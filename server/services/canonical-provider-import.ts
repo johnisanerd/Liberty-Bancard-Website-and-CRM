@@ -175,12 +175,20 @@ export async function materializeCanonicalProviderImportRow(input:{
     return hold("CANONICAL_IMPORT_BUSINESS_IDENTITY_MISSING");
   }
   const place=sourceValue(input.rawRow,"place_id","google_place_id","placeid");
+  const sourceSystem=input.sourceFormat==="google_maps_outscraper" ? "outscraper" : "apollo";
+  const stableKey=place ?? sourceValue(input.rawRow,"organization_id","company_id","apollo_organization_id")
+    ?? `import:${input.executionId}:row:${input.sourceRowNumber}`;
   const organizationInput={
     canonicalName:name,websiteDomain:normalizeDomain(mapped.website),googlePlaceId:place,
     mainPhone:normalizePhoneE164(mapped.phone),city:mapped.city,state:mapped.state,authorityCheck,
+    streetAddress:mapped.address,
+    sourceIdentity:{sourceSystem,sourceType:place ? "place" : "provider_import",stableKey},
     create:{recordClass:"canonical",streetAddress:mapped.address,postalCode:mapped.zip,
       vertical:mapped.vertical ?? mapped.industry,lastSourceType:input.sourceFormat},
   };
+  const businessEvidence={canonicalName:name,websiteDomain:normalizeDomain(mapped.website),
+    mainPhone:normalizePhoneE164(mapped.phone),streetAddress:mapped.address ?? null,
+    city:mapped.city ?? null,state:mapped.state ?? null};
   const resolution=await commit(tx=>resolveOrganization({...organizationInput,transaction:tx}));
   if (resolution.kind==="deferred") {
     return hold(`CANONICAL_IMPORT_${resolution.reasonCode}`,{
@@ -202,9 +210,6 @@ export async function materializeCanonicalProviderImportRow(input:{
   const emails=providerImportEmails(input.rawRow);
   const recipients=emails.map(email=>providerImportRecipient(input.rawRow,email));
   const {applyConsentCommand}=await import("./consent-authority");
-  const sourceSystem=input.sourceFormat==="google_maps_outscraper" ? "outscraper" : "apollo";
-  const stableKey=place ?? sourceValue(input.rawRow,"organization_id","company_id","apollo_organization_id")
-    ?? `import:${input.executionId}:row:${input.sourceRowNumber}`;
   let result;
   try {
   const source=await commit(async tx=>{
@@ -212,9 +217,12 @@ export async function materializeCanonicalProviderImportRow(input:{
       (business_id,source_system,source_type,stable_key,raw_evidence)
       VALUES(${businessId},${sourceSystem},${place ? "place" : "provider_import"},${stableKey},
         ${JSON.stringify({executionId:input.executionId,sourceRowNumber:input.sourceRowNumber,
-          rowFingerprint:fingerprint})}::jsonb)
+          rowFingerprint:fingerprint,businessEvidence})}::jsonb)
       ON CONFLICT(source_system,source_type,stable_key) DO UPDATE
-        SET last_confirmed_at=clock_timestamp()
+        SET last_confirmed_at=clock_timestamp(),
+          raw_evidence=CASE WHEN canonical_source_links.raw_evidence ? 'businessEvidence'
+            THEN canonical_source_links.raw_evidence ELSE coalesce(canonical_source_links.raw_evidence,'{}'::jsonb)
+              ||jsonb_build_object('businessEvidence',${JSON.stringify(businessEvidence)}::jsonb) END
       RETURNING id,business_id`))[0];
     if (Number(source.business_id)!==businessId) throw new Error("CANONICAL_IMPORT_STABLE_SOURCE_CONFLICT");
     if (mapped.address || mapped.city || mapped.zip || place) {
@@ -261,6 +269,7 @@ export async function materializeCanonicalProviderImportRow(input:{
           sourceRowNumber:input.sourceRowNumber,rowFingerprint:fingerprint,sourceExternalId:stableKey,
           actorType:"import",actorId:input.actorId,
            metadata:{place_id:place,sourceFormat:input.sourceFormat,sourceCoordinate:input.sourceCoordinate ?? null,
+             businessEvidence,
              canonicalRecoveryItemId:input.recoveryClaim?.itemId ?? null}},
         actor:{actorType:"import",actorId:input.actorId},
         hookPolicy:{source:"cro03",deferValidation:true,deferReadiness:true,

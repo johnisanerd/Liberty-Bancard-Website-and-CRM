@@ -8,6 +8,9 @@ import {
   lockCurrentSfpRuntimeOwner,
 } from "./cro03/sfp-provider-operations";
 import { runCanonicalTransaction } from "./canonical-transaction-retry";
+import { materializeSupportedContactBusiness } from "./contact-business-materialization";
+import { loadEvidenceRelationshipPage } from "./contact-business-evidence-page";
+import {readContactLinkAssignmentPopulation} from "./contact-link-population";
 
 const KEY = "contact_link_automation_v1";
 const RULE = "independent_guarded_system_links_v2";
@@ -18,10 +21,12 @@ type Program = {
   updatedAt: string; lastError: string | null; complete: boolean;
   scanStartedAt?: string; changedSince?: string; backfillComplete?: boolean;
 };
-export async function getContactLinkAutomationStatus(): Promise<Program | null> {
+export async function getContactLinkAutomationStatus(includePopulation=true): Promise<
+  (Program & {population?:Awaited<ReturnType<typeof readContactLinkAssignmentPopulation>>}) | null> {
   const result = await pool.query("SELECT value FROM system_settings WHERE key=$1", [KEY]);
   const state = result.rows[0]?.value;
-  return state?.version === 1 && state?.rule === RULE ? state : null;
+  return state?.version === 1 && state?.rule === RULE
+    ? {...state,...(includePopulation ? {population:await readContactLinkAssignmentPopulation()} : {})} : null;
 }
 
 /** Operator enable/disable override; routine initialization is automatic. */
@@ -137,9 +142,9 @@ export async function processContactLinkAutomationTick(
     });
     pages++;
     if (!preview.schemaReady) throw new Error("COMMERCIAL_SYSTEM_LINK_DATABASE_GUARD_MISSING");
-    for (const candidate of preview.rows) {
+    for (let candidate of preview.rows) {
       if (Date.now()>=deadline) break;
-      const current = await getContactLinkAutomationStatus();
+       const current = await getContactLinkAutomationStatus(false);
       if (!current?.enabled || current.leaseToken !== token) break;
       let outcome: any = null;
       const authorityCheck = async (tx:any) => {
@@ -157,6 +162,13 @@ export async function processContactLinkAutomationTick(
         if (pinned.value.enabled !== true) throw new Error("CONTACT_LINK_AUTOMATION_DISABLED");
         return true;
       };
+      if(!candidate.eligible && candidate.projectedBusinessId==null && candidate.currentDecisionId==null) {
+        const materialized=await materializeSupportedContactBusiness(candidate.contactId,authorityCheck);
+        if(materialized.status==="materialized" || materialized.status==="matched") {
+          const refreshed=(await loadEvidenceRelationshipPage(db,0,1,candidate.contactId)).previews[0];
+          if(refreshed)candidate=refreshed;
+        }
+      }
       if (candidate.eligible) outcome = await applyContactBusinessSystemLink(candidate as any, authorityCheck);
       // Authority/lease loss is retryable, not an identity-conflict disposition.
       // Keep this contact ahead of the cursor so restoration needs no manual

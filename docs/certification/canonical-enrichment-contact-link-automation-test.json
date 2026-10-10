@@ -1,6 +1,6 @@
 {
-  "observedAt": "2026-10-05T13:42:35.866Z",
-  "checks": 40,
+  "observedAt": "2026-10-10T21:38:27.179Z",
+  "checks": 51,
   "scope": "Disposable real-DB automatic relationship linking only",
   "cohortIndependent": true,
   "automaticNativeRepairRecovery": true,
@@ -14,6 +14,9 @@
   "boundedMultiPageTraversal": true,
   "exactUnprocessedTailPreserved": true,
   "ownerBeforeGraphWithQueuedRenewal": true,
+  "threeConsecutiveEligibleOrdinaryCycles": true,
+  "currentPopulationSeparateFromAttempts": true,
+  "unavailableNativeIsNotZero": true,
   "providerEnrollmentCommunicationAndCohortCountsUnchanged": true,
   "externalNetworkAttempts": 0,
   "nativeFingerprintsUnchanged": true,

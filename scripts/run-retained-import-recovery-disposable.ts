@@ -36,7 +36,36 @@ try {
   await withLocalClient(cluster.admin,client=>client.query('CREATE DATABASE "test_retained_template"'));
   point("test_retained_template");
   await run(["scripts/migrate.ts"]);
-  if(process.argv.includes("--configured-release-only")){
+   if(process.argv.includes("--intake-review-only")){
+     await run(["scripts/certification/test-intake-review-pages.ts"]);
+    } else if(process.argv.includes("--intake-geography-only")){
+      await run(["scripts/test-sfp-free-continuation-certification.ts"]);
+   } else if(process.argv.includes("--intake-workbooks-only")){
+     await run(["scripts/certification/test-canonical-workbook-intake.ts"]);
+   } else if(process.argv.includes("--intake-native-contract-only")){
+     await run(["scripts/certification/test-intake-native-contract.ts"]);
+   } else if(process.argv.includes("--intake-only")){
+     const scripts=[
+       "test-intake-native-contract.ts","test-organization-resolver-disposable.ts",
+       "test-intake-execution-isolation.ts","test-source-only-link-reconsideration.ts",
+       "test-source-family-business-materialization.ts","test-crm-contact-link-automation.ts",
+       "test-intake-review-pages.ts",
+     ];
+     for(const [index,script] of scripts.entries()){
+       const database=`test_intake_${index}`;
+       await withLocalClient(cluster.admin,client=>client.query(
+         `CREATE DATABASE "${database}" TEMPLATE "test_retained_template"`));
+       point(database);
+       await run([`scripts/certification/${script}`]);
+     }
+      const database="test_intake_geography";
+      await withLocalClient(cluster.admin,client=>client.query(
+        `CREATE DATABASE "${database}" TEMPLATE "test_retained_template"`));
+      point(database);
+      await run(["scripts/test-sfp-free-continuation-certification.ts"]);
+   } else if(process.argv.includes("--organization-only")){
+     await run(["scripts/certification/test-organization-resolver-disposable.ts"]);
+   } else if(process.argv.includes("--configured-release-only")){
     await withLocalClient(cluster.admin,client=>client.query(
       'CREATE DATABASE "test_sfp2060_retained_release" TEMPLATE "test_retained_template"'));
     point("test_sfp2060_retained_release");

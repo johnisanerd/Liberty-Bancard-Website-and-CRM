@@ -1,5 +1,7 @@
+import { stateIdentitySql } from "./state-identity";
+import { sourceFamilyRelationshipReasonsSql } from "./source-family-relationship-sql";
 /**
- * Read-only equivalent of the crm_evidence_identity_v2 native evaluator.
+ * Read-only equivalent of the crm_evidence_identity_v3 native evaluator.
  * Publish does not reliably transfer native functions. Reads must not depend
  * on their presence; writes still require the native, fingerprinted fence.
  * Arguments are trusted SQL expressions, never request values.
@@ -17,7 +19,12 @@ export function relationshipReasonsSql(contact: string, business: string, source
   const domain = identityDomainSql;
   const phone = (v: string) => `right(regexp_replace(coalesce(${v},''),'[^0-9]','','g'),10)`;
   const sharedHosts = "'instagram.com','facebook.com','waze.com','linktr.ee','linkedin.com','google.com','yelp.com','tiktok.com','bit.ly'";
-  return `(WITH subject AS MATERIALIZED (
+  return `(CASE WHEN EXISTS(SELECT 1 FROM canonical_source_links family
+    WHERE family.id=${source}::uuid AND family.business_id=${business}::integer
+      AND family.source_system IN ('crm','ghl','apollo','google_maps','google','outscraper')
+      AND family.source_type IN ('provider_import','organization','organization_location','crm_organization'))
+    THEN ${sourceFamilyRelationshipReasonsSql(contact,business,source)}
+    ELSE (WITH subject AS MATERIALIZED (
     SELECT c.*,b.id bid,b.canonical_name,b.record_class business_class,
       b.street_address,b.state business_state,b.main_phone,b.website_domain,b.google_place_id,
       s.id sid,s.source_system,s.source_type,s.stable_key,
@@ -51,7 +58,7 @@ export function relationshipReasonsSql(contact: string, business: string, source
         END stable_match,
       ${name("s.address")}<>'' AND ${name("s.address")}=${name("s.principal_address")}
         AND ${name("s.city")}<>'' AND ${name("s.city")}=${name("s.principal_city")}
-        AND ${name("s.state")}<>'' AND ${name("s.state")}=${name("s.principal_state")}
+        AND ${stateIdentitySql("s.state")}<>'' AND ${stateIdentitySql("s.state")}=${stateIdentitySql("s.principal_state")}
         AND (NULLIF(s.street_address,'') IS NULL OR ${name("s.street_address")}=${name("s.address")}) address_match,
       length(regexp_replace(coalesce(s.phone,''),'[^0-9]','','g'))>=10
         AND ${phone("s.phone")}=${phone("coalesce(nullif(s.entity_json->>'phone',''),s.entity_json->>'owner_phone','')")}
@@ -97,7 +104,7 @@ export function relationshipReasonsSql(contact: string, business: string, source
           AND ${name("evaluated.company_name")} IN (${name("oe.entity_name")},${name("oe.dba")})
           AND ${name("evaluated.address")}=${name("oe.principal_address")}
           AND ${name("evaluated.city")}=${name("oe.principal_city")}
-          AND ${name("evaluated.state")}=${name("oe.principal_state")}) THEN 'address_competing_businesses' END,
+          AND ${stateIdentitySql("evaluated.state")}=${stateIdentitySql("oe.principal_state")}) THEN 'address_competing_businesses' END,
       CASE WHEN sid IS NOT NULL AND (maps OR (registry AND eid IS NOT NULL)) AND EXISTS(
         SELECT 1 FROM canonical_source_links os
         JOIN businesses ob ON ob.id=os.business_id AND ob.record_class='canonical'
@@ -106,6 +113,6 @@ export function relationshipReasonsSql(contact: string, business: string, source
         THEN 'stable_identifier_competing_businesses' END,
       CASE WHEN sid IS NOT NULL AND (maps OR (registry AND eid IS NOT NULL))
         AND state IS NOT NULL AND business_state IS NOT NULL
-        AND upper(btrim(state))<>upper(btrim(business_state)) THEN 'location_state_conflict' END
-    ]::text[],NULL) END FROM evaluated)`;
+        AND ${stateIdentitySql("state")}<>${stateIdentitySql("business_state")} THEN 'location_state_conflict' END
+    ]::text[],NULL) END FROM evaluated) END)`;
 }

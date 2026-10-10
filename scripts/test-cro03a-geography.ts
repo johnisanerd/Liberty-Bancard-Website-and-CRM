@@ -220,6 +220,19 @@ for (const [city, counties] of Object.entries(_CITY_COUNTY_V2_FOR_TEST)) {
 }
 
 // ── Summary ───────────────────────────────────────────────────────────────────
+for(const state of ["FL"," fl ","Florida"," florida ","FLORIDA"]) {
+  assert(`${state}: Broward/33301 alias eligibility`,
+    evaluateSouthFloridaGeography({state,county:"Broward",zip:"33301"}).eligible===true);
+  assert(`${state}: county/ZIP conflict remains held`,
+    evaluateSouthFloridaGeography({state,county:"Broward",zip:"33131"}).eligible===false);
+  assert(`${state}: Monroe remains disabled`,
+    evaluateSouthFloridaGeography({state,county:"Monroe",zip:"33040"}).eligible===false);
+}
+assert("GA plus Florida county/ZIP stays rejected",
+  evaluateSouthFloridaGeography({state:"GA",county:"Broward",zip:"33301"}).eligible===false);
+assert("Unknown state text is not an alias",
+  evaluateSouthFloridaGeography({state:"Flo Rida",county:"Broward",zip:"33301"}).eligible===false);
+assert("Absent geography remains unknown",evaluateSouthFloridaGeography({}).eligible===false);
 console.log(`\n=== Geography Reference Tests ===`);
 console.log(`\n=== ${passed} passed, ${failed} failed ===`);
 if (failures.length) {

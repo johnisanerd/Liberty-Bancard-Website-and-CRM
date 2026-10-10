@@ -126,7 +126,7 @@
 - [Ranked SQL selections and locks](postgres-ranked-selection-locks.md) — window queries cannot use FOR UPDATE; lock base rows and recheck; prove partial-expression index use with EXPLAIN.
 - [Provider contracts](provider-documentation-contracts.md) — Invalid GHL resources can mask request errors; Outscraper expiry looks Pending; Apollo billing is operation-specific.
 - [Provider facts versus eligibility](provider-facts-vs-eligibility.md) — Preserve dispatched receipts across authority drift; serialize authorization separately from network I/O and promotion.
-- [Lossless timestamp authority pins](lossless-timestamp-authority-pins.md) — PostgreSQL microseconds must survive review CAS; JavaScript Date rounding can immediately invalidate an approval.
+- [Lossless timestamp authority pins](lossless-timestamp-authority-pins.md) — Preserve native microseconds in review CAS and keyset cursors; rounding breaks approval pins and repeats pages.
 - [Browser/fixture verification](browser-memory-index.md) — Private sessions, environment Chromium, overlay settling/dismissal, ESM loaders and fixture Run groups.
 - [Authority write pitfalls](authority-bootstrap-transfer.md) — Upserts trigger INSERT; [Drizzle dropped columns](drizzle-set-silent-drop.md).
 - [SFP published build identity](sfp-published-build-identity.md) — Routine publishes auto-handoff audited SFP authority; preserve retired-build fencing, explicit holds, and manual rollback.

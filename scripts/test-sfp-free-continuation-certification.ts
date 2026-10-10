@@ -84,5 +84,39 @@ const after = (await pool.query(`SELECT
   (SELECT COUNT(*)::int FROM sequence_enrollments se JOIN contacts c ON c.id=se.contact_id WHERE c.business_id=ANY($1::int[])) AS enrollments
 `, [[roofing, supplier, restaurant]])).rows[0];
 assert.deepEqual(after, before, "free cursor must make zero provider, contact, or enrollment writes");
+// Previously held full-state spellings are revisited without changing source
+// revisions. A still-held alias is versioned once, not retried every tick.
+const aliasEligible=await business("Reliable Roofing alias");
+const aliasHeld=await business("Reliable Roofing Monroe alias");
+await pool.query(`UPDATE businesses SET state='Florida',updated_at='2020-01-01'
+  WHERE id=ANY($1::int[])`,[[aliasEligible,aliasHeld]]);
+await pool.query(`UPDATE business_locations SET state=' florida ',updated_at='2020-01-01'
+  WHERE business_id=ANY($1::int[])`,[[aliasEligible,aliasHeld]]);
+await pool.query(`UPDATE businesses SET city='Key West',postal_code='33040' WHERE id=$1`,[aliasHeld]);
+await pool.query(`UPDATE business_locations SET city='Key West',postal_code='33040',county_fips='12087'
+  WHERE business_id=$1`,[aliasHeld]);
+const priorRun=(await pool.query(`SELECT id FROM sfp_classification_runs WHERE program_id=$1
+  ORDER BY created_at LIMIT 1`,[programId])).rows[0].id;
+await pool.query(`INSERT INTO sfp_classification_items(run_id,business_id,state,outcome_code)
+  SELECT $1,id,'skipped','{"route":"outside_territory"}'
+  FROM businesses WHERE id=ANY($2::int[])`,[priorRun,[aliasEligible,aliasHeld]]);
+await pool.query(`UPDATE sfp_programs SET name='south-florida-v1' WHERE id=$1`,[programId]);
+await pool.query(`UPDATE sfp_free_classification_continuations SET state='completed',
+  stop_business_id=$2,high_water_business_id=$2 WHERE program_id=$1`,[programId,aliasHeld]);
+const aliasTick=await processSfpFreeClassificationTick();
+assert.equal(aliasTick.processed,2,"Both unchanged Florida-alias holds are reconsidered");
+assert.equal((await pool.query(`SELECT count(*)::int n FROM sfp_classification_items
+  WHERE run_id=$1 AND state='completed' AND business_id=ANY($2::int[])`,
+  [priorRun,[aliasEligible,aliasHeld]])).rows[0].n,2);
+const heldLatest=(await pool.query(`SELECT outcome_code FROM sfp_classification_items
+  WHERE business_id=$1 ORDER BY created_at DESC LIMIT 1`,[aliasHeld])).rows[0];
+assert.equal(JSON.parse(heldLatest.outcome_code).geographyAliasPolicy,"florida_state_alias_v1");
+const runsBeforeRepeat=Number((await pool.query(`SELECT count(*) n FROM sfp_classification_runs
+  WHERE program_id=$1`,[programId])).rows[0].n);
+assert.equal((await processSfpFreeClassificationTick()).processed,0,"Unchanged territory hold cannot monopolize followups");
+assert.equal(Number((await pool.query(`SELECT count(*) n FROM sfp_classification_runs
+  WHERE program_id=$1`,[programId])).rows[0].n),runsBeforeRepeat);
+assert.equal(Number((await pool.query("SELECT count(*) n FROM provider_operations")).rows[0].n),before.providers);
 console.log("SFP free continuation certification: cursor, pause/resume, one bounded run, replay and zero-spend passed");
+console.log("Florida-alias followup: unchanged supported hold revisited; Monroe held once; no repeat run or provider spend");
 await pool.end();

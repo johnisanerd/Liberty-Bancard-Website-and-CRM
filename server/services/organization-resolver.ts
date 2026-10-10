@@ -1,181 +1,94 @@
-import { and, eq, sql } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import { db } from "../db";
 import { businesses, type InsertBusiness } from "@shared/schema";
-import {hashCro03Evidence} from "./cro03/source-staging";
-type ResolutionTransaction=Parameters<Parameters<typeof db.transaction>[0]>[0];
-
+import { hashCro03Evidence } from "./cro03/source-staging";
+import { normalizeStateIdentity, stateIdentitySql } from "../../shared/state-identity";
+import { decideOrganizationIdentity, normalOrganizationName, normalOrganizationValue,
+  type OrganizationIdentity } from "./organization-resolution-policy";
+type ResolutionTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+type Business = typeof businesses.$inferSelect;
 export type OrganizationResolution =
-  | { kind: "created"; business: typeof businesses.$inferSelect }
-  | { kind: "matched"; business: typeof businesses.$inferSelect }
-  | { kind: "deferred"; reasonCode: "INSUFFICIENT_ORGANIZATION_EVIDENCE" | "AMBIGUOUS_ORGANIZATION_MATCH";
-      candidateIds: number[]; snapshotHash?:string;candidateRevisions?:Array<{id:number;revision:string}> };
-
+  | {kind: "created"; business: Business}
+  | {kind: "matched"; business: Business}
+  | {kind: "deferred"; reasonCode: "INSUFFICIENT_ORGANIZATION_EVIDENCE" | "AMBIGUOUS_ORGANIZATION_MATCH";
+      candidateIds: number[]; snapshotHash?: string; candidateRevisions?: Array<{id:number;revision:string}>};
 export type OrganizationPeekResult =
-  | { kind: "would_create" }
-  | { kind: "matched"; business: typeof businesses.$inferSelect }
-  | { kind: "deferred"; reasonCode: "INSUFFICIENT_ORGANIZATION_EVIDENCE" | "AMBIGUOUS_ORGANIZATION_MATCH"; candidateIds: number[] };
-
-function normal(value: string | null | undefined): string | null {
-  const normalized = value?.trim().toLowerCase();
-  return normalized || null;
-}
-function normalizedName(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9\s]/g, "").replace(/\s+/g, " ").trim();
-}
-
-/**
- * Resolves only the business model. It never merges contacts, merchants or
- * companies. Equivalent evidence is serialized by a transaction-scoped
- * advisory lock, then re-read before a new business can be inserted.
- */
-export async function resolveOrganization(input: {
-  canonicalName: string;
-  websiteDomain?: string | null;
-  googlePlaceId?: string | null;
-  mainPhone?: string | null;
-  city?: string | null;
-  state?: string | null;
+  | {kind: "would_create"} | {kind: "matched"; business: Business}
+  | Extract<OrganizationResolution, {kind:"deferred"}>;
+type Input = OrganizationIdentity & {
   create?: Omit<InsertBusiness, "canonicalName" | "normalizedName" | "websiteDomain" | "googlePlaceId" | "mainPhone">;
   authorityCheck?: (tx: any) => Promise<boolean>;
   transaction?: ResolutionTransaction;
-  sourceIdentity?: {sourceSystem:string;sourceType:string;stableKey:string};
-}): Promise<OrganizationResolution> {
-  const domain = normal(input.websiteDomain);
-  const placeId = input.googlePlaceId?.trim() || null;
-  const phone = input.mainPhone?.replace(/\D/g, "") || null;
-  const name = normalizedName(input.canonicalName);
-  const city = normal(input.city);
-  const state = normal(input.state);
+};
+function identity(input: Input) {
+  return {...input, websiteDomain: normalOrganizationValue(input.websiteDomain),
+    googlePlaceId: input.googlePlaceId?.trim() || null, mainPhone: input.mainPhone?.replace(/\D/g,"") || null,
+    city: normalOrganizationValue(input.city), state: normalizeStateIdentity(input.state),
+    streetAddress: input.streetAddress ?? input.create?.streetAddress ?? null};
+}
+async function readCandidates(executor: any, input: ReturnType<typeof identity>, lock: boolean) {
+  const sourceMatch = sql`EXISTS(SELECT 1 FROM canonical_source_links source_link
+    WHERE source_link.business_id=businesses.id
+      AND source_link.source_system=${input.sourceIdentity?.sourceSystem ?? null}::text
+      AND source_link.source_type=${input.sourceIdentity?.sourceType ?? null}::text
+      AND source_link.stable_key=${input.sourceIdentity?.stableKey ?? null}::text)`;
+  const query = executor.select({business: businesses, exactSource: sourceMatch}).from(businesses).where(sql`
+    ${sourceMatch}
+    OR (${input.googlePlaceId}::text IS NOT NULL AND google_place_id=${input.googlePlaceId}::text)
+    OR (${input.websiteDomain}::text IS NOT NULL AND lower(btrim(website_domain))=${input.websiteDomain}::text)
+    OR (${input.mainPhone}::text IS NOT NULL AND regexp_replace(coalesce(main_phone,''),'[^0-9]','','g')=${input.mainPhone}::text)
+    OR (${input.city}::text IS NOT NULL AND ${input.state}::text IS NOT NULL
+      AND normalized_name=${normalOrganizationName(input.canonicalName)}
+      AND lower(btrim(coalesce(city,'')))=${input.city}::text
+      AND ${sql.raw(stateIdentitySql("state"))}=${input.state}::text)
+  `).orderBy(businesses.id);
+  return (lock ? query.for("update") : query) as Promise<Array<{business:Business;exactSource:boolean}>>;
+}
+function decision(input: ReturnType<typeof identity>, candidates: Awaited<ReturnType<typeof readCandidates>>) {
+  return decideOrganizationIdentity(input, candidates.map(({business,exactSource})=>({...business,exactSource})));
+}
+function deferred(result: Extract<ReturnType<typeof decision>, {kind:"deferred"}>,
+  candidates: Awaited<ReturnType<typeof readCandidates>>): OrganizationResolution {
+  return {...result, snapshotHash:hashCro03Evidence(candidates),
+    candidateRevisions:candidates.map(({business})=>({id:business.id,revision:hashCro03Evidence(business)}))};
+}
+/** Stable multi-identifier locking + re-read is the sole write authority. */
+export async function resolveOrganization(raw: Input): Promise<OrganizationResolution> {
+  const input = identity(raw);
   const lockKeys = [
     input.sourceIdentity ? `source:${input.sourceIdentity.sourceSystem}:${input.sourceIdentity.sourceType}:${input.sourceIdentity.stableKey}` : null,
-    placeId ? `place:${placeId}` : null,
-    domain ? `domain:${domain}` : null,
-    phone ? `phone:${phone}` : null,
-    city && state && name ? `name:${name}:${city}:${state}` : null,
-  ].filter((value): value is string => !!value).sort();
-  if (lockKeys.length === 0) return { kind: "deferred", reasonCode: "INSUFFICIENT_ORGANIZATION_EVIDENCE", candidateIds: [] };
-
-  const resolve=async (tx:ResolutionTransaction):Promise<OrganizationResolution> => {
-    if (input.authorityCheck && !(await input.authorityCheck(tx))) {
-      throw new Error("ORGANIZATION_RESOLUTION_AUTHORITY_FENCE_LOST");
-    }
-    // Acquire every supplied strong-evidence lock in a stable order. A domain
-    // lookup and a place-ID lookup for the same incoming organization therefore
-    // serialize instead of creating two rows through different "strongest"
-    // identifiers.
-    for (const lockKey of lockKeys) {
-      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}::text, 1642))`);
-    }
-    // PostgreSQL cannot infer a parameter's type when a nullable value appears
-    // only in an IS NULL / IS NOT NULL predicate. Cast every evidence parameter
-    // explicitly so partially populated organization inputs remain valid.
-    const candidates = await tx.select().from(businesses).where(sql`
-      EXISTS(SELECT 1 FROM canonical_source_links source_link
-        WHERE source_link.business_id=businesses.id
-          AND source_link.source_system=${input.sourceIdentity?.sourceSystem ?? null}::text
-          AND source_link.source_type=${input.sourceIdentity?.sourceType ?? null}::text
-          AND source_link.stable_key=${input.sourceIdentity?.stableKey ?? null}::text)
-         OR (${placeId}::text IS NOT NULL AND google_place_id = ${placeId}::text)
-         OR (${domain}::text IS NOT NULL AND lower(website_domain) = ${domain}::text)
-         OR (${phone}::text IS NOT NULL AND regexp_replace(coalesce(main_phone, ''), '[^0-9]', '', 'g') = ${phone}::text)
-         OR (${placeId}::text IS NULL AND ${domain}::text IS NULL AND ${phone}::text IS NULL
-              AND ${city}::text IS NOT NULL AND ${state}::text IS NOT NULL
-             AND normalized_name = ${name} AND lower(coalesce(city, '')) = ${city ?? ""}
-             AND lower(coalesce(state, '')) = ${state ?? ""})
-    `).for("update");
-    const deferred=(candidateIds:number[]):OrganizationResolution=>({
-      kind:"deferred",reasonCode:"AMBIGUOUS_ORGANIZATION_MATCH",candidateIds,
-      snapshotHash:hashCro03Evidence(candidates.slice().sort((a,b)=>a.id-b.id)),
-      candidateRevisions:candidates.map(candidate=>({id:candidate.id,
-        revision:hashCro03Evidence(candidate)})).sort((a,b)=>a.id-b.id),
-    });
-    if (candidates.length === 1) {
-      const candidate = candidates[0];
-      // A candidate found by one identifier cannot silently absorb a different
-      // supplied strong identifier. Leave those conflicts for review.
-      const conflicts =
-        (placeId && candidate.googlePlaceId && candidate.googlePlaceId !== placeId) ||
-        (domain && candidate.websiteDomain && normal(candidate.websiteDomain) !== domain) ||
-        (phone && candidate.mainPhone && candidate.mainPhone.replace(/\D/g, "") !== phone);
-      if (conflicts) {
-        return deferred([candidate.id]);
-      }
-      return { kind: "matched", business: candidate };
-    }
-    if (candidates.length > 1) {
-      return deferred(candidates.map((row) => row.id).sort((a,b)=>a-b));
-    }
-    if (input.authorityCheck && !(await input.authorityCheck(tx))) {
-      throw new Error("ORGANIZATION_RESOLUTION_AUTHORITY_FENCE_LOST");
-    }
+    input.googlePlaceId ? `place:${input.googlePlaceId}` : null,
+    input.websiteDomain ? `domain:${input.websiteDomain}` : null,
+    input.mainPhone ? `phone:${input.mainPhone}` : null,
+    input.city && input.state ? `name:${normalOrganizationName(input.canonicalName)}:${input.city}:${input.state}` : null,
+  ].filter((key): key is string => !!key).sort();
+  const resolve = async (tx:ResolutionTransaction):Promise<OrganizationResolution> => {
+    const check = async () => {
+      if (input.authorityCheck && !await input.authorityCheck(tx))
+        throw new Error("ORGANIZATION_RESOLUTION_AUTHORITY_FENCE_LOST");
+    };
+    await check();
+    for (const key of lockKeys) await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}::text,1642))`);
+    const candidates = await readCandidates(tx,input,true);
+    const result = decision(input,candidates);
+    if (result.kind==="deferred") return deferred(result,candidates);
+    if (result.kind==="matched") return {kind:"matched",business:candidates.find(c=>c.business.id===result.id)!.business};
+    await check();
     const [business] = await tx.insert(businesses).values({
-      canonicalName: input.canonicalName,
-      normalizedName: name,
-      websiteDomain: domain,
-      googlePlaceId: placeId,
-      mainPhone: phone,
-      city: input.city ?? null,
-      state: input.state ?? null,
-      ...(input.create ?? {}),
+      ...(input.create ?? {}),canonicalName:input.canonicalName,normalizedName:normalOrganizationName(input.canonicalName),
+      websiteDomain:input.websiteDomain,googlePlaceId:input.googlePlaceId,mainPhone:input.mainPhone,
+      city:raw.city ?? null,state:raw.state ?? null,streetAddress:input.streetAddress,
     }).returning();
-    return { kind: "created", business };
+    return {kind:"created",business};
   };
   return input.transaction ? resolve(input.transaction) : db.transaction(resolve);
 }
-
-/**
- * Read-only peek: reports what resolveOrganization() would decide for this
- * input WITHOUT taking the advisory lock or writing anything. Used by preview
- * flows (e.g. the Sunbiz bootstrap dry-run) that must report an exact count
- * of businesses that would be newly materialized before any side effect runs.
- *
- * Because no lock is held, a peek result can theoretically go stale before the
- * real resolveOrganization() call runs (a concurrent writer could insert a
- * matching business in between). That race only ever produces an extra
- * "matched" instead of a missed duplicate — resolveOrganization's own
- * transactional lock + re-read is still the sole source of truth for what
- * actually gets written.
- */
-export async function peekOrganizationResolution(input: {
-  canonicalName: string;
-  websiteDomain?: string | null;
-  googlePlaceId?: string | null;
-  mainPhone?: string | null;
-  city?: string | null;
-  state?: string | null;
-}): Promise<OrganizationPeekResult> {
-  const domain = normal(input.websiteDomain);
-  const placeId = input.googlePlaceId?.trim() || null;
-  const phone = input.mainPhone?.replace(/\D/g, "") || null;
-  const name = normalizedName(input.canonicalName);
-  const city = normal(input.city);
-  const state = normal(input.state);
-
-  if (!placeId && !domain && !phone && !(city && state && name)) {
-    return { kind: "deferred", reasonCode: "INSUFFICIENT_ORGANIZATION_EVIDENCE", candidateIds: [] };
-  }
-
-  const candidates = await db.select().from(businesses).where(sql`
-    (${placeId}::text IS NOT NULL AND google_place_id = ${placeId}::text)
-       OR (${domain}::text IS NOT NULL AND lower(website_domain) = ${domain}::text)
-       OR (${phone}::text IS NOT NULL AND regexp_replace(coalesce(main_phone, ''), '[^0-9]', '', 'g') = ${phone}::text)
-       OR (${placeId}::text IS NULL AND ${domain}::text IS NULL AND ${phone}::text IS NULL
-           AND normalized_name = ${name} AND lower(coalesce(city, '')) = ${city ?? ""}
-           AND lower(coalesce(state, '')) = ${state ?? ""})
-  `);
-  if (candidates.length === 1) {
-    const candidate = candidates[0];
-    const conflicts =
-      (placeId && candidate.googlePlaceId && candidate.googlePlaceId !== placeId) ||
-      (domain && candidate.websiteDomain && normal(candidate.websiteDomain) !== domain) ||
-      (phone && candidate.mainPhone && candidate.mainPhone.replace(/\D/g, "") !== phone);
-    if (conflicts) {
-      return { kind: "deferred", reasonCode: "AMBIGUOUS_ORGANIZATION_MATCH", candidateIds: [candidate.id] };
-    }
-    return { kind: "matched", business: candidate };
-  }
-  if (candidates.length > 1) {
-    return { kind: "deferred", reasonCode: "AMBIGUOUS_ORGANIZATION_MATCH", candidateIds: candidates.map((row) => row.id) };
-  }
-  return { kind: "would_create" };
+/** Same retrieval and decision policy as writes; races remain transactionally revalidated. */
+export async function peekOrganizationResolution(raw: OrganizationIdentity): Promise<OrganizationPeekResult> {
+  const input=identity(raw);
+  const candidates=await readCandidates(db,input,false);
+  const result=decision(input,candidates);
+  if(result.kind==="deferred")return deferred(result,candidates) as Extract<OrganizationPeekResult,{kind:"deferred"}>;
+  return result.kind==="create" ? {kind:"would_create"} :
+    {kind:"matched",business:candidates.find(c=>c.business.id===result.id)!.business};
 }

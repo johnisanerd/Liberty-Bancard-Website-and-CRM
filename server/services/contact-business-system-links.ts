@@ -20,7 +20,7 @@ export {
   type SystemLinkFacts,
 } from "./contact-business-system-link-policy";
 
-export const CONTACT_BUSINESS_SYSTEM_LINK_RULE = "crm_evidence_identity_v2";
+export const CONTACT_BUSINESS_SYSTEM_LINK_RULE = "crm_evidence_identity_v3";
 
 function snapshotHash(facts: SystemLinkFacts): string {
   return crypto.createHash("sha256").update(JSON.stringify(minimizedEvidenceFacts(facts))).digest("hex");

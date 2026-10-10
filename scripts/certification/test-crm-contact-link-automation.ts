@@ -31,7 +31,8 @@ const {assertSystemLinkDatabaseGuard}=await import("../../server/services/commer
 // transform, then ALSO require the current runtime guard. Never bless a live hash.
 const quote=(value:string)=>`'${value.replaceAll("'","''")}'`;
 const verify = fs.readFileSync("docs/certification/canonical-enrichment-native-verify.sql", "utf8")
-  .replaceAll("md5(p.prosrc)",`md5(replace(p.prosrc,${quote(CANONICAL_ADDRESS_RECEIPT_CLAUSE)},${quote(ORIGINAL_ADDRESS_RECEIPT_CLAUSE)}))`);
+  .replaceAll("md5(p.prosrc)",`md5(replace(replace(p.prosrc,'crm_evidence_identity_v3','crm_evidence_identity_v2'),${quote(CANONICAL_ADDRESS_RECEIPT_CLAUSE)},${quote(ORIGINAL_ADDRESS_RECEIPT_CLAUSE)}))`)
+  .replaceAll("6868a6d639a3fd0af7a10346821dad19","3ee7b8798d9dce2f2c6e92ef91c51c7e");
 const originalEnv = {
   NODE_ENV: process.env.NODE_ENV, REPLIT_DEPLOYMENT: process.env.REPLIT_DEPLOYMENT,
   RELEASE_SHA: process.env.RELEASE_SHA, SFP_PUBLISH_ARTIFACT_SHA: process.env.SFP_PUBLISH_ARTIFACT_SHA,
@@ -82,6 +83,10 @@ async function decisionCount(contactId: number) {
     WHERE contact_id=$1 AND decision='verified' AND superseded_at IS NULL`, [contactId])).rows[0].n);
 }
 try {
+  // The shared disposable launcher supplies a build identity for the other
+  // cases. This case deliberately starts without one before selecting first.
+  for(const key of ["RELEASE_SHA","SFP_PUBLISH_ARTIFACT_SHA","SFP_PUBLISH_BUILD_ID","SFP_PUBLISH_BUILT_AT"])
+    delete process.env[key];
   const guard = (await pool.query(verify)).rows[0];
   check(Object.values(guard).every(v => v === true), "Real migrated native guards required");
   await assertSystemLinkDatabaseGuard(db);
@@ -206,16 +211,38 @@ try {
     peer.release();
     await Promise.allSettled([applying,renewing].filter(Boolean));
   }
+  // Each consecutive eligible ordinary cycle must commit its own newly
+  // supported relationship, not just repeat a heartbeat or drain one batch.
+  for(let cycle=0;cycle<3;cycle++){
+    const next=await fixture(`ordinary_cycle_${cycle}`);
+    const before=(await getContactLinkAutomationStatus(false))!;
+    check((await processContactLinkAutomationTick()).ran===true,"Eligible ordinary cycle ran");
+    check(await decisionCount(next.contactId)===1,"Each ordinary cycle committed its supported contact");
+    check((await getContactLinkAutomationStatus(false))!.committed===before.committed+1,
+      "Cycle progress measures a new committed decision");
+  }
+  const {readContactLinkAssignmentPopulation}=await import("../../server/services/contact-link-population");
+  const population=await readContactLinkAssignmentPopulation();
+  check(population.state==="current" && population.currentVerified===5,
+    "Current audited population is separate from cumulative attempts");
+  await pool.query("ALTER FUNCTION crm_source_family_relationship_reasons(integer,integer,uuid) RENAME TO cert_missing_source_family");
+  try {
+    const unavailable=await readContactLinkAssignmentPopulation();
+    check(unavailable.state==="unavailable" && unavailable.currentVerified===null && unavailable.totalActiveProduction===null,
+      "Missing native authority is unavailable, never a healthy zero");
+  } finally {
+    await pool.query("ALTER FUNCTION cert_missing_source_family(integer,integer,uuid) RENAME TO crm_source_family_relationship_reasons");
+  }
   deploy(second);
   check((await processContactLinkAutomationTick()).ran === true, "Published successor takes over existing program");
-  const afterTransfer = await getContactLinkAutomationStatus();
+  const afterTransfer = await getContactLinkAutomationStatus(false);
   deploy(first);
   await assert.rejects(processContactLinkAutomationTick(), /RETIRED_BUILD/); checks++;
-  assert.deepEqual(await getContactLinkAutomationStatus(), afterTransfer); checks++;
+  assert.deepEqual(await getContactLinkAutomationStatus(false), afterTransfer); checks++;
   deploy(second);
   await pool.query("UPDATE sfp_runtime_owner_authority SET revoked_at=clock_timestamp()");
   await assert.rejects(processContactLinkAutomationTick(), /OWNER_REVOKED/); checks++;
-  assert.deepEqual(await getContactLinkAutomationStatus(), afterTransfer); checks++;
+  assert.deepEqual(await getContactLinkAutomationStatus(false), afterTransfer); checks++;
   assert.deepEqual(await counts(), baseline); checks++;
   check(getBlockedCertificationNetworkAttemptCount() === 0, "No provider/network attempts");
   check(Object.values((await pool.query(verify)).rows[0]).every(v => v === true), "Native fingerprints unchanged");
@@ -226,6 +253,8 @@ try {
     currentPublishedOwnerRequired: true, retiredBuildDenied: true, revokedOwnerDenied: true,
     boundedMultiPageTraversal: true, exactUnprocessedTailPreserved: true,
     ownerBeforeGraphWithQueuedRenewal: true,
+    threeConsecutiveEligibleOrdinaryCycles: true,
+    currentPopulationSeparateFromAttempts:true,unavailableNativeIsNotZero:true,
     providerEnrollmentCommunicationAndCohortCountsUnchanged: true, externalNetworkAttempts: 0,
     nativeFingerprintsUnchanged: true, productionExecution: false, taskComplete: false,
   };

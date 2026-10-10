@@ -121,11 +121,12 @@ export async function assertSystemLinkDatabaseGuard(executor: any,options:{prepa
        AND ns.nspname='public' AND con.contype='c' AND con.convalidated
        AND con.conislocal AND con.coninhcount=0
     ) AS sfp_contact_checks
-    ,(SELECT count(*)=3 AND bool_and(md5(p.prosrc)=expected.body_hash)
+    ,(SELECT count(*)=4 AND bool_and(md5(p.prosrc)=expected.body_hash)
       FROM (VALUES
         ('crm_identity_name','e45d1eb858ef5e5f9d94b8b9aa965c49'),
         ('crm_identity_domain','d0af69048a9c4845df1589219a522629'),
-        ('crm_automatic_relationship_reasons','6868a6d639a3fd0af7a10346821dad19')
+        ('crm_automatic_relationship_reasons','3ee7b8798d9dce2f2c6e92ef91c51c7e'),
+        ('crm_source_family_relationship_reasons','4a6980a53fd86d9017679dbca80b2a49')
       ) expected(function_name,body_hash)
       JOIN pg_proc p ON p.proname=expected.function_name
         AND p.pronamespace='public'::regnamespace

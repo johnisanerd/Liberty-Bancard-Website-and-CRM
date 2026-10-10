@@ -2668,9 +2668,17 @@ class QueueManager {
           break;
         }
         case QUEUE_NAMES.CANONICAL_IMPORT_RECOVERY: {
+          // An unsafe expired upload stops its own boundary, but cannot deny
+          // independent retained recovery its ordinary committed opportunity.
           const { processCanonicalImportRecoveryTick } = await import("./canonical-import-recovery-worker");
           const recovered = await processCanonicalImportRecoveryTick();
           if (recovered.ran) console.log(`[CanonicalImportRecovery] ${JSON.stringify(recovered)}`);
+          // Reuse request-free ordinary upload recovery on the existing serial
+          // schedule; no customer restart or second recovery queue is required.
+          const { resumeExpiredCsvImports } = await import("./csv-import-recovery");
+          const { processPersistedCsvImport } = await import("./csv-import-processor");
+          const uploadsResumed = await resumeExpiredCsvImports(processPersistedCsvImport);
+          if (uploadsResumed) console.log(`[CsvImportRecovery] Resumed ${uploadsResumed} expired executions`);
           if (recovered.ran && recovered.budgetExhausted) {
             const { canonicalImportContinuationOptions } = await import("./canonical-import-recovery-scheduling");
             // Serial continuation: no extra concurrency, no provider work and

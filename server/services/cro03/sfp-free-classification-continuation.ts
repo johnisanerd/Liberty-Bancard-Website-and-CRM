@@ -191,6 +191,14 @@ async function processResolvedGeographyFollowups(program: any): Promise<number> 
             WHERE l.business_id=i.business_id
               AND COALESCE(l.updated_at,l.created_at) > i.created_at
          )
+         OR (
+           (CASE WHEN left(i.outcome_code,1)='{' THEN i.outcome_code::jsonb ELSE '{}'::jsonb END)
+             ->>'geographyAliasPolicy' IS DISTINCT FROM 'florida_state_alias_v1'
+           AND (upper(btrim(b.state))='FLORIDA' OR EXISTS (
+             SELECT 1 FROM business_locations l WHERE l.business_id=i.business_id
+               AND upper(btrim(l.state))='FLORIDA'
+           ))
+         )
        )
      ORDER BY i.business_id,i.created_at DESC
      LIMIT ${RUN_LIMIT}
@@ -221,6 +229,13 @@ async function processResolvedGeographyFollowups(program: any): Promise<number> 
     freeOnly: true,
   });
   if (result.costMicros !== 0) throw new Error("SFP_GEOGRAPHY_FOLLOWUP_NONZERO_COST");
+  // Version the new held decision so an unchanged alias/territory conflict does
+  // not monopolize the next ordinary tick. Changed site evidence still revisits.
+  await db.execute(sql`UPDATE sfp_classification_items
+    SET outcome_code=(CASE WHEN left(outcome_code,1)='{' THEN outcome_code::jsonb ELSE '{}'::jsonb END ||
+      '{"geographyAliasPolicy":"florida_state_alias_v1"}'::jsonb)::text
+    WHERE run_id=${result.runId}::uuid AND state='skipped'
+      AND business_id=ANY(ARRAY[${sql.join(checkedIds.map(id=>sql`${id}`),sql`, `)}]::integer[])`);
   await db.execute(sql`
     UPDATE sfp_classification_items i
        SET state='completed',

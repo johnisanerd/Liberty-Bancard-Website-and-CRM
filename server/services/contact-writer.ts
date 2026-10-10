@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import { db } from "../db";
 import { storage } from "../storage";
+import {intakeBusinessEvidence} from "../../shared/intake-business-evidence";
 import {
   contacts,
   contactSourceEvents,
@@ -175,7 +176,11 @@ export async function writeContact(args: {
   _intakeOutcome: "created" | "matched_existing";
   _sourceEventId: number;
 }> {
-  const { mode, provenance, actor, rowDisposition, hookPolicy } = args;
+  const { mode, provenance:rawProvenance, actor, rowDisposition, hookPolicy } = args;
+  const provenance = ["manual_crm","ghl_sync"].includes(rawProvenance.sourceCategory) &&
+    !rawProvenance.metadata?.businessEvidence
+    ? {...rawProvenance,metadata:{...rawProvenance.metadata,businessEvidence:intakeBusinessEvidence(args.mutation)}}
+    : rawProvenance;
   if (args.transaction && (!hookPolicy ||
       !((mode === "local_only") || (mode === "ghl_inbound_no_echo" && hookPolicy.source === "ghl_inbound")) ||
       !hookPolicy.deferValidation ||

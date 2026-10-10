@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import {intakeBusinessEvidence} from "../../shared/intake-business-evidence";
 import { storage } from "../storage";
 import { db, pool } from "../db";
 import type { Contact, Deal, Company, Task, Ticket, Note, UpdateContactRequest } from "@shared/schema";
@@ -150,6 +151,10 @@ const CONFLICT_FIELDS: Array<{ ghlKey: string; contactKey: keyof Contact }> = [
   { ghlKey: "email", contactKey: "email" },
   { ghlKey: "phone", contactKey: "phone" },
   { ghlKey: "companyName", contactKey: "companyName" },
+  { ghlKey: "address1", contactKey: "address" },
+  { ghlKey: "city", contactKey: "city" },
+  { ghlKey: "state", contactKey: "state" },
+  { ghlKey: "website", contactKey: "website" },
 ];
 
 // Wave 7: Replit is the system-of-record for these compliance/permission fields.
@@ -276,6 +281,10 @@ async function detectAndWriteConflicts(
         case "email":        cleanPayload.email        = normalizedGhl; break;
         case "phone":        cleanPayload.phone        = normalizedGhl; break;
         case "companyName":  cleanPayload.companyName  = normalizedGhl; break;
+        case "address": cleanPayload.address=normalizedGhl; break;
+        case "city": cleanPayload.city=normalizedGhl; break;
+        case "state": cleanPayload.state=normalizedGhl; break;
+        case "website": cleanPayload.website=normalizedGhl; break;
       }
     }
   }
@@ -634,6 +643,9 @@ export async function syncContactToGhl(contactId: number): Promise<{ success: bo
 }
 
 export async function syncContactFromGhl(ghlContact: any): Promise<{ contactId: number; created: boolean } | null> {
+  const businessEvidence=intakeBusinessEvidence({companyName:ghlContact.companyName,website:ghlContact.website,
+    phone:ghlContact.phone,address:ghlContact.address1,city:ghlContact.city,state:ghlContact.state});
+  const businessEvidenceRevision=crypto.createHash("sha256").update(JSON.stringify(businessEvidence)).digest("hex");
   // Wave B1: GHL CRM decoupling guard
   const { checkGhlCrmSyncAllowed, logGhlShadowIntent } = await import("./ghl-crm-sync-guard");
   const guard = checkGhlCrmSyncAllowed("syncContactFromGhl", null);
@@ -742,15 +754,17 @@ export async function syncContactFromGhl(ghlContact: any): Promise<{ contactId: 
       }
 
       // Record/refresh a source event so provenance stays current on every inbound sync tick.
-      // eventKey is stable per GHL contact ID — upsertContactSourceEvent is idempotent.
-      upsertContactSourceEvent({
+      // Each evidence revision is immutable. Repeated ticks refresh only the
+      // occurrence timestamp; original events are not overwritten.
+      await upsertContactSourceEvent({
         contactId: existingContact.id,
         provenance: {
-          eventKey: `ghl:${ghlContact.id}:inbound`,
+          eventKey: `ghl:${ghlContact.id}:inbound:business-v1:${businessEvidenceRevision}`,
           sourceCategory: "ghl_sync",
           sourceType: "inbound",
           sourceExternalId: ghlContact.id,
           actorType: "system",
+          metadata:{businessEvidence,businessEvidenceRevision},
         },
       }).catch((e: any) => console.warn(`[GHL Sync] source event upsert failed for contact #${existingContact.id}:`, e?.message || e));
 
@@ -771,6 +785,10 @@ export async function syncContactFromGhl(ghlContact: any): Promise<{ contactId: 
           email: ghlContact.email || "",
           phone: ghlContact.phone || "",
           companyName: ghlContact.companyName || "",
+          address:ghlContact.address1 || null,
+          city:ghlContact.city || null,
+          state:ghlContact.state || null,
+          website:ghlContact.website || null,
           ghlContactId: ghlContact.id,
           status: "New",
           tags: [...(ghlContact.tags || []), "ghl-import"],
@@ -783,6 +801,7 @@ export async function syncContactFromGhl(ghlContact: any): Promise<{ contactId: 
           eventKey: stableEventKey,
           sourceExternalId: ghlContact.id,
           actorType: "system",
+          metadata:{businessEvidence,businessEvidenceRevision},
         },
         actor: { actorType: "system" },
       });

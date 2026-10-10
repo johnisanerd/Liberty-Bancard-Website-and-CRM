@@ -46,3 +46,6 @@ backups/
 /signed.json
 /signed-deployment-inventory.json
 /cro03d-keys/
+
+# Generated verification output; not application assets.
+/generated-artifacts/

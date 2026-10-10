@@ -790,10 +790,11 @@ async function convergeCr04QualificationPolicies(): Promise<SeedTargetResult> {
 // assume the guard is already absent or already present.
 const CRO03_LEDGER_IMMUTABLE_GUARD_FN_SQL = sql`
   CREATE OR REPLACE FUNCTION cro03_immutable_row_guard()
-  RETURNS trigger LANGUAGE plpgsql AS $$
-  BEGIN
-    RAISE EXCEPTION 'CRO03_IMMUTABLE_ROW_GUARD: % on % is not permitted', TG_OP, TG_TABLE_NAME;
-  END $$
+  RETURNS trigger AS $$
+BEGIN
+  RAISE EXCEPTION '% is immutable', TG_TABLE_NAME;
+END;
+$$ LANGUAGE plpgsql
 `;
 
 const CRO03_LEDGER_LINEAGE_GUARD_FN_SQL = sql`

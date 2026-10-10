@@ -20,11 +20,31 @@ export async function loadEvidenceRelationshipPage(
       c.updated_at::text AS contact_revision,c.business_id projected_business_id,
       c.existing_merchant_customer,c.do_not_contact,c.do_not_auto_contact,c.opted_out_email,
       c.opt_out_status,c.unsubscribe_status,c.bounce_status,c.complaint_status,c.suppression_reason,
+      (SELECT coalesce(jsonb_agg(to_jsonb(ev)-'last_seen_at' ORDER BY ev.id),'[]'::jsonb)
+        FROM contact_source_events ev WHERE ev.contact_id=c.id) source_event_revisions,
       d.id current_decision_id,d.decision current_decision
     FROM contacts c LEFT JOIN contact_business_link_decisions d
       ON d.contact_id=c.id AND d.superseded_at IS NULL
     WHERE ${onlyContactId === undefined ? sql`c.id>${afterContactId}` : sql`c.id=${onlyContactId}`}
       AND ${changedSince && onlyContactId === undefined ? sql`(c.updated_at>=${changedSince}::timestamptz OR
+        EXISTS (SELECT 1 FROM contact_source_events ev WHERE ev.contact_id=c.id
+          AND ev.created_at>=${changedSince}::timestamptz) OR
+        EXISTS (SELECT 1 FROM canonical_source_links changed_link
+          JOIN businesses changed_business ON changed_business.id=changed_link.business_id
+          WHERE greatest(changed_link.created_at,changed_link.updated_at)>=${changedSince}::timestamptz
+            AND (changed_business.id=c.business_id
+              OR ${sql.raw(identityNameSql("changed_business.canonical_name"))}=${sql.raw(identityNameSql("c.company_name"))}
+              OR (${sql.raw(identityDomainSql("c.website"))} IS NOT NULL
+                AND ${sql.raw(identityDomainSql("changed_business.website_domain"))}=${sql.raw(identityDomainSql("c.website"))})
+              OR EXISTS(SELECT 1 FROM contact_source_events ev WHERE ev.contact_id=c.id
+                AND changed_link.stable_key IN (ev.metadata->>'filingNumber',ev.metadata->>'filing_number',
+                  ev.metadata->>'place_id',ev.metadata->>'placeId',ev.metadata->>'google_place_id')))) OR
+        EXISTS (SELECT 1 FROM sunbiz_entities changed_entity
+          WHERE (to_jsonb(changed_entity)->>'updated_at')::timestamptz>=${changedSince}::timestamptz
+            AND (${sql.raw(identityNameSql("c.company_name"))} IN (
+              ${sql.raw(identityNameSql("changed_entity.entity_name"))},${sql.raw(identityNameSql("changed_entity.dba"))})
+              OR EXISTS(SELECT 1 FROM contact_source_events ev WHERE ev.contact_id=c.id
+                AND changed_entity.filing_number IN (ev.metadata->>'filingNumber',ev.metadata->>'filing_number')))) OR
         EXISTS (SELECT 1 FROM businesses changed WHERE changed.updated_at>=${changedSince}::timestamptz
           AND ${sql.raw(identityNameSql("changed.canonical_name"))}=${sql.raw(identityNameSql("c.company_name"))}))` : sql`TRUE`}
     ORDER BY c.id LIMIT ${limit + (onlyContactId === undefined ? 1 : 0)}
@@ -78,6 +98,7 @@ export async function loadEvidenceRelationshipPage(
       sourceStableKey: winner.source_stable_key,filingNumber: winner.filing_number,
       relationshipReasons: reasons,
       identityRevision: hash([c.contact_revision,winner.business_revision,winner.source_revision,
+        c.source_event_revisions,
         c.company_name,c.address,c.city,c.state,c.phone,winner.source_entity_id,winner.entity_revision,
         winner.sunbiz_name,winner.sunbiz_dba,winner.principal_address,winner.principal_city,winner.principal_state]),
     } as SystemLinkFacts : undefined;

@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import {normalizeStateIdentity} from "../../shared/state-identity";
 import {
   CONTACT_LINK_COVERAGE_BATCH_SQL as OPTIMIZED_CONTACT_LINK_COVERAGE_BATCH_SQL,
   CONTACT_LINK_COVERAGE_WATERMARK_SQL as OPTIMIZED_CONTACT_LINK_COVERAGE_WATERMARK_SQL,
@@ -501,16 +502,16 @@ function pairSignals(contact: ContactLinkCoverageContact, business: ContactLinkC
   const addressMatch = Boolean(contactAddress && (
     contactAddress === normalizeAddress(business.streetAddress)
     && (!contact.city || !business.city || normalizeCoverageName(contact.city) === normalizeCoverageName(business.city))
-    && (!contact.state || !business.state || normalizeCoverageName(contact.state) === normalizeCoverageName(business.state))
+    && (!contact.state || !business.state || normalizeStateIdentity(contact.state) === normalizeStateIdentity(business.state))
     || links.some(link =>
       contactAddress === normalizeAddress(link.sunbizAddress)
       && (!contact.city || !link.sunbizCity || normalizeCoverageName(contact.city) === normalizeCoverageName(link.sunbizCity))
-      && (!contact.state || !link.sunbizState || normalizeCoverageName(contact.state) === normalizeCoverageName(link.sunbizState)),
+      && (!contact.state || !link.sunbizState || normalizeStateIdentity(contact.state) === normalizeStateIdentity(link.sunbizState)),
     )
     || rawMatches.some(source =>
       contactAddress === normalizeAddress(source.principalAddress)
       && (!contact.city || !source.principalCity || normalizeCoverageName(contact.city) === normalizeCoverageName(source.principalCity))
-      && (!contact.state || !source.principalState || normalizeCoverageName(contact.state) === normalizeCoverageName(source.principalState)),
+      && (!contact.state || !source.principalState || normalizeStateIdentity(contact.state) === normalizeStateIdentity(source.principalState)),
     )
   ));
   const contactDomain = normalizeDomain(contact.website);
@@ -1427,7 +1428,8 @@ export interface ContactLinkCoverageCandidateCursor {
 
 const CONTACT_LINK_CANDIDATES_SQL = `
 SELECT candidate.id AS "candidateId",candidate.contact_id AS "contactId",
-       candidate.business_id AS "businessId",candidate.created_at AS "createdAt",
+       candidate.business_id AS "businessId",
+       to_char(candidate.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "createdAt",
        candidate.candidate_key AS "candidateKey"
   FROM current_contact_business_link_candidates candidate
  WHERE candidate.source_version = $1
@@ -1485,7 +1487,7 @@ export async function listContactLinkCoverageCandidates(input: ContactLinkCovera
       };
     }),
     nextCursor: candidates.length ? {
-      createdAt: new Date((candidates[candidates.length - 1] as any).createdAt).toISOString(),
+      createdAt: String((candidates[candidates.length - 1] as any).createdAt),
       id: String((candidates[candidates.length - 1] as any).candidateId),
     } : null,
     limit,

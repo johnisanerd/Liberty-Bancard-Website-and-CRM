@@ -5,7 +5,7 @@ import {hashCro03Evidence} from "./cro03/source-staging";
 
 export const RETAINED_IDENTITY_BRIDGE_VERSION="original_row_identity_v1";
 const rows=(result:any):any[]=>result?.rows ?? result ?? [];
-async function assertBridgeEvidenceNativeGuard(tx:any) {
+export async function hasBridgeEvidenceNativeGuard(tx:any):Promise<boolean> {
   const guarded=rows(await tx.execute(sql`SELECT EXISTS (
     SELECT 1 FROM pg_trigger trigger
     JOIN pg_proc procedure ON procedure.oid=trigger.tgfoid
@@ -15,7 +15,11 @@ async function assertBridgeEvidenceNativeGuard(tx:any) {
       AND procedure.proname='cro03_immutable_row_guard'
       AND procedure.pronamespace='public'::regnamespace
       AND md5(procedure.prosrc)='f0c933f2b332d19ec7d51866e2ad5a7b') installed`))[0];
-  if(guarded?.installed!==true)throw new Error("PROVIDER_IMPORT_IDENTITY_BRIDGE_NATIVE_GUARD_MISSING");
+  return guarded?.installed===true;
+}
+async function assertBridgeEvidenceNativeGuard(tx:any) {
+  if(!await hasBridgeEvidenceNativeGuard(tx))
+    throw new Error("PROVIDER_IMPORT_IDENTITY_BRIDGE_NATIVE_GUARD_MISSING");
 }
 
 /** Scalar proof lookup. Raw workbook extraction belongs after bounded selection.

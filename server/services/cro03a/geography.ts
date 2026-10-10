@@ -21,6 +21,7 @@
  *  7. If nothing resolves → unknown.
  */
 
+import {normalizeStateIdentity} from "../../../shared/state-identity";
 export const CRO03A_GEOGRAPHY_REFERENCE_VERSION = "south-florida-fips-v2";
 
 /** Previous version string — retained so callers can detect legacy decisions. */
@@ -405,7 +406,8 @@ function evaluateWithReference(
   cityMap: Record<string, string[]>,
   version: string,
 ): GeographyResult {
-  const state = input.state?.trim().toUpperCase() || null;
+  const state = version===CRO03A_GEOGRAPHY_REFERENCE_VERSION_V1
+    ? input.state?.trim().toUpperCase() || null : normalizeStateIdentity(input.state);
   const county = canonicalCounty(input.county);
   const countyFips = input.countyFips?.trim() || fipsFor(county);
   const zip = input.zip?.trim().match(/\d{5}/)?.[0] ?? null;

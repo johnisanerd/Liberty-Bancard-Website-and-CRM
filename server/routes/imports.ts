@@ -24,6 +24,8 @@ import {
   completeImportExecution,
   getImportLedgerSummary,
   heartbeatImportExecution,
+  failCsvImportProjection,
+  type ImportExecutionClaim,
   recordImportRowDisposition,
 } from "../services/import-execution";
 import { parse } from "csv-parse/sync";
@@ -1554,6 +1556,7 @@ Guidelines:
   });
 
   app.post("/api/leads/import-csv", isDashboardUser, requireRole("admin", "manager"), uploadLarge.single("file"), async (req, res) => {
+    let requestClaim: ImportExecutionClaim | undefined;
     try {
       if (!req.file) return res.status(400).json({ message: "No file uploaded" });
 
@@ -1593,6 +1596,7 @@ Guidelines:
         metadata: { sourceFormat, fileName, sourceCoordinates },
         sourcePayload: records,
       });
+      requestClaim = executionClaim;
       if (!executionClaim.claimed) {
         if (executionClaim.execution.status === "running") {
           return res.status(409).json({
@@ -2200,12 +2204,11 @@ Guidelines:
     } catch (err: any) {
       console.error("CSV import error:", err);
       try {
-        const failedImports = await storage.getCsvImports();
-        const processingImport = failedImports.find(i => i.status === "processing");
-        if (processingImport) {
-          await storage.updateCsvImport(processingImport.id, { status: "failed" });
-        }
-      } catch {}
+        if (requestClaim) await failCsvImportProjection(requestClaim);
+      } catch (cleanupError) {
+        console.error("CSV import execution-specific cleanup failed:", cleanupError);
+        if (err && typeof err==="object") Object.defineProperty(err,"cleanupError",{value:cleanupError});
+      }
       serverError(res, err);
     }
   });

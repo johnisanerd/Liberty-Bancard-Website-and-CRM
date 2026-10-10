@@ -99,6 +99,21 @@ export async function heartbeatImportExecution(executionId: string, claimToken: 
   });
 }
 
+/** Failure is a projection of this exact live execution, never "first processing". */
+export async function failCsvImportProjection(claim: ImportExecutionClaim): Promise<boolean> {
+  if (!claim.claimed || !claim.claimToken) return false;
+  return db.transaction(async tx=>{
+    const changed=await tx.execute(sql`WITH pinned AS MATERIALIZED (
+      SELECT id,lease_expires_at FROM import_executions
+      WHERE id=${claim.execution.id}::uuid AND status='running'
+        AND claim_token=${claim.claimToken}::uuid FOR UPDATE
+    ) UPDATE csv_imports projection SET status='failed'
+      FROM pinned WHERE projection.execution_id=pinned.id
+        AND pinned.lease_expires_at>clock_timestamp() RETURNING projection.id`);
+    return ((changed as any).rows ?? []).length>0;
+  });
+}
+
 /**
  * Return only executions which are safe for a recovery worker to attempt.  The
  * caller must still use claimCsvExecution before doing any work; this query is

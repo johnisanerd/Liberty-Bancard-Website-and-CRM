@@ -9,7 +9,8 @@ import {captureRecoveryFailure,safeDatabaseFailure} from "../lib/lock-trace";
 import {CanonicalImportRecoveryFailure,isRecoverableImportRowFailure} from "./canonical-import-recovery-outcomes";
 import {startAutomaticImportLockCapture} from "./primary-lock-capture";
 import {canonicalRecoverableImportAccountingSql,CANONICAL_IMPORT_FULFILLMENT_QUALIFICATION_VERSION} from "./canonical-import-recovery-contract";
-import {retainedResolvedIdentitySql,verifyProviderImportIdentity} from "./provider-import-identity";
+import {retainedResolvedIdentitySql,verifyProviderImportIdentity,
+  loadProviderImportIdentity,hasBridgeEvidenceNativeGuard} from "./provider-import-identity";
 export type RecoveryWorkClass="ordinary"|"legacy"|"hold";
 const rows=(value:any):any[]=>value?.rows ?? value ?? [];
 const MAX_ITEMS_PER_TICK=250;
@@ -131,7 +132,8 @@ export async function processCanonicalImportRecoveryTick(
        // Durable round-robin survives short ticks and restarts. Only a committed
        // original-item claim advances the lane, not a failed/empty cursor read.
        const last=rows(await tx.execute(sql`SELECT details->>'workClass' work_class FROM audit_logs
-         WHERE action='canonical_import_row_claimed' AND actor_id='system:canonical-import-recovery'
+         WHERE action IN ('canonical_import_row_claimed','canonical_import_capability_opportunity')
+           AND actor_id='system:canonical-import-recovery'
          ORDER BY id DESC LIMIT 1`))[0]?.work_class;
        const preferred:RecoveryWorkClass=last==="ordinary" ? "legacy" : last==="legacy" ? "hold" : "ordinary";
         const selected=rows(await tx.execute(canonicalImportRecoveryClaimSql(preferred)))[0];
@@ -144,6 +146,27 @@ export async function processCanonicalImportRecoveryTick(
             updated_at=clock_timestamp()
           WHERE id=${String(selected.id)}::uuid`);
         return {...selected,originalUnavailable:true};
+      }
+      const retainedIdentity=await loadProviderImportIdentity(tx,{executionId:String(selected.execution_id),
+        sourceRowNumber:Number(selected.source_row_number),rawRow:selected.raw_row});
+      if(!retainedIdentity)throw new Error("PROVIDER_IMPORT_ORIGINAL_EVIDENCE_MISMATCH");
+      // Inspect the specific capability before creating a lease or a bridge.
+      // Known missing capability commits an honest hold and a fairness opportunity;
+      // no authority/identity/unknown-commit failure is caught or reclassified.
+      if(retainedIdentity.bridged && !await hasBridgeEvidenceNativeGuard(tx)) {
+        await ownerAuthorityCheck(tx);
+        await tx.execute(sql`UPDATE cro03_enrichment_items SET state='blocked',
+          terminal_code='CANONICAL_IMPORT_IDENTITY_BRIDGE_NATIVE_GUARD_MISSING',
+          claim_token=NULL,lease_expires_at=NULL,current_provider=NULL,completed_at=NULL,
+          next_attempt_at=clock_timestamp()+INTERVAL '1 minute',updated_at=clock_timestamp()
+          WHERE id=${String(selected.id)}::uuid`);
+        await tx.execute(sql`INSERT INTO audit_logs(action,entity_type,entity_key,details,actor_type,actor_id)
+          VALUES('canonical_import_capability_opportunity','cro03_enrichment_item',${String(selected.id)},
+            ${JSON.stringify({executionId:selected.execution_id,sourceRowNumber:selected.source_row_number,
+              workClass:selected.work_class,rowFingerprint:retainedIdentity.fingerprint,
+              outcome:"blocked_source_capability",reasonCode:"PROVIDER_IMPORT_IDENTITY_BRIDGE_NATIVE_GUARD_MISSING"})}::jsonb,
+            'system','system:canonical-import-recovery')`);
+        return {...selected,capabilityBlocked:true};
       }
       await tx.execute(sql`UPDATE cro03_enrichment_items SET state='running',
         current_provider='canonical_local_import',claim_token=${token}::uuid,
@@ -164,7 +187,7 @@ export async function processCanonicalImportRecoveryTick(
     }));
     if (!candidate) break;
      attempted++;
-    if (candidate.originalUnavailable) {held++;continue;}
+    if (candidate.originalUnavailable || candidate.capabilityBlocked) {held++;continue;}
     try {
       const result=await materializeCanonicalProviderImportRow({
         executionId:String(candidate.execution_id),sourceRowNumber:Number(candidate.source_row_number),

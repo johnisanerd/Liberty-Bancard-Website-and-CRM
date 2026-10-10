@@ -198,7 +198,7 @@ contact_identity_keys AS MATERIALIZED (
   UNION ALL
   SELECT contact_id, 'filing', key FROM contact_filing_keys
 ),
-canonical_domain_counts AS MATERIALIZED (
+canonical_domain_counts AS NOT MATERIALIZED (
   SELECT
     lower(regexp_replace(trim(website_domain), '^www[.]', '', 'i')) AS domain_key,
     count(*)::int AS domain_business_count

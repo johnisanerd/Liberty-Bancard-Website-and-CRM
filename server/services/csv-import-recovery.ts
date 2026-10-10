@@ -5,8 +5,11 @@ import { eq } from "drizzle-orm";
 import {
   claimCsvExecution,
   getExpiredRecoverableCsvExecutions,
+  failCsvImportProjection,
   type ImportExecutionClaim,
 } from "./import-execution";
+import { isRecoverableImportRowFailure } from "./canonical-import-recovery-outcomes";
+import { safeDatabaseFailure } from "../lib/lock-trace";
 
 export type CsvImportActor = {
   actorType: string;
@@ -33,6 +36,8 @@ export async function resumeExpiredCsvImports(process: PersistedCsvProcessor): P
   let resumed = 0;
 
   for (const execution of candidates) {
+    let liveClaim: ImportExecutionClaim | undefined;
+    try {
     const records = execution.sourcePayload;
     if (!Array.isArray(records) || !execution.fileHash) continue;
     const metadata = (execution.metadata ?? {}) as Record<string, unknown>;
@@ -45,6 +50,7 @@ export async function resumeExpiredCsvImports(process: PersistedCsvProcessor): P
       metadata,
       sourcePayload: records as Array<Record<string, string>>,
     });
+    liveClaim=claim;
     if (!claim.claimed || !claim.claimToken) continue;
 
     // The UI projection has an immutable relationship to the durable execution.
@@ -71,6 +77,18 @@ export async function resumeExpiredCsvImports(process: PersistedCsvProcessor): P
       filename: importRecord.fileName,
     });
     resumed++;
+    } catch (error) {
+      // Only a confirmed local abort may yield to the next execution. Unknown
+      // commit/connection results and authority denials retain the fatal boundary.
+      if (!isRecoverableImportRowFailure(error)) throw error;
+      try {
+        if (liveClaim) await failCsvImportProjection(liveClaim);
+      } catch (cleanupError) {
+        throw new Error("CSV_IMPORT_RECOVERY_CLEANUP_FAILED",{cause:{originalError:error,cleanupError}});
+      }
+      console.warn(JSON.stringify({event:"csv_import_execution_deferred",executionId:execution.id,
+        failure:safeDatabaseFailure(error)}));
+    }
   }
   return resumed;
 }
