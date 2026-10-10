@@ -1,0 +1,262 @@
+LIBERTY BANCARD — TASK #2083 REPOSITORY AUDIT
+Intake and Business Assignment
+Audit date: 2026-10-09 (America/Bogota)
+Repository: scottpstevenson/Liberty-Bancard-Website-and-CRM
+Reviewed main: afb7532e130342c41d63690fbd6c564d8685d1c2
+Comparison baseline: C4 merge 49289123691d0498d8317ad9a1771a28007bdf59
+
+VERDICT
+
+Keep #2083 and amend its existing preflight/build plan. Its scope and ownership are substantially correct. A wholesale rewrite, a combined enrichment mega-task, or additional recovery/testing tickets would obscure the existing responsibilities.
+
+The attachment is “Intake and Business Assignment,” the B1 task the user identifies as #2083. The earlier #2084 audit answered the wrong task and does not substitute for this audit. #2084 retains downstream enrichment/provider ownership; #2075 retains C3 UI ownership.
+
+#2083 already includes October 9 post-C4 reconciliation. The stale-C4 criticism from the previous #2084 report does not apply. The uploaded text matches the checked-in intake brief apart from its final newline. Its 15 compared intake/link/geography/CSV source files are unchanged between the C4 merge and current main. The current task still describes real unfinished work; C4 did not repair these backend paths.
+
+The important amendments are concrete implementation boundaries and counterexamples, not more approval ceremonies. Several are already covered by broad acceptance language in the task. Make them explicit in the plan so the build cannot satisfy that language with another narrow patch.
+
+EVIDENCE AND LIMITS
+
+Task input:
+  liberty-enrichment-backend-intake-identity 2.md
+  225,694 bytes; 1,552 lines
+  SHA-256: 6da64c537a0295807727914ba8b8b8cc0f5400fc129e88a3995b67658b8b5655
+
+Checked-in counterpart:
+  docs/liberty-enrichment-backend-intake-identity.md
+
+Current main was refreshed and remained afb7532e130342c41d63690fbd6c564d8685d1c2 during this audit. Source conclusions below are pinned to that revision. Repository source and an uploaded task brief are the evidence; the live Replit task-store body/status was not independently retrieved.
+
+Executed verification: eight database-free assertions against the actual current geography evaluator. The Florida alias defect was reproduced. No corrected implementation was applied.
+
+Not executed: database/native tests, authenticated CRM requests, EXPLAIN on the affected production population, complete build/release gates, workbook imports, recovery writes, provider requests, publishing, or production controls. Source-confirmed defects are not newly observed production incidents. The exact human-review 500, current catalogs, serving artifact and current workbook/production counts remain execution-time evidence obligations.
+
+A. SOURCE COVERAGE AND BUSINESS CREATION MUST EXTEND THE AUDITED AUTHORITY
+
+Confirmed source:
+  server/services/contact-business-system-links.ts — loadPage uses loadEvidenceRelationshipPage.
+  server/services/contact-business-evidence-page.ts — candidate joins and relationshipReasonsSql.
+  server/services/contact-business-evidence-candidates.ts — candidate_business_keys.
+  server/services/contact-business-system-link-policy.ts — evaluateSystemLinkFacts.
+  shared/relationship-evidence-sql.ts — relationshipReasonsSql.
+  migrations/0325_crm_evidence_relationship_authority.sql — crm_automatic_relationship_reasons.
+  server/services/commercial-link-authority.ts — native evaluator fingerprints.
+  server/services/canonical-provider-import.ts — sourceSystem/stableKey and source-link insertion.
+
+The active matcher is broader than the retained Sunbiz-only fallback. It does not require a website to select every contact, and its current relationshipReasons override that fallback. Describing the whole active path as Sunbiz-only or corporate-email-only would be incorrect.
+
+However, its audited relationship authority still accepts only Sunbiz registry identity or Google/Maps/Outscraper identity. Other source families return unsupported_identity_source. Apollo company identity or GHL/CRM company evidence cannot establish a relationship through this evaluator by itself. Outscraper rows without a usable place ID can also lack the corroboration this branch demands: an import-row fallback key is not a Maps place identity.
+
+The active automatic matching page joins existing canonical businesses and existing canonical source links; it has no supported missing-business creation branch. Provider intake can create businesses, but that is not a full-population CRM business-creation backfill.
+
+Required amendment:
+Specify supported evidence per actual source family, including retained CRM/GHL/provider organization relationships and independently corroborated company/location evidence. Extend candidate retrieval, source-aware relationship evaluation and supported missing-business materialization together. Keep those transitions under the existing audited writer and source lineage.
+
+Changes to native evaluation require a matching supported schema-delivery change, read-side equivalent, rule/version handling and verifier fingerprints. Updating preview SQL alone leaves writes denied; relaxing the guard alone loses the evidence contract. Do not relabel CRM provenance as registry verification.
+
+Acceptance examples:
+An unassigned CRM/GHL contact with sufficient company/location evidence links or creates one supported business automatically without Sunbiz, outreach geography, validation or paid-provider prerequisites. A sufficiently supported Apollo organization relationship works. A personal mailbox is not a rejection reason. A name-only or contradictory relationship stays held. Existing valid assignments survive.
+
+B. SHARED DOMAIN MATCHING CAN ABSORB OR BLOCK A SEPARATE LOCATION
+
+Confirmed source:
+  server/services/organization-resolver.ts — resolveOrganization and peekOrganizationResolution.
+  server/services/canonical-provider-import.ts — organizationInput and later stableKey construction.
+
+resolveOrganization retrieves candidates using OR across source identity, place ID, domain and phone. With exactly one candidate it checks conflicting nonempty place IDs/domains/phones, but does not compare city, state, address or company name before returning matched.
+
+Consequently, an existing branch and incoming different-location record sharing only the brand domain can be matched despite their location difference. When both have different place IDs, the existing branch found through the shared domain causes a hold; the resolver does not establish that a sufficiently supported second branch should be created. Multiple branches sharing a domain also enter the ambiguous candidate set even when one has stronger exact identity evidence.
+
+The resolver supports sourceIdentity, but this provider importer does not pass it. It constructs its source identity only after organization resolution. The preview function also lacks the sourceIdentity input, so it cannot represent that future exact-source transition without an additive change.
+
+Required amendment:
+Define exact source/location identity precedence and contradiction handling. A shared brand domain supplies candidate evidence, not ownership of every location. Pass supported source identity before resolution and retain transactional deduplication across all relevant identifiers. Permit one supported new location when evidence distinguishes it from existing branches. Preserve real ambiguity, rather than forcing a winner. Keep preview and write decisions aligned for the same supported input.
+
+Acceptance examples:
+Different-city locations sharing a domain are not silently merged. A distinct supported place/location is created once. Exact existing source identity is not defeated merely by unrelated same-brand domain candidates. Concurrent equivalent intake remains idempotent; genuine contradictory identifiers remain held.
+
+This is source control-flow analysis, not an executed database concurrency result.
+
+C. SOURCE-ONLY CHANGES CAN LEAVE HELD CONTACTS OUT OF THE INCREMENTAL PASS
+
+Confirmed source:
+  server/services/contact-link-automation.ts — completed backfill switches to changedSince passes.
+  server/services/contact-business-evidence-page.ts — changedSince predicate.
+  server/services/contact-business-system-links.ts — active loadPage alias.
+
+The active incremental page checks contact.updated_at or an updated business with a normalized matching company name. It does not independently select contacts because their contact_source_events, canonical_source_links or registry evidence changed.
+
+Some retained helper code has broader changed-source logic, but it is not the active page loader. Updating source evidence without a contact/business timestamp change can leave a previously held lower-ID contact out of subsequent automatic passes.
+
+Required amendment:
+Use the existing incremental/checkpoint mechanism to revisit contacts when relevant retained source/link/entity evidence revisions change. Bind both positive and negative outcomes to their real dependencies, and expose current unresolved population separately from cumulative repeated scans. Do not depend on customers resetting a cursor or manually touching contacts.
+
+Acceptance example:
+Complete the initial pass, then add or correct corroborating source evidence for a held contact without updating the contact/business timestamps. The ordinary automatic path reconsiders that contact, records the new outcome and supplies the compatible downstream handoff. Unchanged holds do not monopolize subsequent work.
+
+D. A BRIDGE GUARD FAILURE BEFORE CLAIM COMMIT CAN REPEATEDLY STOP THE RECOVERY TICK
+
+Confirmed source:
+  server/services/canonical-import-recovery-worker.ts — import_cursor_claim transaction.
+  server/services/provider-import-identity.ts — verifyProviderImportIdentity and assertBridgeEvidenceNativeGuard.
+  server/services/canonical-import-recovery-outcomes.ts — guard/authority failures remain fatal.
+  scripts/certification/test-audited-retained-import-recovery.ts — disabled-guard negative test.
+
+The row claim transaction updates the selected item, then verifies/creates the retained identity bridge, then writes the durable claim receipt. The per-row processing catch starts only after that transaction succeeds.
+
+A missing bridge guard therefore aborts before that catch. The lease update and fairness receipt roll back. The same selected bridge-dependent original can be selected again on a later tick while another non-bridge original remains eligible in the same worker. Existing round-robin fairness relies on committed claims and does not by itself solve this failure.
+
+The existing certification source proves that disabling the guard fails closed. That is valuable, but does not prove another eligible row progresses under the same missing-bridge topology.
+
+Required amendment:
+Implement explicit isolation of the affected native/source capability within the existing recovery authority. Preserve an honest blocked diagnosis and keep the original row/evidence unchanged. Eligible work that does not require the missing capability must still get an ordinary committed opportunity. Do not classify owner/guard failures as generic retryable row failures, manufacture fulfillment, skip bridge verification or continue uncertain commits.
+
+Acceptance example:
+With general relationship guards valid but the bridge guard absent, mix a bridge-dependent original with a non-bridge eligible original. The former remains safely blocked and diagnosable; the latter progresses. Independent linking/local stages also continue when their own authority is valid. Restore the bridge through the supported native-delivery path and prove the original becomes recoverable without a new upload or duplicate evidence.
+
+The exact Dev/Prod object mismatch must be freshly measured. Migration text is not installed-function proof.
+
+E. ORDINARY UPLOAD FAILURE CLEANUP CAN MARK THE WRONG IMPORT FAILED
+
+Confirmed source:
+  server/routes/imports.ts — POST /api/leads/import-csv catch.
+  server/services/import-execution.ts.
+  server/services/csv-import-processor.ts.
+  server/services/csv-import-recovery.ts.
+  server/index.ts — startup reconciliation.
+
+The upload error handler fetches all CSV imports and marks the first one whose status is processing as failed. It does not identify that record through the failing request's execution/import identity. A failed upload or pre-processing request can therefore mark another concurrent upload's UI projection as failed.
+
+Also, resumeExpiredCsvImports processes executions sequentially without an execution-level catch. Its startup caller catches an escaped error for the whole reconciliation invocation and says it will retry on the next restart. That invocation can abandon later candidates after one execution fails. The build must establish sustained ordinary recovery, rather than using another restart as routine operation.
+
+Correction to avoid a false finding:
+A request-free fallback processor exists. processPersistedCsvImport calls recoverPersistedCsvImport when no interactive processor is registered, and provider formats use the canonical provider writer. Registration inside the upload handler does not prove fresh-process recovery is missing. Test that existing path; do not add a replacement recovery factory.
+
+Required amendment:
+Bind cleanup/status projection to the exact durable execution/import and current authority. Refuse to mark an unrelated processing import failed. Preserve primary/cleanup errors and uncertain-commit handling. Within the existing recovery scheduling authority, ensure a safely isolated failing execution does not abandon other eligible executions and explain how due work continues without customer restarts.
+
+Add these entry points to Relevant files, alongside the existing retained-recovery files.
+
+Acceptance examples:
+Two simultaneous imports plus a malformed/failed third request cannot alter the wrong import. A fresh process resumes an expired ordinary upload through its persisted source/coordinates. Failure in one recoverable execution does not suppress another execution's eligible progress. Replay and crash boundaries create no duplicate contacts, businesses, links or row outcomes.
+
+F. FLORIDA ALIAS PARITY MUST COVER IDENTITY AS WELL AS GEOGRAPHY
+
+Executed current-source reproduction:
+  server/services/cro03a/geography.ts — evaluateSouthFloridaGeography.
+
+Eight assertions passed against current behavior:
+  FL + Broward + 33301: eligible.
+  padded lowercase fl + same evidence: eligible.
+  Florida + same evidence: rejected as STATE_NOT_FLORIDA.
+  padded lowercase florida + same evidence: same rejection.
+  GA + same Florida county/ZIP: rejected.
+  FL + Broward + Miami-Dade ZIP: conflicting, held.
+  FL + Monroe: disabled, held.
+  no evidence: unknown, held.
+
+“Passed” here means the test accurately reproduced current behavior, including the defect; alias acceptance has not been fixed.
+
+Additional confirmed source:
+  shared/relationship-evidence-sql.ts and native evaluator compare upper(trim(contact state)) with upper(trim(business state)). FL versus Florida can still produce location_state_conflict.
+  organization-resolver.ts lowercases state but does not canonicalize its name/code aliases, affecting the name/city/state identity fallback.
+
+Required amendment:
+Apply compatible state identity normalization across the affected resolver, read evaluator, native audited writer and geography decision inputs. Preserve raw source values and historical evidence. Refresh only affected current decisions with the appropriate policy/evidence revision and downstream wake-up.
+
+Do not broadly treat unknown state text as Florida, erase contradictory geography or use registered-agent-only addresses as operating-site proof.
+
+Already repaired behavior to preserve:
+sfp-geography-resolver.ts already sorts eligible actual locations ahead of ineligible locations. Reimplementing an “any eligible branch wins” correction is not a substitute for alias repair.
+
+G. COVERAGE AND THE HUMAN-REVIEW 500 NEED TWO ACCESS-PATH PROOFS
+
+Confirmed source:
+  server/services/contact-link-coverage-query.ts — bounded MATERIALIZED coverage page.
+  server/services/contact-link-coverage.ts — candidate keyset listing, then coverage/evidence hydration.
+  server/routes/contact-link-coverage.ts.
+  server/services/contact-business-evidence-candidates.ts — active automatic matcher retrieval.
+
+The coverage query already bounds its page before evidence expansion. Adding another LIMIT is not an evidence-backed fix. The candidate-list request uses current_contact_business_link_candidates with source_version and a created_at/id cursor, then hydrates the selected contacts through the coverage loader.
+
+The active automatic matcher is a different query. It contains normalized name/domain expressions and Sunbiz name/DBA candidate branches. A faster census page does not prove a faster production-wide automatic affiliation pass.
+
+Required amendment:
+Retain the task's exact failed batch/request obligation. Separate and measure page selection, candidate listing and hydration, and the active linking query. Compare the actual plan/cardinality/checkpoint movement under ordinary concurrent load. Use native indexed normalization or other justified access-path changes against the exact plan, not a speculative pool-size adjustment.
+
+Correlate the actual authenticated review exception and prove first/next pages plus hydration and role denial. No 500 root cause is asserted by this source audit.
+
+No additional task, UI redesign, global health gate or arbitrary new performance SLA is required. Agree a measured budget from the reproduced operation and make committed checkpoint progress visible.
+
+REQUIREMENTS THAT SHOULD REMAIN AS WRITTEN
+
+1. September and October are separate populations. Preserve 1,472 September originals, mailbox occurrences versus people, business-only rows and both valid foreign relationships. Trace each October workbook by its own exact file hash and actual execution/source. The 2,914-row fixture total does not establish production ingestion.
+
+2. Affiliation is independent of Sunbiz membership, accepted vertical, outreach territory, ZeroBounce, program binding and send permission. Evidence-backed ambiguity and valid relationship protections remain; ordinary supported cases advance automatically.
+
+3. B1 owns intake/source lineage, affiliations, geography, coverage/review and local typed facts. B2 owns downstream classification/provider/recipient orchestration and the assembled status DTO. C3 consumes those existing facts. Keep the serial queue-manager ownership agreement and inherited C4 shell/interiors.
+
+4. Keep the supported managed native-delivery requirement. Neither manual production DDL nor weaker fingerprints is an acceptable application workaround. A missing capability blocks its affected writes; unrelated valid local work continues.
+
+5. Keep meaningful replay, restart, uncertainty, stale-token/owner and native-topology tests. The existing retained tests already cover several of these cases; extend them around the missing transitions rather than discarding them or claiming they were rerun here.
+
+6. Keep separate source-fixed, tested, merged, deployed and production-accepted verdicts. Three eligible ordinary cycles must show committed row/relationship outcomes, followed by full source-scoped disposition and restart/replay proof. Heartbeats, queue “completed” messages, fixture counts or a publication do not satisfy that result.
+
+COPY-READY AMENDMENT FOR REPLIT PLAN MODE
+
+Review and amend the EXISTING #2083 “Intake and Business Assignment” task against repository main afb7532e130342c41d63690fbd6c564d8685d1c2 and the attached #2083 audit. Keep its scope, original findings, post-C4 reconciliation, source populations and B1/B2/C3 ownership. Do not create replacement or recovery/testing tickets.
+
+Add concrete preflight/build steps and regression examples for:
+- Extending source-backed automatic affiliation and supported missing-business creation through the active read/native audited authority, including CRM/GHL/Apollo and adequately corroborated no-place-ID imports.
+- Source/location identity precedence in organization resolution, preventing shared-domain branch absorption or indefinite blocking of a supported distinct location; pass sourceIdentity before resolution and align preview/write behavior.
+- Automatic reconsideration when source events, source links or registry evidence change, without manual cursor resets or timestamp touches.
+- Bridge-dependent failure isolation before claim commit, so a missing bridge capability cannot repeatedly starve an eligible non-bridge original or independent local stages.
+- Exact execution-bound upload failure cleanup and continued existing ordinary CSV recovery after one execution fails; verify the existing request-free fallback instead of building a new recovery service.
+- FL/Florida alias parity across geography, organization identity and relationship read/native writer, with affected-only decision refresh.
+- Separate exact coverage/list/hydration and active-linker access-path evidence, plus the real authenticated human-review 500 regression.
+
+Add server/routes/imports.ts, server/index.ts, server/services/import-execution.ts, server/services/csv-import-processor.ts, server/services/csv-import-recovery.ts, server/services/contact-business-evidence-page.ts, server/services/contact-business-evidence-candidates.ts, server/services/contact-business-system-links.ts, shared/relationship-evidence-sql.ts and the relevant native schema/verifier definitions to the implementation inventory.
+
+Reuse existing authorities and meaningful certification tests. This amendment adds specificity to the current task; it does not authorize live imports, recovery writes, provider calls, control changes or publication. Keep outbound paused and the existing supported publication boundary. Do not turn routine business assignment into a paid-provider, named-email, frozen-cohort or manual approval gate.
+
+Return the amended #2083 preflight/build plan with each audit item mapped to its existing build step and evidence. Keep production acceptance open until the deployed correction demonstrates sustained automatic committed progress and reconciles the original populations.
+
+PINNED SOURCE REFERENCE
+
+All repository paths above refer to:
+https://github.com/scottpstevenson/Liberty-Bancard-Website-and-CRM/tree/afb7532e130342c41d63690fbd6c564d8685d1c2
+
+Compared unchanged Git blobs (15/15):
+  server/services/provider-import-identity.ts
+    2943b52cdf029f28ec0273ef83359d78fee5c1ab
+  server/services/canonical-provider-import.ts
+    b3ec1606412886cbd4d49f2eb284f5a2c509c50d
+  server/services/canonical-import-recovery-worker.ts
+    abdceca8960448d5e85314eb5f06ab6dd63dabbd
+  server/services/contact-link-automation.ts
+    b6ecdd811cc5766c4837b31b33cb66cb12817eb6
+  server/services/contact-business-system-link-policy.ts
+    4202cc04462352f439ba6a6ab8e21f6f9b1e1d05
+  server/services/organization-resolver.ts
+    8b96833145074a3cd979da55f5d533b560c98c70
+  server/services/contact-link-coverage-query.ts
+    68f34f1cc0cb327e6f80066dfd9e528c0266d9ce
+  server/services/contact-link-coverage.ts
+    5ae3008ce7938c0cd5e41a6e33893bd9d09a8579
+  server/services/contact-business-evidence-page.ts
+    0328270855fb50273e91eb93251e12585e1f0010
+  shared/relationship-evidence-sql.ts
+    bb2c6a0867ac1b0c8ee237b7de63f06f4b17eb6e
+  server/services/cro03a/geography.ts
+    5182135b8a3d65bb7eb68c6367159dc11b515a49
+  server/services/cro03/sfp-geography-resolver.ts
+    d0cea3200a8214fa5d6b1108518ce71fb44d6ae5
+  server/routes/imports.ts
+    d03d7ad58261b0684e4a87ac45045bf6e005f4fd
+  server/services/csv-import-processor.ts
+    89ee82512b30f8640e06c292e0537cb485251a24
+  server/services/csv-import-recovery.ts
+    6cae8b730d0fd7be49411e2703f3efa6520bf81d
+
+No application or production fix was made by this audit.
+
