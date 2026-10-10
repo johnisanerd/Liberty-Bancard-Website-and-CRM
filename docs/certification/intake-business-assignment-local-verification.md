@@ -102,6 +102,36 @@ Production log search found no matching `contact-link-coverage` exception
 since 2026-10-08. Other worker/pool failures were visible, but are not attributed
 to the historical authenticated review 500.
 
+## October originals rechecked — 2026-10-10 UTC
+
+The five newly attached files ending in `_1791674434685.xlsx` were read with
+the existing tabular reader. Each SHA-256 matches the corresponding original
+fixture exactly; the new attachment suffix does not change file identity.
+
+| Outscraper file stem | Rows | Columns | Same bytes as tested fixture |
+| --- | ---: | ---: | --- |
+| `Outscraper-20261002160911s8d6b` | 537 | 93 | Yes |
+| `Outscraper-20261002160955s00ed` | 578 | 93 | Yes |
+| `Outscraper-20261002161052s68e5` | 513 | 93 | Yes |
+| `Outscraper-20261002161147s2b94` | 653 | 93 | Yes |
+| `Outscraper-20261002161239s8aab` | 633 | 93 | Yes |
+| **Total** | **2,914** | | |
+
+Fresh read-only production-replica queries returned actual result headers:
+
+- No `import_executions` records matching any of the five exact file hashes.
+- No executions started on or after 2026-10-01.
+- The `csv_imports` ledger contains one entry: the 1,472-row September CSV,
+  created 2026-09-09, with its separate execution/hash.
+- The Outscraper source population contains 1,472 subjects, all created from
+  2026-09-09 through 2026-09-12.
+
+This establishes that the originals are available and exactly identified,
+but these five files have no matching recorded production imports in the
+queried ledgers. It does not prove their contacts/businesses are absent from
+other sources. Chat attachments are not CRM import requests. No live import,
+provider call, production mutation or publication was performed.
+
 ## Original acceptance still outstanding
 
 1. A verified authentic September native capture is unavailable. The previous
