@@ -185,8 +185,10 @@ try {
     });
     let timer:ReturnType<typeof setTimeout>|undefined;
     try {
-      await Promise.race([ownerPinned,new Promise((_,reject)=>{
-        timer=setTimeout(()=>reject(new Error("OWNER_NOT_PINNED_BEFORE_GRAPH_WAIT")),3000);
+      await Promise.race([ownerPinned,applying.then(result=>{
+        throw new Error(`OWNER_PIN_APPLY_ENDED:${result.status}:${"code" in result ? result.code : ""}`);
+      }),new Promise((_,reject)=>{
+        timer=setTimeout(()=>reject(new Error("OWNER_NOT_PINNED_BEFORE_GRAPH_WAIT")),10000);
       })]);
     } finally {if (timer) clearTimeout(timer);}
     renewing=renewSfpRuntimeDeploymentOwner();

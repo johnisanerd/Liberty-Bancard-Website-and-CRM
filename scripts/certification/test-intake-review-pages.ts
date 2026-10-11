@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import {randomUUID} from "node:crypto";
 import express from "express";
 import bcrypt from "bcryptjs";
+import {CONTACT_LINK_COVERAGE_BATCH_SQL} from "../../server/services/contact-link-coverage-query";
+import {CONTACT_LINK_COVERAGE_BATCH_SQL as PRIOR_COVERAGE_SQL} from "./fixtures/contact-link-coverage-prior";
 import {assertDisposableTestInfrastructure} from "../test-infrastructure-guard";
 await assertDisposableTestInfrastructure({operation:"intake authenticated review pages",requireRedis:false});
 const {pool}=await import("../../server/db");
@@ -29,6 +31,83 @@ try {
     VALUES($1,$2,'sdr_orchestration','contact_link_coverage_v1',$3,50,
       '2020-01-01T00:00:00.123456Z')`,[contact.id,business.id,randomUUID()]);
   const pagePath="/api/admin/contact-link-coverage/candidates";
+  // Compare the full native read against the actual prior implementation,
+  // not a hand-written approximation or a fixture's expected candidate count.
+  const params=[0,2147483647,500,[contact.id]];
+  const oldRows=(await pool.query(PRIOR_COVERAGE_SQL,params)).rows;
+  const newRows=(await pool.query(CONTACT_LINK_COVERAGE_BATCH_SQL,params)).rows;
+  assert.deepEqual(newRows,oldRows,"Indexed read must retain every fact, proof and candidate");checks++;
+  const edgeBusiness=(await pool.query(`INSERT INTO businesses
+    (canonical_name,normalized_name,website_domain,main_phone,street_address,city,state,record_class)
+    VALUES('Thé Anchor Café, Incorporated','th anchor caf','www.anchor-key.example',
+    '13055550099','10 Main St.','Miami','FL','canonical') RETURNING id`)).rows[0];
+  const edgeFiling=`COV-${randomUUID()}`;
+  await pool.query(`INSERT INTO sunbiz_entities(entity_name,dba,filing_number,website,phone,owner_phone,
+    principal_address,principal_city,principal_state,source)
+    VALUES('Anchor Site Alias Inc','Thé Anchor Café LLC',$1,
+    'https://www.anchor-key.example.:443/path?x=1','+1 (305) 555-0099','305-555-0199',
+    '10 Main St.','Miami','FL','sunbiz')`,[edgeFiling]);
+  await pool.query(`INSERT INTO canonical_source_links(business_id,source_system,source_type,stable_key)
+    VALUES($1,'sunbiz','sunbiz_entity',$2)`,[edgeBusiness.id,edgeFiling]);
+  const edgeContacts=(await pool.query(`INSERT INTO contacts
+    (first_name,last_name,company_name,email,website,phone,address,city,state,row_provenance,record_class)
+    VALUES('Key','Fixture','Thé Anchor Café LLC',$1,'https://www.anchor-key.example/path?x=1',
+      '+1 (305) 555-0099','10 Main St.','Miami','FL','{}','production'),
+    ('Key','Fixture','Owner Phone Only',$2,NULL,'305-555-0199',NULL,NULL,NULL,'{}','production'),
+    ('Key','Fixture','Filing Only',$3,NULL,'',NULL,NULL,NULL,
+      jsonb_build_object('filingNumber',lower($4::text)),'production'),
+    ('Key','Fixture','Anchor Site Alias',$5,NULL,'',NULL,NULL,NULL,'{}','production')
+    RETURNING id`,[`${randomUUID()}@gmail.com`,`${randomUUID()}@gmail.com`,
+      `${randomUUID()}@gmail.com`,edgeFiling,`${randomUUID()}@gmail.com`])).rows;
+  const edgeParams=[0,2147483647,500,edgeContacts.map(row=>row.id)];
+  const edgePrior=(await pool.query(PRIOR_COVERAGE_SQL,edgeParams)).rows;
+  const edgeIndexed=(await pool.query(CONTACT_LINK_COVERAGE_BATCH_SQL,edgeParams)).rows;
+  assert.deepEqual(edgeIndexed,edgePrior,
+    "Legal suffixes/Unicode, URL/phone/address, source DBA/name/owner-phone and filing keys retain parity");checks++;
+  assert(edgeIndexed.every(row=>row.businesses.some((b:any)=>b.businessId===edgeBusiness.id)),
+    "Each independently selected identity-key branch must hydrate the same real business");checks++;
+
+  // Production-sized unrelated population. This is local serving-volume proof,
+  // not a replacement for timing the deployed corrected primary request.
+  await pool.query(`INSERT INTO businesses(canonical_name,normalized_name,website_domain,main_phone,
+    street_address,city,state,record_class)
+    SELECT 'Coverage noise '||n,'coverage noise '||n,'coverage-noise-'||n||'.example.invalid',
+    '800'||lpad(n::text,7,'0'),n||' Noise Street','Noise City','FL','canonical'
+    FROM generate_series(1,147000) n`);
+  await pool.query(`INSERT INTO sunbiz_entities(entity_name,filing_number,website,phone,
+    principal_address,principal_city,principal_state,source)
+    SELECT 'Coverage noise '||n,'COVNOISE'||n,'https://coverage-noise-'||n||'.example.invalid',
+    '800'||lpad(n::text,7,'0'),n||' Noise Street','Noise City','FL','sunbiz'
+    FROM generate_series(1,127000) n`);
+  // Real INSERT guards acquire business-scoped advisory locks. Populate in
+  // bounded committed transactions instead of exhausting native lock slots.
+  for(let start=1;start<=127000;start+=512) {
+    await pool.query(`INSERT INTO canonical_source_links(business_id,source_system,source_type,stable_key)
+      SELECT b.id,'sunbiz','sunbiz_entity','COVNOISE'||split_part(b.normalized_name,' ',3)
+      FROM businesses b WHERE b.normalized_name IN (
+        SELECT 'coverage noise '||n FROM generate_series($1::integer,$2::integer) n)`,
+      [start,Math.min(start+511,127000)]);
+  }
+  await pool.query("ANALYZE businesses");
+  await pool.query("ANALYZE sunbiz_entities");
+  await pool.query("ANALYZE canonical_source_links");
+  const scaledStart=performance.now();
+  const scaledRows=(await pool.query(CONTACT_LINK_COVERAGE_BATCH_SQL,params)).rows;
+  const scaledMs=performance.now()-scaledStart;
+  assert.deepEqual(scaledRows,newRows,"Unrelated native population must not change hydrated facts");checks++;
+  console.log(JSON.stringify({event:"intake_review_native_volume",businesses:147002,
+    linkedSources:127001,contactIds:1,elapsedMs:scaledMs,productionExecution:false}));
+  const sourceScaledStart=performance.now();
+  const sourceScaledRows=(await pool.query(CONTACT_LINK_COVERAGE_BATCH_SQL,edgeParams)).rows;
+  const sourceScaledMs=performance.now()-sourceScaledStart;
+  assert.deepEqual(sourceScaledRows,edgeIndexed,
+    "Source-backed domain/DBA/name/owner-phone/filing proofs retain parity at native serving volume");checks++;
+  console.log(JSON.stringify({event:"intake_review_source_native_volume",businesses:147002,
+    linkedSources:127001,contactIds:edgeContacts.length,elapsedMs:sourceScaledMs,productionExecution:false}));
+  const plan=(await pool.query("EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+CONTACT_LINK_COVERAGE_BATCH_SQL,params)).rows[0]["QUERY PLAN"];
+  const planText=JSON.stringify(plan);
+  assert(planText.includes("businesses_coverage_name_key_idx"),
+    "Actual plan must use the native indexed name key");checks++;
   assert.equal((await fetch(url+pagePath)).status,401);checks++;
   const password=randomUUID(),hash=await bcrypt.hash(password,4);
   for(const role of ["admin","manager","agent"]) {

@@ -2,10 +2,10 @@
  * Pure, batched read-only source query for contact-link coverage.
  *
  * Equality-key joins are deliberately separated by evidence type. Expensive
- * name/phone/address normalization is computed once per batch on the business
- * and retained-source sides, not in a per-contact correlated lookup. Sunbiz
- * lineage joins use exact filing-key equality so the existing indexes remain
- * usable; this never scans the full Sunbiz universe.
+ * normalization is database-generated on writes. Parameterized equality probes
+ * retrieve only the keys on the bounded contact page, rather than materializing
+ * the entire business/source identity-key universe. Sunbiz lineage retains exact
+ * filing equality and the existing matching and supersession semantics.
  */
 // The database generates these keys with the exact prior normalization.
 // Ordinary column indexes avoid Publish's broken nested-index serialization.
@@ -198,15 +198,7 @@ contact_identity_keys AS MATERIALIZED (
   UNION ALL
   SELECT contact_id, 'filing', key FROM contact_filing_keys
 ),
-canonical_domain_counts AS NOT MATERIALIZED (
-  SELECT
-    lower(regexp_replace(trim(website_domain), '^www[.]', '', 'i')) AS domain_key,
-    count(*)::int AS domain_business_count
-  FROM businesses
-  WHERE record_class = 'canonical'
-  GROUP BY lower(regexp_replace(trim(website_domain), '^www[.]', '', 'i'))
-),
-canonical_businesses AS MATERIALIZED (
+canonical_businesses AS NOT MATERIALIZED (
   SELECT
     b.id AS business_id,
     b.canonical_name,
@@ -219,33 +211,22 @@ canonical_businesses AS MATERIALIZED (
     b.postal_code,
     b.record_class,
     COALESCE(b.do_not_visit, false) AS do_not_visit,
-    lower(regexp_replace(
-      regexp_replace(
-        regexp_replace(trim(b.website_domain), '^www[.]', '', 'i'),
-        ':[0-9]+$', ''
-      ),
-      '[.]$', ''
-    )) AS domain_key,
-    COALESCE(domain_counts.domain_business_count, 0) AS domain_business_count,
-    regexp_replace(coalesce(b.main_phone, ''), '[^0-9]', '', 'g') AS phone_key,
-    lower(regexp_replace(concat_ws(' ', nullif(b.street_address, ''), nullif(b.city, ''), nullif(b.state, '')), '[^a-zA-Z0-9]', '', 'g')) AS address_key
+    b.coverage_domain_key AS domain_key,
+    (SELECT count(*)::int FROM businesses counted
+      WHERE counted.record_class='canonical'
+        AND counted.coverage_count_domain_key=b.coverage_count_domain_key) AS domain_business_count,
+    b.coverage_phone_key AS phone_key,
+    b.coverage_address_key AS address_key
   FROM businesses b
-  LEFT JOIN canonical_domain_counts domain_counts
-    ON domain_counts.domain_key = lower(regexp_replace(trim(b.website_domain), '^www[.]', '', 'i'))
 ),
-business_name_keys AS MATERIALIZED (
-  SELECT business_id, trim(regexp_replace(
-    regexp_replace(
-      lower(regexp_replace(coalesce(normalized.value, ''), '[^a-zA-Z0-9]+', ' ', 'g')),
-      '\\m(incorporated|inc|limited|ltd|llc|llp|corp|corporation|company|co)\\M', ' ', 'g'
-    ),
-    '\\s+', ' ', 'g'
-  )) AS key
-  FROM canonical_businesses b
-  CROSS JOIN LATERAL (VALUES (b.canonical_name), (b.normalized_name)) normalized(value)
-  WHERE nullif(trim(normalized.value), '') IS NOT NULL
+business_name_keys AS NOT MATERIALIZED (
+  SELECT id AS business_id,coverage_name_key AS key FROM businesses
+  WHERE nullif(trim(canonical_name),'') IS NOT NULL
+  UNION ALL
+  SELECT id AS business_id,coverage_normalized_name_key AS key FROM businesses
+  WHERE nullif(trim(normalized_name),'') IS NOT NULL
 ),
-all_sunbiz_source_links AS MATERIALIZED (
+all_sunbiz_source_links AS NOT MATERIALIZED (
   SELECT
     csl.id AS source_link_id,
     csl.business_id,
@@ -264,10 +245,17 @@ all_sunbiz_source_links AS MATERIALIZED (
     se.principal_zip,
     se.phone,
     se.owner_phone,
+    se.contact_identity_name_key,
+    se.contact_identity_dba_key,
+    se.coverage_domain_key,
+    se.coverage_phone_key,
+    se.coverage_owner_phone_key,
+    se.coverage_address_key,
+    se.coverage_street_key,
     se.source AS entity_source
   FROM canonical_source_links csl
-  LEFT JOIN sunbiz_entities se ON se.filing_number = csl.stable_key
-  JOIN canonical_businesses b ON b.business_id = csl.business_id
+   LEFT JOIN sunbiz_entities se ON se.filing_number = csl.stable_key AND se.filing_number IS NOT NULL
+   JOIN businesses b ON b.id = csl.business_id
   WHERE csl.source_system = 'sunbiz'
     AND csl.source_type = 'sunbiz_entity'
 ),
@@ -336,67 +324,50 @@ raw_unlinked_sunbiz_by_contact AS MATERIALIZED (
     LIMIT 21
   ) raw
 ),
-source_identity_keys AS MATERIALIZED (
-  SELECT business_id, 'name'::text AS kind, trim(regexp_replace(
-    regexp_replace(
-      lower(regexp_replace(coalesce(normalized.value, ''), '[^a-zA-Z0-9]+', ' ', 'g')),
-      '\\m(incorporated|inc|limited|ltd|llc|llp|corp|corporation|company|co)\\M', ' ', 'g'
-    ),
-    '\\s+', ' ', 'g'
-  )) AS key
-  FROM all_sunbiz_source_links source
-  CROSS JOIN LATERAL (VALUES (source.entity_name), (source.dba)) normalized(value)
-  WHERE nullif(trim(normalized.value), '') IS NOT NULL
+source_identity_keys AS NOT MATERIALIZED (
+  SELECT business_id,'name'::text AS kind,contact_identity_name_key AS key
+  FROM all_sunbiz_source_links WHERE nullif(trim(entity_name),'') IS NOT NULL
+  UNION ALL
+  SELECT business_id,'name',contact_identity_dba_key
+  FROM all_sunbiz_source_links WHERE dba IS NOT NULL AND nullif(trim(dba),'') IS NOT NULL
   UNION ALL
   SELECT business_id, 'domain',
-    lower(regexp_replace(
-      regexp_replace(
-        regexp_replace(
-          regexp_replace(
-            split_part(regexp_replace(trim(coalesce(website, '')), '^[a-zA-Z]+://', '', 'i'), '/', 1),
-            '[?#].*$', ''
-          ),
-          '^www[.]', '', 'i'
-        ),
-        ':[0-9]+$', ''
-      ),
-      '[.]$', ''
-    ))
+    coverage_domain_key
   FROM all_sunbiz_source_links
   WHERE nullif(trim(coalesce(website, '')), '') IS NOT NULL
   UNION ALL
-  SELECT business_id, 'phone', regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g')
+  SELECT business_id, 'phone', coverage_phone_key
   FROM all_sunbiz_source_links
-  WHERE nullif(regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g'), '') IS NOT NULL
+  WHERE nullif(coverage_phone_key, '') IS NOT NULL
   UNION ALL
-  SELECT business_id, 'phone', regexp_replace(coalesce(owner_phone, ''), '[^0-9]', '', 'g')
+  SELECT business_id, 'phone', coverage_owner_phone_key
   FROM all_sunbiz_source_links
-  WHERE nullif(regexp_replace(coalesce(owner_phone, ''), '[^0-9]', '', 'g'), '') IS NOT NULL
+  WHERE nullif(coverage_owner_phone_key, '') IS NOT NULL
   UNION ALL
   SELECT business_id, 'address',
-    lower(regexp_replace(concat_ws(' ', nullif(principal_address, ''), nullif(principal_city, ''), nullif(principal_state, '')), '[^a-zA-Z0-9]', '', 'g'))
+    coverage_address_key
   FROM all_sunbiz_source_links
   WHERE nullif(trim(coalesce(principal_address, '')), '') IS NOT NULL
   UNION ALL
-  SELECT business_id, 'address', lower(regexp_replace(coalesce(principal_address, ''), '[^a-zA-Z0-9]', '', 'g'))
+  SELECT business_id, 'address', coverage_street_key
   FROM all_sunbiz_source_links
   WHERE nullif(trim(coalesce(principal_address, '')), '') IS NOT NULL
   UNION ALL
   SELECT business_id, 'filing', lower(stable_key) FROM all_sunbiz_source_links
   WHERE nullif(stable_key, '') IS NOT NULL
 ),
-business_identity_keys AS MATERIALIZED (
-  SELECT business_id, 'domain'::text AS kind, domain_key AS key
-  FROM canonical_businesses WHERE nullif(domain_key, '') IS NOT NULL
+business_identity_keys AS NOT MATERIALIZED (
+  SELECT id AS business_id, 'domain'::text AS kind, coverage_domain_key AS key
+  FROM businesses WHERE nullif(coverage_domain_key, '') IS NOT NULL
   UNION ALL
-  SELECT business_id, 'phone', phone_key
-  FROM canonical_businesses WHERE nullif(phone_key, '') IS NOT NULL
+  SELECT id AS business_id, 'phone', coverage_phone_key
+  FROM businesses WHERE nullif(coverage_phone_key, '') IS NOT NULL
   UNION ALL
-  SELECT business_id, 'address', address_key
-  FROM canonical_businesses WHERE nullif(address_key, '') IS NOT NULL
+  SELECT id AS business_id, 'address', coverage_address_key
+  FROM businesses WHERE nullif(coverage_address_key, '') IS NOT NULL
   UNION ALL
-  SELECT business_id, 'address', lower(regexp_replace(coalesce(street_address, ''), '[^a-zA-Z0-9]', '', 'g'))
-  FROM canonical_businesses WHERE nullif(trim(coalesce(street_address, '')), '') IS NOT NULL
+  SELECT id AS business_id, 'address', coverage_street_key
+  FROM businesses WHERE nullif(trim(coalesce(street_address, '')), '') IS NOT NULL
   UNION ALL
   SELECT business_id, 'name', key FROM business_name_keys
   UNION ALL
@@ -405,9 +376,13 @@ business_identity_keys AS MATERIALIZED (
 candidate_pairs AS MATERIALIZED (
   SELECT DISTINCT contact_keys.contact_id, business_keys.business_id
   FROM contact_identity_keys contact_keys
-  JOIN business_identity_keys business_keys
-    ON business_keys.kind = contact_keys.kind
-   AND business_keys.key = contact_keys.key
+   CROSS JOIN LATERAL (
+     SELECT business_id FROM business_identity_keys business_keys
+     WHERE business_keys.kind=contact_keys.kind AND business_keys.key=contact_keys.key
+     -- Keep the bounded page key as the parameter of the indexed Append.
+     -- Without this fence PostgreSQL can flatten it into a full-universe hash join.
+     OFFSET 0
+   ) business_keys
   UNION
   SELECT DISTINCT raw.contact_id, business_name.business_id
   FROM raw_unlinked_sunbiz_by_contact raw

@@ -2471,6 +2471,13 @@
       "when":1800300017000,
       "tag":"0349_source_family_relationship_identity",
       "breakpoints":true
+    },
+    {
+      "idx":353,
+      "version":"7",
+      "when":1800400017000,
+      "tag":"0350_contact_coverage_indexed_keys",
+      "breakpoints":true
     }
   ]
 }

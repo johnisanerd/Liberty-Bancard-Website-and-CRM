@@ -24,6 +24,17 @@ original-row duplicate census does not prove an expanded graph is duplicate-free
 
 **How to apply:** Treat an unexplained constraint mismatch as an open gate.
 Resolve schema ownership/parity explicitly; preserve original topology.
+Separate blank-email projection repair from real email-identity reconciliation.
+A duplicate email does not by itself prove two contact records are the same
+person; existing verified relationships must not be transferred to make an
+index fit.
+
+**Why:** A full production census included both many blank-email records and
+syntactic-email duplicates, including an affected current relationship.
+
+**How to apply:** Obtain authorization for live record correction, retain source
+history, and use corroborating identity evidence before merging or archiving.
+Do not describe a captured-ID hash comparison as whole-database acceptance.
 
 The production SQL reader can truncate a complete result near one MiB and can
 cancel a read because of replica recovery. Successful bounded exports do not

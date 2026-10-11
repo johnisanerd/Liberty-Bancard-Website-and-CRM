@@ -3,6 +3,8 @@ import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { users } from "./models/auth";
+import {coverageNameKey,coveragePhoneKey,coverageAddressKey,coverageCountDomainKey,
+  coverageBusinessDomainKey,coverageSourceDomainKey} from "./contact-coverage-keys";
 
 const bytea = customType<{ data: Buffer; driverData: Buffer }>({
   dataType() {
@@ -3545,6 +3547,11 @@ export const sunbizEntities = pgTable("sunbiz_entities", {
   feiEinNumber: text("fei_ein_number"),
   entityName: text("entity_name").notNull(),
   dba: text("dba"),
+  coverageDomainKey: text("coverage_domain_key").generatedAlwaysAs(sql.raw(coverageSourceDomainKey("website"))),
+  coveragePhoneKey: text("coverage_phone_key").generatedAlwaysAs(sql.raw(coveragePhoneKey("phone"))),
+  coverageOwnerPhoneKey: text("coverage_owner_phone_key").generatedAlwaysAs(sql.raw(coveragePhoneKey("owner_phone"))),
+  coverageAddressKey: text("coverage_address_key").generatedAlwaysAs(sql.raw(coverageAddressKey("principal_address","principal_city","principal_state"))),
+  coverageStreetKey: text("coverage_street_key").generatedAlwaysAs(sql.raw(coverageAddressKey("principal_address"))),
   // Publish cannot faithfully round-trip these nested expressions as index
   // expressions. Stored generated keys preserve database-owned normalization
   // while the indexes below remain ordinary, publish-safe column indexes.
@@ -3609,6 +3616,11 @@ export const sunbizEntities = pgTable("sunbiz_entities", {
   index("sunbiz_entities_list_id_idx").on(table.listId),
   index("sunbiz_entities_created_at_idx").on(table.createdAt),
   index("sunbiz_entities_contact_identity_name_key_idx").on(table.contactIdentityNameKey).where(sql`filing_number IS NOT NULL`),
+  index("sunbiz_coverage_domain_key_idx").on(table.coverageDomainKey),
+  index("sunbiz_coverage_phone_key_idx").on(table.coveragePhoneKey),
+  index("sunbiz_coverage_owner_phone_key_idx").on(table.coverageOwnerPhoneKey),
+  index("sunbiz_coverage_address_key_idx").on(table.coverageAddressKey),
+  index("sunbiz_coverage_street_key_idx").on(table.coverageStreetKey),
   index("sunbiz_entities_contact_identity_dba_key_idx").on(table.contactIdentityDbaKey).where(sql`filing_number IS NOT NULL AND dba IS NOT NULL`),
   // Simple immutable-function expressions round-trip through Publish without
   // serializing nested regexp bodies. Queries retain the equivalent inline SQL,
@@ -4981,6 +4993,13 @@ export const businesses = pgTable("businesses", {
   id: serial("id").primaryKey(),
   canonicalName: text("canonical_name").notNull(),
   normalizedName: text("normalized_name").notNull(),
+  coverageNameKey: text("coverage_name_key").generatedAlwaysAs(sql.raw(coverageNameKey("canonical_name"))),
+  coverageNormalizedNameKey: text("coverage_normalized_name_key").generatedAlwaysAs(sql.raw(coverageNameKey("normalized_name"))),
+  coverageDomainKey: text("coverage_domain_key").generatedAlwaysAs(sql.raw(coverageBusinessDomainKey("website_domain"))),
+  coverageCountDomainKey: text("coverage_count_domain_key").generatedAlwaysAs(sql.raw(coverageCountDomainKey("website_domain"))),
+  coveragePhoneKey: text("coverage_phone_key").generatedAlwaysAs(sql.raw(coveragePhoneKey("main_phone"))),
+  coverageAddressKey: text("coverage_address_key").generatedAlwaysAs(sql.raw(coverageAddressKey("street_address","city","state"))),
+  coverageStreetKey: text("coverage_street_key").generatedAlwaysAs(sql.raw(coverageAddressKey("street_address"))),
   websiteDomain: text("website_domain"),
   mainPhone: text("main_phone"),
   mainEmail: text("main_email"),
@@ -5029,6 +5048,13 @@ export const businesses = pgTable("businesses", {
   updatedAt: timestamp("updated_at").defaultNow(),
 }, (table) => [
   index("businesses_normalized_name_city_state_idx").on(table.normalizedName, table.city, table.state),
+  index("businesses_coverage_name_key_idx").on(table.coverageNameKey),
+  index("businesses_coverage_normalized_name_key_idx").on(table.coverageNormalizedNameKey),
+  index("businesses_coverage_domain_key_idx").on(table.coverageDomainKey),
+  index("businesses_coverage_count_domain_key_idx").on(table.coverageCountDomainKey).where(sql`record_class='canonical'`),
+  index("businesses_coverage_phone_key_idx").on(table.coveragePhoneKey),
+  index("businesses_coverage_address_key_idx").on(table.coverageAddressKey),
+  index("businesses_coverage_street_key_idx").on(table.coverageStreetKey),
   index("businesses_website_domain_idx").on(table.websiteDomain),
   index("businesses_main_phone_idx").on(table.mainPhone),
   index("businesses_google_place_id_idx").on(table.googlePlaceId),

@@ -35,6 +35,7 @@ actual access, authorization or scope decision.
 **Why:** The user repeatedly rejected stopping at intermediate local milestones
 and requesting incremental publishes without end-to-end progress, and explicitly
 rejected stopping after identifying a confirmed production deadlock.
+They repeated: “I need you to finish the task then and quit stopping.”
 
 **How to apply:** Keep scope-specific proof separate: ingestion, discovery,
 qualification, validation and scheduled production convergence are not

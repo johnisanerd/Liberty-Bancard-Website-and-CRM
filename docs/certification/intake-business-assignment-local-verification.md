@@ -1,6 +1,6 @@
 # Intake and Business Assignment — local verification
 
-Observed 2026-10-10 UTC. **The original task remains open. This is not
+Observed through 2026-10-11 UTC. **The original task remains open. This is not
 end-to-end production acceptance, publication authorization or release GO.**
 
 ## Verified locally
@@ -20,10 +20,11 @@ performed by these checks.
 | Source-only reconsideration | 6 checks passed without changing the contact timestamp. Immutable corrections change snapshots; unchanged `last_seen_at` refreshes do not. |
 | Source-family materialization | 30 checks passed for GHL, Apollo and manual CRM. Personal mailboxes were accepted with independent organization evidence. Three locations under one brand remained three businesses. Legal-name suffix aliases agreed. Superseded source evidence was rejected; a restoring observation restored eligibility. Actual audited affiliation and repeat preservation were verified. Weak evidence remained held. |
 | Ordinary automatic linker | 51 checks passed, including three consecutive eligible ordinary cycles, each committing a new native audited relationship. Explicit pause, stale/live leases, owner-before-graph ordering, publish-owner transfer, retired/revoked owner denial and no-provider/no-send/cohort independence were retained. These are local cycles, not the required production cycles. |
-| Authenticated review endpoint | 14 checks passed using the actual local login, session guards, route and native hydration. Admin first/next/third pages advanced without duplicates, then returned an empty terminal page. Manager/agent access remained 403 and anonymous access 401. This is not correlation of the historical production 500. |
+| Authenticated review endpoint | 20 checks passed using actual local login, session guards, route and native hydration. Full returned-fact parity against the frozen prior implementation, domain/DBA/name/owner-phone/filing key coverage, native index-plan use, and microsecond-safe first/next/terminal pages passed. Manager/agent remained 403 and anonymous access 401. At 147,002 businesses and 127,001 linked sources, one-contact hydration took 41.369 ms; four source-backed contacts took 1,205.827 ms. These are disposable serving-volume observations, not corrected production-request timings. |
 | Geography | 787 pure checks passed. FL/Florida/case/whitespace aliases agreed; GA, county/ZIP conflicts, disabled Monroe and missing geography remained held. |
 | Existing free continuation | Native cursor, pause/resume, replay and zero-spend checks passed. Unchanged Florida-alias holds were reconsidered; a still-held Monroe observation received a policy marker and did not create repeated followup runs. |
-| Public preview | Existing `/login` rendered. Signed-in application UI was not verified. The current ambient server was not restarted to imply that its native schema matches these disposable certificates. |
+| Public preview | Migration 0350 was applied through the existing development migration runner. The application workflow was restarted once and came up on port 5000 with journal migrations current and background jobs off. `/login` rendered. Signed-in UI was not visually verified; authenticated API behavior was separately certified. |
+| Build | `npm run build` passed. This is a local build, not a publish or release approval. |
 | Type check | Still fails only on the pre-existing missing `LiveChat` name at `server/routes/live-chat.ts:309`; that source is unchanged from HEAD. No task-specific type errors remain. The stock release gate is not declared passed. |
 
 Commands:
@@ -98,9 +99,19 @@ They do not certify progress under the new deployed correction.
 
 The local review test independently reproduced timestamp rounding causing
 repeated pages. The fix preserves database microseconds in the keyset cursor.
-Production log search found no matching `contact-link-coverage` exception
-since 2026-10-08. Other worker/pool failures were visible, but are not attributed
-to the historical authenticated review 500.
+The exact authenticated human-review 500 was subsequently reproduced and
+correlated on 2026-10-11: request duration 32.326 seconds, hydration query
+execution 30.042 seconds, SQLSTATE `57014`, fingerprint
+`5ed15d1305212bee`, and negligible pool acquisition. This establishes a
+hydration statement timeout, not pool exhaustion.
+
+Migration `0350_contact_coverage_indexed_keys.sql` and its matching declared
+schema add generated lookup keys and ordinary indexes while retaining the prior
+normalization. Parameterized lateral equality probes with `OFFSET 0`, direct
+indexed source-key branches and per-candidate domain counts replace the global
+key-universe hydration. The frozen pre-indexed query remains a test-only parity
+oracle, independent of whichever commit happens to be HEAD. This correction
+has not been published or timed through the corrected production endpoint.
 
 ## October originals rechecked — 2026-10-10 UTC
 
@@ -132,10 +143,45 @@ queried ledgers. It does not prove their contacts/businesses are absent from
 other sources. Chat attachments are not CRM import requests. No live import,
 provider call, production mutation or publication was performed.
 
+## September retained graph and native constraint conflict — 2026-10-11 UTC
+
+The ignored private export retains all 1,472 originals, 145 raw columns,
+original observation/item identities and 46 original-row parts. Its 305 native
+graph files cover 17 tables: 954 contacts, 759 businesses, 739 locations,
+749 source links, 10 entities, 2,943 observations, 981 source events, 917
+evidence/decision rows each and 2,484 audits, plus the execution/list and 1,472
+subject/batch/membership/item/disposition rows each.
+
+Each captured graph file was compared with read-only production rows. All
+captured rows matched, and compact source-side hashes for all 17 captured
+table scopes agreed before and after verification. The private manifest is
+revision-verified; this does not certify successful restoration or recovery.
+
+The real denied disposable native restore refused the graph with SQLSTATE
+`23505`, table `contacts`, constraint `contacts_email_unique_idx`. No constraint
+was disabled and no retained contacts were merged, archived or normalized.
+Recovery and replay were not run after the failed restore.
+
+Read-only production catalog evidence shows that the declared unarchived-email
+unique index is absent. The retained scope contains three duplicate active
+email groups covering seven production contacts; three of those contacts are
+referenced by the original execution. None of these seven has a projected
+business relationship.
+
+The full production census separately returned 141 duplicate non-null active
+email groups covering 1,186 contacts: one blank-email group of 786 records and
+140 syntactic-email groups of 400 records. Record classes were 1,182 production
+and four test contacts. One affected contact has a current business relationship
+and decision, which must be preserved. These counts do not establish which
+records are the same identity and do not authorize blind merging or archival.
+Production identity correction and supported schema convergence remain open.
+
 ## Original acceptance still outstanding
 
-1. A verified authentic September native capture is unavailable. The previous
-   private capture was already rejected; no synthetic substitute was accepted.
+1. The September capture is revision-verified, but authentic native restoration
+   is blocked by the demonstrated production/schema uniqueness mismatch.
+   The original 1,472-row recovery and replay remain uncertified; no normalized
+   or empty-CRM substitute was accepted.
    Full native ordinary-upload fresh-process restart and retained replay of the
    1,472 originals remain unverified. Preserve all 1,277 mailbox occurrences,
    195 business-only originals and both protected foreign relationships.
@@ -144,8 +190,8 @@ provider call, production mutation or publication was performed.
    production executions; the disposable workbook success cannot fill this gap.
 3. Production native delivery and serving-build identity remain unverified.
    No separately authorized publication/live-write action was taken.
-4. The exact authenticated human-review 500 remains uncorrelated, and the
-   failed coverage operation still needs primary request/transaction/component
+4. The exact authenticated human-review 500 is correlated and its local
+   correction is certified, but it still needs corrected primary request/transaction/component
    timing under representative ordinary concurrent load.
 5. The deployed correction still needs at least three consecutive eligible
    production cycles, full source-scoped dispositions, and the distinct
