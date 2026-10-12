@@ -2499,6 +2499,13 @@
       "when":1800400020000,
       "tag":"0353_contact_readiness_timestamp_parity",
       "breakpoints":true
+    },
+    {
+      "idx":357,
+      "version":"7",
+      "when":1800400021000,
+      "tag":"0354_contact_coverage_single_rewrite",
+      "breakpoints":true
     }
   ]
 }

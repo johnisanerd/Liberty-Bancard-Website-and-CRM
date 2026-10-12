@@ -8,7 +8,7 @@
  * filing equality and the existing matching and supersession semantics.
  */
 // The database generates these keys with the exact prior normalization.
-// Ordinary column indexes avoid Publish's broken nested-index serialization.
+// Array-subscript indexes avoid Publish's broken nested-regexp serialization.
 import { relationshipReasonsSql } from "../../shared/relationship-evidence-sql";
 const SUNBIZ_NAME_KEY_ENTITY_SQL = "se.contact_identity_name_key";
 const SUNBIZ_NAME_KEY_DBA_SQL = "se.contact_identity_dba_key";
@@ -211,19 +211,19 @@ canonical_businesses AS NOT MATERIALIZED (
     b.postal_code,
     b.record_class,
     COALESCE(b.do_not_visit, false) AS do_not_visit,
-    b.coverage_domain_key AS domain_key,
+    b.coverage_keys[3] AS domain_key,
     (SELECT count(*)::int FROM businesses counted
       WHERE counted.record_class='canonical'
-        AND counted.coverage_count_domain_key=b.coverage_count_domain_key) AS domain_business_count,
-    b.coverage_phone_key AS phone_key,
-    b.coverage_address_key AS address_key
+        AND counted.coverage_keys[4]=b.coverage_keys[4]) AS domain_business_count,
+    b.coverage_keys[5] AS phone_key,
+    b.coverage_keys[6] AS address_key
   FROM businesses b
 ),
 business_name_keys AS NOT MATERIALIZED (
-  SELECT id AS business_id,coverage_name_key AS key FROM businesses
+  SELECT id AS business_id,coverage_keys[1] AS key FROM businesses
   WHERE nullif(trim(canonical_name),'') IS NOT NULL
   UNION ALL
-  SELECT id AS business_id,coverage_normalized_name_key AS key FROM businesses
+  SELECT id AS business_id,coverage_keys[2] AS key FROM businesses
   WHERE nullif(trim(normalized_name),'') IS NOT NULL
 ),
 all_sunbiz_source_links AS NOT MATERIALIZED (
@@ -247,11 +247,11 @@ all_sunbiz_source_links AS NOT MATERIALIZED (
     se.owner_phone,
     se.contact_identity_name_key,
     se.contact_identity_dba_key,
-    se.coverage_domain_key,
-    se.coverage_phone_key,
-    se.coverage_owner_phone_key,
-    se.coverage_address_key,
-    se.coverage_street_key,
+    se.coverage_keys[1] AS coverage_domain_key,
+    se.coverage_keys[2] AS coverage_phone_key,
+    se.coverage_keys[3] AS coverage_owner_phone_key,
+    se.coverage_keys[4] AS coverage_address_key,
+    se.coverage_keys[5] AS coverage_street_key,
     se.source AS entity_source
   FROM canonical_source_links csl
    LEFT JOIN sunbiz_entities se ON se.filing_number = csl.stable_key AND se.filing_number IS NOT NULL
@@ -357,16 +357,16 @@ source_identity_keys AS NOT MATERIALIZED (
   WHERE nullif(stable_key, '') IS NOT NULL
 ),
 business_identity_keys AS NOT MATERIALIZED (
-  SELECT id AS business_id, 'domain'::text AS kind, coverage_domain_key AS key
-  FROM businesses WHERE nullif(coverage_domain_key, '') IS NOT NULL
+  SELECT id AS business_id, 'domain'::text AS kind, coverage_keys[3] AS key
+  FROM businesses WHERE nullif(coverage_keys[3], '') IS NOT NULL
   UNION ALL
-  SELECT id AS business_id, 'phone', coverage_phone_key
-  FROM businesses WHERE nullif(coverage_phone_key, '') IS NOT NULL
+  SELECT id AS business_id, 'phone', coverage_keys[5]
+  FROM businesses WHERE nullif(coverage_keys[5], '') IS NOT NULL
   UNION ALL
-  SELECT id AS business_id, 'address', coverage_address_key
-  FROM businesses WHERE nullif(coverage_address_key, '') IS NOT NULL
+  SELECT id AS business_id, 'address', coverage_keys[6]
+  FROM businesses WHERE nullif(coverage_keys[6], '') IS NOT NULL
   UNION ALL
-  SELECT id AS business_id, 'address', coverage_street_key
+  SELECT id AS business_id, 'address', coverage_keys[7]
   FROM businesses WHERE nullif(trim(coalesce(street_address, '')), '') IS NOT NULL
   UNION ALL
   SELECT business_id, 'name', key FROM business_name_keys

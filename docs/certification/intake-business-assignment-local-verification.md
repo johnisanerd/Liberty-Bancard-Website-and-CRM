@@ -250,9 +250,9 @@ establish production import, native retained-graph recovery or release GO.
    with no replay growth. Ordinary fresh-process restart also passed in the
    restored native graph. These are local proofs, not production acceptance;
    no normalized or empty-CRM substitute was accepted.
-   Full native ordinary-upload fresh-process restart and retained replay of the
-   1,472 originals remain unverified. Preserve all 1,277 mailbox occurrences,
-   195 business-only originals and both protected foreign relationships.
+    Production ordinary-upload fresh-process restart and retained replay of the
+    1,472 originals remain unverified. Preserve all 1,277 mailbox occurrences,
+    195 business-only originals and both protected foreign relationships.
 2. Exact production execution/source/batch/current-outcome identity for each
    October file remains unverified. The last exact hash lookup found no matching
    production executions; the disposable workbook success cannot fill this gap.
@@ -348,3 +348,42 @@ the existing out-of-scope `server/routes/live-chat.ts:309` undefined `LiveChat`.
 Development startup uses background profile off with canonical outbound pause
 intact. The login screen was visually verified; signed-in UI was not visually
 verified in this run.
+
+## Publish timeout repair — 2026-10-12 UTC
+
+The failed promotion reported a database migration timeout. Its logged plan
+contained twelve separate STORED generated-column additions, five on the
+approximately 1.9-million-row Sunbiz registry and seven on Businesses, plus
+their indexes and the other pending schema changes. Logs listed the statements
+before execution; they did not identify which statement stalled. Empty activity
+results on the production replica are not proof of an unlocked primary.
+
+Declared migration `0354_contact_coverage_single_rewrite.sql` packs the same
+computed lookup keys into one generated text array per table. Fixed array slots
+preserve every prior normalization and NULL result. The migration compares all
+existing old/new key tuples before dropping the superseded calculated helpers;
+no base/source fields, identity guards, original assignments or evidence are
+removed. Matching reads and all twelve existing lookup indexes use the exact
+corresponding slots. Historical migrations and their hashes are unchanged.
+
+The existing development runner completed with EXIT=0 in approximately 161
+seconds on the registry with approximately 1.9 million rows. The actual managed
+diff afterward contained 20 statements, only two stored-column additions and
+all twelve intact array-subscript indexes. It reported no tables or columns
+removed, no truncation and no structural data loss. It still flagged possible
+non-backwards-compatible rollout; table rewrites/index builds can block reads
+or writes while publishing.
+
+The focused disposable authenticated-review certificate passed all 20 checks,
+including frozen returned-fact parity, actual indexed plans and role denials.
+With 147,002 businesses and 127,001 linked sources, observations were 24.549 ms
+for one contact and 2,190.119 ms for four source-backed contacts. These are local,
+uncontrolled observations, not production timings or a speedup claim.
+
+Build passed. Type checking still reports only the unchanged missing `LiveChat`.
+Development restarted with current migrations, background jobs off and canonical
+outbound pause intact. `/login` rendered; signed-in UI was not visually verified.
+Existing production startup policy continues to skip development journal replay.
+No deployment configuration, startup-DDL workaround, production DDL or outbound
+control changes were made. Production promotion and original acceptance remain
+unverified until the user republishes; this is not task completion or release GO.
