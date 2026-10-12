@@ -1,6 +1,6 @@
 # Intake and Business Assignment — local verification
 
-Observed through 2026-10-11 UTC. **The original task remains open. This is not
+Observed through 2026-10-12 UTC. **The original task remains open. This is not
 end-to-end production acceptance, publication authorization or release GO.**
 
 ## Verified locally
@@ -13,19 +13,20 @@ performed by these checks.
 
 | Check | Result and limits |
 | --- | --- |
-| Five actual October workbooks | Passed on the final native contract: all 2,914 original rows accounted for, original 93-column payloads retained. All five files passed separately. No providers, cohorts, validation purchases or messages. This is not production ingestion or a target number of newly created contacts. |
+| Five actual October workbooks | Completed serial rerun after the nullable creation change passed all five files through canonical native intake: all 2,914 original rows accounted for, original 93-column payloads retained. No providers, cohorts, validation purchases or messages. This is not production ingestion or a target number of newly created contacts. |
 | Native contract and aliases | Actual native identity-bridge verifier passed. Read/native source-family evaluators and reviewed-link enforcement were pinned to exact bodies. No observed production hash was added to an allowlist. |
 | Organization resolver | 10 actual native checks passed; zero provider calls/outbound changes. Precise location identity, supported matching/creation and conflicts remain distinct from shared-brand domain identity. |
 | Execution isolation | 10 checks passed. Three active imports cannot project a request failure onto the wrong execution. Real native abort isolation and fatal authority-loss behavior remain separate. The shipped serial queue case additionally proves canonical recovery runs before an unsafe expired-upload failure, and that unknown-commit/owner failures still propagate. |
 | Source-only reconsideration | 6 checks passed without changing the contact timestamp. Immutable corrections change snapshots; unchanged `last_seen_at` refreshes do not. |
 | Source-family materialization | 30 checks passed for GHL, Apollo and manual CRM. Personal mailboxes were accepted with independent organization evidence. Three locations under one brand remained three businesses. Legal-name suffix aliases agreed. Superseded source evidence was rejected; a restoring observation restored eligibility. Actual audited affiliation and repeat preservation were verified. Weak evidence remained held. |
 | Ordinary automatic linker | 51 checks passed, including three consecutive eligible ordinary cycles, each committing a new native audited relationship. Explicit pause, stale/live leases, owner-before-graph ordering, publish-owner transfer, retired/revoked owner denial and no-provider/no-send/cohort independence were retained. These are local cycles, not the required production cycles. |
-| Authenticated review endpoint | 20 checks passed using actual local login, session guards, route and native hydration. Full returned-fact parity against the frozen prior implementation, domain/DBA/name/owner-phone/filing key coverage, native index-plan use, and microsecond-safe first/next/terminal pages passed. Manager/agent remained 403 and anonymous access 401. At 147,002 businesses and 127,001 linked sources, one-contact hydration took 41.369 ms; four source-backed contacts took 1,205.827 ms. These are disposable serving-volume observations, not corrected production-request timings. |
+| Authenticated review endpoint | 20 checks passed using actual local login, session guards, route and native hydration. Full returned-fact parity against the frozen prior implementation, domain/DBA/name/owner-phone/filing key coverage, native index-plan use, and microsecond-safe first/next/terminal pages passed. Manager/agent remained 403 and anonymous access 401. At 147,002 businesses and 127,001 linked sources, the latest completed serial run observed 24.934 ms for one contact and 1,192.728 ms for four source-backed contacts. These are disposable serving-volume observations, not corrected production-request timings or a causal speedup claim. |
 | Geography | 787 pure checks passed. FL/Florida/case/whitespace aliases agreed; GA, county/ZIP conflicts, disabled Monroe and missing geography remained held. |
 | Existing free continuation | Native cursor, pause/resume, replay and zero-spend checks passed. Unchanged Florida-alias holds were reconsidered; a still-held Monroe observation received a policy marker and did not create repeated followup runs. |
 | Public preview | Migration 0350 was applied through the existing development migration runner. The application workflow was restarted once and came up on port 5000 with journal migrations current and background jobs off. `/login` rendered. Signed-in UI was not visually verified; authenticated API behavior was separately certified. |
 | Build | `npm run build` passed. This is a local build, not a publish or release approval. |
 | Type check | Still fails only on the pre-existing missing `LiveChat` name at `server/routes/live-chat.ts:309`; that source is unchanged from HEAD. No task-specific type errors remain. The stock release gate is not declared passed. |
+| Audited blank-email correction | 24 checks passed through the native command and actual authenticated API. Mixed-set atomic rejection, exact blank/identity/version checks, retained before/after audits, replay, changed-payload rejection, unchanged physical identity/timestamps and zero provider projections passed. Anonymous 401, manager/agent 403 and missing CSRF 403 were verified. This does not mean the 786 production blanks have been normalized. |
 
 Commands:
 
@@ -176,6 +177,65 @@ and decision, which must be preserved. These counts do not establish which
 records are the same identity and do not authorize blind merging or archival.
 Production identity correction and supported schema convergence remain open.
 
+## Authorized production correction — 2026-10-11 UTC
+
+The user authorized blank-to-NULL normalization and archival of only
+evidence-confirmed duplicates, preserving original imports, history and valid
+relationships.
+
+The existing authenticated, versioned archive command committed **74** confirmed
+duplicate archives. Its receipt retained the records and returned zero permanent
+deletions. Independent production reads verified 74 archived rows and 74 matching
+command-scoped audits, with zero business projections, current relationship
+decisions or source events on the archived rows. Comparing the raw receipt with
+the stored fields underlying the read DTO verified that physical identity fields
+were unchanged. No links were moved, contacts merged, source imports rewritten,
+provider calls made or outbound controls changed.
+
+The first request carrying the optional new identity fingerprint was refused
+with HTTP 400 and no writes. The committed command used the existing deployed
+version/owner/classification contract, following fresh authenticated identity
+checks. Private before-state, classification, command and receipt evidence is
+retained in ignored restricted storage; authentication cookies are not retained.
+
+The subsequent production census found 86 remaining nonblank duplicate-email
+groups covering 272 active contacts, and the same 786 blank-email records.
+The retained September graph's seven shared-email contacts were not in the
+confirmed archive set: their names, phones or location evidence conflict or
+remain insufficient. They were not archived merely to make restoration pass.
+
+A subsequent authenticated reread retained the seven exact contact identities.
+The two automotive pairs have different physical addresses and cities, not
+merely spelling or phone-format differences. The first-party Vertical Automotive
+website explicitly describes two locations in Fort Lauderdale and Wilton
+Manors. Shared corporate-domain mail cannot justify collapsing those sites.
+The other three held records carry a template-domain mailbox; its appearance
+does not authorize treating the unrelated businesses as one identity or
+silently extending blank-only correction to nonblank values.
+
+The blank correction is prepared but **not applied to production**. Production
+still has a non-null email column. Development migration 0351 permits actual
+NULL absence without dropping the real-email unique index or any foreign key.
+The existing contact lifecycle command supplies atomic, audited blank
+normalization without ordinary profile-write GHL/readiness/validation hooks.
+The canonical creation writer also represents a new missing mailbox as NULL,
+not an empty-string uniqueness key. Nullable consumers preserve fail-closed
+eligibility and existing compatibility DTOs.
+
+The application was restarted after development delivery; `/login` rendered.
+Signed-in UI was not visually verified. No production DDL or publication was
+performed. The remaining shared-email identity cases and full original
+production/native acceptance are still open.
+
+Final local build passed. Initial parallel full-intake and five-workbook reruns
+each hit the 300-second command deadline without reporting a failed assertion;
+they were not accepted as completed certifications. A subsequent serial
+background run completed both commands with exit code zero: the full intake
+group, authenticated review, all 24 blank-email checks and free continuation
+passed, followed by all five workbooks and all 2,914 original rows. Both
+disposable clusters were destroyed. These completed local results do not
+establish production import, native retained-graph recovery or release GO.
+
 ## Original acceptance still outstanding
 
 1. The September capture is revision-verified, but authentic native restoration
@@ -189,7 +249,8 @@ Production identity correction and supported schema convergence remain open.
    October file remains unverified. The last exact hash lookup found no matching
    production executions; the disposable workbook success cannot fill this gap.
 3. Production native delivery and serving-build identity remain unverified.
-   No separately authorized publication/live-write action was taken.
+   No publication or production DDL was performed. The separately authorized
+   duplicate archival above does not establish native schema/build convergence.
 4. The exact authenticated human-review 500 is correlated and its local
    correction is certified, but it still needs corrected primary request/transaction/component
    timing under representative ordinary concurrent load.

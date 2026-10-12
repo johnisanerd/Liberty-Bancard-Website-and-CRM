@@ -431,7 +431,7 @@ function getOrCrawlDomain(
 }
 
 /** Re-checks the same "missing" definition as CONTACT_NEEDS_ENRICHMENT_SQL for one contact. */
-function contactFieldsMissing(contact: { email: string; phone: string; website: string | null }) {
+function contactFieldsMissing(contact: { email: string | null; phone: string; website: string | null }) {
   const email = contact.email ?? "";
   const emailMissing = email.trim() === "" || /^no-email-/i.test(email) || /\.internal$/i.test(email);
   const phoneMissing = (contact.phone ?? "").trim() === "";

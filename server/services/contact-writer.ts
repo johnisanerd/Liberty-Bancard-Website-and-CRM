@@ -213,6 +213,10 @@ export async function writeContact(args: {
 
   const shouldProject = mode === "local_first" && !hookPolicy?.suppressProviderProjection;
   const email = String((mutation as any).email ?? "").trim().toLowerCase();
+  // Phone-only contacts have no mailbox. Preserve raw source observations,
+  // but represent absence honestly in the contact projection, not as a shared
+  // empty-string key that conflicts with the active-email unique index.
+  if (!email) (mutation as any).email = null;
   const syntheticPlaceholder = /^no-email-[0-9a-f-]+@no-email\.libertybancard\.internal$/i.test(email);
   const initialEmailTokenHash = hashEmailToken(email);
 

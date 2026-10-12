@@ -46,7 +46,7 @@ function legacyCampaignQueueDisabled(): boolean {
  * Pass `_deps` to inject mocked ZB functions in tests.
  */
 export async function passesZeroBounceCheck(
-  contact: { id: number; email: string; emailStatus?: string | null },
+  contact: { id: number; email: string | null; emailStatus?: string | null },
   _campaignId: number,
 ): Promise<boolean> {
   // BT-10 authority: outbound paths consume current durable evidence only.

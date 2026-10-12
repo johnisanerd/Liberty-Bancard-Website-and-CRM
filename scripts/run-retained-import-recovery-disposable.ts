@@ -44,12 +44,14 @@ try {
      await run(["scripts/certification/test-canonical-workbook-intake.ts"]);
    } else if(process.argv.includes("--intake-native-contract-only")){
      await run(["scripts/certification/test-intake-native-contract.ts"]);
+   } else if(process.argv.includes("--blank-email-only")){
+     await run(["scripts/certification/test-contact-blank-email-correction.ts"]);
    } else if(process.argv.includes("--intake-only")){
      const scripts=[
        "test-intake-native-contract.ts","test-organization-resolver-disposable.ts",
        "test-intake-execution-isolation.ts","test-source-only-link-reconsideration.ts",
        "test-source-family-business-materialization.ts","test-crm-contact-link-automation.ts",
-       "test-intake-review-pages.ts",
+       "test-intake-review-pages.ts","test-contact-blank-email-correction.ts",
      ];
      for(const [index,script] of scripts.entries()){
        const database=`test_intake_${index}`;

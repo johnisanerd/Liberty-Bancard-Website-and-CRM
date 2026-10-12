@@ -514,7 +514,7 @@ import { createValidationIntent, hashEmailToken, normalizeEmailToken } from "../
     const target = resolveContactTargetVertical(vertical);
     if (!target) return [];
     const query = db
-      .select({ id: contacts.id, firstName: contacts.firstName, lastName: contacts.lastName, email: contacts.email, phone: contacts.phone, vertical: effectiveVertical })
+      .select({ id: contacts.id, firstName: contacts.firstName, lastName: contacts.lastName, email: sql<string>`coalesce(${contacts.email},'')`, phone: contacts.phone, vertical: effectiveVertical })
       .from(contacts)
       .where(and(isNull(contacts.archivedAt), eq(effectiveVertical, target)))
       .orderBy(desc(contacts.createdAt));
@@ -558,7 +558,7 @@ import { createValidationIntent, hashEmailToken, normalizeEmailToken } from "../
         id: contacts.id,
         firstName: contacts.firstName,
         lastName: contacts.lastName,
-        email: contacts.email,
+        email: sql<string>`coalesce(${contacts.email},'')`,
         phone: contacts.phone,
         vertical: effectiveVertical,
         companyName: contacts.companyName,

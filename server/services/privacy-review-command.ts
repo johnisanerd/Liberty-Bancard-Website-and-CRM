@@ -21,7 +21,7 @@ export async function reviewPrivacyRequest(id:number,actor:WorkActor,input:z.inf
       (actor.accountVersion!==undefined && operator.accountVersion!==actor.accountVersion)) throw new WorkCommandError("Request unavailable",404);
     const [subject]=await tx.select().from(contacts).where(eq(contacts.id,input.subjectContactId)).for("share");
     const [before]=await tx.select().from(dataDeleteRequests).where(eq(dataDeleteRequests.id,id)).for("update");
-    if(!before || !subject || before.email.trim().toLowerCase()!==subject.email.trim().toLowerCase() ||
+    if(!before || !subject?.email?.trim() || before.email.trim().toLowerCase()!==subject.email.trim().toLowerCase() ||
       /@(?:[^@]+\.)?libertybancard\.internal$/i.test(subject.email)) {
       throw new WorkCommandError("Subject record match could not be verified; no review state was changed.",409);
     }

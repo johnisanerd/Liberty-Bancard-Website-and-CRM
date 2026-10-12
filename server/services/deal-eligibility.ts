@@ -16,7 +16,7 @@ export const ANONYMOUS_LAST_NAMES = new Set([
   "", "unknown", "n/a", "na", "anonymous",
 ]);
 
-export function isPlaceholderEmail(email: string): boolean {
+export function isPlaceholderEmail(email: string | null): boolean {
   if (!email) return true;
   const lower = email.toLowerCase();
   return (
@@ -37,7 +37,7 @@ export function isAnonymousContact(c: { firstName: string; lastName: string; com
   return false;
 }
 
-export function hasValidIdentity(c: { firstName: string; lastName: string; email: string; phone: string; companyName: string | null }): boolean {
+export function hasValidIdentity(c: { firstName: string; lastName: string; email: string | null; phone: string; companyName: string | null }): boolean {
   const hasName = !!(c.firstName?.trim()) || !!(c.lastName?.trim()) || !!(c.companyName?.trim());
   const hasContact = (!isPlaceholderEmail(c.email) && !!(c.email?.trim())) || !!(c.phone?.trim());
   return hasName && hasContact;
@@ -55,7 +55,7 @@ export type EligibilityVerdict =
 export interface EligibilityCandidate {
   firstName: string;
   lastName: string;
-  email: string;
+  email: string | null;
   phone: string;
   companyName: string | null;
   leadScore: number | null;

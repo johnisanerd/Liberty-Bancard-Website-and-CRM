@@ -5531,7 +5531,7 @@ export function registerAdminRoutes(app: Express) {
 
       // Attach contact names where available
       const contactIds = [...new Set(rows.map(r => r.contactId).filter(Boolean))] as number[];
-      let contactMap: Record<number, { firstName: string; lastName: string; email: string }> = {};
+      let contactMap: Record<number, { firstName: string; lastName: string; email: string | null }> = {};
       if (contactIds.length > 0) {
         const { contacts: contactsTable } = await import("@shared/schema");
         const { inArray } = await import("drizzle-orm");

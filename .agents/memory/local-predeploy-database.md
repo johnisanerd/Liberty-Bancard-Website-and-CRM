@@ -18,3 +18,15 @@ Use a freshly migrated disposable database for a full certification retry after 
 **Why:** Failed suites can retain eligible synthetic businesses and global package state; later frozen selections can include those leftovers. Application startup also performs classification reconciliations even with background jobs off.
 
 **How to apply:** Allocate a new test database and Redis namespace for the retry. Keep browser and server-startup checks on separate disposable databases, and bind clean-checkout receipts to the tested commit.
+
+Run large native intake/serving-volume and multi-workbook certificates
+sequentially in a background shell when the foreground command budget is
+insufficient. A foreground deadline is not an assertion failure or a completed
+certificate.
+
+**Why:** Parallel migrated-database certificates exceeded the five-minute
+foreground limit; the same certificates completed successfully when run
+sequentially without that deadline.
+
+**How to apply:** Monitor the final exit result, inspect each certificate's
+completion output and verify disposable cleanup before claiming a pass.

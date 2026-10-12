@@ -587,7 +587,7 @@ export async function enrollInInboundConfirmation(params: {
 
   const bookingLink =
     getCalendarBookingUrl({
-      contactEmail: contact.email,
+      contactEmail: contact.email ?? undefined,
       contactName: `${contact.firstName ?? ""} ${contact.lastName ?? ""}`.trim(),
       source: formType,
     }) || SALES_CALENDAR;

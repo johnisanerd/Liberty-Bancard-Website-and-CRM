@@ -76,7 +76,7 @@ export const contacts = pgTable("contacts", {
   lifecycleVersion:integer("lifecycle_version").notNull().default(1),
   firstName: text("first_name").notNull(),
   lastName: text("last_name").notNull(),
-  email: text("email").notNull(),
+  email: text("email"),
   phone: text("phone").notNull(),
   companyName: text("company_name"),
   vertical: text("vertical"),

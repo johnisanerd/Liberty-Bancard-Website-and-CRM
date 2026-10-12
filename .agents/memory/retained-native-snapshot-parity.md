@@ -36,6 +36,19 @@ syntactic-email duplicates, including an affected current relationship.
 history, and use corroborating identity evidence before merging or archiving.
 Do not describe a captured-ID hash comparison as whole-database acceptance.
 
+The user authorized audited blank-email normalization to NULL and archival of
+only evidence-confirmed duplicate contacts, preserving original imports,
+history and valid relationships. This is not authorization to archive genuinely
+different businesses/locations that share an address or alter global email
+uniqueness merely to make a retained graph restore.
+
+**Why:** The owner explicitly selected audited correction; the census also
+contained separate storefronts sharing corporate/support mailboxes.
+
+**How to apply:** Complete confirmed corrections through existing audited
+commands. Keep ambiguous identities intact and obtain a scope decision before
+changing their representation or the global contact-email identity contract.
+
 The production SQL reader can truncate a complete result near one MiB and can
 cancel a read because of replica recovery. Successful bounded exports do not
 by themselves prove an atomic, complete graph.

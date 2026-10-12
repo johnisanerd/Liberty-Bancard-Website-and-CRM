@@ -2902,6 +2902,22 @@ export function registerContactsRoutes(app: Express, creationDependencies: Parti
   });
 
   // ── DELETE /api/contacts/bulk-delete — admin/manager only (#1444 step 10) ──
+  app.post("/api/admin/contacts/normalize-blank-emails", requireRole("admin"), async (req, res) => {
+    try {
+      const {contactLifecycleFields,commandContactLifecycle}=await import("../services/contact-lifecycle-command");
+      const {bindWorkActor}=await import("../services/work-item-command");
+      const fields=contactLifecycleFields.parse(req.body);
+      const result=await commandContactLifecycle(bindWorkActor(req.user,fields.expectedActorId,fields.expectedAccountVersion),
+        "normalize_blank_email",fields);
+      res.json(result);
+    } catch (err: any) {
+      if(err instanceof z.ZodError) return res.status(400).json({message:"Supply the versioned contact set and exact expected blank emails."});
+      const {WorkCommandError}=await import("../services/work-item-command");
+      if(err instanceof WorkCommandError) return res.status(err.status).json({message:err.message});
+      serverError(res,err);
+    }
+  });
+
   // Accepts body: { contactIds: number[] }
   // Soft-archives each contact; agent accounts receive 403 from requireRole.
   app.delete("/api/contacts/bulk-delete", requireRole("admin", "manager"), async (req, res) => {

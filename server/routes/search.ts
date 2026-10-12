@@ -50,7 +50,7 @@ export function registerSearchRoutes(app: Express) {
 
       contacts.forEach(c => {
         const searchStr = `${c.firstName} ${c.lastName} ${c.email} ${c.companyName || ""} ${c.phone || ""}`.toLowerCase();
-        if (searchStr.includes(q)) results.push({ type: "contact", id: c.id, title: `${c.firstName} ${c.lastName}`, subtitle: c.companyName || c.email, href: "/dashboard/contacts" });
+        if (searchStr.includes(q)) results.push({ type: "contact", id: c.id, title: `${c.firstName} ${c.lastName}`, subtitle: c.companyName || c.email || c.phone || "", href: "/dashboard/contacts" });
       });
 
       deals.forEach(d => {

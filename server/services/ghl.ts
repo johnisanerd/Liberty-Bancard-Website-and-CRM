@@ -1461,7 +1461,7 @@ export async function sendTemplatedMessage(params: {
       merchantTier: deal.merchantTier || "",
     } : {},
     calendarLink: getCalendarBookingUrl({
-      contactEmail: contact.email,
+      contactEmail: contact.email ?? undefined,
       contactName: `${contact.firstName} ${contact.lastName}`,
     }) || "[CALENDAR_LINK]",
     ...params.extraData,
