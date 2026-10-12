@@ -2485,6 +2485,20 @@
       "when":1800400018000,
       "tag":"0351_contact_email_absence_nullable",
       "breakpoints":true
+    },
+    {
+      "idx":355,
+      "version":"7",
+      "when":1800400019000,
+      "tag":"0352_contact_mailbox_identity",
+      "breakpoints":true
+    },
+    {
+      "idx":356,
+      "version":"7",
+      "when":1800400020000,
+      "tag":"0353_contact_readiness_timestamp_parity",
+      "breakpoints":true
     }
   ]
 }

@@ -6,6 +6,7 @@ import {existsSync} from "node:fs";
 import {userInfo} from "node:os";
 import {buildLocalRehearsalEnvironment,launchLocalPostgres16,withLocalClient} from "./local-rehearsal-core";
 import {launchSfp2060DisposableRedis} from "./sfp2060-disposable-redis";
+import {migrateRetainedSourceEpoch,verifyRetainedSourceEpochContract} from "./certification/retained-native-epoch";
 
 const input=process.argv[2];
 if(!input || !existsSync(input))throw new Error("RETAINED_INPUT_DIRECTORY_REQUIRED");
@@ -35,7 +36,10 @@ try {
   Object.assign(env,{REDIS_URL:redis.url,REDIS_PREFIX:redis.prefix,TEST_REDIS_PREFIX:redis.prefix});
   await withLocalClient(cluster.admin,client=>client.query('CREATE DATABASE "test_retained_template"'));
   point("test_retained_template");
-  await run(["scripts/migrate.ts"]);
+  if(process.argv.includes("--native-topology-only")||process.argv.includes("--native-upload-restart-only")){
+    await migrateRetainedSourceEpoch(env);
+    await verifyRetainedSourceEpochContract(env);
+  }else await run(["scripts/migrate.ts"]);
    if(process.argv.includes("--intake-review-only")){
      await run(["scripts/certification/test-intake-review-pages.ts"]);
     } else if(process.argv.includes("--intake-geography-only")){
@@ -46,12 +50,17 @@ try {
      await run(["scripts/certification/test-intake-native-contract.ts"]);
    } else if(process.argv.includes("--blank-email-only")){
      await run(["scripts/certification/test-contact-blank-email-correction.ts"]);
+   } else if(process.argv.includes("--mailbox-identity-only")){
+     await run(["scripts/certification/test-contact-mailbox-identity.ts"]);
+   } else if(process.argv.includes("--transaction-leases-only")){
+     env.DB_POOL_MAX="1";
+     await run(["scripts/certification/test-canonical-transaction-leases.ts"]);
    } else if(process.argv.includes("--intake-only")){
      const scripts=[
        "test-intake-native-contract.ts","test-organization-resolver-disposable.ts",
        "test-intake-execution-isolation.ts","test-source-only-link-reconsideration.ts",
        "test-source-family-business-materialization.ts","test-crm-contact-link-automation.ts",
-       "test-intake-review-pages.ts","test-contact-blank-email-correction.ts",
+       "test-intake-review-pages.ts","test-contact-blank-email-correction.ts","test-contact-mailbox-identity.ts",
      ];
      for(const [index,script] of scripts.entries()){
        const database=`test_intake_${index}`;
@@ -90,12 +99,23 @@ try {
         {env,stdio:"inherit",cwd});child.once("error",reject);child.once("exit",code=>resolve(code ?? 1));
     });
     if(code!==0)throw new Error(`CONFIGURED_RELEASE_CHECK_FAILED:${code}`);
-  } else if(process.argv.includes("--native-topology-only")) {
+  } else if(process.argv.includes("--native-topology-only")||process.argv.includes("--native-upload-restart-only")) {
     await withLocalClient(cluster.admin,client=>client.query(
       'CREATE DATABASE "test_retained_native_topology" TEMPLATE "test_retained_template"'));
     point("test_retained_native_topology");
-    for(const phase of ["seed","recover","replay"]) {
+    const phases=process.argv.includes("--native-upload-restart-only")
+      ? ["seed","upload_interrupt","upload_restart"] : ["seed","recover","replay"];
+    for(const phase of phases) {
       console.log(`RETAINED_NATIVE_CERTIFICATION_PHASE ${phase}`);
+      if(phase==="recover"||phase==="upload_interrupt")await run(["scripts/migrate.ts"]);
+      await run(["scripts/certification/test-retained-canonical-import-recovery.ts",phase]);
+    }
+  } else if(process.argv.includes("--recovery-faults-only")) {
+    await withLocalClient(cluster.admin,client=>client.query(
+      'CREATE DATABASE "test_retained_faults" TEMPLATE "test_retained_template"'));
+    point("test_retained_faults");
+    for(const phase of ["faults","restart","legacy","budget"]){
+      console.log(`RETAINED_CERTIFICATION_PHASE ${phase}`);
       await run(["scripts/certification/test-retained-canonical-import-recovery.ts",phase]);
     }
   } else if(process.argv.includes("--recovery-fixture-only")) {
@@ -136,8 +156,20 @@ try {
   }
   await withLocalClient(cluster.admin,client=>client.query('CREATE DATABASE "test_retained_workload" TEMPLATE "test_retained_template"'));
   point("test_retained_workload");
-  for(const phase of ["faults","restart","legacy","budget","seed","recover","replay"]){
+  for(const phase of ["faults","restart","legacy","budget"]){
     console.log(`RETAINED_CERTIFICATION_PHASE ${phase}`);
+    await run(["scripts/certification/test-retained-canonical-import-recovery.ts",phase]);
+  }
+  // Historical native data cannot be inserted under a newer source contract.
+  // The full runner uses the same verified source-era chronology as its
+  // focused native mode, then performs only normal forward migrations.
+  await withLocalClient(cluster.admin,client=>client.query('CREATE DATABASE "test_retained_source_epoch"'));
+  point("test_retained_source_epoch");
+  await migrateRetainedSourceEpoch(env);
+  await verifyRetainedSourceEpochContract(env);
+  for(const phase of ["seed","recover","replay","upload_interrupt","upload_restart"]){
+    console.log(`RETAINED_NATIVE_CERTIFICATION_PHASE ${phase}`);
+    if(phase==="recover")await run(["scripts/migrate.ts"]);
     await run(["scripts/certification/test-retained-canonical-import-recovery.ts",phase]);
   }
   console.log("RETAINED_CANONICAL_IMPORT_CERTIFICATION_PASS");

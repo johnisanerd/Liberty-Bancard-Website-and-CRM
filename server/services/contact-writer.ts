@@ -2,6 +2,7 @@ import crypto from "crypto";
 import { db } from "../db";
 import { storage } from "../storage";
 import {intakeBusinessEvidence} from "../../shared/intake-business-evidence";
+import {selectMailboxContact,ContactIdentityAmbiguityError} from "./contact-mailbox-identity";
 import {
   contacts,
   contactSourceEvents,
@@ -215,8 +216,8 @@ export async function writeContact(args: {
   const email = String((mutation as any).email ?? "").trim().toLowerCase();
   // Phone-only contacts have no mailbox. Preserve raw source observations,
   // but represent absence honestly in the contact projection, not as a shared
-  // empty-string key that conflicts with the active-email unique index.
-  if (!email) (mutation as any).email = null;
+  // empty-string pseudo-identity. Source observations retain the original.
+  (mutation as any).email = email || null;
   const syntheticPlaceholder = /^no-email-[0-9a-f-]+@no-email\.libertybancard\.internal$/i.test(email);
   const initialEmailTokenHash = hashEmailToken(email);
 
@@ -228,11 +229,11 @@ export async function writeContact(args: {
   const { auditChange } = await import("./audit-change");
 
   const writeInsideTransaction = async (tx: any) => {
-    // Serialize concurrent deliveries of one manual-create occurrence inside
-    // the writer's own transaction; never hold its key on another connection.
-    if (provenance.sourceCategory === "manual_crm" && provenance.sourceType === "dashboard") {
-      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${provenance.eventKey}, 0))`);
-    }
+    // With mailbox uniqueness removed, serialize retries and competing mailbox
+    // resolutions in this transaction (never on another connection).
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`contact-source:${provenance.eventKey}`}, 0))`);
+    if(email&&!syntheticPlaceholder)
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`contact-mailbox:${email}`}, 0))`);
     if (hookPolicy?.authorityCheck && !(await hookPolicy.authorityCheck(tx))) {
       throw new Error("CONTACT_WRITE_AUTHORITY_FENCE_LOST");
     }
@@ -309,9 +310,8 @@ export async function writeContact(args: {
       ) return;
       throw new Error(`IMPORT_LEDGER_DISPOSITION_CONFLICT:${provenance.importExecutionId}:${provenance.sourceRowNumber}`);
     };
-    // A real email is the only generic automatic match. Phone and company are
-    // intentionally not used here because BT-07 keeps potential identity
-    // conflicts reviewable rather than merging them silently.
+    // Shared email alone is not identity. Reuse only one corroborated candidate;
+    // conflicting names/sites/source IDs remain separate contacts.
     // An existing source-event key is an exact retry of this intake command,
     // not a newly discovered identity match. Resolve it before email matching
     // so a recovery worker preserves the original `created` disposition.
@@ -320,14 +320,18 @@ export async function writeContact(args: {
       FROM contact_source_events e
       JOIN contacts c ON c.id = e.contact_id
       WHERE e.event_key = ${provenance.eventKey}
-      LIMIT 1
+      LIMIT 2
     `);
-    const replayedSourceContact = ((prior as any).rows ?? [])[0];
-    let [existing] = replayedSourceContact
+    const priorContacts = ((prior as any).rows ?? []);
+    if(priorContacts.length>1)throw new ContactIdentityAmbiguityError("CONTACT_SOURCE_EVENT_IDENTITY_AMBIGUOUS",
+      priorContacts.map((candidate:any)=>Number(candidate.id)));
+    const replayedSourceContact = priorContacts[0];
+    const candidates: Contact[] = replayedSourceContact
       ? await tx.select().from(contacts).where(eq(contacts.id, replayedSourceContact.id)).limit(1)
       : email && !syntheticPlaceholder
-        ? await tx.select().from(contacts).where(and(eq(contacts.email, email), isNull(contacts.archivedAt))).limit(1)
+        ? await tx.select().from(contacts).where(and(eq(contacts.email, email), isNull(contacts.archivedAt)))
         : [];
+    const existing = replayedSourceContact ? candidates[0] : selectMailboxContact(candidates, mutation);
     if (existing) {
       const sourceEventResult = await tx.execute(sql`
         INSERT INTO contact_source_events

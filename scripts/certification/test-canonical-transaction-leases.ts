@@ -229,7 +229,7 @@ try {
   for (const matched of [false,true]) {
     const ordinarySuffix=randomUUID().replaceAll("-","");
     const ordinaryRaw={name:`Ordinary restart ${ordinarySuffix}`,place_id:`ordinary_${ordinarySuffix}`,
-      category:"Automotive",city:"Miami",state:"FL",email_1:`ordinary.first.${ordinarySuffix}@gmail.com`,
+      category:"Automotive",city:"Miami",state:"FL",phone:"3055550100",email_1:`ordinary.first.${ordinarySuffix}@gmail.com`,
       email_2:`ordinary.second.${ordinarySuffix}@gmail.com`,opted_out_email:"yes"};
     const fileHash=createHash("sha256").update(randomUUID()).digest("hex");
     const originalMetadata={fileName:"ordinary.csv",originalMarker:randomUUID()};
@@ -238,8 +238,9 @@ try {
     const csvImport=await storage.createCsvImport({executionId:ordinary.execution.id,fileName:"ordinary.csv",
       sourceFormat:"google_maps_outscraper",importSource:"google_maps_outscraper",totalRows:1,
       status:"processing",importedBy:actorId});
-    const preexisting=matched ? (await pool.query(`INSERT INTO contacts(first_name,last_name,email,phone,record_class)
-      VALUES('Existing','',$1,'','production') RETURNING id`,[ordinaryRaw.email_1])).rows[0] : null;
+    const preexisting=matched ? (await pool.query(`INSERT INTO contacts(first_name,last_name,email,phone,company_name,city,state,record_class)
+      VALUES('','',$1,$2,$3,'Miami','FL','production') RETURNING id`,
+    [ordinaryRaw.email_1,ordinaryRaw.phone,ordinaryRaw.name])).rows[0] : null;
     await assert.rejects(materializeCanonicalProviderImportRow({
       executionId:ordinary.execution.id,claimToken:ordinary.claimToken!,
       sourceRowNumber:1,sourceFormat:"google_maps_outscraper",rawRow:ordinaryRaw,actorId,fileName:"ordinary.csv",

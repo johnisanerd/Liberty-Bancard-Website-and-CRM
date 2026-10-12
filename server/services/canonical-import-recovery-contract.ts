@@ -2,7 +2,9 @@ import {sql} from "drizzle-orm";
 import {retainedResolvedIdentitySql,verifyProviderImportIdentity} from "./provider-import-identity";
 
 export type CanonicalImportRecoveryClaim={itemId:string;claimToken:string};
-export const CANONICAL_IMPORT_FULFILLMENT_QUALIFICATION_VERSION="mailbox_business_link_v1";
+// The old qualification predates identity-based shared-mailbox matching.
+// Preserve old receipts, but requalify their original items under this contract.
+export const CANONICAL_IMPORT_FULFILLMENT_QUALIFICATION_VERSION="mailbox_business_identity_v2";
 /** An original staging infrastructure failure is not an identity/safety denial.
  * Retry only this evidenced failure class, preserving its immutable receipt.
  * Other originally failed imports do not become recoverable by default. */

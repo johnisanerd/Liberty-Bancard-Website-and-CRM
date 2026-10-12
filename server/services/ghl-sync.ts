@@ -668,10 +668,12 @@ export async function syncContactFromGhl(ghlContact: any): Promise<{ contactId: 
       : undefined;
 
     // Branch B: indexed lookup by normalized email.
-    // Uses contacts_email_unique_idx (shared/schema.ts:116) — partial unique index WHERE archived_at IS NULL.
+    // A mailbox may belong to distinct GHL identities; require corroboration.
     const normalizedEmail = ghlContact.email ? ghlContact.email.trim().toLowerCase() : "";
     const existingByEmail = normalizedEmail
-      ? await storage.getContactByEmail(normalizedEmail)
+      ? await storage.getContactByEmail(normalizedEmail,{
+        ...ghlContact,address:ghlContact.address1,ghlContactId:ghlContact.id,
+      })
       : undefined;
 
     // Identity-conflict guard: both branches matched but to *different* local contacts.

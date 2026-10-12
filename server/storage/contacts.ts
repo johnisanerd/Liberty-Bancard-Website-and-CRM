@@ -102,6 +102,7 @@ import {
 import { eq, desc, and, lt, isNull, ne, sql, asc, gt, gte, lte, inArray, or, ilike, count, getTableColumns } from "drizzle-orm";
 import { effectiveContactVerticalSql,effectiveContactVerticalStatusSql } from "@shared/effective-vertical";
 import { resolveContactTargetVertical } from "@shared/contact-vertical-taxonomy";
+import {selectMailboxContact,type MailboxIdentity} from "../services/contact-mailbox-identity";
 const effectiveVertical = sql<string | null>`${sql.raw(effectiveContactVerticalSql("contacts"))}`;
 const effectiveVerticalStatus = sql<string>`${sql.raw(effectiveContactVerticalStatusSql("contacts"))}`;
 import { coerceDateFields } from "../utils/date-coerce";
@@ -164,12 +165,12 @@ import { createValidationIntent, hashEmailToken, normalizeEmailToken } from "../
   }
 
 
-  async getContactByEmail(email: string) {
-    // contacts_email_unique_idx (shared/schema.ts:116) — partial unique index on email WHERE archived_at IS NULL
+  async getContactByEmail(email: string, identity?: MailboxIdentity) {
+    // Nonunique active-mailbox lookup. Never arbitrarily select a shared mailbox.
     const normalized = email.trim().toLowerCase();
     if (!normalized) return undefined;
-    const [contact] = await db.select().from(contacts).where(and(eq(contacts.email, normalized), isNull(contacts.archivedAt)));
-    return contact;
+    const candidates = await db.select().from(contacts).where(and(eq(contacts.email, normalized), isNull(contacts.archivedAt)));
+    return identity ? selectMailboxContact(candidates,identity) : candidates.length===1?candidates[0]:undefined;
   }
 
   async getContactByPhone(phone: string): Promise<typeof contacts.$inferSelect | null> {

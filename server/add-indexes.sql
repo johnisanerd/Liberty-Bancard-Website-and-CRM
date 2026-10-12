@@ -2,7 +2,7 @@
 -- Safe: CREATE INDEX IF NOT EXISTS prevents duplicates
 
 -- contacts (152K rows): phone, status, ghl_contact_id are common filters
--- Note: email has a partial unique index (contacts_email_unique_idx WHERE archived_at IS NULL)
+-- Email is a nonunique delivery mailbox (contacts_active_email_idx WHERE archived_at IS NULL).
 CREATE INDEX IF NOT EXISTS idx_contacts_phone ON contacts(phone);
 CREATE INDEX IF NOT EXISTS idx_contacts_status ON contacts(status);
 CREATE INDEX IF NOT EXISTS idx_contacts_ghl_id ON contacts(ghl_contact_id);

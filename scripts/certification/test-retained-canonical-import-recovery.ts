@@ -28,16 +28,22 @@ const {processCanonicalImportRecoveryTick}=await import("../../server/services/c
 const {providerImportEmails,materializeCanonicalProviderImportRow}=await import("../../server/services/canonical-provider-import");
 const {LADDER_BUDGET_LOCK_KEY}=await import("../../server/services/cro03/shared-paid-budget-ledger");
 const {CanonicalImportRecoveryFailure}=await import("../../server/services/canonical-import-recovery-outcomes");
+const {CANONICAL_IMPORT_FULFILLMENT_QUALIFICATION_VERSION}=await import("../../server/services/canonical-import-recovery-contract");
+const {claimCsvExecution,completeImportExecution}=await import("../../server/services/import-execution");
 const {inputRows,seedExecution,syntheticRows,dispatchStoppedAfterBudget}=await import("./retained-recovery-fixtures");
-const {seedNativeRetainedTopology,retainedNativeExecutionId}=await import("./retained-native-topology");
+const {seedNativeRetainedTopology,retainedNativeExecutionId,verifyRetainedBusinessRelationships}=await import("./retained-native-topology");
 const phase=process.argv[2];
 const probe=new pg.Client({connectionString:process.env.DATABASE_URL});await probe.connect();
 let checks=0;
 const check=(value:unknown,label:string)=>{assert(value,label);checks++;console.log(`PASS ${label}`);};
 const delay=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
-const items=async(execution:string)=>(await probe.query(`SELECT item.*,split_part(batch.idempotency_key,':',3)::int row_number
+const items=async(execution:string)=>(await probe.query(`SELECT item.*,split_part(batch.idempotency_key,':',3)::int row_number,
+  EXISTS(SELECT 1 FROM audit_logs receipt WHERE receipt.entity_type='cro03_enrichment_item'
+    AND receipt.entity_key=item.id::text AND receipt.action='canonical_import_row_fulfilled'
+    AND receipt.details->>'qualificationVersion'=$2) qualified
   FROM cro03_enrichment_items item JOIN cro03_enrichment_batches batch ON batch.id=item.batch_id
-  WHERE batch.idempotency_key LIKE $1 ORDER BY row_number`,[`csv-source:${execution}:%`])).rows;
+  WHERE batch.idempotency_key LIKE $1 ORDER BY row_number`,
+  [`csv-source:${execution}:%`,CANONICAL_IMPORT_FULFILLMENT_QUALIFICATION_VERSION])).rows;
 const executions=async(kind:string)=>kind==="retained_original"
   ? (await probe.query("SELECT id,metadata FROM import_executions WHERE id=$1",
     [retainedNativeExecutionId()])).rows
@@ -156,9 +162,21 @@ try {
     const conflicting=await seedExecution(conflictRows,"shared_mailbox_conflict");
     await processCanonicalImportRecoveryTick({maxItems:2});
     const conflictingItems=await items(conflicting);
-    check(conflictingItems.filter(item=>item.state==="completed").length===1 &&
-      conflictingItems.some(item=>item.terminal_code==="CANONICAL_IMPORT_CONTACT_AFFILIATION_HELD"),
-      "An existing mailbox on another approved business is held, never falsely fulfilled or transferred");
+    assert(conflictingItems.every(item=>item.state==="completed"&&item.qualified));
+    const shared=(await probe.query(`SELECT event.source_row_number,event.row_fingerprint,
+      contact.id,contact.email,contact.business_id,business.canonical_name
+      FROM contact_source_events event JOIN contacts contact ON contact.id=event.contact_id
+      JOIN businesses business ON business.id=contact.business_id
+      WHERE event.import_execution_id=$1`,[conflicting])).rows;
+    assert.equal(shared.length,6);assert.equal(new Set(shared.map(contact=>contact.id)).size,6);
+    assert.equal(new Set(shared.map(contact=>contact.business_id)).size,2);
+    for(const row of conflictRows){
+      const recipients=shared.filter(contact=>contact.source_row_number===row.sourceRowNumber);
+      assert.deepEqual(recipients.map(contact=>contact.email).sort(),providerImportEmails(row.rawRow));
+      assert(recipients.every(contact=>contact.row_fingerprint===row.rowFingerprint
+        &&contact.canonical_name===row.rawRow.name));
+    }
+    check(true,"Distinct supported business identities sharing addresses keep separate people and exact provenance without transferring the first relationship");
   }else if(phase==="budget"){
     const rows=syntheticRows(1),execution=await seedExecution(rows,"held_budget");
     const owner=await claimSfpRuntimeDeploymentOwner();
@@ -215,6 +233,69 @@ try {
     const reclaimed=await claimSfpRuntimeDeploymentOwner();
     check(reclaimed.ownerEpoch>owner.ownerEpoch && reclaimed.ownerToken!==owner.ownerToken,
       "Expired authority cannot renew; legitimate reclamation rotates epoch and token");
+  }else if(phase==="upload_interrupt"){
+    // The actual September corpus has at most one mailbox per row. Exercise
+    // future multi-mailbox upload with an explicitly controlled NEW input in
+    // the exact restored native graph; never rewrite a historical source row.
+    const native=syntheticRows(1)[0];
+    const before=await baseline(),sourcePayload=[native.rawRow];
+    const claim=await claimCsvExecution({fileHash:createHash("sha256").update(JSON.stringify(sourcePayload)).digest("hex"),
+      totalRows:1,actorType:"import",actorId:"system:native-ordinary-upload",
+      sourcePayload,metadata:{certificationKind:"native_ordinary_upload",sourceFormat:native.sourceFormat,
+        controlledNewUpload:true,nativeOrdinaryBaseline:before}});
+    assert(claim.claimed&&claim.claimToken);
+    let loseReply=true;
+    afterCommit=async()=>{
+      if(!loseReply)return;
+      const count=(await (originalQuery as any).call(probe,
+        "SELECT count(*)::int n FROM contact_source_events WHERE import_execution_id=$1",[claim.execution.id])).rows[0].n;
+      if(count===1){loseReply=false;throw Object.assign(new Error("FIXTURE_NATIVE_UPLOAD_COMMIT_REPLY_LOST"),{code:"ECONNRESET"});}
+    };
+    await assert.rejects(()=>materializeCanonicalProviderImportRow({executionId:claim.execution.id,
+      claimToken:claim.claimToken!,sourceRowNumber:1,sourceFormat:native.sourceFormat,
+      rawRow:native.rawRow,actorId:"system:native-ordinary-upload"}));
+    afterCommit=null;
+    check(!loseReply,"Ordinary native upload loses confirmation after exactly one real mailbox commit");
+    const incomplete=await completeImportExecution({executionId:claim.execution.id,
+      claimToken:claim.claimToken!,expectedRows:1});
+    check(!incomplete.completed,"Original row accounting cannot complete an ordinary upload with an unfinished mailbox");
+    assert((await baseline()).contacts<=before.contacts+1);
+    assert.equal((await baseline()).businesses,before.businesses+1);
+    await probe.query(`UPDATE import_executions SET lease_expires_at=clock_timestamp()-interval '1 second'
+      WHERE id=$1`,[claim.execution.id]);
+  }else if(phase==="upload_restart"){
+    const execution=(await probe.query(`SELECT * FROM import_executions
+      WHERE metadata->>'certificationKind'='native_ordinary_upload'`)).rows[0];
+    assert(execution);
+    const raw=execution.source_payload[0],expected=providerImportEmails(raw),before=await baseline();
+    const claim=await claimCsvExecution({fileHash:execution.file_hash,totalRows:1,
+      actorType:"import",actorId:"system:native-ordinary-upload",sourcePayload:execution.source_payload,
+      metadata:execution.metadata});
+    assert.equal(claim.execution.id,execution.id);assert(claim.claimed&&claim.claimToken);
+    const result=await materializeCanonicalProviderImportRow({executionId:execution.id,
+      claimToken:claim.claimToken!,sourceRowNumber:1,sourceFormat:execution.metadata.sourceFormat,
+      rawRow:raw,actorId:"system:native-ordinary-upload"});
+    assert.equal(result.fulfillmentState,"completed");
+    await completeImportExecution({executionId:execution.id,claimToken:claim.claimToken!,expectedRows:1});
+    const proven=(await probe.query(`SELECT DISTINCT contact.id,contact.email,contact.business_id FROM contact_source_events event
+      JOIN contacts contact ON contact.id=event.contact_id WHERE event.import_execution_id=$1`,[execution.id])).rows;
+    assert.deepEqual(proven.map(contact=>contact.email.toLowerCase()).sort(),expected);
+    assert(proven.every(contact=>contact.business_id===result.businessId));
+    const created=(await probe.query("SELECT count(*)::int rows FROM contacts WHERE import_batch_id=$1",
+      [execution.id])).rows[0].rows;
+    assert(created<=expected.length);
+    assert.equal((await baseline()).contacts,execution.metadata.nativeOrdinaryBaseline.contacts+created);
+    assert.equal((await probe.query("SELECT count(*)::int rows FROM contact_source_events WHERE import_execution_id=$1",
+      [execution.id])).rows[0].rows,expected.length);
+    assert.equal((await baseline()).businesses,before.businesses);
+    assert((await claimCsvExecution({fileHash:execution.file_hash,totalRows:1,
+      actorType:"import",actorId:"system:native-ordinary-upload"})).replay);
+    check(true,"A fresh ordinary process resumes every actual native mailbox and business link without duplicate people or businesses");
+    const protectedRelationships=await verifyRetainedBusinessRelationships(probe);
+    writeFileSync("/tmp/retained-native-upload-restart-report.json",JSON.stringify({
+      phase:"ordinary_native_fresh_process_restart",expectedMailboxes:expected.length,
+      provenMailboxes:proven.length,controlledNewUpload:true,
+      ...protectedRelationships,providerCalls:0,outboundEffects:0},null,2));
   }else if(phase==="seed"){
     const rows=inputRows();
     const execution=await seedNativeRetainedTopology(rows,certificationEnvironment);
@@ -246,13 +327,14 @@ try {
       }
       const state=await items(original.id);
       console.log(JSON.stringify({event:"retained_fixture_cycle",phase,cycle:cycles+1,
-        completed:state.filter(item=>item.state==="completed").length,
+         completed:state.filter(item=>item.state==="completed"&&item.qualified).length,
         running:state.filter(item=>item.state==="running").length}));
       const retry=state.filter(item=>item.state==="running" || item.terminal_code==="CANONICAL_IMPORT_RECOVERY_RETRY_REQUIRED");
       if(retry.length)await probe.query(`UPDATE cro03_enrichment_items SET
         lease_expires_at=CASE WHEN state='running' THEN clock_timestamp()-interval '1 second' ELSE lease_expires_at END,
         next_attempt_at=clock_timestamp()-interval '1 second' WHERE id=ANY($1::uuid[])`,[retry.map(item=>item.id)]);
-      const eligible=state.filter(item=>item.terminal_code==="STAGING_RECIPE_DISABLED" || item.state==="running" ||
+       const eligible=state.filter(item=>(item.state==="completed"&&!item.qualified) ||
+         item.terminal_code==="STAGING_RECIPE_DISABLED" || item.state==="running" ||
         item.terminal_code==="CANONICAL_IMPORT_RECOVERY_RETRY_REQUIRED");
       if(!eligible.length)break;
     }
@@ -283,10 +365,15 @@ try {
         return {row:item.row_number,outcome:"fulfilled",expectedMailboxes:expected.length,provenMailboxes:found.length};
       }
       assert.equal(item.state,"blocked");
-      assert(/^CANONICAL_IMPORT_(AMBIGUOUS_ORGANIZATION_MATCH|BUSINESS_IDENTITY_MISSING|STABLE_SOURCE_CONFLICT|INSUFFICIENT|CONTACT_AFFILIATION_HELD)/.test(item.terminal_code),
+      assert(/^CANONICAL_IMPORT_(AMBIGUOUS_ORGANIZATION_MATCH|BUSINESS_IDENTITY_MISSING|STABLE_SOURCE_CONFLICT|INSUFFICIENT|CONTACT_AFFILIATION_HELD|CONTACT_IDENTITY_AMBIGUOUS)/.test(item.terminal_code),
         `Unexplained retained-row hold ${item.row_number}: ${item.terminal_code}`);
       const heldReceipt=holdEvidence.get(item.id);
       assert(heldReceipt?.reasonCode===item.terminal_code && heldReceipt.rowFingerprint===raw.rowFingerprint);
+      if(item.terminal_code==="CANONICAL_IMPORT_CONTACT_IDENTITY_AMBIGUOUS"){
+        const candidates=heldReceipt.diagnostic.candidateContactIds;
+        assert(Array.isArray(candidates)&&new Set(candidates).size>=2&&candidates.every((id:number)=>byId.has(id)),
+          "Ambiguous-contact hold must retain the actual competing contact identities");
+      }
       if(item.terminal_code==="CANONICAL_IMPORT_CONTACT_AFFILIATION_HELD"){
         const diagnostic=heldReceipt.diagnostic;
         assert(businessIds.has(diagnostic.businessId) && diagnostic.incomplete.length>0);
@@ -296,10 +383,13 @@ try {
       return {row:item.row_number,outcome:"held",reason:item.terminal_code,expectedMailboxes:expected.length,provenMailboxes:0};
     });
     assert.deepEqual((await probe.query("SELECT source_row_number,disposition,reason_code,row_fingerprint FROM import_row_dispositions WHERE execution_id=$1 ORDER BY source_row_number",[original.id])).rows,accountingBefore);
+    const protectedRelationships=await verifyRetainedBusinessRelationships(probe);
+    check(true,"Every original projected relationship, decision and evidence row is preserved");
     check(true,"Every original row, expected mailbox, business link and fingerprint-bound provenance is reconciled; immutable dispositions unchanged");
     if(phase==="replay"){assert.deepEqual(await baseline(),before);check(true,"Full retained-workload materialization replay creates no contact, business or provenance duplicates");}
     const report={phase,rows:1472,fulfilled:final.filter(item=>item.state==="completed").length,
       held,provenMailboxes:mailboxes,cycles:cycles+1,explicitLeaseExpiryFailures:transientFailures,
+      ...protectedRelationships,
       inputDigest:original.metadata.inputDigest,providerCalls:0,outboundEffects:0,rowOutcomes};
     writeFileSync(`/tmp/retained-recovery-${phase}-report.json`,JSON.stringify(report,null,2));
     console.log(JSON.stringify({...report,rowOutcomes:undefined}));

@@ -29,8 +29,11 @@ stable source evidence. Preserve original accounting and atomic restrictive
 consent; do not manufacture a deferred disposition to fit another worker.
 
 An immutable mailbox/source receipt does not certify the mailbox's approved
-business affiliation. A shared address on another business must remain a native
-affiliation hold, not successful fulfillment or an automatic ownership transfer.
+business affiliation. When the same pinned contact belongs to another approved
+business, it must remain a native affiliation hold, not successful fulfillment
+or automatic ownership transfer. A separately supported person/business
+location may have a different CRM contact sharing that address; mailbox
+equality alone is not identity or transfer authority.
 
 **Why:** Full retained-workload reconciliation found completed rows whose
 mailboxes projected a different business; read-only production evidence
@@ -41,6 +44,14 @@ merely to make the qualification status consistent.
 provenance before certifying recovery. Reverify older completion claims when the
 qualification contract strengthens, preserve their historical receipts, and
 keep the mutable work outcome separate from immutable intake accounting.
+Change the qualification identity when mailbox/person matching changes too,
+not only when the final link check changes. Certification eligibility must
+include completed items lacking the current qualification.
+
+**Why:** Reusing an old link-only qualification skipped most historical rows
+after identity-based matching changed; their first full reprocessing happened
+only during replay, producing additional legitimate materialization and
+invalidating the claimed settled recovery.
 
 Retained-workload certification must preserve distinct original source
 observations, accounting identities and mutable recovery-item topology.
@@ -66,3 +77,15 @@ retained-population certification is meant to detect.
 restart proof from full retained-topology acceptance. Refuse full-population
 certification until the original native graph is captured and faithfully seeded;
 never interpret a raw-only reconstruction pass as recovery acceptance.
+
+A controlled NEW ordinary upload can exercise a condition absent from the
+historical corpus while retaining its exact populated native graph. Label the
+controlled input explicitly, keep historical source rows unchanged, and do not
+claim it came from an original workbook.
+
+**Why:** The retained September corpus has no multi-mailbox rows. Assuming such
+a row existed repeatedly prevented the restart scenario from even starting;
+altering historical rows would instead invalidate native snapshot proof.
+
+**How to apply:** Keep full actual-source recovery/replay evidence separate
+from controlled new-input ordinary-service fault/restart evidence.

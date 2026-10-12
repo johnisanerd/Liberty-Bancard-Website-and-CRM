@@ -13,6 +13,9 @@ performed by these checks.
 
 | Check | Result and limits |
 | --- | --- |
+| Exact retained native recovery and replay | Both EXIT=0. Each reconciled all 1,472 originals: 1,309 qualified fulfillment receipts, 163 revision-evidenced holds and 1,117 fulfilled mailbox occurrences. Full replay adds no materialization. All 917 original assignments, decisions and evidence hashes survive. Actual source-era guards and normal forward migration; no normalized/empty graph substitute. |
+| Ordinary native service restart | EXIT=0. An explicitly controlled new three-mailbox upload in the exact populated native graph loses its first committed reply, refuses premature completion, resumes the same execution in a fresh process and returns completed replay without duplicates. This is separate from retained recovery, not an original historical multi-mailbox specimen or production HTTP proof. |
+| Recovery fault, restart, qualification and budget regression | EXIT=0: 8 fault, 5 restart, 4 qualification/shared-identity and 13 budget/owner checks. Real lock and cleanup failures, unknown commit response, expired/stale tokens, live-budget-lock independence, unchanged routine owner verification, separate renewal, revoked-owner rejection and newer-token reclamation. Shared-mailbox expectations follow the approved identity model; actual foreign original assignments remain protected by full-native evidence. |
 | Five actual October workbooks | Completed serial rerun after the nullable creation change passed all five files through canonical native intake: all 2,914 original rows accounted for, original 93-column payloads retained. No providers, cohorts, validation purchases or messages. This is not production ingestion or a target number of newly created contacts. |
 | Native contract and aliases | Actual native identity-bridge verifier passed. Read/native source-family evaluators and reviewed-link enforcement were pinned to exact bodies. No observed production hash was added to an allowlist. |
 | Organization resolver | 10 actual native checks passed; zero provider calls/outbound changes. Precise location identity, supported matching/creation and conflicts remain distinct from shared-brand domain identity. |
@@ -238,10 +241,15 @@ establish production import, native retained-graph recovery or release GO.
 
 ## Original acceptance still outstanding
 
-1. The September capture is revision-verified, but authentic native restoration
-   is blocked by the demonstrated production/schema uniqueness mismatch.
-   The original 1,472-row recovery and replay remain uncertified; no normalized
-   or empty-CRM substitute was accepted.
+1. Authentic September restoration now passes exact hashes for all 17 captured
+   tables under real source-era native guards, followed by normal forward
+   migration. The unique-mailbox blocker is resolved by the owner's
+   identity-based CRM decision and declared migration 0352; login identity is
+   unchanged. Current-contract full recovery and full replay passed: all
+   1,472 originals reconcile to 1,309 fulfilled and 163 evidenced holds,
+   with no replay growth. Ordinary fresh-process restart also passed in the
+   restored native graph. These are local proofs, not production acceptance;
+   no normalized or empty-CRM substitute was accepted.
    Full native ordinary-upload fresh-process restart and retained replay of the
    1,472 originals remain unverified. Preserve all 1,277 mailbox occurrences,
    195 business-only originals and both protected foreign relationships.
@@ -255,8 +263,88 @@ establish production import, native retained-graph recovery or release GO.
    correction is certified, but it still needs corrected primary request/transaction/component
    timing under representative ordinary concurrent load.
 5. The deployed correction still needs at least three consecutive eligible
-   production cycles, full source-scoped dispositions, and the distinct
-   ordinary-upload restart/retained replay acceptance.
+   production cycles and full source-scoped dispositions. Distinct
+   ordinary-upload restart and retained replay now have local native proof,
+   but this does not certify the still-unpublished production correction.
 
 No additional tasks or replacement pipelines were created. Outbound controls
 were not changed. The original acceptance gaps were not moved into follow-ups.
+
+## Native parity and identity-contract correction — 2026-10-12 UTC
+
+CRM contacts may share a mailbox when they represent independently supported
+people/business locations. The canonical writer serializes mailbox/source
+transactions, retains exact source-event retries, and reuses only corroborated,
+nonconflicting identities. Multiple supported candidates produce a typed
+ambiguity hold containing their actual IDs, not an arbitrary first match.
+Manual creation returns HTTP 409 for this case. Storage and GHL lookup no longer
+silently select an ambiguous mailbox. The dedicated mailbox certificate passed
+24 checks after the typed-error amendment.
+
+Historical native decisions are restored under the actual migration journal
+through 0348 and independently verified source function hashes. All native
+guards remain enabled. The current guard is applied through normal forward
+migration before execution; its accepted hashes were not widened to old
+contracts and historical evidence was not rewritten. Declared 0353 corrects
+fresh-snapshot readiness timestamp type drift while preserving UTC instants
+and microseconds and leaving production's existing timestamptz types intact.
+Native item INSERT triggers recompute batch projections; the exact captured
+projection fields are restored afterward, and every original source field is
+verified before commit.
+
+Receipt closure exposed 81 business-only businesses omitted from the
+contact-derived export, with 81 locations and 81 source links. All receipt
+contact IDs were already present. The original capture remains unchanged.
+An extended private capture includes these real source leaves, 840 businesses
+and the same 954 original contacts. Production read-only before/after checks
+verified all 17 table scopes, and native restoration reproduced their exact
+hashes. No missing business was fabricated to satisfy a receipt.
+
+The first expanded run reconciled all 1,472 original rows, but full replay
+correctly refused its no-additional-materialization assertion. Older v1
+fulfillment receipts predated the identity-based contract and had incorrectly
+been treated as current. The current qualification is now
+`mailbox_business_identity_v2`: old receipts remain immutable, while their
+original items must be requalified. Certification counts current-qualified
+receipts, not terminal state labels, and cannot exit while old completed items
+remain unqualified.
+
+Concurrent hold snapshot changes must still reject the speculative hold. The
+hold transaction now obtains a real PostgreSQL 40001 abort, permitting the
+existing bounded, token-fenced recovery cleanup and fresh-authority recheck.
+Generic snapshot errors, uncertain connections/commits and owner/lease/native
+authority denials remain fatal; no verifier or negative snapshot comparison
+was relaxed.
+
+The strict native recovery and replay both passed. Each converged after 27
+concurrent worker cycles to exactly 1,309 fulfilled originals and 163
+revision-evidenced holds: 75 preserved foreign-affiliation conflicts and 88
+ambiguous organization matches. All 1,117 fulfilled mailbox occurrences have
+the intended business and fingerprint-bound provenance. Immutable dispositions
+are unchanged. All 917 original projections plus exact hashes of all 917
+decisions and all 917 evidence records survive both runs. Full replay adds
+zero contacts, businesses, provenance, provider operations, communications or
+validation intents. No lease-expiry/owner-loss exemption was needed.
+
+The separate ordinary-upload mode passed interrupt and fresh-process restart.
+The actual September corpus has a maximum of one mailbox per row (1,277
+mailbox occurrences across 1,472 originals); it cannot supply a genuine
+historical multi-mailbox input. The test explicitly uses a controlled NEW
+three-mailbox upload in the exact populated native graph. It does not alter a
+historical row or claim those three mailboxes came from an original workbook.
+A real PostgreSQL mailbox commit occurred before the injected lost reply.
+Original row accounting could not complete the unfinished upload. A fresh
+process resumed the same ordinary execution, reconciled all three contacts,
+their business and exact provenance, completed it and returned replay without
+additional materialization. All 917 original relationships/decisions/evidence
+remain unchanged. This uses the ordinary import service, not the deferred
+worker; only the controlled fixture's lease was expired for takeover.
+
+Both focused modes returned EXIT=0 and destroyed their disposable clusters.
+Provider calls, outbound effects and nonselective validation admission remain
+zero. These completed local checks do not establish production acceptance or
+release GO. The current build succeeds; the project type check still reports
+the existing out-of-scope `server/routes/live-chat.ts:309` undefined `LiveChat`.
+Development startup uses background profile off with canonical outbound pause
+intact. The login screen was visually verified; signed-in UI was not visually
+verified in this run.

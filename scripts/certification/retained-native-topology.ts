@@ -33,6 +33,42 @@ export function retainedNativeExecutionId(): string {
   return manifest.executionId;
 }
 
+/** Read-only postcondition: includes every original projected relationship,
+ * not just relationships mentioned in newly fulfilled row receipts. */
+export async function verifyRetainedBusinessRelationships(client:any) {
+  const directory=join(process.env.RETAINED_INPUT_DIR!,"native");
+  const manifest:Manifest=JSON.parse(readFileSync(join(directory,"manifest.json"),"utf8"));
+  const original=(table:Table)=>manifest.files.filter(file=>file.table===table).flatMap(file=>{
+    assert.match(file.file,/^[a-z][a-z0-9_]*-\d{4}\.json$/);
+    const bytes=readFileSync(join(directory,file.file));
+    assert.equal(sha256(bytes),file.sha256,"RETAINED_NATIVE_FILE_DRIFT");
+    return JSON.parse(bytes.toString("utf8")) as any[];
+  });
+  const projections=original("contacts").filter(contact=>contact.business_id!=null)
+    .map(contact=>({id:contact.id,business_id:contact.business_id}));
+  const verified=(await client.query(`SELECT count(*)::int rows,
+    count(*) FILTER(WHERE destination.business_id IS DISTINCT FROM source.business_id)::int changed
+    FROM jsonb_to_recordset($1::jsonb) source(id integer,business_id integer)
+    JOIN contacts destination ON destination.id=source.id`,[JSON.stringify(projections)])).rows[0];
+  assert.equal(verified.rows,projections.length,"RETAINED_ORIGINAL_RELATIONSHIP_CONTACT_MISSING");
+  assert.equal(verified.changed,0,"RETAINED_ORIGINAL_RELATIONSHIP_TRANSFERRED");
+  for(const table of ["contact_business_link_decisions","contact_business_system_link_evidence"] as const){
+    const ids=original(table).map(record=>String(record.id));
+    const hash=(await client.query(`WITH captured AS (
+      SELECT (SELECT jsonb_object_agg(key,value) FROM jsonb_each(to_jsonb(record))
+        WHERE key IN(SELECT jsonb_array_elements_text($2::jsonb))) data
+      FROM "${table}" record WHERE record.id::text IN(SELECT jsonb_array_elements_text($1::jsonb)))
+      SELECT count(*)::int rows,encode(sha256(convert_to(string_agg(
+        encode(sha256(convert_to(data::text,'UTF8')),'hex'),','
+        ORDER BY data->>'id'),'UTF8')),'hex') hash FROM captured`,
+      [JSON.stringify(ids),JSON.stringify(manifest.sourceColumns[table])])).rows[0];
+    assert.deepEqual(hash,manifest.tableHashes[table],`RETAINED_ORIGINAL_RELATIONSHIP_HISTORY_DRIFT:${table}`);
+  }
+  return {preservedOriginalBusinessProjections:projections.length,
+    preservedOriginalDecisions:manifest.tableHashes.contact_business_link_decisions.rows,
+    preservedOriginalEvidence:manifest.tableHashes.contact_business_system_link_evidence.rows};
+}
+
 /** Restore a verified private graph, not a normalized empty-CRM substitute.
  * All real INSERT guards and FK constraints remain enabled. No production
  * runtime owner, provider control, credentials or transport is restored.
@@ -95,11 +131,13 @@ export async function seedNativeRetainedTopology(rows: RetainedRow[],certificati
       "RETAINED_NATIVE_OBSERVATION_PAYLOAD_DRIFT");
   }
   const client = await pool.connect();
+  let restorePhase="begin";
   try {
     await client.query("BEGIN");
     await client.query("SET LOCAL TIME ZONE 'UTC'");
     await client.query("SET CONSTRAINTS ALL DEFERRED");
     for (const table of tables) {
+      restorePhase=`insert:${table}`;
       const attributes = (await client.query(`SELECT attname,attnotnull,
           pg_get_expr(def.adbin,def.adrelid) default_expression FROM pg_attribute attr
         LEFT JOIN pg_attrdef def ON def.adrelid=attr.attrelid AND def.adnum=attr.attnum
@@ -116,12 +154,21 @@ export async function seedNativeRetainedTopology(rows: RetainedRow[],certificati
           `RETAINED_NATIVE_UNSUPPORTED_ADDITIVE_COLUMN:${table}:${column.attname}`);
       assert(columns.length);
       const quoted = columns.map(name => `"${String(name).replaceAll('"', '""')}"`).join(",");
+      // The retained-source FK is immediately restrictive, not deferrable.
+      // Restore the same A→B→C ordering used by the canonical contact writer:
+      // insert contact with no primary/relationship projection, insert its exact
+      // source events and decisions, then set the original pointers. Final parity checks every source
+      // value; no constraint, trigger or historical field is weakened.
+      const selected = columns.map(name=>table==="contacts"&&name==="primary_source_event_id"
+        ? 'NULL::integer AS "primary_source_event_id"'
+        : table==="contacts"&&name==="business_id" ? 'NULL::integer AS "business_id"'
+        : `"${String(name).replaceAll('"', '""')}"`).join(",");
       const records = graph.get(table)!;
       assert(records.every(record=>sourceColumns.every(column=>Object.hasOwn(record,column))),
         `RETAINED_NATIVE_SOURCE_COLUMN_MISSING:${table}`);
       for (let offset = 0; offset < records.length; offset += 128) {
         await client.query(`INSERT INTO "${table}" (${quoted})
-          SELECT ${quoted} FROM jsonb_populate_recordset(NULL::"${table}",$1::jsonb)`,
+          SELECT ${selected} FROM jsonb_populate_recordset(NULL::"${table}",$1::jsonb)`,
         [JSON.stringify(records.slice(offset, offset + 128))]);
       }
       const sequence = (await client.query("SELECT pg_get_serial_sequence($1,'id') name", [table])).rows[0].name;
@@ -131,11 +178,36 @@ export async function seedNativeRetainedTopology(rows: RetainedRow[],certificati
           pg_sequence_last_value($1::regclass)),true)`, [sequence]);
       }
     }
+    const originalContacts=graph.get("contacts")!;
+    restorePhase="restore:contact-pointers";
+    for(let offset=0;offset<originalContacts.length;offset+=128){
+      await client.query(`UPDATE contacts destination SET primary_source_event_id=original.primary_source_event_id,
+          business_id=original.business_id
+        FROM jsonb_populate_recordset(NULL::contacts,$1::jsonb) original
+        WHERE destination.id=original.id`,
+      [JSON.stringify(originalContacts.slice(offset,offset+128))]);
+    }
+    // Item INSERTs legitimately run the real native accounting projection.
+    // Restore the capture's exact mutable projection after every original item
+    // exists; do not normalize historical counters to newly computed values.
+    // Native CHECKs and triggers remain enabled for these updates too.
+    restorePhase="restore:batch-projections";
+    const originalBatches=graph.get("cro03_enrichment_batches")!;
+    for(let offset=0;offset<originalBatches.length;offset+=128){
+      await client.query(`UPDATE cro03_enrichment_batches destination SET
+          blocked_count=original.blocked_count,completed_count=original.completed_count,
+          outstanding_count=original.outstanding_count,completed_at=original.completed_at,
+          updated_at=original.updated_at
+        FROM jsonb_populate_recordset(NULL::cro03_enrichment_batches,$1::jsonb) original
+        WHERE destination.id=original.id`,
+      [JSON.stringify(originalBatches.slice(offset,offset+128))]);
+    }
     // Prove the restored graph equals the source-side revision inventory before
     // any certification worker is allowed to run. Timestamp precision and every
     // historical receipt are included. The compact raw reference is merely a
     // lossless export encoding, not a new observation or a substitute fixture.
     for (const table of tables) {
+      restorePhase=`verify:${table}`;
       const ids = graph.get(table)!.map(record => String(record.id));
       let expression = `(SELECT jsonb_object_agg(key,value) FROM jsonb_each(to_jsonb(record))
         WHERE key IN(SELECT jsonb_array_elements_text($2::jsonb)))`;
@@ -152,6 +224,21 @@ export async function seedNativeRetainedTopology(rows: RetainedRow[],certificati
           encode(sha256(convert_to(data::text,'UTF8')),'hex'),','
           ORDER BY data->>'id'),'UTF8')),'hex') hash FROM captured`,
       [JSON.stringify(ids),JSON.stringify(manifest.sourceColumns[table])])).rows[0];
+      if(verified.rows!==manifest.tableHashes[table].rows||verified.hash!==manifest.tableHashes[table].hash){
+        // Diagnose representation/schema drift without logging original values.
+        const differences=(await client.query(`WITH originals AS (
+          SELECT value original FROM jsonb_array_elements($1::jsonb)),
+        compared AS (SELECT originals.original,to_jsonb(destination) actual FROM originals
+          JOIN "${table}" destination ON destination.id::text=originals.original->>'id')
+        SELECT field.key,count(*)::int rows FROM compared
+          CROSS JOIN LATERAL jsonb_each(compared.original) field
+        WHERE field.key IN(SELECT jsonb_array_elements_text($2::jsonb))
+          AND field.value IS DISTINCT FROM compared.actual->field.key
+        GROUP BY field.key ORDER BY field.key`,
+        [JSON.stringify(graph.get(table)),JSON.stringify(manifest.sourceColumns[table])])).rows;
+        console.error(JSON.stringify({event:"retained_native_field_drift",table,
+          expectedRows:manifest.tableHashes[table].rows,actualRows:verified.rows,differences}));
+      }
       assert.deepEqual(verified, manifest.tableHashes[table],
         `RETAINED_NATIVE_REVISION_DRIFT:${table}`);
     }
@@ -160,7 +247,7 @@ export async function seedNativeRetainedTopology(rows: RetainedRow[],certificati
   } catch (error) {
     const fields=error as {code?:string;table?:string;column?:string;constraint?:string};
     console.error(JSON.stringify({event:"retained_native_restore_refused",
-      sqlState:fields.code,table:fields.table,column:fields.column,constraint:fields.constraint}));
+      phase:restorePhase,sqlState:fields.code,table:fields.table,column:fields.column,constraint:fields.constraint}));
     try { await client.query("ROLLBACK"); }
     catch(cleanupError) {
       Object.defineProperty(error,"cleanupError",{value:cleanupError,configurable:true});

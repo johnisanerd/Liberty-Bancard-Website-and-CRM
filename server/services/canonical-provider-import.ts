@@ -15,6 +15,15 @@ import {verifyProviderImportIdentity} from "./provider-import-identity";
 import {loadEvidenceRelationshipPage} from "./contact-business-evidence-page";
 
 const rows=(value:any):any[]=>value?.rows ?? value ?? [];
+/** A concurrent evidence revision invalidates this speculative hold, not the
+ * runtime authority. Obtain a real PostgreSQL-aborted transaction before the
+ * recovery worker may yield and retry with freshly loaded facts. */
+async function abortChangedHoldSnapshot(tx:any):Promise<never> {
+  await tx.execute(sql`DO $$ BEGIN
+    RAISE EXCEPTION USING ERRCODE='40001',MESSAGE='CANONICAL_IMPORT_HOLD_SNAPSHOT_CHANGED';
+  END $$`);
+  throw new Error("CANONICAL_IMPORT_SNAPSHOT_ABORT_NOT_RAISED");
+}
 const sourceValue=(raw:Record<string,string>,...keys:string[])=>{
   for (const [key,value] of Object.entries(raw)) {
     if (keys.includes(key.trim().toLowerCase().replace(/\s+/g,"_")) && value?.trim()) return value.trim();
@@ -198,7 +207,7 @@ export async function materializeCanonicalProviderImportRow(input:{
       const current=await resolveOrganization({...organizationInput,transaction:tx});
       if(current.kind!=="deferred" || current.reasonCode!==resolution.reasonCode
         || current.snapshotHash!==resolution.snapshotHash)
-        throw new Error("CANONICAL_IMPORT_HOLD_SNAPSHOT_CHANGED");
+         await abortChangedHoldSnapshot(tx);
     });
   }
   const businessId=Number(resolution.business.id);
@@ -315,6 +324,9 @@ export async function materializeCanonicalProviderImportRow(input:{
     return {disposition:String(receipt.disposition),fulfillmentState:"completed",businessId,contactIds};
   });
   } catch (error) {
+    if(error instanceof Error&&["CONTACT_MAILBOX_IDENTITY_AMBIGUOUS","CONTACT_SOURCE_EVENT_IDENTITY_AMBIGUOUS"].includes(error.message))
+      return hold("CANONICAL_IMPORT_CONTACT_IDENTITY_AMBIGUOUS",{businessId,identityReason:error.message,
+        candidateContactIds:(error as Error&{candidateContactIds?:number[]}).candidateContactIds??[]});
     if (error && typeof error==="object" && "cro03bLegacyWriterDisposition" in error) {
       // commit() has rolled back and released its connection before this catch.
       await recordCro03bLegacyWriterDisposition((error as any).cro03bLegacyWriterDisposition);
@@ -326,7 +338,7 @@ export async function materializeCanonicalProviderImportRow(input:{
             FROM canonical_source_links WHERE source_system=${sourceSystem}
               AND source_type=${place ? "place" : "provider_import"} AND stable_key=${stableKey} FOR SHARE`))[0];
           if(!conflict || Number(conflict.business_id)===businessId)
-            throw new Error("CANONICAL_IMPORT_HOLD_SNAPSHOT_CHANGED");
+           await abortChangedHoldSnapshot(tx);
         });
     throw error;
   }
@@ -365,7 +377,7 @@ export async function materializeCanonicalProviderImportRow(input:{
       for(const snapshot of snapshots) {
         const current=(await loadEvidenceRelationshipPage(tx,0,1,snapshot.contactId)).previews[0];
         if(!current || current.snapshotHash!==snapshot.snapshotHash)
-          throw new Error("CANONICAL_IMPORT_HOLD_SNAPSHOT_CHANGED");
+           await abortChangedHoldSnapshot(tx);
       }
     });
   }

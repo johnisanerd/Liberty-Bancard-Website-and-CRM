@@ -187,9 +187,9 @@ export const contacts = pgTable("contacts", {
   dataReadinessScore: integer("data_readiness_score"),
   dataReadinessGrade: text("data_readiness_grade"),
   readinessBreakdown: jsonb("readiness_breakdown"),
-  readinessUpdatedAt: timestamp("readiness_updated_at"),
+  readinessUpdatedAt: timestamp("readiness_updated_at", {withTimezone:true}),
   readinessModelVersion: integer("readiness_model_version"),
-  lastMeaningfulContactMutationAt: timestamp("last_meaningful_contact_mutation_at"),
+  lastMeaningfulContactMutationAt: timestamp("last_meaningful_contact_mutation_at", {withTimezone:true}),
   // Intake provenance — immutable after first set; dual-field design:
   // sourceCategory (line 99 above) = operational field read by contactability.ts
   // primarySourceCategory = permanent record of acquisition origin
@@ -252,7 +252,7 @@ export const contacts = pgTable("contacts", {
   // Vocabulary: production | test | demo | synthetic | unknown (default)
   recordClass: text("record_class").notNull().default("unknown"),
 }, (table) => [
-  uniqueIndex("contacts_email_unique_idx").on(table.email).where(sql`archived_at IS NULL`),
+  index("contacts_active_email_idx").on(table.email).where(sql`archived_at IS NULL`),
   index("contacts_phone_idx").on(table.phone),
   uniqueIndex("contacts_ghl_contact_id_unique").on(table.ghlContactId).where(sql`ghl_contact_id IS NOT NULL AND BTRIM(ghl_contact_id) <> ''`),
   index("contacts_created_at_idx").on(table.createdAt),

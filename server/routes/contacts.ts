@@ -485,6 +485,8 @@ export function registerContactsRoutes(app: Express, creationDependencies: Parti
           message: "Contact saved locally. Handoff is incomplete; retry with the same Idempotency-Key." });
       }
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message, field: err.errors[0].path.join('.') });
+      if(["CONTACT_MAILBOX_IDENTITY_AMBIGUOUS","CONTACT_SOURCE_EVENT_IDENTITY_AMBIGUOUS"].includes(err?.message))
+        return res.status(409).json({message:"Several contacts match this identity. Select the existing contact instead of creating another.",code:err.message});
       if (isUniqueEmailViolation(err)) {
         const existing = await storage.getContactByEmail(req.body?.email || "").catch(() => undefined);
         return res.status(409).json({

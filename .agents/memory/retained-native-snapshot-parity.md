@@ -13,6 +13,17 @@ turned source-absent additive columns into NULL, bypassing their real defaults.
 **How to apply:** Reject missing original fields and unsupported non-null
 additions. Verify all source fields after insertion under real native guards.
 
+Restore contact/source-event cycles in canonical A→B→C order: insert the contact
+with no primary pointer, insert the original events, then set the exact original
+pointer before final field/hash verification and commit.
+
+**Why:** The retained primary-source foreign key is non-deferrable. Deferring
+other constraints cannot permit a pointer to a source event not yet inserted,
+even when the captured graph contains every referenced event.
+
+**How to apply:** Preserve every original final value and all native guards; do
+not alter FK deferrability or omit retained source pointers to make a test pass.
+
 Audit production/disposable constraint parity before claiming that an exact
 historical graph can be restored. Do not merge/archive retained contacts or
 remove a uniqueness constraint merely to make certification pass.
@@ -24,6 +35,40 @@ original-row duplicate census does not prove an expanded graph is duplicate-free
 
 **How to apply:** Treat an unexplained constraint mismatch as an open gate.
 Resolve schema ownership/parity explicitly; preserve original topology.
+
+Restore immutable historical decisions under the independently verified
+capture-era native contract, then apply the declared migrations forward before
+running corrected workers. Never insert old-version decisions through a newer
+guard by widening its accepted hashes or rewriting historical evidence.
+
+**Why:** New-write validation correctly rejects a historical decision version
+that can legitimately remain stored across a normal policy upgrade.
+
+**How to apply:** Verify the real source-era function fingerprints, keep all
+native guards enabled during restoration, and require the corrected verifier
+after forward delivery. Keep restoration and upgraded execution proof separate.
+
+Native INSERT triggers can recompute mutable projections while loading a graph.
+Restore the capture's exact final projection values after its base rows exist,
+then verify every source field before commit; do not accept recomputed values as
+historical parity.
+
+**Why:** Loading original work items recalculates batch counters and timestamps,
+even when the capture's own counters reflect an earlier projection state.
+
+**How to apply:** Preserve source values, real CHECKs and triggers. Diagnose
+differences by field names/counts, without logging private original values.
+
+A retained graph must include subjects referenced by fulfillment receipts,
+including business-only rows, not just businesses reached through contacts.
+
+**Why:** Exact verification of captured rows does not prove closure: valid
+business-only fulfillment receipts can reference businesses absent from a
+contact-derived export.
+
+**How to apply:** Check receipt/contact/business/source-link/location closure.
+Keep the original capture immutable, extend it in a new private artifact, and
+independently reverify source scopes and added leaves before native acceptance.
 Separate blank-email projection repair from real email-identity reconciliation.
 A duplicate email does not by itself prove two contact records are the same
 person; existing verified relationships must not be transferred to make an
@@ -38,16 +83,19 @@ Do not describe a captured-ID hash comparison as whole-database acceptance.
 
 The user authorized audited blank-email normalization to NULL and archival of
 only evidence-confirmed duplicate contacts, preserving original imports,
-history and valid relationships. This is not authorization to archive genuinely
-different businesses/locations that share an address or alter global email
-uniqueness merely to make a retained graph restore.
+history and valid relationships. The owner subsequently chose to allow distinct
+CRM contacts to share an email under identity/source-based duplicate protection.
+Login-account email uniqueness remains unchanged. This is not authorization to
+archive genuinely different businesses/locations that share a mailbox.
 
 **Why:** The owner explicitly selected audited correction; the census also
 contained separate storefronts sharing corporate/support mailboxes.
 
 **How to apply:** Complete confirmed corrections through existing audited
-commands. Keep ambiguous identities intact and obtain a scope decision before
-changing their representation or the global contact-email identity contract.
+commands. Keep ambiguous identities intact. Deliver the owner-approved CRM
+mailbox contract through supported versioned migrations, never by disabling
+guards in a certification fixture. Require source/identity corroboration rather
+than treating mailbox equality as proof of a duplicate.
 
 The production SQL reader can truncate a complete result near one MiB and can
 cancel a read because of replica recovery. Successful bounded exports do not
