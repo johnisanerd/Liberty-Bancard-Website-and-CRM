@@ -509,10 +509,10 @@ JIT correction. Native contract status remains verified.
 
 Actual authenticated primary request observations:
 
-| Request | HTTP | Elapsed | Returned / hydrated |
+| Request | HTTP | Elapsed | Returned / current matching evidence |
 | --- | --- | --- | --- |
-| Review first page, `limit=100` | 200 | 8,894 ms | 100 / 100 |
-| Next page using the exact returned microsecond cursor | 200 | 6,999 ms | 100 / 100 |
+| Review first page, `limit=100` | 200 | 8,894 ms | 100 / 95 |
+| Next page using the exact returned microsecond cursor | 200 | 6,999 ms | 100 / 89 |
 | Canonical enrichment status | 200 | 3,161 ms | native contracts verified |
 | Automatic linking status | 200 | 610 ms | current population observed |
 
@@ -520,6 +520,13 @@ There was zero candidate-ID overlap between review pages. Anonymous access to
 the same review endpoint returned HTTP 401. Manager/agent denial remains
 supported by the prior disposable certificate, not a new signed-in production
 role check. Signed-in UI rendering was not visually verified.
+
+Correction to the earlier observation wording: 100 returned DTOs do not mean
+100 candidates have matching current evidence. Five first-page and eleven
+next-page candidates return the explicit `candidate_facts_no_longer_match`
+hold. All 200 rows also return no independently bound retained review evidence
+for this observed admin actor and are non-reviewable. Successful reads are not authorization to bypass those holds
+or proof of completed human-review acceptance.
 
 The original coverage run and watermark are unchanged. Durable production
 checkpoint receipts show successive committed cursors 137,593 → 138,093 →
@@ -587,3 +594,101 @@ Evidence is retained in `generated-artifacts/intake-published-primary-progress.j
 `generated-artifacts/intake-published-scoped-receipts.json` and
 `generated-artifacts/intake-shared-domain-publish-diff.json`; raw authenticated
 page/status responses remain in the ignored private acceptance directory.
+
+## Shared-domain delivery and source-scoped production proof — 2026-10-13 UTC
+
+The next owner publish now serves `a7b51b19a9c97b31a812e1260260008bbed06af9`,
+built `2026-10-13T22:18:45.134Z`. The production catalog confirms the obsolete
+domain unique index is absent and the ordinary lookup index remains. The
+authenticated primary native verifier reports `verified`. The selected runtime
+release and live owner both match this exact served SHA, owner epoch 139;
+no owner credential/token was exported.
+
+The same primary review requests returned HTTP 200 in 19,938 and 11,405 ms,
+100 DTOs each, zero candidate-ID overlap, and 95/89 matching evidence payloads.
+Their retained-evidence and stale-facts holds remain as qualified above.
+Primary coverage status reports the original run/watermark unchanged, cursor
+141,593, processed 141,500 of 154,418, no last error, incomplete.
+
+Three consecutive published ordinary recovery cycle reports are now corroborated
+by current September-scoped fulfillment receipts:
+
+| Cycle end UTC | Fulfilled | Held | Attempted | Row / cleanup failures |
+| --- | --- | --- | --- | --- |
+| 22:39:17.259 | 1 | 0 | 1 | 0 / 0 |
+| 22:47:44.997 | 1 | 0 | 1 | 0 / 0 |
+| 22:49:13.700 | 3 | 1 | 4 | 0 / 0 |
+
+Current-qualified receipt timestamps for original rows 1249, 409, 170, 1251
+and 411 fall within those cycles. This establishes the original three-cycle
+committed-progress requirement, not complete original-row disposition.
+
+A read-only source-scoped census preserves all 1,472 originals, with immutable
+1,471 deferred/one failed accounting. It finds 1,116 mutable completed items,
+but only 142 have current `mailbox_business_identity_v2` receipts; 974 completed
+items still have older qualification. There are 339 blocked and 17 running
+items. Current hold-revision validity is not inferred from blocked state.
+Concurrent scheduling continues after this observation.
+
+Fresh production comparisons against the exact native capture found:
+
+| Captured native objects | Count | Missing | Changed |
+| --- | --- | --- | --- |
+| Contact-to-business assignments | 917 | 0 | 0 |
+| Current decision identities, revisions and evidence references | 917 | 0 | 0 |
+| System-link evidence hashes, identities and rule/source references | 917 | 0 | 0 |
+
+Automatic affiliation remains incomplete: its cursor is 12,875 with 12,782
+cumulative scans and 13 committed links. The independent current population
+read finds 154,883 active production contacts, 980 verified and 153,903
+unresolved; cumulative held counts are not that population's disposition.
+Live logs expose owner acquisition contention (including 55P03 and 25P03)
+outside the claimed program's persisted last-error boundary. The current
+program's `lastError=null` does not establish error-free ordinary execution.
+
+The actual deployed active-page builders were compiled and measured read-only
+on the production replica: cursor selection at 12,875 took 8.738 ms, and a
+representative adjacent 25-ID evidence page took 2,917.541 ms. These indexed
+read-plan observations do not replace primary transaction/acquisition/write
+timings or certify the full automatic-affiliation population.
+
+Both attachment copies of each of the five October workbooks have identical
+bytes. A fresh parameter-bound exact-hash production ledger query returned the
+expected result header and zero executions for all five. Their 2,914 source
+rows remain unimported through the recorded native path. The original scope
+requires separate authorization for those real production imports; publication
+alone is not that authorization. No live import, provider/outbound control
+change, replacement pipeline or additional task was performed.
+
+The corrected-schema denied native certificates now both completed with exit
+code zero and both disposable clusters were destroyed:
+
+| Fresh corrected-schema certificate | Actual result |
+| --- | --- |
+| Native retained recovery | All 1,472 originals accounted: 1,309 fulfilled, 163 held; 1,117 proven mailboxes; 17 cycles |
+| Native full materialization replay in another process | 1,310 fulfilled, 162 held; 1,118 proven mailboxes; 15 cycles; baseline contact/business/provenance counts unchanged |
+| Separate ordinary-upload interruption | A real native mailbox commit loses its reply; unfinished upload is not completed by original-row accounting |
+| Ordinary upload resumed by a fresh process | All three actual native mailboxes and business links proven; no duplicate people or businesses |
+
+Both retained phases individually prove the original 917 assignments, 917
+decisions and 917 evidence rows unchanged, immutable original accounting
+unchanged, and fingerprint-bound provenance for each fulfilled original.
+The replay legitimately qualifies one additional mailbox that already exists;
+its exact baseline equality assertion passes, so this is not new materialization.
+Each remaining held original has a fingerprint-matched receipt with a recognized
+reason and retained competing identity/affiliation diagnostics. The ordinary fresh-process proof preserves
+the same original graph. Both runs report zero provider/outbound/validation
+admission effects. These are isolated local certificates, not a production
+upload restart or production full-population completion.
+
+Evidence: ignored private `shared-domain-published-verification.json`,
+`intake-domain-published-recovery-cycle-evidence.json`,
+`intake-published-original-disposition.json`,
+`intake-published-original-relationship-preservation.json`,
+`intake-published-original-evidence-preservation.json`,
+`intake-published-exact-source-ledger.json` and
+`intake-active-affiliation-production-plans.json`.
+The new isolated full-row certificates are retained in ignored
+`intake-post-domain-native-recovery-report.json`,
+`intake-post-domain-native-replay-report.json` and
+`intake-post-domain-native-upload-restart-report.json`.
