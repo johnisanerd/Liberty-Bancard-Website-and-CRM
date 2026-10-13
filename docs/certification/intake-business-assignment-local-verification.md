@@ -452,3 +452,50 @@ recovery/replay, three eligible ordinary cycles, complete population disposition
 and ordinary-upload production fresh-process restart remain in the original task.
 Native guard repair and publication are continuation requirements, not completion,
 replacement tasks or permission to weaken the authorities.
+
+## Owner-console native repair verified — 2026-10-13 UTC
+
+After the owner reported running 0348 and 0349 in the production Database SQL
+console, read-only production catalog checks confirmed the installed postconditions:
+
+| Installed object | Verified fingerprint / condition |
+| --- | --- |
+| `cro03_immutable_row_guard` | `f0c933f2b332d19ec7d51866e2ad5a7b` |
+| `cro03_source_observation_immutable` | Enabled `O`, trigger type `27`, no condition, correct public guard function |
+| `crm_source_family_relationship_reasons` | `4a6980a53fd86d9017679dbca80b2a49` |
+| `crm_automatic_relationship_reasons` | `3ee7b8798d9dce2f2c6e92ef91c51c7e` |
+| `enforce_reviewed_contact_business_link` | `2d38f8614320afbf936c529662e2c684` |
+
+The authenticated primary `/api/canonical-enrichment/status` request returned
+HTTP 200 and `nativeContracts.state="verified"`. Its current import total remains
+one completed execution; exact October file-hash reads still found no matching
+executions. The September ledger still contains all 1,472 original dispositions
+(1,471 deferred and one failed); immutable accounting is not fulfillment.
+
+Recovery actually resumed: the ordinary production worker reported
+`committed_progress` at `2026-10-13T17:22:04.715Z`, with two fulfilled originals,
+two attempted, no row/cleanup failures, and no authority failure. The production
+audit read also returned two `mailbox_business_identity_v2` receipts for the
+September execution, separate from 1,092 older-version receipts and 246
+unversioned receipts. This establishes initial current-qualified progress, not
+three consecutive cycles or full retained-population acceptance.
+
+The authenticated automatic-affiliation reader returned current population
+evidence with native verification true: 154,865 active production contacts,
+963 current verified assignments and 153,902 current unresolved contacts.
+Its program remains enabled and incomplete. These current population facts
+remain distinct from cumulative scan/hold counters.
+
+The coverage reader still reports the same run, cursor 126,593 / watermark
+159,476, with 126,500 processed and no last error; its last committed timestamp
+remains `2026-10-13T14:16:04.598Z`. Healthy status and processing enabled are not
+new committed progress. The primary health response still serves
+`2ff0add39a70fe812786433766ef98a07ff4bf00`, not the workspace's selective-hydration
+and transaction-local JIT correction. Publish remains required before corrected
+primary review/coverage timing and same-run checkpoint advance can be certified.
+
+Catalog, source-disposition and first-cycle evidence is retained in
+`generated-artifacts/intake-native-repair-observation.json`; authenticated raw
+status responses remain in the ignored private acceptance directory. No Agent
+production DDL, live import, schedule/control change, outbound activation or
+replacement task was performed. The original task remains open.
