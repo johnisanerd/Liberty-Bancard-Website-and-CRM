@@ -1179,6 +1179,7 @@ async function withCoverageTransaction<T>(
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    await client.query("SET LOCAL jit = off");
     const lock = await client.query(
       "SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0)) AS acquired",
       [CONTACT_LINK_COVERAGE_WORKFLOW],
@@ -1266,6 +1267,8 @@ export async function processContactLinkCoveragePage(
   state: ContactLinkCoverageState,
   actorId: string | null,
 ): Promise<ContactLinkCoverageState> {
+  // Bound execution, not LLVM compilation, consumes the existing page budget.
+  await client.query("SET LOCAL jit = off");
   state.status = "running";
   await writeCoverageCheckpoint(client, state, actorId);
   const result = await client.query(CONTACT_LINK_COVERAGE_BATCH_SQL, [
@@ -1454,10 +1457,7 @@ export async function listContactLinkCoverageCandidates(input: ContactLinkCovera
   let classifiedByContact = new Map<number, ContactLinkCoverageClassification>();
   let contactById = new Map<number, ContactLinkCoverageContact>();
   if (contactIds.length) {
-    const rows = await loadContactLinkCoverageBatch(
-      (sqlText, params) => pool.query(sqlText, params),
-      { afterContactId: 0, watermark: 2147483647, contactIds },
-    );
+    const rows = await loadContactLinkCoverageReadPage(contactIds);
     contactById = new Map(rows.map(row => [row.contactId, row]));
     classifiedByContact = new Map(rows.map(row => [row.contactId, classifyContactLinkCoverage(row)]));
   }
@@ -1494,6 +1494,27 @@ export async function listContactLinkCoverageCandidates(input: ContactLinkCovera
   };
 }
 
+/** Keep the setting and cleanup on one checkout, never on a recycled pool client. */
+async function loadContactLinkCoverageReadPage(contactIds: number[]) {
+  const { pool } = await import("../db");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN READ ONLY");
+    await client.query("SET LOCAL jit = off");
+    const rows = await loadContactLinkCoverageBatch(
+      (sqlText, params) => client.query(sqlText, params),
+      { afterContactId: 0, watermark: 2147483647, contactIds },
+    );
+    await client.query("COMMIT");
+    return rows;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 function candidateFact(contactId: number, businessId: number, rows: ContactLinkCoverageContact[]) {
   const contact = rows.find(row => row.contactId === contactId);
   if (!contact) return null;
@@ -1505,6 +1526,8 @@ function candidateFact(contactId: number, businessId: number, rows: ContactLinkC
 }
 
 async function fetchSingleContactCoverage(executor: any, contactId: number): Promise<ContactLinkCoverageContact | null> {
+  // This helper is used inside the audited writer's existing transaction.
+  await queryDrizzleExecutor(executor, "SET LOCAL jit = off", []);
   const rows = await loadContactLinkCoverageBatch(
     (sqlText, params) => queryDrizzleExecutor(executor, sqlText, params),
     { afterContactId: 0, watermark: 2147483647, contactIds: [contactId] },
@@ -1627,7 +1650,7 @@ export async function reviewContactLinkCoverageBatch(
         }
       }
       if (item.decision === "verified" && eventId === null) {
-        const contact = await fetchSingleContactCoverage(db, item.contactId);
+        const contact = (await loadContactLinkCoverageReadPage([item.contactId]))[0] ?? null;
         const fact = contact ? candidateFact(item.contactId, item.businessId, [contact]) : null;
         if (!fact || fact.candidate.snapshotHash !== item.snapshotHash ||
             fact.candidate.expectedRevision !== item.expectedRevision) {
@@ -1665,7 +1688,7 @@ export async function reviewContactLinkCoverageBatch(
       }
       const currentCandidate = await verifyCurrentCandidate(db, item);
       if (!currentCandidate) throw new Error("CONTACT_LINK_CANDIDATE_NOT_CURRENT");
-      const contact = await fetchSingleContactCoverage(db, item.contactId);
+      const contact = (await loadContactLinkCoverageReadPage([item.contactId]))[0] ?? null;
       if (!contact) throw new Error("CRM_OBJECT_NOT_FOUND");
       const fact = candidateFact(item.contactId, item.businessId, [contact]);
       if (!fact) throw new Error("CONTACT_LINK_CANDIDATE_FACTS_UNSUPPORTED");

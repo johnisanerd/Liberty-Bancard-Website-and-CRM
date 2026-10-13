@@ -30,6 +30,18 @@ later check at an *earlier* snapshot/run that predates the mutation, or (b)
 minting a fresh, dedicated fixture for the later check. Don't assume a fixture
 id is stable in meaning just because its variable name didn't change.
 
+For "unrelated volume does not change returned facts" benchmarks, capture the
+baseline after all relevant edge-fixture mutations, immediately before inserting
+the unrelated volume.
+
+**Why:** Adding a missing-entity source link to a competing business changed the
+original contacts' real evidence. Comparing with the earlier baseline falsely
+attributed that fixture change to the volume or query optimization.
+
+**How to apply:** Preserve an independent old-query comparison, but refresh the
+volume-invariance baseline after adding conflict/source fixtures. Do not weaken
+the full returned-fact assertion to compensate for a stale baseline.
+
 Receipt assertions must bind the current execution/run as well as the selected
 source identity. Selecting by candidate ID alone can include an older
 review-required eligibility row with no provider receipt, even when the new

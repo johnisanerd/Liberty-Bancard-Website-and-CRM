@@ -105,10 +105,22 @@ if(process.argv.includes("--normalize-blanks")) {
   save("blank-command",command);
   console.log(JSON.stringify({event:"production_blank_email_preview",contacts:blanks.length,providerActions:0}));
   if(process.argv.includes("--apply")) {
-    const result=await request("/api/admin/contacts/normalize-blank-emails","POST",command);
-    save("blank-receipt",result);
-    if(result.changed!==blanks.length)throw new Error("BLANK_RECEIPT_MISMATCH");
-    console.log(JSON.stringify({event:"production_blank_email_committed",normalized:result.changed,providerActions:0}));
+    // Bounded requests respect the existing body limit without relaxing pins.
+    // Persist each exact command before dispatch for confirmation-loss replay.
+    let normalized=0;
+    for(let offset=0;offset<command.items.length;offset+=100) {
+      const batch={...command,commandId:randomUUID(),items:command.items.slice(offset,offset+100)};
+      const index=String(offset/100).padStart(3,"0");
+      save(`blank-command-${index}`,batch);
+      const result=await request("/api/admin/contacts/normalize-blank-emails","POST",batch);
+      save(`blank-receipt-${index}`,result);
+      if(result.changed!==batch.items.length)throw new Error("BLANK_RECEIPT_MISMATCH");
+      normalized+=result.changed;
+      console.log(JSON.stringify({event:"production_blank_email_batch_committed",
+        normalized:result.changed,totalNormalized:normalized,providerActions:0}));
+    }
+    save("blank-receipt",{changed:normalized,batches:Math.ceil(command.items.length/100)});
+    console.log(JSON.stringify({event:"production_blank_email_committed",normalized,providerActions:0}));
   }
   process.exit(0);
 }

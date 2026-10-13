@@ -97,11 +97,32 @@ export function relationshipReasonsSql(contact: string, business: string, source
         AND NOT(stable_match OR (registry AND (address_match OR phone_match)) OR domain_match)
         THEN 'independent_corroboration_required' END,
       CASE WHEN registry AND eid IS NOT NULL AND address_match AND NOT stable_match AND EXISTS(
-        SELECT 1 FROM canonical_source_links os
+        SELECT 1 FROM (
+          SELECT oe.filing_number,oe.principal_address,oe.principal_city,oe.principal_state
+          FROM sunbiz_entities oe
+          WHERE oe.filing_number IS NOT NULL AND oe.source IN ('cordata','corevt','sunbiz')
+            AND ${name("oe.entity_name")}=${name("evaluated.company_name")}
+          UNION ALL
+          SELECT oe.filing_number,oe.principal_address,oe.principal_city,oe.principal_state
+          FROM sunbiz_entities oe
+          WHERE oe.filing_number IS NOT NULL AND oe.source IN ('cordata','corevt','sunbiz')
+            AND oe.dba IS NOT NULL AND ${name("oe.dba")}=${name("evaluated.company_name")}
+          UNION ALL
+          -- The old coalesce(dba,'') could match an empty contact-name key.
+          -- Preserve that case exactly rather than narrowing conflict evidence.
+          SELECT oe.filing_number,oe.principal_address,oe.principal_city,oe.principal_state
+          FROM sunbiz_entities oe
+          WHERE oe.filing_number IS NOT NULL AND oe.source IN ('cordata','corevt','sunbiz')
+            AND oe.dba IS NULL AND ${name("evaluated.company_name")}=''
+        ) oe
+        CROSS JOIN LATERAL (
+          SELECT os.business_id FROM canonical_source_links os
+          WHERE os.source_system='sunbiz' AND os.source_type='sunbiz_entity'
+            AND os.stable_key=oe.filing_number
+          OFFSET 0
+        ) os
         JOIN businesses ob ON ob.id=os.business_id AND ob.record_class='canonical'
-        JOIN sunbiz_entities oe ON oe.filing_number=os.stable_key AND oe.source IN ('cordata','corevt','sunbiz')
-        WHERE os.source_system='sunbiz' AND os.source_type='sunbiz_entity' AND ob.id<>bid
-          AND ${name("evaluated.company_name")} IN (${name("oe.entity_name")},${name("oe.dba")})
+        WHERE ob.id<>bid
           AND ${name("evaluated.address")}=${name("oe.principal_address")}
           AND ${name("evaluated.city")}=${name("oe.principal_city")}
           AND ${stateIdentitySql("evaluated.state")}=${stateIdentitySql("oe.principal_state")}) THEN 'address_competing_businesses' END,

@@ -67,6 +67,41 @@ try {
   assert(edgeIndexed.every(row=>row.businesses.some((b:any)=>b.businessId===edgeBusiness.id)),
     "Each independently selected identity-key branch must hydrate the same real business");checks++;
 
+  // Exercise the rewritten competing-address evaluator, not only lookups that
+  // never enter that branch. The prior helper retains its original broad scan.
+  const competitor=(await pool.query(`INSERT INTO businesses(canonical_name,normalized_name,record_class)
+    VALUES('Independent competing site','independent competing site','canonical') RETURNING id`)).rows[0];
+  const competitorFiling=`COV-PEER-${randomUUID()}`;
+  await pool.query(`INSERT INTO sunbiz_entities(entity_name,filing_number,
+    principal_address,principal_city,principal_state,source)
+    VALUES('Thé Anchor Café LLC',$1,'10 Main St.','Miami','Florida','cordata')`,[competitorFiling]);
+  await pool.query(`INSERT INTO canonical_source_links(business_id,source_system,source_type,stable_key)
+    VALUES($1,'sunbiz','sunbiz_entity',$2)`,[competitor.id,competitorFiling]);
+  const competitorPrior=(await pool.query(PRIOR_COVERAGE_SQL,edgeParams)).rows;
+  const competitorIndexed=(await pool.query(CONTACT_LINK_COVERAGE_BATCH_SQL,edgeParams)).rows;
+  assert.deepEqual(competitorIndexed,competitorPrior,
+    "Indexed competing-registry probes retain full independent conflict evidence");checks++;
+  assert(competitorIndexed.find(row=>row.contactId===edgeContacts[0].id).businesses
+    .find((b:any)=>b.businessId===edgeBusiness.id).automaticRelationshipReasons
+    .includes("address_competing_businesses"),"The conflict branch actually executed");checks++;
+
+  // Missing source entities still contribute filing-only candidates. An inner
+  // join for every source key would silently lose this retained source link.
+  const missingFiling=`COV-MISSING-${randomUUID()}`;
+  await pool.query(`INSERT INTO canonical_source_links(business_id,source_system,source_type,stable_key)
+    VALUES($1,'sunbiz','sunbiz_entity',$2)`,[competitor.id,missingFiling]);
+  const filingContact=(await pool.query(`INSERT INTO contacts(first_name,last_name,email,phone,company_name,
+    row_provenance,record_class) VALUES('Missing entity','Fixture',$1,'','Filing-only retained identity',
+    jsonb_build_object('filingNumber',lower($2::text)),'production') RETURNING id`,
+    [`${randomUUID()}@gmail.com`,missingFiling])).rows[0];
+  const filingParams=[0,2147483647,500,[filingContact.id]];
+  const filingIndexed=(await pool.query(CONTACT_LINK_COVERAGE_BATCH_SQL,filingParams)).rows;
+  assert.deepEqual(filingIndexed,(await pool.query(PRIOR_COVERAGE_SQL,filingParams)).rows);checks++;
+  assert(filingIndexed[0].businesses.some((b:any)=>b.businessId===competitor.id));checks++;
+  // Capture after every relevant fixture mutation. The missing-entity link is
+  // also a real fact on the competing business seen by the original contacts.
+  const beforeNoiseSourceRows=(await pool.query(CONTACT_LINK_COVERAGE_BATCH_SQL,edgeParams)).rows;
+
   // Production-sized unrelated population. This is local serving-volume proof,
   // not a replacement for timing the deployed corrected primary request.
   await pool.query(`INSERT INTO businesses(canonical_name,normalized_name,website_domain,main_phone,
@@ -95,15 +130,15 @@ try {
   const scaledRows=(await pool.query(CONTACT_LINK_COVERAGE_BATCH_SQL,params)).rows;
   const scaledMs=performance.now()-scaledStart;
   assert.deepEqual(scaledRows,newRows,"Unrelated native population must not change hydrated facts");checks++;
-  console.log(JSON.stringify({event:"intake_review_native_volume",businesses:147002,
-    linkedSources:127001,contactIds:1,elapsedMs:scaledMs,productionExecution:false}));
+  console.log(JSON.stringify({event:"intake_review_native_volume",businesses:147003,
+    linkedSources:127003,contactIds:1,elapsedMs:scaledMs,productionExecution:false}));
   const sourceScaledStart=performance.now();
   const sourceScaledRows=(await pool.query(CONTACT_LINK_COVERAGE_BATCH_SQL,edgeParams)).rows;
   const sourceScaledMs=performance.now()-sourceScaledStart;
-  assert.deepEqual(sourceScaledRows,edgeIndexed,
+  assert.deepEqual(sourceScaledRows,beforeNoiseSourceRows,
     "Source-backed domain/DBA/name/owner-phone/filing proofs retain parity at native serving volume");checks++;
-  console.log(JSON.stringify({event:"intake_review_source_native_volume",businesses:147002,
-    linkedSources:127001,contactIds:edgeContacts.length,elapsedMs:sourceScaledMs,productionExecution:false}));
+  console.log(JSON.stringify({event:"intake_review_source_native_volume",businesses:147003,
+    linkedSources:127003,contactIds:edgeContacts.length,elapsedMs:sourceScaledMs,productionExecution:false}));
   const plan=(await pool.query("EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+CONTACT_LINK_COVERAGE_BATCH_SQL,params)).rows[0]["QUERY PLAN"];
   const planText=JSON.stringify(plan);
   assert(planText.includes("businesses_coverage_name_key_idx"),

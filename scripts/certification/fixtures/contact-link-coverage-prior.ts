@@ -10,7 +10,23 @@
  */
 // The database generates these keys with the exact prior normalization.
 // Ordinary column indexes avoid Publish's broken nested-index serialization.
-import { relationshipReasonsSql } from "../../../shared/relationship-evidence-sql";
+import { relationshipReasonsSql as currentRelationshipReasonsSql, identityNameSql } from "../../../shared/relationship-evidence-sql";
+// Freeze the original competing-registry scan independently of the optimized
+// read helper. Otherwise changing that shared helper would change both oracles.
+function relationshipReasonsSql(...args: Parameters<typeof currentRelationshipReasonsSql>) {
+  const current = currentRelationshipReasonsSql(...args);
+  const start = current.indexOf("SELECT 1 FROM (\n          SELECT oe.filing_number");
+  if (start < 0) throw new Error("FROZEN_RELATIONSHIP_ORACLE_BOUNDARY_MISSING");
+  const end = current.indexOf(`AND ${identityNameSql("evaluated.address")}=`, start);
+  if (end < 0) throw new Error("FROZEN_RELATIONSHIP_ORACLE_END_MISSING");
+  const name = identityNameSql;
+  return current.slice(0,start) + `SELECT 1 FROM canonical_source_links os
+        JOIN businesses ob ON ob.id=os.business_id AND ob.record_class='canonical'
+        JOIN sunbiz_entities oe ON oe.filing_number=os.stable_key AND oe.source IN ('cordata','corevt','sunbiz')
+        WHERE os.source_system='sunbiz' AND os.source_type='sunbiz_entity' AND ob.id<>bid
+          AND ${name("evaluated.company_name")} IN (${name("oe.entity_name")},${name("oe.dba")})
+          ` + current.slice(end);
+}
 const SUNBIZ_NAME_KEY_ENTITY_SQL = "se.contact_identity_name_key";
 const SUNBIZ_NAME_KEY_DBA_SQL = "se.contact_identity_dba_key";
 

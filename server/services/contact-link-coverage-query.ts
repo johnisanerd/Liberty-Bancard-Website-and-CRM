@@ -324,33 +324,40 @@ raw_unlinked_sunbiz_by_contact AS MATERIALIZED (
     LIMIT 21
   ) raw
 ),
+-- PostgreSQL cannot infer that an array subscript rejects a NULL-extended
+-- outer-join row. Explicitly require the entity for entity-owned keys so the
+-- planner can push equality into each source index. Filing-only links below
+-- deliberately retain their LEFT JOIN semantics.
+linked_sunbiz_source_entities AS NOT MATERIALIZED (
+  SELECT * FROM all_sunbiz_source_links WHERE source_entity_id IS NOT NULL
+),
 source_identity_keys AS NOT MATERIALIZED (
   SELECT business_id,'name'::text AS kind,contact_identity_name_key AS key
-  FROM all_sunbiz_source_links WHERE nullif(trim(entity_name),'') IS NOT NULL
+  FROM linked_sunbiz_source_entities WHERE nullif(trim(entity_name),'') IS NOT NULL
   UNION ALL
   SELECT business_id,'name',contact_identity_dba_key
-  FROM all_sunbiz_source_links WHERE dba IS NOT NULL AND nullif(trim(dba),'') IS NOT NULL
+  FROM linked_sunbiz_source_entities WHERE dba IS NOT NULL AND nullif(trim(dba),'') IS NOT NULL
   UNION ALL
   SELECT business_id, 'domain',
     coverage_domain_key
-  FROM all_sunbiz_source_links
+  FROM linked_sunbiz_source_entities
   WHERE nullif(trim(coalesce(website, '')), '') IS NOT NULL
   UNION ALL
   SELECT business_id, 'phone', coverage_phone_key
-  FROM all_sunbiz_source_links
+  FROM linked_sunbiz_source_entities
   WHERE nullif(coverage_phone_key, '') IS NOT NULL
   UNION ALL
   SELECT business_id, 'phone', coverage_owner_phone_key
-  FROM all_sunbiz_source_links
+  FROM linked_sunbiz_source_entities
   WHERE nullif(coverage_owner_phone_key, '') IS NOT NULL
   UNION ALL
   SELECT business_id, 'address',
     coverage_address_key
-  FROM all_sunbiz_source_links
+  FROM linked_sunbiz_source_entities
   WHERE nullif(trim(coalesce(principal_address, '')), '') IS NOT NULL
   UNION ALL
   SELECT business_id, 'address', coverage_street_key
-  FROM all_sunbiz_source_links
+  FROM linked_sunbiz_source_entities
   WHERE nullif(trim(coalesce(principal_address, '')), '') IS NOT NULL
   UNION ALL
   SELECT business_id, 'filing', lower(stable_key) FROM all_sunbiz_source_links
@@ -387,14 +394,17 @@ candidate_pairs AS MATERIALIZED (
   SELECT DISTINCT raw.contact_id, business_name.business_id
   FROM raw_unlinked_sunbiz_by_contact raw
   CROSS JOIN LATERAL (VALUES (raw.entity_name), (raw.dba)) source_name(value)
-  JOIN business_name_keys business_name
-    ON business_name.key = trim(regexp_replace(
+   CROSS JOIN LATERAL (
+     SELECT business_id FROM business_name_keys candidate_name
+     WHERE candidate_name.key = trim(regexp_replace(
       regexp_replace(
         lower(regexp_replace(coalesce(source_name.value, ''), '[^a-zA-Z0-9]+', ' ', 'g')),
         '\\m(incorporated|inc|limited|ltd|llc|llp|corp|corporation|company|co)\\M', ' ', 'g'
       ),
       '\\s+', ' ', 'g'
-    ))
+     ))
+     OFFSET 0
+   ) business_name
   UNION
   SELECT p.contact_id, p.projected_business_id
   FROM page p WHERE p.projected_business_id IS NOT NULL
@@ -452,14 +462,17 @@ raw_sunbiz_by_contact_business AS MATERIALIZED (
     ) ORDER BY raw.source_entity_id) AS matches
   FROM raw_unlinked_sunbiz_by_contact raw
   CROSS JOIN LATERAL (VALUES (raw.entity_name), (raw.dba)) source_name(value)
-  JOIN business_name_keys business_name
-    ON business_name.key = trim(regexp_replace(
+   CROSS JOIN LATERAL (
+     SELECT business_id FROM business_name_keys candidate_name
+     WHERE candidate_name.key = trim(regexp_replace(
       regexp_replace(
         lower(regexp_replace(coalesce(source_name.value, ''), '[^a-zA-Z0-9]+', ' ', 'g')),
         '\\m(incorporated|inc|limited|ltd|llc|llp|corp|corporation|company|co)\\M', ' ', 'g'
       ),
       '\\s+', ' ', 'g'
-    ))
+     ))
+     OFFSET 0
+   ) business_name
   GROUP BY raw.contact_id, business_name.business_id
 ),
 contact_data AS (

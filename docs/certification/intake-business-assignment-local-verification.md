@@ -387,3 +387,68 @@ Existing production startup policy continues to skip development journal replay.
 No deployment configuration, startup-DDL workaround, production DDL or outbound
 control changes were made. Production promotion and original acceptance remain
 unverified until the user republishes; this is not task completion or release GO.
+
+## Published continuation and selective hydration — 2026-10-13 UTC
+
+The owner published successfully. The served production health response identifies
+`2ff0add39a70fe812786433766ef98a07ff4bf00`; production now has nullable contact
+email and both generated coverage-key arrays. Publication did not establish native
+guard delivery: the identity-bridge guard function has its correct
+`f0c933f2b332d19ec7d51866e2ad5a7b` body, but its required observation immutability
+trigger is absent. The source-family relationship function is absent, and automatic
+and reviewed relationship routines remain on the pre-0349 bodies. The actual
+automatic hash and reviewed-body inverse transformation match 0349's upstream
+preconditions. Existing owner-console repairs 0348 then 0349 are needed; no Agent
+production DDL, installer or startup replay was used.
+
+The published authenticated review request still returned HTTP 500 after 31.675
+seconds. Its correlated SQLSTATE 57014 represented approximately 30 seconds of
+execution and approximately 0.05 ms of acquisition, not evidence of pool exhaustion.
+The actual replica plan exposed five full registry scans inside outer-join
+array-subscript branches. Explicit entity existence now makes entity-owned keys
+selective, while filing-only links retain their original missing-entity behavior.
+Both raw-source-to-business name probes are also parameterized. Competing-address
+evidence uses separate exact native-name/DBA index probes, including the old empty
+name/NULL DBA case; coverage's different ASCII name normalization is not substituted.
+
+The expanded plan enables JIT at its very high estimated cost; the same read
+completed within budget with JIT disabled. Coverage and review hydration now
+disable JIT only on their own transaction
+checkout, with rollback/release cleanup and the original statement timeout intact.
+The independent prior-read oracle retains its original competing-registry scan.
+All 24 authenticated disposable checks passed, including full returned-fact parity,
+an actually exercised competing-address conflict, missing-entity filing-only
+retention, first/next/end pages, and role denials. Serving-volume fixtures contain
+147,003 businesses and 127,003 linked sources; those are local checks.
+
+Read-only production-replica execution measurements for the corrected SQL:
+
+| Scope | Planning | Execution |
+| --- | ---: | ---: |
+| Exact review-page contact selection, 49 distinct contacts | 345.667 ms | 4,880.342 ms |
+| Original failed 500-contact scope, cursor 101093 / watermark 159476 | 96.475 ms | 11,301.271 ms |
+| Current same-run checkpoint, cursor 126593 / watermark 159476 | 83.942 ms | 9,508.274 ms |
+
+These are replica SQL measurements, not corrected primary HTTP/component timing,
+nor a committed checkpoint advance. A combined full production returned-fact
+comparison did not return the required result and remains unverified; it is not
+reported as passing. The correction still needs publication and primary evidence.
+
+The previously authorized blank-email cleanup is now committed. Fifteen of the
+original 786 selections had acquired nonblank email and were preserved. The
+remaining 771 were normalized to NULL through eight existing audited admin commands
+with exact actor, lifecycle, ownership and identity pins. The original oversized
+request returned 413 before mutation; the operator helper now saves and dispatches
+bounded 100-contact commands without raising the body's size limit. Production
+postconditions show zero active blank emails, 771 NULL emails, 771 normalization
+audits, and no selected contact archived. Commands and receipts remain private
+generated evidence; no provider or outbound activation was performed.
+
+Build passes. Type checking still reports only the unchanged missing `LiveChat`.
+Development restarted with background jobs off and canonical pause intact.
+The public login screen rendered; the signed-in UI was not visually verified.
+Production ingestion of all five October files, native September current-qualified
+recovery/replay, three eligible ordinary cycles, complete population dispositions,
+and ordinary-upload production fresh-process restart remain in the original task.
+Native guard repair and publication are continuation requirements, not completion,
+replacement tasks or permission to weaken the authorities.
