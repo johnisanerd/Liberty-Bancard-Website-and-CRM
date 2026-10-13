@@ -499,3 +499,91 @@ Catalog, source-disposition and first-cycle evidence is retained in
 status responses remain in the ignored private acceptance directory. No Agent
 production DDL, live import, schedule/control change, outbound activation or
 replacement task was performed. The original task remains open.
+
+## Corrected published requests and surviving domain constraint — 2026-10-13 UTC
+
+The owner republished. The authenticated primary health response now serves
+`2dab7f8ef5a4901b2e5909bfe1cccc8fd05f125b`, built
+`2026-10-13T19:16:03.679Z`, including the selective hydration and transaction-local
+JIT correction. Native contract status remains verified.
+
+Actual authenticated primary request observations:
+
+| Request | HTTP | Elapsed | Returned / hydrated |
+| --- | --- | --- | --- |
+| Review first page, `limit=100` | 200 | 8,894 ms | 100 / 100 |
+| Next page using the exact returned microsecond cursor | 200 | 6,999 ms | 100 / 100 |
+| Canonical enrichment status | 200 | 3,161 ms | native contracts verified |
+| Automatic linking status | 200 | 610 ms | current population observed |
+
+There was zero candidate-ID overlap between review pages. Anonymous access to
+the same review endpoint returned HTTP 401. Manager/agent denial remains
+supported by the prior disposable certificate, not a new signed-in production
+role check. Signed-in UI rendering was not visually verified.
+
+The original coverage run and watermark are unchanged. Durable production
+checkpoint receipts show successive committed cursors 137,593 → 138,093 →
+138,593 → 139,093, with processed counts 137,500 → 138,000 → 138,500 →
+139,000. The last recorded page began at `21:55:26.216764Z` and its checkpoint
+was updated at `21:55:49.408Z`, approximately 23.2 seconds later. This is a
+primary committed-page observation, not a replica EXPLAIN or a new run/reset.
+It does not establish that all remaining contacts are disposed.
+
+Ordinary retained recovery logs report three consecutive committed-progress
+cycles at `21:48:44.407Z`, `21:50:42.907Z` and `21:51:17.119Z`,
+fulfilling one, one and two originals respectively. September-scoped current
+`mailbox_business_identity_v2` receipts corroborate original rows 1221, 1084,
+1223 and 1225 at those boundaries. The last cycle also had two row failures;
+these are not three error-free cycles. A separate current census found 115
+distinct current-qualified originals, separate from older-version and
+unversioned receipts; background recovery continued afterward.
+
+Recovery failures exposed an installed native constraint omitted from the
+fresh migrated certification template: both development and production retain
+`businesses_website_domain_unique_idx` from historical migration 0043. The
+current declared schema permits distinct businesses sharing a brand domain.
+Production SQLSTATE 23505 failures use query fingerprint `93542bc5fb34f2ee`;
+the real canonical business insert independently generates exactly that
+fingerprint.
+
+Additional read-only production corroboration found an existing exact-domain
+business for each sampled failed original (126, 1319, 349 and 1349). Originals
+126 and 1349 have a different retained city and address from that business;
+349 has a different retained address. Production logs omit the constraint name,
+so the reproduced named constraint and these installed/data facts establish
+the shared-domain obstruction, not attribution of every other failure to it.
+
+Migration `0355_business_shared_domain_identity.sql` pins the exact historical
+index definition before removing only that domain-wide uniqueness constraint,
+retaining the declared lookup index. No records, source identities, relationship
+guards or resolver locks are removed. It is applied in development, not
+production. The extended denied disposable certificate explicitly reinstalls
+the historical index, reproduces the real resolver's 23505 and exact constraint
+name, then applies the correction twice. All 15 checks passed, including
+unchanged original business facts, two distinct same-domain locations,
+concurrent equivalent-input idempotency, exact-source precedence, alias parity
+and conflict holds. Provider calls and outbound changes were zero.
+
+The supported Publish schema diff is exactly:
+
+```sql
+DROP INDEX "businesses_website_domain_unique_idx";
+```
+
+It reports no structural data loss and no table/column removal or truncation.
+The compatibility flag is true because uniqueness semantics change. This
+supports the already-required separate-branch identity behavior, not weakening
+source/place identity. No production console repair, Agent DDL, custom installer
+or startup-production migration replay is required or attempted.
+
+The development workflow restarted successfully and the login UI rendered.
+Type checking still reports only the existing `LiveChat` error. The original
+task remains open for production delivery of this correction, complete current
+population disposition, October production intake, ordinary-upload production
+fresh-process restart and retained replay. Existing configured gate failures
+are not represented as full-roster passes.
+
+Evidence is retained in `generated-artifacts/intake-published-primary-progress.json`,
+`generated-artifacts/intake-published-scoped-receipts.json` and
+`generated-artifacts/intake-shared-domain-publish-diff.json`; raw authenticated
+page/status responses remain in the ignored private acceptance directory.

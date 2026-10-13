@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import {randomUUID} from "node:crypto";
+import {readFileSync} from "node:fs";
 import {assertDisposableTestInfrastructure} from "../test-infrastructure-guard";
+import {businesses} from "../../shared/schema";
+import {fingerprintQuery} from "../../server/lib/lock-trace";
+import {drizzle} from "drizzle-orm/node-postgres";
 await assertDisposableTestInfrastructure({operation:"organization-location-identity",requireRedis:false});
 const {pool}=await import("../../server/db");
 const {resolveOrganization,peekOrganizationResolution}=await import("../../server/services/organization-resolver");
@@ -14,9 +18,35 @@ try {
   if(a.kind==="deferred")throw new Error("EXPECTED_BUSINESS");
   const second={...first,city:"Miami",streetAddress:"20 Main St",googlePlaceId:randomUUID(),state:"Florida"};
   assert.equal((await peekOrganizationResolution(second)).kind,"would_create");checks++;
+  // Reproduce production's actual surviving historical constraint. A migrated
+  // template without this index cannot certify retained native topology.
+  await pool.query(readFileSync("migrations/0043_sdr_business_domain_unique.sql","utf8"));
+  const businessBefore=(await pool.query("SELECT to_jsonb(b) row FROM businesses b WHERE id=$1",
+    [a.business.id])).rows[0].row;
+  await assert.rejects(()=>resolveOrganization(second),(error:any)=>
+    error.cause?.code==="23505" &&
+    error.cause?.constraint==="businesses_website_domain_unique_idx");checks++;
+  const insert=drizzle.mock().insert(businesses).values({
+    canonicalName:label,normalizedName:"fixture",websiteDomain:first.websiteDomain,
+    googlePlaceId:first.googlePlaceId,mainPhone:"1234567890",city:first.city,state:first.state,
+    streetAddress:first.streetAddress,recordClass:"canonical",postalCode:"33301",
+    vertical:"test",lastSourceType:"google_maps_outscraper",
+  }).returning().toSQL();
+  assert.equal(fingerprintQuery(insert.sql),"93542bc5fb34f2ee",
+    "Reproduced business insert matches production's failing query fingerprint");checks++;
+  const repair=readFileSync("migrations/0355_business_shared_domain_identity.sql","utf8");
+  await pool.query(repair);
+  await pool.query(repair); // Idempotent owner-console/development delivery.
+  assert.deepEqual((await pool.query("SELECT to_jsonb(b) row FROM businesses b WHERE id=$1",
+    [a.business.id])).rows[0].row,businessBefore,"Repair preserves original business facts");checks++;
+  assert.equal((await pool.query(`SELECT to_regclass(
+    'public.businesses_website_domain_unique_idx') obsolete,
+    to_regclass('public.businesses_website_domain_idx') lookup`)).rows[0].obsolete,null);checks++;
   const simultaneous=await Promise.all([resolveOrganization(second),resolveOrganization(second)]);
   assert.equal(simultaneous.filter(result=>result.kind==="created").length,1);checks++;
   assert(simultaneous.every(result=>result.kind!=="deferred"));checks++;
+  assert.equal(Number((await pool.query("SELECT count(*) FROM businesses WHERE website_domain=$1",
+    [first.websiteDomain])).rows[0].count),2);checks++;
   assert.equal((await peekOrganizationResolution(first)).kind,"matched");checks++;
   const sourceIdentity={sourceSystem:"outscraper",sourceType:"provider_import",stableKey:randomUUID()};
   await pool.query(`INSERT INTO canonical_source_links(business_id,source_system,source_type,stable_key)

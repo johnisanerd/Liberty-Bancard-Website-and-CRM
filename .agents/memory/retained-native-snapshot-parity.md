@@ -36,6 +36,19 @@ original-row duplicate census does not prove an expanded graph is duplicate-free
 **How to apply:** Treat an unexplained constraint mismatch as an open gate.
 Resolve schema ownership/parity explicitly; preserve original topology.
 
+Fresh migrated templates can omit surviving legacy indexes from live databases.
+Reproduce the actual installed constraint as a negative before certifying a
+correction against a template that no longer declares it.
+
+**Why:** A same-brand location certificate passed on a fresh template while the
+live database still rejected legitimate branch creation through historical
+domain-wide uniqueness. Matching current schema source did not establish
+installed native parity.
+
+**How to apply:** Compare actual catalogs and exercise the native writer with
+the legacy constraint present, then deliver the approved identity correction
+forward and prove record preservation and concurrent replay.
+
 Restore immutable historical decisions under the independently verified
 capture-era native contract, then apply the declared migrations forward before
 running corrected workers. Never insert old-version decisions through a newer

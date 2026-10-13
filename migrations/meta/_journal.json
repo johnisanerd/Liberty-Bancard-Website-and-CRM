@@ -2506,6 +2506,13 @@
       "when":1800400021000,
       "tag":"0354_contact_coverage_single_rewrite",
       "breakpoints":true
+    },
+    {
+      "idx":358,
+      "version":"7",
+      "when":1800400022000,
+      "tag":"0355_business_shared_domain_identity",
+      "breakpoints":true
     }
   ]
 }
