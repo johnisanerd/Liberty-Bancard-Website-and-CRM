@@ -1908,6 +1908,10 @@ The existing registered role-guards validation now uses that SAME isolated launc
 
 ## C4 provisional source and bounded evidence amendment
 
+### Owner-authorized C4 implementation continuation — 2026-10-14
+
+The later scoped implementation and verification record is [C4 owner continuation](certification/stage3-c4/owner-continuation-2026-10-14.md). It pins compiled source `401d7bdad4c76172736a9a76bb33b3fd7abfd216`, local build `b4ce8687-dad1-4c0f-9451-17572501279f`, V1–V4 changes, executed six-suite evidence, matched Portfolio performance/native 200% zoom and bounded reader/client rollback. **C4 remains OPEN / NOT FULLY ACCEPTED; merge SHA is none and no publication occurred.** Normal CI fails the unchanged-main SFP source assertion expecting `verifyEmail(realEmail)`; it is not waived or repaired by restoring removed gates. Full action/state/accessibility/financial and whole bundled-server rollback obligations remain in this same C4 continuation. Original 95-finding lineage and ownership are unchanged. The earlier provisional paragraph below remains historical, not the current compiled identity.
+
 C4 is **in progress, not complete**. Current assignment remains39 routes/70 historical panel references, not control/action pass counts. Starting source is9fcbb8cc62e80ed69c5088c10f3db21c1b6a59d3; effective dirty inputs and compiled outputs are pinned separately in receipts. See `certification/stage3-c4/working-status.md`, `source-inventory.json`, `handler-actions.json` and `browser-receipt.json` for exact limits and retained failures. Source expressions are not an expanded mounted action inventory.
 
 Grouped Merchant Operations and four Reports areas consume existing C1/C2/A/B owners. Portfolio continuation, chargeback accepted-intent/MID/ledger consumers, complete relationship readers, local Inbox keysets, Calendar exclusive month boundary and named read-state corrections have bounded source/handler proof. Existing Calendar duration, pending count, compact C2 header and appointment-reader selection remain preserved. One C4 Outreach presentation is reused by C3; no new shell/sidebar authority.

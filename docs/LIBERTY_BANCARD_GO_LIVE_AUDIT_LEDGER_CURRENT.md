@@ -14,6 +14,12 @@ The final eleven-entry sidebar remains C5. Outbound stays paused; incoming GHL s
 
 # LIBERTY BANCARD — GO-LIVE AUDIT LEDGER (CURRENT)
 
+## C4 owner-authorized implementation record — 2026-10-14
+
+See [exact C4 continuation evidence and limits](certification/stage3-c4/owner-continuation-2026-10-14.md). V1–V4 are implemented on the isolated verification branch; all six required suites passed locally and in remote run 38637895318, including named nonempty financial and real handler/session/CSRF cases. Matched Portfolio candidate visible-list times were 371.139/391.851 ms; physical-input feedback was 41.032/40.335 ms. Native browser zoom was 200%; 223 scoped contact/MID rows retained their exact hash across bounded reader/client rollback.
+
+Compiled source is `401d7bdad4c76172736a9a76bb33b3fd7abfd216`; local build is `b4ce8687-dad1-4c0f-9451-17572501279f`. Neither is a deployed or merge identity. **Merge SHA: none. C4 OPEN / NOT FULLY ACCEPTED; global release remains NO-GO.** Required normal CI fails a reproduced unchanged-main SFP assertion expecting obsolete `verifyEmail(realEmail)` source text; no gate was waived. Full C4 conditional control/action, state, accessibility, financial-scope and whole-source/bundled rollback acceptance remains unresolved under its existing owner, not moved to new tasks. Original 95 findings/14 repair groups and C2/C3/C4/C5/A/B/D ownership remain intact. Outbound PAUSED, proposals HELD and incoming GHL independently ENABLED/no-echo stay the operating contract. No production test writes or publication occurred.
+
 **Canonical working record for the fresh Liberty Bancard go-live audit**
 
 **Latest audit:** Section 18 records the October 2 Stage 3 three-audit consolidation, fresh authenticated checks, current source/runtime identities, proposed navigation/design/metric contracts and grouped implementation roadmap. Section 17 and earlier sections remain historical evidence.  
