@@ -43,7 +43,8 @@ export async function runC4BundledRollback(h:Awaited<ReturnType<typeof stage3BHt
     });
     const base=`http://127.0.0.1:${port}`;
     const nonce=randomBytes(32).toString("hex");
-    const child=spawnCertificationTsx(wrapper,[bundle],{cwd:root,stdio:"pipe",env:{
+    const child=spawnCertificationTsx(wrapper,[bundle],{cwd:root,stdio:"pipe",sourceEnv:{
+      ...process.env,
       PORT:String(port),BASE_URL:base,NODE_ENV:"test",BACKGROUND_JOB_PROFILE:"off",
       CERTIFICATION_HTTP_HOST:"127.0.0.1",CERTIFICATION_HTTP_NONCE:nonce,
     }});

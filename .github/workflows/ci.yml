@@ -131,6 +131,14 @@ jobs:
       - name: Generate unique Redis namespace
         run: echo "TEST_REDIS_PREFIX=$(npx tsx scripts/generate-certification-redis-prefix.ts)" >> "$GITHUB_ENV"
 
+      - name: Prepare private Chromium for registered browser suites
+        run: |
+          chrome_bin="$(command -v google-chrome || command -v chromium || true)"
+          test -n "$chrome_bin"
+          sudo mkdir -p /repl/tools/bin
+          sudo ln -s "$chrome_bin" /repl/tools/bin/chromium
+
+
       - name: Verify certification process isolation
         run: |
           npx tsx scripts/test-certification-process-env.ts

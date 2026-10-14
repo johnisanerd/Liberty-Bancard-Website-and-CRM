@@ -18,17 +18,28 @@ export async function runC4Accessibility(h:Awaited<ReturnType<typeof stage3BHttp
         ["/dashboard/onboarding-kickoff",/Closed Won Sales → linked Onboarding preparation/,"main h1"],
         ["/dashboard/terminal-roi",/Terminal Recommendation Forecasts/,'[data-testid="button-terminal-report-more"]'],
       ] as const){
+        console.log(`C4 accessibility: ${theme}/${width} ${url}`);
         // Let the real ThemeProvider read the persisted theme on navigation.
         // Toggling only the root class races provider hydration/transitions.
         await b.evaluate(`localStorage.setItem("liberty-theme",${JSON.stringify(theme)})`);
         await b.navigate(url);await b.waitFor(ready);
-        await b.evaluate(`(async()=>{
-          await document.fonts.ready;
-          await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
-          await Promise.all(document.getAnimations({subtree:true})
-            .filter(animation=>animation.constructor.name==="CSSTransition")
-            .map(animation=>animation.finished.catch(()=>{})));
+        const settled=await b.evaluate(`(async()=>{
+          let phase="fonts";
+          return Promise.race([
+            (async()=>{
+              await document.fonts.ready;
+              phase="animation frames";
+              await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+              phase="CSS transitions";
+              await Promise.all(document.getAnimations({subtree:true})
+                .filter(animation=>animation.constructor.name==="CSSTransition")
+                .map(animation=>animation.finished.catch(()=>{})));
+              return {settled:true,phase:"complete"};
+            })(),
+            new Promise(resolve=>setTimeout(()=>resolve({settled:false,phase}),10000))
+          ]);
         })()`);
+        assert.equal(settled.settled,true,`${url} ${theme}/${width} theme settling timed out: ${settled.phase}`);
         assert.equal(await b.evaluate(`document.documentElement.classList.contains(${JSON.stringify(theme)})`),true,
           `${url} actual persisted theme ${theme}/${width}`);
         const probe=await b.evaluate(`(()=>{
