@@ -27,6 +27,7 @@ const h=await stage3BHttpFixture(async app=>{
     ["testimonials","registerTestimonialRoutes"],
     ["workflows","registerWorkflowsRoutes"],
     ["churn","registerChurnRoutes"],
+    ["campaigns","registerCampaignsRoutes"],
   ]) {const module=await import(`../server/routes/${file}.ts`);module[fn](app,file==="crm-operations" ? {
     onboardingPreparationAfterStep:async(step:string)=>{
       if(browserPreparationFault && step==="Submit application to processor"){
@@ -116,6 +117,36 @@ try {
     await new Promise(resolve=>setTimeout(resolve,100));
   assert.equal(await b.evaluate('location.pathname.startsWith("/dashboard")'),true,"desktop-control navigation settled before viewport change");
   await settleStaffTour("admin");
+  for(const [route,ready] of [
+    ["/dashboard/onboarding",/Onboarding Pipeline/],
+    ["/dashboard/onboarding?tab=board",/Onboarding Operations Board/],
+    ["/dashboard/onboarding-kickoff",/Closed Won Sales → linked Onboarding preparation/],
+  ] as const){
+    await b.navigate(route);await b.waitFor(ready);
+    const headings=await b.evaluate('Array.from(document.querySelectorAll("main h1")).map(e=>e.textContent.trim())');
+    assert.equal(headings.length,1,`Persistent unique Onboarding page identity: ${route}`);
+    rows.push({phase:"Onboarding unique H1",role:"admin",route,headings});
+  }
+  for(const [route,control,parameter,value,ready] of [
+    ["/dashboard/merchant-applications","tab-status-approved","status","approved",/Merchant Applications/],
+    ["/dashboard/boarding","tab-boarding-approved","status","approved",/Boarding/],
+    ["/dashboard/reporting?tab=outreach-analytics","tab-ab-testing","outreachView","ab-testing",/Outreach Analytics/],
+    ["/dashboard/leaderboard","tab-metric-calls","metric","calls",/Leaderboard/],
+  ] as const){
+    await b.navigate(route);await b.waitFor(ready);
+    const originalUrl=await b.evaluate("location.href");
+    await b.click(`[data-testid="${control}"]`);
+    assert.equal(await b.evaluate(`new URLSearchParams(location.search).get(${JSON.stringify(parameter)})`),value);
+    await b.call("Page.reload");await b.waitFor(ready);
+    assert.equal(await b.evaluate(`document.querySelector('[data-testid="${control}"]').getAttribute("data-state")`),"active");
+    await b.evaluate("history.back()");
+    for(let attempt=0;attempt<60 && await b.evaluate("location.href")!==originalUrl;attempt++)await new Promise(resolve=>setTimeout(resolve,50));
+    assert.equal(await b.evaluate("location.href"),originalUrl,"Back restores original retained selector");
+    await b.evaluate("history.forward()");
+    for(let attempt=0;attempt<60 && await b.evaluate(`new URLSearchParams(location.search).get(${JSON.stringify(parameter)})`)!==value;attempt++)await new Promise(resolve=>setTimeout(resolve,50));
+    assert.equal(await b.evaluate(`new URLSearchParams(location.search).get(${JSON.stringify(parameter)})`),value,"Forward restores selection");
+    rows.push({phase:"Retained URL state reload/Back/Forward",role:"admin",route,parameter,value});
+  }
   for(const theme of ["light","dark"]) for(const width of [320,390,768,1280,1440]) {
     await b.call("Emulation.setDeviceMetricsOverride",{width,height:1000,deviceScaleFactor:1,mobile:false});
     const started=performance.now();
@@ -424,13 +455,19 @@ try {
   b.failRead(null);await b.click('[data-testid="tab-content-payouts"] [data-testid="button-retry"]');
   await b.waitFor(/Stored allocations and recorded statuses, not native transfer/);
   await b.screenshot("payout-recorded-not-native-receipt");
+  b.failRead("/api/campaigns",{exact:true});
   await b.navigate("/dashboard/reporting?tab=outreach-analytics");
   await b.waitFor(/Campaign reporting is unavailable/);
   for(const child of ["campaigns","ab-testing","messages"])
     assert.equal(await b.evaluate(`!!document.querySelector('[data-testid="tab-${child}"]')`),true);
-  await b.click('[data-testid="tab-ab-testing"]');await b.waitFor(/A\/B results unavailable/);
-  await b.click('[data-testid="tab-messages"]');await b.waitFor(/Message source unavailable/);
+  await b.click('[data-testid="tab-ab-testing"]');await b.waitFor(/No A\/B tests configured/);
+  b.failRead("/api/sequences/ab-test-results",{exact:true});
+  await b.call("Page.reload");await b.waitFor(/A\/B results unavailable/);
+  await b.click('[data-testid="tab-messages"]');
+  b.failRead("/api/outbound-messages",{exact:true});
+  await b.call("Page.reload");await b.waitFor(/Message source unavailable/);
   await b.screenshot("outreach-independent-unavailable-children");
+  b.failRead(null);
   rows.push({phase:"Payout observed/unknown scope and Outreach independent child failure states",mutationRequests:0,
     qualification:"Real payout reader/read-only retry and local report selections. No generate/approve/paid/A-B evaluation command invoked."});
   const acquisitionRequestsBefore=b.requests.length;

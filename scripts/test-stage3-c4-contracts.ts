@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import {applicationStatuses,boardingStatuses,outreachViews,leaderboardMetrics,leaderboardPeriods,retainedSelection,
+  retainedSelectionUrl,outreachAliasUrl} from "../client/src/lib/crm-destination-state";
 import {readFileSync} from "node:fs";
 import {financialState,financialUrl,selectValue,revenueViews,underwritingViews,supportViews,onboardingViews} from "../client/src/lib/crm-destination-state";
 import {rfiViews,rfiUrl,c4WorkspaceSelection} from "../client/src/lib/crm-destination-state";
@@ -23,6 +25,26 @@ import {churnSummarySchema,churnWeightsSchema,churnScoresSchema} from "../client
 import {testimonialViews,testimonialUrl,testimonialAliasUrl} from "../client/src/lib/crm-destination-state";
 
 // Source/codec checks only. No browser, handler, DB, provider or action claim.
+for(const [path,key,allowed,fallback] of [
+  ["/dashboard/merchant-applications","status",applicationStatuses,"all"],
+  ["/dashboard/boarding","status",boardingStatuses,"all"],
+  ["/dashboard/reporting","outreachView",outreachViews,"campaigns"],
+  ["/dashboard/leaderboard","metric",leaderboardMetrics,"deals"],
+  ["/dashboard/leaderboard","period",leaderboardPeriods,"month"],
+] as const){
+  for(const value of allowed){
+    assert.equal(retainedSelection(`${key}=${value}`,key,allowed as readonly string[],fallback).value,value);
+    const url=retainedSelectionUrl(path,"contactId=42&page=9&offset=100&cursor=old&unsafe=x","#records",key,allowed as readonly string[],value);
+    const params=new URL(url,"http://isolated.test").searchParams;
+    assert.equal(params.get(key),value);assert.equal(params.get("contactId"),"42");
+    for(const dropped of ["page","offset","cursor","unsafe"])assert.equal(params.has(dropped),false);
+    assert.equal(retainedSelection(`${key}=${value}&${key}=${value}`,key,allowed as readonly string[],fallback).issues.length,0);
+  }
+  assert.equal(retainedSelection(`${key}=unknown`,key,allowed as readonly string[],fallback).issues[0].kind,"invalid");
+  assert.equal(retainedSelection(`${key}=${allowed[0]}&${key}=${allowed[1]}`,key,allowed as readonly string[],fallback).issues[0].kind,"conflict");
+}
+assert.throws(()=>retainedSelectionUrl("/dashboard/unregistered","","","status",applicationStatuses,"all"));
+assert.equal(new URL(outreachAliasUrl("contactId=42&outreachView=ab-testing","#records"),"http://isolated.test").searchParams.get("outreachView"),"ab-testing");
 const originalZone=process.env.TZ;
 try{
   for(const timezone of ["UTC","America/Bogota","America/New_York","Pacific/Apia"]){

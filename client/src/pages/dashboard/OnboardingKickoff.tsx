@@ -9,7 +9,7 @@ import { parseLocalEntityId } from "@/lib/crm-destination-state";
 import { CrmDataState } from "@/components/crm/CrmPresentation";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -187,14 +187,24 @@ export default function OnboardingKickoff() {
 
   if (contactsLoading || (selectedContactId && dealsLoading)) {
     return (
-      <div className="flex items-center justify-center h-64" data-testid="onboardingkickoff-loading">
-        <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
+      <div className="crm-page max-w-2xl mx-auto space-y-4" data-testid="onboardingkickoff-loading">
+        <header>
+          <h1 data-testid="text-onboardingkickoff-title">Onboarding Kickoff</h1>
+          <p className="mt-1 text-sm text-muted-foreground">Prepare the selected Closed Won deal for local onboarding.</p>
+        </header>
+        <div className="flex items-center justify-center h-64">
+          <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="max-w-2xl mx-auto" data-testid="onboardingkickoff-page">
+    <div className="crm-page max-w-2xl mx-auto" data-testid="onboardingkickoff-page">
+      <header className="mb-4">
+        <h1 data-testid="text-onboardingkickoff-title">Onboarding Kickoff</h1>
+        <p className="mt-1 text-sm text-muted-foreground">Prepare the selected Closed Won deal for local onboarding.</p>
+      </header>
       <p className="text-sm mb-4">Closed Won Sales → linked Onboarding preparation. Sales stays unchanged. Only missing local checklist/task preparation is retried; completed work is never reset. No native, sending, enrollment or activation effects are requested.</p>
       {preparation.isLoading && selectedDealId>0 && <CrmDataState state="loading" message="Reading exact linked preparation authority"/>}
       {preparation.isError && <CrmDataState state="unavailable" message="Selected deal is unavailable or not eligible for linked local preparation" onRetry={()=>void preparation.refetch()}/>}
@@ -219,9 +229,6 @@ export default function OnboardingKickoff() {
         <p className="text-sm">{contactsRes && !contactsError ? `${contactsRes.data.length} loaded contacts in the authorized page; total unavailable from this row reader` : "Contact page and total unavailable"}</p>
       </nav>
       <Card>
-        <CardHeader>
-          <CardTitle data-testid="text-onboardingkickoff-title">LB - Onboarding Kickoff</CardTitle>
-        </CardHeader>
         <CardContent>
           <Form {...form}>
             <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">

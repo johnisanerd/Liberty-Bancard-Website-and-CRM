@@ -12,6 +12,8 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PageHeader } from "@/components/ui/page-header";
 import { DataState } from "@/components/ui/data-state";
+import { boardingStatuses } from "@/lib/crm-destination-state";
+import { useC4RetainedSelection } from "@/hooks/use-c4-retained-selection";
 import { ResponsiveTable } from "@/components/ui/responsive-table";
 import {
   Search, RefreshCw, Loader2, ExternalLink, Building2,
@@ -112,7 +114,9 @@ const IN_FLIGHT_STATUSES: BoardingStatus[] = [
 
 export default function BoardingTracker() {
   const { toast } = useToast();
-  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const statusState=useC4RetainedSelection("/dashboard/boarding","status",boardingStatuses,"all");
+  const statusFilter=statusState.value;
+  const setStatusFilter=(value:string)=>{if(boardingStatuses.includes(value as typeof statusFilter))statusState.setValue(value as typeof statusFilter);};
   const [search, setSearch] = useState("");
 
   const { data, isLoading,isError,error,refetch } = useQuery<SubmissionsResponse>({
@@ -296,6 +300,7 @@ export default function BoardingTracker() {
           ))}
         </TabsList>
       </Tabs>
+      {statusState.issues.map(issue=><p key={issue.key} role="status" className="text-sm text-destructive">{issue.reason}</p>)}
 
       {!isLoading&&!isError&&data&&<div className="space-y-1 text-xs text-muted-foreground">
         <p>Recorded boarding state, not a processor refresh receipt. Counts follow the selected status; search filters returned records locally.</p>

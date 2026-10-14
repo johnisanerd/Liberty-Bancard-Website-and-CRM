@@ -469,7 +469,7 @@ export default function OnboardingBoard() {
     <div className="space-y-5">
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-2xl font-bold" data-testid="text-board-title">Onboarding Operations Board</h1>
+          <h2 className="text-lg font-semibold" data-testid="text-board-title">Onboarding Operations Board</h2>
           <p className="text-sm text-muted-foreground mt-1">Track document collection and checklist progress per merchant deal</p>
         </div>
         <Button

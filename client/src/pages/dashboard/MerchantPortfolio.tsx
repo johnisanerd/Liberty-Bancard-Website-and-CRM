@@ -465,6 +465,7 @@ export default function MerchantPortfolio() {
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <Input
                 className="pl-9"
+                aria-label="Search merchants on this loaded page"
                 placeholder="Search by name, company, or rep email…"
                 value={search}
                     onChange={(e) => {setSearch(e.target.value);setOffset(0);}}

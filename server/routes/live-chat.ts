@@ -6,6 +6,7 @@ import { authorizeContactAccess, authorizeLiveChatAccess } from "../services/crm
 import { z } from "zod";
 import { randomUUID } from "crypto";
 import { contacts } from "@shared/schema";
+import type { LiveChat } from "@shared/schema";
 import { and, eq, ilike, isNull, or } from "drizzle-orm";
 import { createContactLocalFirst } from "../services/contact-writer";
 import { sendCriticalEmailNotification } from "../services/digest-service";

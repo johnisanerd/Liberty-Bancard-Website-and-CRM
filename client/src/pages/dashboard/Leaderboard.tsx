@@ -6,6 +6,8 @@ import { AgentReportsNavigation } from "@/components/crm/AgentReportsNavigation"
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { PageHeader } from "@/components/ui/page-header";
 import { useAuth } from "@/hooks/use-auth";
+import { leaderboardPeriods, leaderboardMetrics } from "@/lib/crm-destination-state";
+import { useC4RetainedSelection } from "@/hooks/use-c4-retained-selection";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -115,8 +117,10 @@ function formatRevenue(val: number | null) {
 export default function Leaderboard() {
   const { user } = useAuth();
   const { toast } = useToast();
-  const [period, setPeriod] = useState<TimePeriod>("month");
-  const [activeMetric, setActiveMetric] = useState<MetricKey>("deals");
+  const periodState=useC4RetainedSelection("/dashboard/leaderboard","period",leaderboardPeriods,"month");
+  const metricState=useC4RetainedSelection("/dashboard/leaderboard","metric",leaderboardMetrics,"deals");
+  const period=periodState.value,setPeriod=periodState.setValue;
+  const activeMetric=metricState.value,setActiveMetric=metricState.setValue;
   const [editingSettings, setEditingSettings] = useState(false);
   const [localSettings, setLocalSettings] = useState<LeaderboardData["settings"] | null>(null);
 
@@ -314,6 +318,7 @@ export default function Leaderboard() {
         </Card>
       )}
 
+      {[...periodState.issues,...metricState.issues].map(issue=><p key={issue.key} role="status" className="text-sm text-destructive">{issue.reason}</p>)}
       <Tabs value={activeMetric} onValueChange={(v) => setActiveMetric(v as MetricKey)}>
         <TabsList className="h-auto flex-wrap gap-1" data-testid="tabs-leaderboard-metrics">
           {tabs.map(({ key, label, icon: Icon }) => (

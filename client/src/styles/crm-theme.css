@@ -258,7 +258,12 @@
 .crm-page .crm-worklist-table td { padding: 10px 12px; }
 .crm-page [data-testid="contacts-pagination"] { flex-wrap: wrap; gap: 12px; padding: 16px; }
 .crm-page [data-testid="contacts-pagination"] > div { flex-wrap: wrap; }
-.crm-theme :is(button, [role="button"], [role="tab"], [role="combobox"]) { min-height: 44px; }
+.crm-theme :is(button, [role="button"], input, select, textarea, [role="tab"], [role="combobox"]) {
+  min-height: var(--crm-target-height);
+}
+.crm-theme :is(button, [role="button"], [role="tab"], [role="combobox"]) {
+  min-width: var(--crm-target-height);
+}
 .crm-theme [role="tab"][data-state="inactive"],
 .crm-portal [role="tab"][data-state="inactive"] { color: hsl(var(--foreground)); }
 .crm-theme :is(button[aria-label], [data-testid="button-sidebar-toggle"]) { min-width: 44px; }
@@ -300,7 +305,8 @@
   .crm-worklist-cards { display: block; }
   .crm-worklist-table { display: none; }
 }
-.crm-page h1 {
+.crm-page h1,
+.crm-merchant-ops-content h1 {
   margin: 0;
   font-size: var(--crm-title-size);
   line-height: var(--crm-title-line);
@@ -312,14 +318,14 @@
 }
 .crm-page :is(button, [role="button"], input, select, [role="combobox"], [role="tab"]),
 .crm-portal :is(button, [role="button"], input, select, [role="combobox"], [role="tab"]) {
-  min-height: 44px;
+  min-height: var(--crm-target-height);
 }
 .crm-page :is(input, select, textarea),
 .crm-portal :is(input, select, textarea) {
   border-color: hsl(var(--crm-control-border));
   border-radius: var(--crm-control-radius);
 }
-.crm-page :is(button, a, input, select, textarea, [tabindex]):focus-visible,
+.crm-theme :is(button, a, input, select, textarea, [tabindex]):focus-visible,
 .crm-portal :is(button, a, input, select, textarea, [tabindex]):focus-visible {
   outline: 2px solid hsl(var(--ring));
   outline-offset: 2px;
@@ -415,11 +421,11 @@
   display: flex;
   min-height: 44px;
   align-items: center;
-  gap: 9px;
+  gap: var(--crm-space-2);
   border-radius: var(--crm-control-radius);
-  padding: 0 9px;
+  padding: 0 var(--crm-space-3);
   color: hsl(var(--foreground));
-  font-size: 13px;
+  font-size: var(--crm-body-size);
   text-decoration: none;
 }
 .crm-merchant-ops-link svg { width: 16px; height: 16px; flex: 0 0 auto; color: hsl(var(--muted-foreground)); }

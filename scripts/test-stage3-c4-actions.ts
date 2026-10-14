@@ -29,6 +29,7 @@ const h=await stage3BHttpFixture(async app=>{
     ["testimonials","registerTestimonialRoutes"],
     ["workflows","registerWorkflowsRoutes"],
     ["churn","registerChurnRoutes"],
+    ["campaigns","registerCampaignsRoutes"],
     ["acquisition","registerAcquisitionRoutes"],
     ["lifecycle","registerLifecycleRoutes"],
   ]) {const module=await import(`../server/routes/${file}.ts`);module[fn](app,file==="analytics"?{
@@ -51,6 +52,12 @@ async function check(role:string,method:string,path:string,body:unknown,status:n
   return result.body;
 }
 try {
+  const emptyAb = await check("admin","GET","/api/sequences/ab-test-results",undefined,200,"literal A/B reader and genuine empty results");
+  assert.deepEqual(emptyAb,[]);
+  await check("manager","GET","/api/sequences/ab-test-results",undefined,200,"manager A/B reader");
+  for(const role of ["agent","merchant","partner"])
+    await check(role,"GET","/api/sequences/ab-test-results",undefined,403,`${role} A/B denial`);
+  await check("anonymous","GET","/api/sequences/ab-test-results",undefined,401,"anonymous A/B denial");
   const {calendarEvents}=await import("../shared/schema");
   for(const [zone,start,end] of [
     ["UTC","2026-10-01T00:00:00Z","2026-11-01T00:00:00Z"],

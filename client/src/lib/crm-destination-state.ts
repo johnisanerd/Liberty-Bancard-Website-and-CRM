@@ -39,6 +39,38 @@ export function revenueFilterUrl(search:string,hash:string,filter:Omit<RevenueFi
 }
 export const underwritingViews = ["queue","approved","config"] as const;
 export const onboardingViews = ["overview", "board"] as const;
+export const applicationStatuses = ["all","submitted","under_review","approved","declined","draft"] as const;
+export const boardingStatuses = ["all","submitted","under_review","more_info_needed","approved","declined"] as const;
+export const outreachViews = ["campaigns","ab-testing","messages"] as const;
+export const leaderboardMetrics = ["deals","revenue","proposals","calls","responseRate","contacts"] as const;
+export const leaderboardPeriods = ["week","month","quarter","all"] as const;
+/** Route-owned retained selectors, using C1's duplicate/context authority. */
+export function retainedSelection<T extends string>(search:string,key:string,allowed:readonly T[],fallback:T,legacyKey?:string) {
+  const input=new URLSearchParams(search);
+  if(legacyKey)for(const value of input.getAll(legacyKey))input.append(key,value);
+  return selectValue(input,key,allowed,fallback);
+}
+export function retainedSelectionUrl<T extends string>(path:string,search:string,hash:string,key:string,
+  allowed:readonly T[],value:T,legacyKey?:string,resetPaging=true) {
+  if(!allowed.includes(value))throw new Error(`Invalid ${key} selection`);
+  const routeKeys=path==="/dashboard/reporting"
+    ? ["tab","outreachView","financialTab","revenueView",...revenueFilterKeys]
+    : path==="/dashboard/leaderboard"?["metric","period"]
+    : ["/dashboard/boarding","/dashboard/merchant-applications"].includes(path)?["status"]:[];
+  if(!routeKeys.includes(key))throw new Error(`Unregistered route selector: ${key}`);
+  const params=safeParams(search,[...safeContextKeys,...routeKeys,...(!resetPaging?["page","offset","cursor"]:[])]);
+  if(legacyKey && legacyKey!==key)params.delete(legacyKey);
+  params.set(key,value);
+  if(path==="/dashboard/reporting")params.set("tab","outreach-analytics");
+  return destinationUrl(path,params,hash);
+}
+export function outreachAliasUrl(search:string,hash:string) {
+  const params=safeParams(search,safeContextKeys);
+  // Preserve invalid/conflicting child values for explicit destination rejection.
+  for(const value of new URLSearchParams(search).getAll("outreachView"))params.append("outreachView",value);
+  params.set("tab","outreach-analytics");
+  return destinationUrl("/dashboard/reporting",params,hash);
+}
 export const supportViews = ["tickets", "rfis", "review-queue"] as const;
 /** C4 extension: nested Review Queue status is distinct from Support's tab. */
 export const reviewQueueViews = ["pending","approved","all"] as const;

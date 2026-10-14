@@ -8,13 +8,15 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Switch } from "@/components/ui/switch";
+import { CrmPageHeader } from "@/components/crm/CrmPresentation";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
 import {
   Monitor, TrendingUp, AlertTriangle, CheckCircle2, Clock, DollarSign,
   RefreshCw, Download, Settings, Plus, Pencil, Trash2, Loader2,
-  ShieldCheck, ShieldAlert, ShieldX,
+  ShieldCheck, ShieldAlert, ShieldX, MoreHorizontal,
 } from "lucide-react";
 import { exportToCSV } from "@/lib/export-csv";
 import type { EquipmentModel } from "@shared/schema";
@@ -208,32 +210,39 @@ export default function TerminalROI() {
 
   return (
     <div className="space-y-6" data-testid="terminal-roi-page">
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-        <div>
-          <h2 className="text-2xl font-bold flex items-center gap-2" data-testid="text-terminal-roi-title">
-            <Monitor className="w-6 h-6 text-primary" />
-          Terminal Recommendation Forecasts
-          </h2>
-          <p className="text-sm text-muted-foreground mt-1">
-            Model-based forecasts; verified deployment and actual cash recovery are unavailable.
-          </p>
-        </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching} className="gap-2" data-testid="button-refresh-report">
-            {isFetching ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-            Refresh
-          </Button>
-          <Button variant="outline" size="sm" onClick={handleExport} className="gap-2" data-testid="button-export-report">
+      <CrmPageHeader
+        title="Terminal Recommendation Forecasts"
+        description="Model-based forecasts; verified deployment and actual cash recovery are unavailable."
+        primaryAction={
+          <Button onClick={handleExport} className="gap-2" data-testid="button-export-report">
             <Download className="w-4 h-4" /> Export CSV
           </Button>
-          <Button variant="outline" size="sm" onClick={() => setModelsOpen(true)} className="gap-2" data-testid="button-manage-models">
-            <Monitor className="w-4 h-4" /> Equipment Catalog
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => { setConfigOpen(true); refetchConfig(); }} className="gap-2" data-testid="button-configure-thresholds">
-            <Settings className="w-4 h-4" /> Thresholds
-          </Button>
-        </div>
-      </div>
+        }
+        secondaryActions={
+          <>
+            <Button variant="outline" onClick={() => refetch()} disabled={isFetching} className="gap-2" data-testid="button-refresh-report">
+              {isFetching ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+              Refresh
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" aria-label="More terminal report actions" className="gap-2" data-testid="button-terminal-report-more">
+                  <MoreHorizontal className="w-4 h-4" />
+                  <span className="hidden sm:inline">More</span>
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => setModelsOpen(true)} data-testid="button-manage-models">
+                  <Monitor className="mr-2 h-4 w-4" /> Equipment Catalog
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => { setConfigOpen(true); refetchConfig(); }} data-testid="button-configure-thresholds">
+                  <Settings className="mr-2 h-4 w-4" /> Thresholds
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </>
+        }
+      />
 
       {isLoading ? (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
@@ -294,7 +303,7 @@ export default function TerminalROI() {
                 <button
                   key={t}
                   onClick={() => setFilterTier(t)}
-                  className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
+                  className={`min-h-11 min-w-11 text-xs px-2.5 py-1 rounded-full border transition-colors ${
                     filterTier === t
                       ? "bg-primary text-primary-foreground border-primary"
                       : "border-border text-muted-foreground hover:border-primary/50"
