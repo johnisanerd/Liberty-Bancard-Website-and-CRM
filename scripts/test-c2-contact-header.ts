@@ -58,6 +58,10 @@ async function key(key:string) {
   const codes:Record<string,number>={Tab:9,Enter:13,Escape:27,ArrowDown:40};
   await b!.call("Input.dispatchKeyEvent",{type:"keyDown",key,code:key,windowsVirtualKeyCode:codes[key],...(key==="Enter"?{text:"\r",unmodifiedText:"\r"}:{})});
   await b!.call("Input.dispatchKeyEvent",{type:"keyUp",key,code:key,windowsVirtualKeyCode:codes[key]});
+  // The protocol acknowledgement precedes Radix's rendered focus update.
+  // Measure each actual keyboard transition after rendering, without changing
+  // the command count, menu order, focus assertions or input timing budgets.
+  await b!.evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
 }
 async function login(zoom=1) {
   b=await privateStage3Browser(h.base,"",h.originalFetch,dir,{realInput:true,zoom});
