@@ -1363,3 +1363,67 @@ eligible ordinary production cycles, full source/contact disposition and
 production fresh-process restart/replay remain pending. The previous stock
 release result (124 passes, 60 failures, two skips) is not superseded by this
 focused regression batch. The task remains unfinished and there is no release GO.
+
+## Independent production row reconciliation — 2026-10-14, after 14:12 UTC
+
+Read-only reconciliation continued without waiting for publication of the
+coverage correction. At 14:12:56 UTC, the 537-row and 633-row October executions
+reported completed, with full original accounting and zero pending mailbox
+fulfillment. Their completion heartbeats were 13:40:35.501 and 13:58:37.408 UTC.
+The 578-row execution was actively progressing; the 513-row and 653-row
+executions still had expired leases and unchanged 13:02 heartbeats. These
+source states supersede the earlier observation that all five were running.
+
+Separate later snapshots inspected actual row/source/contact/business chains:
+
+- The 633-row execution has 524 contact-creation/match rows with 524 exact
+  source events, zero missing contacts, zero missing current verified
+  affiliations, six business-only rows with existing business references,
+  and 103 immutable deferred ambiguity dispositions.
+- The 537-row execution has 441 contact-creation rows with 441 exact source
+  events, zero missing contacts and 17 business-only rows with existing
+  business references. Six contacts lack current verified affiliation; all
+  six trace to blocked source items with matching native hold evidence
+  (five affiliation holds and one organization ambiguity hold). Its immutable
+  ledger also retains 72 deferred rows and seven historical staging failures;
+  ledger disposition alone is not the current outcome.
+- The 578-row execution advanced from 228 accounted rows in the first snapshot
+  to 257 and then 315 in subsequent snapshots. The latter source-chain snapshot
+  had 265 contact rows with exact source events and no missing contacts or
+  current verified affiliations, plus 11 business-only rows with live business
+  references. These changing snapshots are not one atomic aggregate.
+- The 653-row execution has five unassigned contacts with matching affiliation
+  hold evidence and one additional unassigned source still at
+  `STAGING_RECIPE_DISABLED`, without qualifying hold evidence. That last row
+  remains unresolved, not accepted as a hold.
+
+September retains all 1,472 original accounting rows and has 363 completed
+source items with current-version, matching execution/row/fingerprint
+fulfillment receipts. Another snapshot found 125 blocked rows with matching
+native hold-evidence receipts and 984 without either qualifying receipt.
+Matching receipt presence does not by itself establish current hold freshness.
+The source-chain audit found 1,138 exact source events and no missing physical
+contacts, but 44 events without current verified affiliation. A later exception
+snapshot distinguished ambiguity/affiliation holds, retry-required sources
+and in-flight sources rather than treating all of them as missing writes.
+Full September disposition remains open.
+
+Ordinary upload completion and retained-recovery qualification are separate
+contracts. The two completed October executions have actual ordinary source
+chains despite zero retained-recovery qualification receipts. That zero is
+not proof that ordinary intake created nothing, and those legacy-recovery
+receipts must not replace ordinary mailbox/restart verification.
+
+The existing queue runs retained recovery before ordinary upload recovery,
+but ordinary recovery awaits whole executions serially before the queue job
+finishes. This is a potential explanation for delayed subsequent cycles, not
+proof of a new scheduler defect or authorization for another queue. No queue
+ordering, concurrency, source state or native authority was changed.
+
+All queries were production-scoped and read-only. Evidence is retained in
+`original-executions-current.json`, `original-row-receipts-current.json`,
+`original-dispositions-current.json`, `ordinary-source-chain-current.json`
+and `affiliation-exceptions-current.json` under the same ignored evidence
+directory. No extra tasks, new approval gates, production SQL writes,
+workbook resends or provider/outbound changes were made. The original task
+remains open.
