@@ -211,6 +211,7 @@ export default function TerminalROI() {
   return (
     <div className="space-y-6" data-testid="terminal-roi-page">
       <CrmPageHeader
+        headingLevel={2}
         title="Terminal Recommendation Forecasts"
         description="Model-based forecasts; verified deployment and actual cash recovery are unavailable."
         primaryAction={

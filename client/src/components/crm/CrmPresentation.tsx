@@ -8,18 +8,20 @@ import {useIsMobile} from "@/hooks/use-mobile";
 
 export interface CrmPageHeaderProps {
   title: string;
+  headingLevel?: 1 | 2;
   description?: ReactNode;
   context?: ReactNode;
   primaryAction?: ReactNode;
   secondaryActions?: ReactNode;
 }
 
-export function CrmPageHeader({ title, description, context, primaryAction, secondaryActions }: CrmPageHeaderProps) {
+export function CrmPageHeader({ title, headingLevel = 1, description, context, primaryAction, secondaryActions }: CrmPageHeaderProps) {
+  const Heading = headingLevel === 2 ? "h2" : "h1";
   return (
     <header className="flex flex-wrap items-start justify-between gap-4">
       <div className="min-w-0">
         {context && <div className="mb-2 text-xs text-muted-foreground">{context}</div>}
-        <h1>{title}</h1>
+        <Heading>{title}</Heading>
         {description && <p className="mt-1 text-sm text-muted-foreground">{description}</p>}
       </div>
       {(primaryAction || secondaryActions) && (

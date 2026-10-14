@@ -72,14 +72,18 @@ ordered(continuation, [
 
 // Validation retains three command-bound authority checks: worker pre-reserve,
 // worker immediately pre-I/O, and the ZeroBounce executor boundary. Readiness
-// itself revalidates current authorization at claim/reservation/execution.
+// uses canonical selection/address ownership, not the retired command-budget
+// authority helper, at claim, projection, admission and immediate pre-I/O.
 assert.match(worker, /await assertCro03cAuthorityBeforeIo\(context\);[\s\S]*?await reserveCro03cProviderOperation\(/);
 assert.match(worker, /await assertCro03cAuthorityBeforeIo\(context\);[\s\S]*?await executeCro03cLiveProvider\(/);
 assert.match(executor, /case "zerobounce":[\s\S]*?await assertCro03cAuthorityBeforeIo\(context\);[\s\S]*?await processValidationIntent\(input\.intentId!?/);
 assert.ok(
-  (readiness.match(/hasCurrentCro03cValidationAuthority\(/g) ?? []).length >= 4,
-  "claim, reservation, execution, and immediate pre-I/O must remain authority checked",
+  (readiness.match(/await currentCanonicalValidationSelection\(/g) ?? []).length >= 4,
+  "canonical selection must remain checked across claim, admission, projection and dispatch",
 );
+assert.match(readiness, /await claimCanonicalAddressValidation\(tokenHash!,tx\)/);
+assert.match(readiness, /await markCanonicalAddressDispatch\(addressOwner,String\(operationId\),tx\)/);
+assert.match(readiness, /if \(!state\?\.enabled \|\| state\.circuit_state !== "closed"\)/);
 
 // Terminal hooks are one generation-coalesced outbox. Readiness is requested
 // first, scoring exactly once by its durable key, then completion is permitted.
