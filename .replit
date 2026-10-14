@@ -21,6 +21,7 @@ PORT = "5000"
 deploymentTarget = "vm"
 run = ["bash", "-c", "RELEASE_SHA=$(cat dist/RELEASE_SHA 2>/dev/null || echo unset) npm run start"]
 build = ["bash", "-c", "npm run build"]
+ignorePorts = false
 
 [workflows]
 runButton = "Project"
