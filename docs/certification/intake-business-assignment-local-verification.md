@@ -1167,3 +1167,19 @@ ordinary sustained execution, prove three consecutive eligible source-scoped
 committed cycles, then reconcile the full production-contact population and
 each actual October execution, with production fresh-process restart and
 retained replay. No new task, recovery service or approval gate is created.
+
+### Owner-approved always-on hosting configuration
+
+The owner selected Reserved VM after disclosure of ongoing compute charges.
+The supported publishing configuration now sets deploymentTarget to `vm`.
+The verified configuration diff changes only that target; the existing
+build command and release-SHA-aware run command remain byte-for-byte unchanged.
+No provider/outbound control, workflow, native limit or production schema was
+changed.
+
+This configuration takes effect on the next owner publication, not immediately.
+No publication was performed by the agent. The failed stock release checks and
+original A–G production acceptance remain open. After publication, obtain fresh
+deployment metadata and serving/build identities before measuring worker
+continuity, original source-scoped progress and the remaining disposition,
+restart and replay obligations.

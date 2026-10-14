@@ -145,3 +145,4 @@
 - [Large planning payloads](task-planning-payload-limits.md) — Task plans have a byte ceiling; filter large callback results to avoid notebook resets and preserve original evidence.
 - [Upload boundary verification](upload-boundary-verification.md) — Verify multipart admission; a 300s gateway timeout can hide a committed import. Reconcile exact hashes before resending.
 - [Transaction rollback masking](transaction-rollback-masking.md) — Idle termination may surface only as failed rollback; preserve both errors and never infer healthy work from a lease alone.
+- [Production worker hosting](production-worker-hosting.md) — Owner selected Reserved VM for continuous workers; configured hosting is not live deployment or acceptance proof.
