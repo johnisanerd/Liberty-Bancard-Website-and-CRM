@@ -23,3 +23,15 @@ That output was not a successful empty census.
 **How to apply:** If the expected columns or aggregate result are absent, treat
 the check as unverified. Inspect the live schema and query syntax, then rerun the
 corrected read; never report zero records or use it as mutation evidence.
+
+Large production SQL results can be truncated at 1 MiB while still reporting
+success. Do not parse or certify a partially returned cohort.
+
+**Why:** A successful original-row read was cut in the middle of CSV/JSON;
+retrying the complete cohort did not recover the omitted rows. Retaining raw
+and parsed copies also exhausted the notebook's memory and reset its state.
+
+**How to apply:** Fetch bounded source-coordinate pages, reject truncation
+markers, and assert each page's expected cardinality and the complete coordinate
+union. Persist private pages promptly and retain only small summaries in the
+notebook; process bulky saved evidence locally rather than accumulating copies.

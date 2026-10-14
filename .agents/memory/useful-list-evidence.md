@@ -23,3 +23,9 @@ Native-button keyboard acceptance must include Chromium's character event, not j
 **Why:** A private no-database Chromium probe showed Enter without text generated keydown/keyup and zero clicks, while carriage-return text generated keypress and exactly one native click. Radix's keydown-driven controls can pass while native buttons silently remain untested.
 
 **How to apply:** Read the rendered component's actual selectors instead of inventing them, require real rows or cards with explicit visibility, and declare volume, hardware, network and cache conditions. Keep navigation timing, local-input timing and whole-volume acceptance separate.
+
+Compare rendered record identifiers with the page's actual returned identifiers; a broad semantic-tag count is not a record count.
+
+**Why:** A composite review panel contained both source-recovery articles and actual review records. Counting all articles rejected a correctly hydrated page, while an earlier shell-only capture missed that records were still loading.
+
+**How to apply:** Wait for the destination's hydrated records, verify their identifiers and next-page non-overlap, then capture the visible result. Do not certify the record collection from its parent panel or loading shell.

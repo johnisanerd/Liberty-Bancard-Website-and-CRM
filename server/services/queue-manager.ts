@@ -1054,7 +1054,7 @@ interface HistoryBucket {
 
 const HISTORY_HOURS = 24;
 
-class QueueManager {
+export class QueueManager {
   private queues: Map<string, Queue> = new Map();
 
   private workers: Map<string, Worker> = new Map();
@@ -2675,6 +2675,19 @@ class QueueManager {
           break;
         }
         case QUEUE_NAMES.CANONICAL_IMPORT_RECOVERY: {
+          // Give the existing provider-free linker a bounded serial opportunity
+          // on the existing local schedule, before a whole upload occupies it.
+          // No new queue, provider tick, control change or cursor reset.
+          const { processContactLinkAutomationTick } = await import("./contact-link-automation");
+          let linkingFailure;
+          let linkingFailed = false;
+          try {
+            const linked = await processContactLinkAutomationTick();
+            if (linked.ran) console.log(`[ContactLinkAutomation] ${JSON.stringify(linked)}`);
+          } catch (error) {
+            linkingFailure = error;
+            linkingFailed = true;
+          }
           // Each boundary keeps its own fatal outcome and claim fences. A
           // retained-row failure must not skip independently claimed uploads.
           const { processCanonicalImportRecoveryTick } = await import("./canonical-import-recovery-worker");
@@ -2694,6 +2707,8 @@ class QueueManager {
           try { uploadsResumed = await resumeExpiredCsvImports(processPersistedCsvImport); }
           catch (error) { uploadFailure = error; uploadFailed = true; }
           if (uploadsResumed) console.log(`[CsvImportRecovery] Resumed ${uploadsResumed} expired executions`);
+          if (linkingFailed) throw new Error("CANONICAL_IMPORT_INDEPENDENT_LINKING_FAILED",
+            {cause:{linkingFailure,retainedFailure,uploadFailure}});
           if (retainedFailed && uploadFailed)
             throw new Error("CANONICAL_IMPORT_INDEPENDENT_BOUNDARIES_FAILED",
               {cause:{originalError:retainedFailure,cleanupError:uploadFailure}});

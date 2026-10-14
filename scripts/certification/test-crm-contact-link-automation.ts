@@ -223,9 +223,19 @@ try {
     check((await getContactLinkAutomationStatus(false))!.committed===before.committed+1,
       "Cycle progress measures a new committed decision");
   }
+  // Execute the real existing serial processor, without starting unrelated
+  // workers or changing production schedules, controls or provider transports.
+  const {QueueManager,QUEUE_NAMES}=await import("../../server/services/queue-manager");
+  const serialSupported=await fixture("serial_local_continuation");
+  const serialProcessor=(new QueueManager() as any).buildProcessor(QUEUE_NAMES.CANONICAL_IMPORT_RECOVERY,{});
+  await serialProcessor({id:`${prefix}.serial`,name:"tick",data:{}});
+  check(await decisionCount(serialSupported.contactId)===1,
+    "The existing serial local recovery processor commits its supported relationship");
+  check((await getContactLinkAutomationStatus(false))!.leaseToken===null,
+    "The serial continuation releases only its own linking lease");
   const {readContactLinkAssignmentPopulation}=await import("../../server/services/contact-link-population");
   const population=await readContactLinkAssignmentPopulation();
-  check(population.state==="current" && population.currentVerified===5,
+  check(population.state==="current" && population.currentVerified===6,
     "Current audited population is separate from cumulative attempts");
   await pool.query("ALTER FUNCTION crm_source_family_relationship_reasons(integer,integer,uuid) RENAME TO cert_missing_source_family");
   try {

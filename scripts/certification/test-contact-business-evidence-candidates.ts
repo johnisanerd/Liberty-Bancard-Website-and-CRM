@@ -6,6 +6,7 @@ import { sql } from "drizzle-orm";
 import { assertDisposableTestInfrastructure } from "../test-infrastructure-guard";
 import { evidenceRelationshipCandidateCte } from "../../server/services/contact-business-evidence-candidates";
 import { identityNameSql,identityDomainSql } from "../../shared/relationship-evidence-sql";
+import {hasMaterializableSourceEvidence,MATERIALIZATION_SOURCE_CATEGORIES,MATERIALIZATION_SOURCE_TYPES} from "../../server/services/contact-business-materialization-policy";
 
 await assertDisposableTestInfrastructure({operation:"Candidate retrieval parity and scale"});
 const pool=new Pool({connectionString:process.env.TEST_DATABASE_URL});
@@ -29,6 +30,8 @@ try {
     CREATE TEMP TABLE sunbiz_entities(filing_number text,entity_name text,dba text,source text);
     CREATE TEMP TABLE contact_source_events(contact_id integer,metadata jsonb);
     CREATE INDEX fixture_business_name ON businesses(crm_identity_name(canonical_name))
+      WHERE record_class='canonical';
+    CREATE INDEX fixture_business_domain ON businesses(crm_identity_domain(website_domain))
       WHERE record_class='canonical';
     CREATE INDEX fixture_registry_name ON sunbiz_entities(crm_identity_name(entity_name))
       WHERE filing_number IS NOT NULL AND source IN ('sunbiz','cordata','corevt');
@@ -106,8 +109,24 @@ try {
   }
   visit(plan.Plan);
   assert(indexedNodes.includes("fixture_business_name"),"Inline read normalizer uses unchanged native-function index");checks++;
+  assert(indexedNodes.includes("fixture_business_domain"),"Domain lookup uses its exact native normalization index");checks++;
   assert(indexedNodes.includes("fixture_registry_name"),"Registry legal-name branch uses the exact normalization index");checks++;
   assert(indexedNodes.includes("fixture_registry_dba"),"Registry alias branch uses the exact normalization index");checks++;
+  for(const source_category of MATERIALIZATION_SOURCE_CATEGORIES) {
+    assert(hasMaterializableSourceEvidence([{source_category,metadata:{businessEvidence:{canonicalName:"Source"}}}]));
+    checks++;
+  }
+  for(const source_type of MATERIALIZATION_SOURCE_TYPES) {
+    assert(hasMaterializableSourceEvidence([{source_type,metadata:{businessEvidence:{canonicalName:"Source"}}}]));
+    checks++;
+  }
+  for(const events of [[],[{source_category:"crm",metadata:{}}],
+    [{source_category:"crm",metadata:{businessEvidence:null}}],
+    [{source_category:"crm",metadata:{businessEvidence:[]}}],
+    [{source_category:"unsupported",metadata:{businessEvidence:{canonicalName:"Source"}}}]]) {
+    assert.equal(hasMaterializableSourceEvidence(events),false);checks++;
+  }
+  assert.throws(()=>hasMaterializableSourceEvidence(undefined),/SOURCE_SNAPSHOT_UNAVAILABLE/);checks++;
   fs.writeFileSync("docs/certification/canonical-enrichment-candidate-retrieval.json",JSON.stringify({
     checks,scope:"Disposable SQL retrieval parity; native write authority unchanged",
     unrelatedBusinesses:50001,unrelatedRegistryEntities:50001,

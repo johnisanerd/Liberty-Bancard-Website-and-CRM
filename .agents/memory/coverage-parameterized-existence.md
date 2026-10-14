@@ -17,3 +17,11 @@ source-backed payload, not just a one-contact lookup or scalar count. Require
 full result parity, retained missing-entity/filing semantics and actual index
 execution. Large estimated costs are not runtime proof, and successful replica
 queries are not primary request or committed-checkpoint acceptance.
+
+An indexed smaller fixture can still hide a broad production hash join on a
+different active branch. Require executed name, domain and alias branch plans
+with realistic NULL/non-NULL key mixes; one branch's index assertion is not
+evidence for the others.
+
+**Why:** Active linking retained a small contact page and passed fixture index
+checks while production still scanned the full canonical-business population.

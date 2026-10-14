@@ -7,6 +7,7 @@ import {assertSystemLinkDatabaseGuard} from "./commercial-link-authority";
 import {normalizeStateIdentity} from "../../shared/state-identity";
 import {normalizeDomain,normalizePhoneE164} from "./sdr/dedupe";
 import {normalOrganizationName,normalOrganizationValue} from "./organization-resolution-policy";
+import {MATERIALIZATION_SOURCE_CATEGORIES,MATERIALIZATION_SOURCE_TYPES} from "./contact-business-materialization-policy";
 
 const rows=(result:any):any[]=>result?.rows ?? result ?? [];
 const address=(value:unknown)=>String(value ?? "").toLowerCase().replace(/[^a-z0-9]/g,"");
@@ -41,8 +42,8 @@ export async function materializeSupportedContactBusiness(contactId:number,
         id,source_category,source_type,source_external_id,
         metadata->'businessEvidence' proof FROM contact_source_events
       WHERE contact_id=${contactId} AND jsonb_typeof(metadata->'businessEvidence')='object'
-        AND (source_category IN ('ghl_sync','crm','crm_manual','manual_crm','csv_import','manual_import','apollo')
-          OR source_type IN ('google_maps_outscraper','apollo_lead_list'))
+        AND (source_category IN (${sql.join(MATERIALIZATION_SOURCE_CATEGORIES.map(value=>sql`${value}`),sql`, `)})
+          OR source_type IN (${sql.join(MATERIALIZATION_SOURCE_TYPES.map(value=>sql`${value}`),sql`, `)}))
       ORDER BY source_category,source_type,coalesce(source_external_id,''),id DESC
       ) latest ORDER BY id DESC`));
     if(!events.length)return {status:"held",reasonCode:"RETAINED_ORGANIZATION_EVIDENCE_MISSING"};

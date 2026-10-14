@@ -162,7 +162,8 @@ export async function processContactLinkAutomationTick(
         if (pinned.value.enabled !== true) throw new Error("CONTACT_LINK_AUTOMATION_DISABLED");
         return true;
       };
-      if(!candidate.eligible && candidate.projectedBusinessId==null && candidate.currentDecisionId==null) {
+      if(!candidate.eligible && candidate.projectedBusinessId==null && candidate.currentDecisionId==null &&
+        candidate.hasSupportedMaterializationEvidence) {
         const materialized=await materializeSupportedContactBusiness(candidate.contactId,authorityCheck);
         if(materialized.status==="materialized" || materialized.status==="matched") {
           const refreshed=(await loadEvidenceRelationshipPage(db,0,1,candidate.contactId)).previews[0];
@@ -180,7 +181,9 @@ export async function processContactLinkAutomationTick(
       // The initializer independently proves original retained provenance and
       // current verified affiliation; it cannot promote explicit test classes.
       const {initializeImportedLinkedContactClass}=await import("./commercial-classification-authority");
-      await initializeImportedLinkedContactClass(candidate.contactId,authorityCheck);
+      if(candidate.eligible || candidate.projectedBusinessId!=null) {
+        await initializeImportedLinkedContactClass(candidate.contactId,authorityCheck);
+      }
       state.scanned++;
       if (outcome?.status === "applied") state.committed++;
       else if (outcome?.status === "replayed") state.replayed++;

@@ -1427,3 +1427,235 @@ and `affiliation-exceptions-current.json` under the same ignored evidence
 directory. No extra tasks, new approval gates, production SQL writes,
 workbook resends or provider/outbound changes were made. The original task
 remains open.
+
+## 2026-10-14 — active-linker correction and completed October accounting
+
+The exact production active-linker contact selection at the retained cursor
+took 9.721 ms (69.014 ms planning). Its actual 25-contact candidate query took
+2,959.229 ms (164.276 ms planning), scanning 88,899 canonical businesses in
+both name/domain branches. These are executed production plans, not inferred
+from the discovery schedule or substituted coverage queries.
+
+The correction fences each name/domain lookup as a parameterized lateral
+probe without limiting competing alternatives. The domain index uses the
+unchanged native identity function, not the semantically different coverage
+projection. Migration 0356 and the matching schema declaration are delivered
+to development through the normal migration runner; production index delivery
+belongs to managed Publish. No native function body or guard was changed.
+
+The existing transactional materializer and read preflight now share the
+same retained-source/object admission predicate. Unlinked contacts without
+that evidence avoid a transaction which could only return missing evidence;
+unlinked negative candidates avoid the no-op classification lookup. Actual
+materialization, affiliation and classification still use their original
+owner, lease, source and native-write checks. The existing local recovery
+processor gives that same bounded, provider-free linker a serial opportunity
+before ordinary upload recovery. No new queue, pipeline, control change,
+manual cursor reset or larger execution budget was introduced.
+
+Four fresh disposable suites passed: 32 candidate parity/index checks against
+50,001 unrelated businesses, 30 source-family materialization checks,
+53 automatic-linking checks including the real serial recovery processor,
+and six source-only reconsideration checks. Provider/network attempts remained
+zero; native fingerprints and explicit pause/retired/revoked-owner protections
+passed. Build passed. Type checking still reports the pre-existing unresolved
+`LiveChat` type in `server/routes/live-chat.ts`; the same reference is present
+in HEAD. This is not an all-stock-gates-green or release-GO statement.
+Development restarted with the existing background-off workflow and the
+public landing page rendered; this screenshot is not signed-in UI evidence.
+
+At 16:12:18 UTC all five original October executions were completed with
+633/633, 653/653, 513/513, 578/578 and 537/537 original accounting.
+The final 513-row execution resumed normally; nothing was resent.
+Independent bounded pages subsequently verified all 2,914 exact coordinates,
+with no missing referenced contacts, duplicate events per contact/row or
+event-fingerprint mismatches. Current mailbox inventory/affiliation is not
+silently promoted to proof of the business expected by the original source.
+The October disjoint audit contains 2,391 inventory/current-affiliation rows
+whose expected-business qualification remains unproven, 76 business-only
+canonical references, 424 holds requiring current freshness qualification,
+and 23 remaining staging/chain dispositions. Completed accounting is not
+full source acceptance.
+
+Three consecutive eligible published recovery cycles ended at 16:12:01,
+16:12:34 and 16:13:07 UTC, fulfilling 3, 4 and 3 rows, respectively, with
+no failed/cleanup-failed/abandoned outcomes. Separate audit joins verified
+exactly 3/4/3 distinct September items, original coordinates/fingerprints
+and current completed native fulfillment terminals. This establishes
+source-scoped consecutive progress for the currently published build, not
+activation of the newer workspace correction.
+
+All 917 protected original evidence records were independently compared
+against their captured original JSONB facts: 917 present, 917 exact body
+matches and 917 unchanged hash/decision/business/contact/source/entity
+references. This closes exact evidence-body preservation, not current
+qualification of every historical decision or hold.
+
+Original acceptance remains open. The tested active-linker/index correction
+is not yet published; full-population disposition, fresh hold/expected-business
+qualification and authorized production ordinary-upload restart/retained
+replay proof remain required. The previous full-stock baseline remains
+separately attributed, and there is no release GO.
+
+Private ignored evidence: `post-publish/active-linker-plan-{0,1}.json`,
+`linker-serial-certification-final.log`, `linker-build.log`,
+`protected-evidence-body-preservation.json`,
+`three-source-scoped-ordinary-cycles.json`, `original-workbook-watch.json`
+and the complete bounded `final-original-*` coordinate union/summary.
+
+At 15:34:57 the original status reader reported four of five October executions
+completed (537, 578, 633 and 653 rows), with zero pending fulfillment on each.
+The 513-row execution still had 121 original dispositions, but a subsequent
+production read at 15:35:36 proved its ordinary recovery claim advanced from
+attempt 33 to 34, with a fresh heartbeat and live lease through 15:40:36.
+This establishes automatic re-claim after the serial slot freed; it is not yet
+proof of tail-row fulfillment or execution completion.
+
+## Republished primary acceptance observations — 2026-10-14, 14:41–15:02 UTC
+
+The owner published again. Fresh deployment metadata confirms the existing
+public Reserved VM and Liberty domains; no hosting or domain change was made.
+Primary health serves SHA `4e20d3dfe9b8c4820a158ea9c3d361dbe432194a`,
+build `bf403475-9f50-48b4-ada6-9e8e92a516f1`, built 14:40:52.183 UTC.
+Initial probes encountered HTTP 500 during startup; production logs then
+established port-open at 14:41:03, and subsequent authenticated requests succeeded.
+The published coverage-query source exactly matches the tested workspace source.
+
+**The original coverage run is now complete**, not replaced or reset:
+run `9e4e1edf-4bfc-402e-85da-2e77e8d184d4`, original watermark 159,476,
+154,418/154,418 processed, cursor 159,476, no last error. Its automatic
+server tick committed 153,500 processed at 14:41:16. Two existing authorized
+resume requests subsequently committed 154,000 and 154,418. The first primary
+request returned HTTP 200 in 2,741 ms; its correlated server log records
+2,650 ms HTTP, 2,423.673 ms database execution, 0.465 ms acquisition and
+successful COMMIT. The final page returned HTTP 200 in 1,993 ms
+(1,899 ms server HTTP). The frozen census denominator and exclusive bucket
+sum both remain 154,418. These are actual primary requests and committed
+checkpoints under ordinary concurrent worker activity, not replica EXPLAIN proof.
+
+Actual first/next 50-candidate primary review requests returned HTTP 200 in
+3,351/2,207 ms, with 50 distinct candidate IDs each and zero overlap.
+An authenticated private Chromium session then rendered the actual
+`/dashboard/lead-ops?tab=businesses` screen, waited for hydrated review
+records, clicked Next page and verified 25 distinct rendered IDs on each
+page with zero overlap. Census displayed completed/100%; no panel alerts
+or browser exceptions were observed at capture. The initial unsigned
+`/api/auth/user` 401 was before login, not a signed-in review failure.
+Screenshots of the completed census and hydrated next review page are
+retained privately. An intermediate collector counted nested recovery
+articles as review records; that incorrect selector was repaired before
+the successful rendered verification. No approval/linking controls were used.
+
+The primary diagnostic completed 60,001 ms with 213 samples and no capture
+failure. Three samples observed lock blocking; this is not a zero-blocker
+claim. Event-loop p99 was 22.331 ms, maximum 60.326 ms; primary round-trip
+maximum 101.933 ms. Native bridge verification still returned true, and all
+three native relationship body fingerprints match the certified versions.
+Fresh production reads against hash-verified captured references also
+preserved all 917 historical business projections, all 917 captured decision
+identities/classifications/revisions/evidence references and all 917 evidence
+identities/source references/facts hashes. No captured reference was missing
+or changed. This is not an independent recomputation of every evidence body.
+
+At 15:01:45 UTC, exact original October executions had accounting
+537/537, 397/578, 121/513, 296/653 and 633/633. The 537- and 633-row executions
+remain completed with zero pending fulfillment. The 578- and 653-row
+executions demonstrably advanced after publication; the 513-row execution
+still awaits its expired ordinary claim's recovery opportunity. Its stale
+heartbeat is not accepted as current committed progress.
+
+Ordinary restart rechecks are distinguished from new materialization:
+at 14:51:30, 161 existing source events in the 578-row execution had been
+refreshed after publication through row 241, before its original accounting
+advanced again. Replaying that committed prefix is not counted as newly
+fulfilled originals. The 653-row execution also advanced in separate
+snapshots. Full production ordinary-upload completion/restart proof remains
+pending for the unfinished executions.
+
+At 15:04:36–37, production payload reads independently retained the five exact
+workbook filenames and execution file hashes, with arrays of 513, 537, 578,
+633 and 653 original rows respectively. Each first retained original row has
+93 columns. All 2,914 original rows remain available, including the unfinished
+executions; this structural observation does not claim every retained cell
+was independently re-hashed against the workbooks in this measurement.
+
+September had 368 current-qualified terminal receipts and 129 matching blocked
+hold receipts at 14:50:27. Hold freshness and the remaining originals still
+need complete reconciliation; receipt presence alone is not acceptance.
+The published retained worker has one observed eligible cycle with two
+fulfilled and two held rows, zero failed/cleanup-failed/abandoned outcomes.
+Three consecutive eligible production recovery cycles and full retained
+replay remain unproven. Assignment is enabled and has two observed
+post-publication checkpoints, but its initial population pass is incomplete:
+15:01:46 reported 156,640 active contacts, 2,719 currently verified,
+153,921 unresolved and zero legacy projections without current verified
+assignment. The completed frozen census does not substitute for this
+unfinished assignment/recovery acceptance.
+
+A bounded, read-only observer is running against the existing status/import
+readers while the existing workers continue. It does not enqueue jobs,
+change leases, import workbooks, reset cursors, enable providers or mutate
+production records. It checks the five exact execution identities, preserves
+unavailable-reader states, records current accounting/pending fulfillment and
+notifies when ordinary workbook completion is ready for reconciliation or
+the 90-minute observation window ends. Neither outcome marks this task complete.
+Evidence remains under the ignored `post-publish` directory. The original
+task stays open; no additional tasks, approval gates or release GO were created.
+
+### Independent reconciliation while ordinary imports continue — 2026-10-14
+
+Read-only production evidence now covers every original coordinate in the
+completed 537/633-row October executions and all 1,472 September originals.
+The saved audit asserts exact coordinate cardinality, derives the mailbox
+inventory from retained original email columns, and checks physical contacts,
+current decisions, original source-event fingerprints, historical business
+references, staging states and current-version receipts. It found zero missing
+referenced contacts, duplicate source events for the same contact/row, or
+event-fingerprint mismatches across these 2,642 originals.
+
+The 537-row inventory has 520 mailbox rows, 17 business-only references,
+441 mailbox rows with physical contacts and 435 with current verified
+affiliations. The 633-row inventory has 627 mailbox rows, six business-only
+references and 524 mailbox rows with physical contacts/current verified
+affiliations. Thirteen and one rows respectively remain in unresolved
+staging/retry states. Their other hold receipts require native-fact freshness
+checks. Current affiliation alone does not independently prove the business
+expected by an original source; ordinary completion is not retained
+current-version qualification.
+
+September has 1,277 mailbox rows and 195 business-only rows. Physical source
+events account for 1,141 mailbox rows; 1,097 have current verified affiliations,
+and 1,040 match a retained original-item business reference. Of the business-only
+rows, 185 have existing canonical business references. There are 368
+current-qualified terminal receipts with matching physical references, 129
+current-item-matching hold receipts whose graph freshness remains unproven,
+and 97 residual staging/retry/chain-unresolved coordinates after separating
+physical references and inventory-only evidence. These categories are not
+permission to merge, transfer, reimport or count legacy receipts as new
+fulfillment. Full native evidence-body recomputation is still outstanding.
+
+The recovery delay is now evidenced rather than inferred from counters:
+the primary recovery queue was selected, active and unpaused, with one active
+job and five waiting. The published handler awaits whole ordinary executions
+before releasing that serial queue slot; startup reconciliation is independent.
+The 513-row execution's last claim expired at 14:44:58 while its original
+accounting remained 121. The active queue job finally completed at 15:32:35,
+after 3,090,288 ms, and the next retained cycle committed three fulfilled and
+two held rows at 15:33:06, with zero failed/cleanup-failed/abandoned outcomes.
+This is the second observed eligible published retained cycle, not proof of
+three consecutive cycles or completed 513-row recovery.
+
+Assignment's next ordinary checkpoint occurred at 15:30:35: 13,681 scanned,
+13 committed and 13,668 held, initial pass incomplete. The existing
+30-minute discovery schedule invokes a maximum 30-second assignment pass;
+the slow cadence is real, but this observation does not establish the cost
+of individual SQL statements or certify full-population assignment.
+
+Private ignored evidence: `post-publish/independent-source-audit-summary.json`,
+the bounded original-row pages and receipt-reference captures, primary queue
+telemetry and `independent-final-worker-trace.json`. The aggregation explicitly
+distinguishes inventory, historical references, current receipts, unproved
+hold freshness and unresolved work. No application changes, scheduling
+changes, production writes, provider changes, extra tasks or approval gates
+were made for these independent checks. Original production acceptance
+remains open.

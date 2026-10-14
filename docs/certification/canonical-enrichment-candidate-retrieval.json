@@ -1,16 +1,17 @@
 {
-  "checks": 16,
+  "checks": 32,
   "scope": "Disposable SQL retrieval parity; native write authority unchanged",
   "unrelatedBusinesses": 50001,
   "unrelatedRegistryEntities": 50001,
   "indexesUsed": [
     "contacts_pkey",
     "fixture_business_name",
+    "fixture_business_domain",
     "fixture_registry_name",
     "fixture_registry_dba"
   ],
-  "executionMs": 143.946,
-  "planningMs": 2.653,
+  "executionMs": 189.196,
+  "planningMs": 1.849,
   "candidatePairs": 9,
   "productionWrites": false,
   "taskComplete": false

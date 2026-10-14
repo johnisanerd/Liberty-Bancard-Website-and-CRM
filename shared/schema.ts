@@ -5049,6 +5049,8 @@ export const businesses = pgTable("businesses", {
   index("businesses_google_place_id_idx").on(table.googlePlaceId),
   index("canonical_link_business_name_lookup_idx").on(sql`crm_identity_name(${table.canonicalName})`)
     .where(sql`record_class='canonical'`),
+  index("canonical_link_business_domain_lookup_idx").on(sql`crm_identity_domain(${table.websiteDomain})`)
+    .where(sql`record_class='canonical'`),
   // Matches migration 0240. Declared here (not just in the migration file)
   // so Publish's schema diff can actually apply it to production — Publish
   // diffs shared/schema.ts against live production, it does not execute

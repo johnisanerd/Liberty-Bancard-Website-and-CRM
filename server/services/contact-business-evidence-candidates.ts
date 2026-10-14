@@ -15,12 +15,20 @@ export function evidenceRelationshipCandidateCte(contactIds: number[]) {
     ]::integer[])
   ), candidate_business_keys AS MATERIALIZED (
     SELECT c.id contact_id,b.id business_id FROM contact_page c
-      JOIN businesses b ON ${sql.raw(identityNameSql("b.canonical_name"))}=c.name_key
-      WHERE c.name_key<>'' AND b.record_class='canonical'
+      JOIN LATERAL (
+        SELECT b.id FROM businesses b
+        WHERE c.name_key<>'' AND b.record_class='canonical'
+          AND ${sql.raw(identityNameSql("b.canonical_name"))}=c.name_key
+        OFFSET 0
+      ) b ON TRUE
     UNION
     SELECT c.id,b.id FROM contact_page c
-      JOIN businesses b ON ${sql.raw(identityDomainSql("b.website_domain"))}=c.domain_key
-      WHERE c.domain_key IS NOT NULL AND b.record_class='canonical'
+      JOIN LATERAL (
+        SELECT b.id FROM businesses b
+        WHERE c.domain_key IS NOT NULL AND b.record_class='canonical'
+          AND ${sql.raw(identityDomainSql("b.website_domain"))}=c.domain_key
+        OFFSET 0
+      ) b ON TRUE
     UNION
     SELECT c.id,sl.business_id FROM contact_page c
       JOIN LATERAL (

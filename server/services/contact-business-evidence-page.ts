@@ -3,6 +3,7 @@ import { sql } from "drizzle-orm";
 import type { SystemLinkFacts } from "./contact-business-system-link-policy";
 import { identityNameSql, identityDomainSql, relationshipReasonsSql } from "../../shared/relationship-evidence-sql";
 import { evidenceRelationshipCandidateCte } from "./contact-business-evidence-candidates";
+import { hasMaterializableSourceEvidence } from "./contact-business-materialization-policy";
 
 const rows = (result: any): any[] => result?.rows ?? result ?? [];
 const hash = (value: unknown) => crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -112,6 +113,7 @@ export async function loadEvidenceRelationshipPage(
       snapshotHash: hash([c,alternatives,reasons]),
       contactRevision:c.contact_revision,currentDecisionId:c.current_decision_id ?? null,
       projectedBusinessId:c.projected_business_id ?? null,
+      hasSupportedMaterializationEvidence:hasMaterializableSourceEvidence(c.source_event_revisions),
       candidateEvidence:alternatives.map((m:any)=>({businessId:Number(m.business_id),
         sourceLinkId:String(m.source_link_id),sourceEntityId:m.source_entity_id ?? null,
         businessRevision:m.business_revision,sourceRevision:m.source_revision,

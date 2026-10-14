@@ -55,8 +55,13 @@ try {
    } else if(process.argv.includes("--transaction-leases-only")){
      env.DB_POOL_MAX="1";
      await run(["scripts/certification/test-canonical-transaction-leases.ts"]);
-   } else if(process.argv.includes("--intake-only")){
-     const scripts=[
+   } else if(process.argv.includes("--intake-only")||process.argv.includes("--linker-performance-only")){
+     const scripts=process.argv.includes("--linker-performance-only")?[
+       "test-contact-business-evidence-candidates.ts",
+       "test-source-family-business-materialization.ts",
+       "test-crm-contact-link-automation.ts",
+       "test-source-only-link-reconsideration.ts",
+     ]:[
        "test-intake-native-contract.ts","test-organization-resolver-disposable.ts",
        "test-intake-execution-isolation.ts","test-source-only-link-reconsideration.ts",
        "test-source-family-business-materialization.ts","test-crm-contact-link-automation.ts",
