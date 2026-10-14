@@ -18,8 +18,19 @@ export async function runC4Accessibility(h:Awaited<ReturnType<typeof stage3BHttp
         ["/dashboard/onboarding-kickoff",/Closed Won Sales → linked Onboarding preparation/,"main h1"],
         ["/dashboard/terminal-roi",/Terminal Recommendation Forecasts/,'[data-testid="button-terminal-report-more"]'],
       ] as const){
+        // Let the real ThemeProvider read the persisted theme on navigation.
+        // Toggling only the root class races provider hydration/transitions.
+        await b.evaluate(`localStorage.setItem("liberty-theme",${JSON.stringify(theme)})`);
         await b.navigate(url);await b.waitFor(ready);
-        await b.evaluate(`document.documentElement.classList.toggle("dark",${theme==="dark"})`);
+        await b.evaluate(`(async()=>{
+          await document.fonts.ready;
+          await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+          await Promise.all(document.getAnimations({subtree:true})
+            .filter(animation=>animation.constructor.name==="CSSTransition")
+            .map(animation=>animation.finished.catch(()=>{})));
+        })()`);
+        assert.equal(await b.evaluate(`document.documentElement.classList.contains(${JSON.stringify(theme)})`),true,
+          `${url} actual persisted theme ${theme}/${width}`);
         const probe=await b.evaluate(`(()=>{
           const e=document.querySelector(${JSON.stringify(target)}),r=e.getBoundingClientRect();
           const canvas=document.createElement("canvas");canvas.width=canvas.height=1;
@@ -38,12 +49,14 @@ export async function runC4Accessibility(h:Awaited<ReturnType<typeof stage3BHttp
             height:r.height,width:r.width,label:e.getAttribute("aria-label")||e.textContent.trim(),
             contrast:(Math.max(f,g)+.05)/(Math.min(f,g)+.05),
             large:parseFloat(s.fontSize)>=24||(parseFloat(s.fontSize)>=18.66&&parseFloat(s.fontWeight)>=700),
-            reducedMotion:matchMedia("(prefers-reduced-motion: reduce)").matches};
+            reducedMotion:matchMedia("(prefers-reduced-motion: reduce)").matches,
+            foreground:fg,background,computedColor:s.color,theme:document.documentElement.className};
         })()`);
         assert.equal(probe.h1,1,`${url} persistent H1 ${theme}/${width}`);
         assert.equal(probe.overflow,false,`${url} document-wide overflow ${theme}/${width}`);
         assert.equal(probe.reducedMotion,true);
-        assert.ok(probe.contrast>=(probe.large?3:4.5),`${url} actual rendered text contrast ${probe.contrast}`);
+        assert.ok(probe.contrast>=(probe.large?3:4.5),
+          `${url} actual rendered text contrast ${theme}/${width}: ${JSON.stringify(probe)}`);
         if(target!=="main h1"){
           assert.ok(probe.height>=44,`${url} control target height ${probe.height}`);
           assert.ok(probe.label.length>0);

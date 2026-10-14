@@ -7,7 +7,14 @@ import { spawnSync } from "node:child_process";
 import { writeCandidateIdentity, captureCandidateSource } from "./fixtures/candidate-build-identity";
 
 function run(command: string, args: string[]): void {
-  const result = spawnSync(command, args, { stdio: "inherit", env: process.env });
+  const compiling = command === "npm" || command === "npm.cmd";
+  const env = compiling && process.env.VG_PROVIDER_DENY_MODE === "1" ? {
+    ...process.env,
+    CERTIFICATION_COMPILER_ONLY: "1",
+    CERTIFICATION_ALLOWED_NETWORK_ORIGINS: "",
+    CERTIFICATION_ALLOW_LOOPBACK: "0",
+  } : process.env;
+  const result = spawnSync(command, args, { stdio: "inherit", env });
   if (result.error) throw result.error;
   if (result.status !== 0) {
     throw new Error(`${command} ${args.join(" ")} exited ${result.status ?? "with a signal"}`);
