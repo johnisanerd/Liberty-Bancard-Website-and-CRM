@@ -114,7 +114,18 @@ try {
   // footer control. Wait for that independent source to settle before pointer
   // measurement rather than clicking a coordinate during hydration.
   await b.waitFor(/Native appointments are unavailable/);
-  await b.waitFor(/110/);
+  const ownedUsefulCount=await h.pool.query(
+    "SELECT count(*)::int AS count FROM contacts WHERE email LIKE $1",
+    [`${h.prefix}-browser-%`],
+  );
+  assert.equal(ownedUsefulCount.rows[0].count,110,"The owned useful fixture volume remains exactly 110");
+  const mobileFacets=await h.request("admin","GET","/api/contacts/facets?");
+  assert.equal(mobileFacets.status,200);
+  assert.ok(mobileFacets.body.total>=110,"The actual admin reader must include every useful fixture contact");
+  assert.equal(await b.evaluate(`(async()=>{for(let n=0;n<120;n++){
+    if(document.querySelector('[data-testid="text-total-contacts"]')?.textContent.trim()===${JSON.stringify(String(mobileFacets.body.total))})return true;
+    await new Promise(resolve=>setTimeout(resolve,100));
+  }return false;})()`),true,"Mobile's visible count must match its real native reader, including prior owned CI fixtures");
   await b.evaluate("document.fonts.ready.then(()=>true)");
   await b.click('[data-testid="button-switch-to-desktop"]');
   for(let n=0;n<50 && !await b.evaluate('localStorage.getItem("prefer_desktop")==="true"');n++)

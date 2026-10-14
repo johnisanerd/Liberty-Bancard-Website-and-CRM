@@ -156,6 +156,14 @@ export async function privateStage3Browser(base:string,cookie:string,originalFet
           await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
           if(!e.isConnected)return null;
           const r=e.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2,hit=document.elementFromPoint(x,y);
+          if(x<0||x>=innerWidth||y<0||y>=innerHeight){
+            // Native reader hydration can move a footer after its first
+            // scroll. Bring the same connected control back into view, then
+            // still require stable geometry and an unobstructed pointer hit.
+            e.scrollIntoView({block:'center',inline:'nearest',behavior:'instant'});
+            previous=null;
+            continue;
+          }
           const ready=r.width>0&&r.height>0&&!e.disabled&&e.getAttribute("aria-disabled")!=="true"&&
             getComputedStyle(e).pointerEvents!=="none"&&x>=0&&x<innerWidth&&y>=0&&y<innerHeight&&(hit===e||e.contains(hit));
           if(ready&&previous&&Math.abs(previous.x-x)<1&&Math.abs(previous.y-y)<1)return {x,y};
@@ -194,6 +202,22 @@ export async function privateStage3Browser(base:string,cookie:string,originalFet
       failRead:(path:string|null,options:{exact?:boolean}={})=>{failPath=path;failExact=options.exact===true;},
       delayRead:(path:string|null,ms=0)=>{delayPath=path;delayMs=ms;},
       acceptDialogs:(accept:boolean)=>{acceptDialog=accept;},
-      navigate:(pathname:string)=>call("Page.navigate",{url:base+pathname})};
+      navigate:async(pathname:string)=>{
+        const previousOrigin=await evaluate("performance.timeOrigin");
+        const navigation=await call("Page.navigate",{url:base+pathname});
+        // A shared heading/selector can still belong to the previous page.
+        // Require the new document itself before callers inspect hydration,
+        // URL-backed state, controls or native reader results.
+        for(let attempt=0;attempt<300;attempt++){
+          try{
+            if(await evaluate(`performance.timeOrigin!==${JSON.stringify(previousOrigin)}&&document.readyState==="complete"`))
+              return navigation;
+          }catch{
+            // Chromium discards the execution context during full navigation.
+          }
+          await new Promise(resolve=>setTimeout(resolve,100));
+        }
+        throw new Error("Browser full-navigation did not reach a new complete document");
+      }};
   } catch(error){await close();throw error;}
 }

@@ -57,17 +57,35 @@ export async function runC4MatchedPerformance(
           if((${visible}).length)return true;await new Promise(r=>setTimeout(r,10));
         }return false;})()`),true,"A hydrated business must actually be visible");
         const usefulListMs=performance.now()-started;
+        // Time the genuine input event and subsequent painted feedback in the
+        // renderer. Node/CDP round trips are recorded separately, not charged
+        // to the UI's retained 200ms response target.
+        await b.evaluate(`(()=>{
+          const input=document.querySelector('main input[placeholder^="Search by name"]');
+          window.__c4LocalFeedback=null;
+          input.addEventListener("input",()=>{
+            const started=performance.now();
+            requestAnimationFrame(()=>requestAnimationFrame(()=>{
+              window.__c4LocalFeedback={elapsed:performance.now()-started,value:input.value};
+            }));
+          },{once:true});
+        })()`);
         let inputStarted=0;
         await b.set('main input[placeholder^="Search by name"]',"C4 Useful Business 1",()=>{inputStarted=performance.now();});
-        assert.equal(await b.evaluate(`new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>{
-          resolve(document.querySelector('main input[placeholder^="Search by name"]').value==="C4 Useful Business 1");
-        })))`),true,"Physical input must produce visible local feedback");
-        const localResponseMs=performance.now()-inputStarted;
+        const feedback=await b.evaluate(`(async()=>{for(let n=0;n<120;n++){
+          if(window.__c4LocalFeedback)return window.__c4LocalFeedback;
+          await new Promise(resolve=>setTimeout(resolve,10));
+        }return null;})()`);
+        assert.ok(feedback,"Physical input must reach two actual browser animation frames");
+        assert.equal(feedback.value,"C4 Useful Business 1","Physical input must produce visible local feedback");
+        const localResponseMs=feedback.elapsed;
+        const controlRoundTripMs=performance.now()-inputStarted;
         assert.equal(await b.evaluate(`(async()=>{for(let i=0;i<250;i++){
           const rows=(${visible});if(rows.length&&rows.every(e=>/C4 Useful Business 1/.test(e.textContent)))return true;
           await new Promise(r=>setTimeout(r,10));
         }return false;})()`),true,"Actual scoped reader must subsequently provide matching visible records");
-        trials.push({version,usefulListMs,localResponseMs,visibleRecords:await b.evaluate(`(${visible}).length`),
+        trials.push({version,usefulListMs,localResponseMs,controlRoundTripMs,
+          responseClock:"browser input event to two animation frames",visibleRecords:await b.evaluate(`(${visible}).length`),
           viewport:await b.evaluate("({width:innerWidth,height:innerHeight,dpr:devicePixelRatio})")});
         if(version==="candidate"){
           assert.ok(usefulListMs<=2500,`Useful-list target failed: ${usefulListMs}ms`);
