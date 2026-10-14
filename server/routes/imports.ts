@@ -1343,7 +1343,7 @@ Guidelines:
       // A resumed native processor can be healthy before its next projection
       // checkpoint. Render its actual live lease; never mark it interrupted
       // solely because an older projection timestamp is stale.
-      if (imp.executionId && liveExecutions.has(imp.executionId)) {
+      if (imp.executionId && liveExecutions.has(imp.executionId) && imp.status !== "failed") {
         imp.status = "processing";
         continue;
       }
@@ -1655,10 +1655,15 @@ Guidelines:
         : sourceFormat === "apollo_lead_list" ? "apollo"
         : "csv_contact";
       const importExecution = executionClaim.execution;
+      const isProviderExport = sourceFormat === "google_maps_outscraper" || sourceFormat === "apollo_lead_list";
 
-      const existingEmails = await db.select({ email: sql<string>`LOWER(TRIM(email))` }).from(contacts).where(and(ne(contacts.email, ""), sql`email IS NOT NULL`));
-      const existingPhones = await db.select({ phone: contacts.phone }).from(contacts).where(and(ne(contacts.phone, ""), sql`phone IS NOT NULL`));
-      const existingCompanies = await db.select({ name: sql<string>`LOWER(TRIM(company_name))` }).from(contacts).where(and(sql`company_name IS NOT NULL`, ne(contacts.companyName, "")));
+      // Native provider materialization owns its identity/consent reads. These
+      // full-population caches belong only to the generic mapper below, whose
+      // path provider rows never enter. Avoid retaining three unused CRM scans
+      // for the entire lifetime of each concurrent provider upload.
+      const existingEmails = isProviderExport ? [] : await db.select({ email: sql<string>`LOWER(TRIM(email))` }).from(contacts).where(and(ne(contacts.email, ""), sql`email IS NOT NULL`));
+      const existingPhones = isProviderExport ? [] : await db.select({ phone: contacts.phone }).from(contacts).where(and(ne(contacts.phone, ""), sql`phone IS NOT NULL`));
+      const existingCompanies = isProviderExport ? [] : await db.select({ name: sql<string>`LOWER(TRIM(company_name))` }).from(contacts).where(and(sql`company_name IS NOT NULL`, ne(contacts.companyName, "")));
 
       const emailSet = new Set<string>();
       for (const row of existingEmails) { if (row.email) emailSet.add(row.email); }
@@ -1763,7 +1768,6 @@ Guidelines:
 
       const batchSize = 100;
       const contactInserts: any[] = [];
-      const isProviderExport = sourceFormat === "google_maps_outscraper" || sourceFormat === "apollo_lead_list";
       for (const [rowIndex, record] of records.entries()) {
         // Provider rows perform native transactions during this first loop,
         // unlike the fast generic mapping pass. Renew per row, as the existing

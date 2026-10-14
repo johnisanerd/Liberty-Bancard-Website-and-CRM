@@ -9,7 +9,7 @@ import { writeContact } from "./contact-writer";
 import { recordImportRowDisposition } from "./import-execution";
 import type { ImportSourceCoordinate } from "./tabular-import-reader";
 import {hasCanonicalImportRecoveryClaim,type CanonicalImportRecoveryClaim} from "./canonical-import-recovery-contract";
-import {runCanonicalTransaction,boundCanonicalWriteTransaction} from "./canonical-transaction-retry";
+import {runCanonicalTransaction,boundCanonicalWriteTransaction,preserveCanonicalTransactionFailure} from "./canonical-transaction-retry";
 import {recordCro03bLegacyWriterDisposition} from "./cro03/admission-service";
 import {verifyProviderImportIdentity} from "./provider-import-identity";
 import {loadEvidenceRelationshipPage} from "./contact-business-evidence-page";
@@ -100,7 +100,8 @@ export async function materializeCanonicalProviderImportRow(input:{
     SELECT id FROM pinned WHERE lease_expires_at>clock_timestamp()`)).length===1;
   };
   const commit=async<T>(fn:(tx:any)=>Promise<T>):Promise<T> =>
-    runCanonicalTransaction("import_materialize",()=>db.transaction(async tx=>{
+    runCanonicalTransaction("import_materialize",()=>preserveCanonicalTransactionFailure(
+      callback=>db.transaction(callback),async tx=>{
       if (!await authorityCheck(tx)) throw new Error("IMPORT_EXECUTION_LEASE_LOST");
       const result=await fn(tx);
       if (!await authorityCheck(tx)) throw new Error("IMPORT_EXECUTION_LEASE_LOST");

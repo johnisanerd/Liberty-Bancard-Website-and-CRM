@@ -788,3 +788,82 @@ No first/second-file resend, provider/outbound setting change, production SQL
 write, native-function alteration, new task or approval gate was performed.
 The original A–G task remains open; full disposition, primary timings,
 full-population convergence and actual production restart/replay remain required.
+
+## Five real October admissions and subsequent native failures — 2026-10-14 UTC
+
+Owner publication is independently served as
+`5b382fe759548449ef347d9166ac0ebbbd6d3139`; the authenticated unsupported-file
+probe still returned the scoped 400 before claim. Exact-hash production
+reconciliation and primary import-detail reads establish:
+
+| Original attachment suffix | Original rows | Projection | Durable execution |
+| --- | ---: | ---: | --- |
+| 160911s8d6b | 537 | 3 | 83e594ce-3b4c-484a-96a8-2f9f71f789d7 |
+| 160955s00ed | 578 | 4 | b070a72b-faa5-4056-b300-c24686ccc76e |
+| 161052s68e5 | 513 | 5 | 9cd520f7-0d80-4265-985f-0fe6af0b7307 |
+| 161147s2b94 | 653 | 6 | 6623a227-8986-4d95-a46c-14b09ed67d12 |
+| 161239s8aab | 633 | 7 | 6b28085c-8ee3-475c-973d-dd6a500e5109 |
+
+All **2,914 original rows** are retained under these five distinct executions.
+No accepted file was resent. The last three ordinary authenticated upload
+responses were HTTP 202 in 1,750, 3,208 and 2,185 ms respectively, with original
+hash, row count and durable execution identity. The third request's response
+was saved before an operator assertion stopped: the raw partial-index upsert
+returned snake_case projection keys despite its CsvImport type assertion.
+Primary/replica reconciliation confirmed acceptance; the operator then accepted
+either projection wire spelling while still requiring agreement with the
+top-level execution and exact primary detail. Only files four and five followed.
+
+Admission is **not completed native fulfillment**. At 02:04:27 UTC, immutable
+row accounting was 98/537, 113/578, 6/513, 2/653 and 2/633. Three projections had
+failed, while execution originals remained running/recoverable; the ordinary
+resumer had reclaimed the fifth execution. Live request transactions exposed
+SQLSTATE 25P03 at 01:43–01:44 UTC, and an ensuing rollback failure obscured the
+original callback error. These observations do not prove the CPU/network/lock
+cause of idle termination or that a retry finished.
+
+Scoped local follow-through, not a replacement pipeline:
+
+- Normalize the raw partial-index upsert to the existing Drizzle CsvImport
+  shape, preserving all fields, zero/null values, dates and JSON.
+- Skip the generic mapper's three full-contact-table caches for native provider
+  rows, which never consume them. Native identity/consent reads remain intact.
+  Reduced scan/memory work is verified; resolution of live idle termination is
+  **not** established.
+- Preserve callback and rollback errors together; ambiguous cleanup is neither
+  a safe retry nor a definitive immutable failed-row outcome. Both fallback
+  branches now retain their fatal boundary for unknown/authority failures and
+  expose failure-write errors instead of swallowing them.
+- Order eligible expired uploads by oldest lease/start/identity. Reclaimed
+  projection reopening requires the exact execution/token and a live lease,
+  preserves accounting and occurs before processing. A failed projection is
+  not presented as healthy merely because its old lease has not expired.
+
+The targeted actual-block units pass, including 26 projection columns, native
+cache exclusion, 14 failure-boundary cases, five rollback-preservation cases,
+five projection-start/fairness checks, and the existing multipart/lease/handoff
+cases. Existing bounded transaction retry checks also pass. Full build
+succeeds; type checking still reports only the unchanged LiveChat reference.
+
+The authentic source-era disposable native upload/restart certificate was
+rerun against these changes: an actual mailbox commit followed by confirmation
+loss cannot complete the unfinished row; a separate fresh process resumes all
+three actual native mailboxes and business links without duplicate people or
+businesses. All five scoped assertions pass, denied provider/outbound/blanket
+validation assertions pass, and the isolated cluster was destroyed. This is
+**local restart proof**, not production restart acceptance.
+
+Primary import details returned 200 in 244–298 ms. The original coverage run
+remains unchanged and advanced to cursor 148,593, processed 148,500/154,418;
+its status read took 629 ms. Automatic affiliation remains incomplete:
+cursor 13,024, 12,931 cumulative scans and 13 committed automatic links, with
+155,105 active production contacts, 1,188 currently verified and 153,917
+unresolved; that primary read took 7,821 ms. Coverage scans and cumulative holds
+are not full identity disposition.
+
+One development restart and public login render succeeded. Signed-in UI
+rendering remains unverified. These follow-through corrections require owner
+publication before live confirmation; all files are already retained and need
+no re-upload. Provider/outbound settings, native SQL definitions, historical
+relationships and task scope were not changed. No release GO or A–G completion
+is claimed.

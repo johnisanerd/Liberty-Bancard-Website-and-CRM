@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { db } from "../db";
 import { importExecutions, importRowDispositions } from "@shared/schema";
 import {
@@ -126,7 +126,25 @@ export async function getExpiredRecoverableCsvExecutions() {
     eq(importExecutions.status, "running"),
     sql`${importExecutions.sourcePayload} IS NOT NULL`,
     sql`(${importExecutions.leaseExpiresAt} IS NULL OR ${importExecutions.leaseExpiresAt} < now())`,
-  ));
+  )).orderBy(sql`${importExecutions.leaseExpiresAt} ASC NULLS FIRST`,
+    asc(importExecutions.startedAt), asc(importExecutions.id));
+}
+
+/** A reclaimed execution must explicitly reopen its own projection. An old
+ * failed projection plus an unexpired lease is not evidence of healthy work. */
+export async function startCsvImportProjection(claim: ImportExecutionClaim): Promise<boolean> {
+  if (!claim.claimed || !claim.claimToken) return false;
+  return db.transaction(async tx => {
+    const changed = await tx.execute(sql`WITH pinned AS MATERIALIZED (
+      SELECT id,lease_expires_at FROM import_executions
+      WHERE id=${claim.execution.id}::uuid AND status='running'
+        AND claim_token=${claim.claimToken}::uuid FOR UPDATE
+    ) UPDATE csv_imports projection SET status='processing',
+        stale_reason=NULL,last_progress_at=clock_timestamp()
+      FROM pinned WHERE projection.execution_id=pinned.id
+        AND pinned.lease_expires_at>clock_timestamp() RETURNING projection.id`);
+    return ((changed as any).rows ?? []).length === 1;
+  });
 }
 
 export async function recordImportRowDisposition(args: {

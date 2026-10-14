@@ -14,6 +14,7 @@ import {resolveOrganization} from "./organization-resolver";
 import {normalizeDomain,normalizePhoneE164} from "./sdr/dedupe";
 import {db} from "../db";
 import {importedSourceRestrictions,mapProviderCsvRow} from "./provider-import-columns";
+import {isRecoverableImportRowFailure} from "./canonical-import-recovery-outcomes";
 
 let registeredProcessor: PersistedCsvProcessor | null = null;
 
@@ -155,11 +156,17 @@ async function recoverPersistedCsvImport(args: Parameters<PersistedCsvProcessor>
       }});
       });
     } catch (error: any) {
-      await recordImportRowDisposition({
-        executionId, claimToken, sourceRowNumber, rowFingerprint,
-        disposition: "failed", reasonCode: "RECOVERY_CONTACT_WRITE_FAILED",
-        diagnostic: { error: String(error?.code ?? "write_failed") },
-      });
+      if (!isRecoverableImportRowFailure(error)) throw error;
+      try {
+        await recordImportRowDisposition({
+          executionId, claimToken, sourceRowNumber, rowFingerprint,
+          disposition: "failed", reasonCode: "RECOVERY_CONTACT_WRITE_FAILED",
+          diagnostic: { error: String(error?.code ?? "write_failed") },
+        });
+      } catch (cleanupError) {
+        throw new Error("CSV_IMPORT_RECOVERY_ROW_FAILURE_WRITE_FAILED",
+          {cause:{originalError:error,cleanupError}});
+      }
     }
   }
 
@@ -237,12 +244,21 @@ async function recoverProviderCsvImport(args: Parameters<PersistedCsvProcessor>[
         fileName: (executionClaim.execution.metadata as any)?.fileName,
       });
     } catch (error: any) {
-      await recordImportRowDisposition({
-        executionId, claimToken, sourceRowNumber, rowFingerprint,
-        disposition: "failed",
-        reasonCode: "RECOVERY_PROVIDER_STAGING_FAILED",
-        diagnostic: { error: String(error?.message ?? "staging_failed").slice(0, 200) },
-      }).catch(() => {});
+      // An idle-session termination, unknown commit/connection result or lost
+      // authority is not a definitive row outcome. Retain the original for the
+      // same claim-fenced resumer instead of poisoning its immutable ledger.
+      if (!isRecoverableImportRowFailure(error)) throw error;
+      try {
+        await recordImportRowDisposition({
+          executionId, claimToken, sourceRowNumber, rowFingerprint,
+          disposition: "failed",
+          reasonCode: "RECOVERY_PROVIDER_STAGING_FAILED",
+          diagnostic: { error: String(error?.message ?? "staging_failed").slice(0, 200) },
+        });
+      } catch (cleanupError) {
+        throw new Error("CSV_IMPORT_RECOVERY_ROW_FAILURE_WRITE_FAILED",
+          {cause:{originalError:error,cleanupError}});
+      }
     }
   }
 

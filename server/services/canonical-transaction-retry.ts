@@ -37,6 +37,34 @@ export async function runCanonicalTransaction<T>(
   }
 }
 
+/**
+ * Drizzle can replace the statement/callback error when its automatic rollback
+ * also fails. Preserve both without treating failed cleanup as a safe retry.
+ * No connection/commit uncertainty is normalized into a confirmed abort.
+ */
+export async function preserveCanonicalTransactionFailure<T>(
+  transaction: (callback: (tx: any) => Promise<T>) => Promise<T>,
+  callback: (tx: any) => Promise<T>,
+): Promise<T> {
+  let callbackFailed = false;
+  let originalError: unknown;
+  try {
+    return await transaction(async tx => {
+      try {
+        return await callback(tx);
+      } catch (error) {
+        callbackFailed = true;
+        originalError = error;
+        throw error;
+      }
+    });
+  } catch (cleanupError) {
+    if (!callbackFailed || cleanupError === originalError) throw cleanupError;
+    throw new Error("CANONICAL_TRANSACTION_CALLBACK_AND_CLEANUP_FAILED",
+      {cause: {originalError, cleanupError}});
+  }
+}
+
 /** Bound authority-pinned waits and idle application work, not just the outer
  * loop's start deadline. PostgreSQL aborts these transactions; callers do NOT
  * retry ambiguous connection/commit failures. Keep native statement checks. */

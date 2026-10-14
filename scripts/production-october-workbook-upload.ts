@@ -123,7 +123,8 @@ for(const [index,[file,hash,rows]] of fixtures.entries()){
   const result=await request("/api/leads/import-csv","POST",form,undefined,3_600_000);
   save(`upload-${index}`,{observedAt:new Date().toISOString(),file,hash,expectedRows:rows,...result});
   console.log(JSON.stringify({event:"ordinary_upload_response",index,hash,status:result.status,
-    elapsedMs:result.elapsedMs,importId:result.body.import?.id,executionId:result.body.import?.executionId ?? result.body.execution?.id,
+    elapsedMs:result.elapsedMs,importId:result.body.import?.id,
+    executionId:result.body.executionId ?? result.body.import?.executionId ?? result.body.import?.execution_id ?? result.body.execution?.id,
     replayed:result.body.replayed ?? false,counts:result.body.counts,at:new Date().toISOString()}));
   // Do not hide partial/ambiguous HTTP outcomes or blindly send another upload.
   assert(result.status===201 || result.status===202 || (result.status===200 && result.body.replayed),"ORDINARY_UPLOAD_NEEDS_RECONCILIATION");
@@ -131,7 +132,7 @@ for(const [index,[file,hash,rows]] of fixtures.entries()){
     assert.equal(result.body.status,"processing");
     assert.equal(result.body.fileHash,hash);
     assert.equal(result.body.totalRows,rows);
-    assert.equal(result.body.executionId,result.body.import.executionId);
+    assert.equal(result.body.executionId,result.body.import.executionId ?? result.body.import.execution_id);
     assert(result.body.import.id,"ACCEPTED_IMPORT_ID_REQUIRED");
   }
   const importId=result.body.import?.id;
@@ -139,7 +140,8 @@ for(const [index,[file,hash,rows]] of fixtures.entries()){
     const ledger=await request(`/api/csv-imports/${importId}`);
     save(`ledger-${index}`,ledger);
     assert.equal(ledger.status,200);
-    assert.equal(ledger.body.executionId,result.body.import.executionId);
+    assert.equal(ledger.body.executionId,
+      result.body.executionId ?? result.body.import.executionId ?? result.body.import.execution_id);
     assert.equal(ledger.body.totalRows,rows);
     if(result.status!==202)assert.equal(ledger.body.processedRows,rows);
     else console.log(JSON.stringify({event:"ordinary_upload_durably_accepted",index,hash,rows,

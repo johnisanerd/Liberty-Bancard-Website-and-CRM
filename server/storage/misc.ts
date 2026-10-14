@@ -100,7 +100,7 @@ import {
   roleplayExchanges, type RoleplayExchange, type InsertRoleplayExchange,
   leaderboardSettings, type LeaderboardSettings,
 } from "@shared/schema";
-import { eq, desc, and, lt, isNull, ne, sql, asc, gte, lte, inArray, or, ilike, count } from "drizzle-orm";
+import { eq, desc, and, lt, isNull, ne, sql, asc, gte, lte, inArray, or, ilike, count, getTableColumns } from "drizzle-orm";
 import { coerceDateFields } from "../utils/date-coerce";
   import { type PaginationParams, type PaginatedResult, normalizePagination } from "./_shared";
 
@@ -366,7 +366,12 @@ import { coerceDateFields } from "../utils/date-coerce";
           importData.importedBy ?? null,
         ],
       );
-      return r.rows[0];
+      // pg returns physical snake_case names, not the CsvImport DTO. A type
+      // assertion cannot rename execution_id/file_name/total_rows at runtime.
+      // Keep this partial-index upsert, but return the same shape as Drizzle.
+      const physical = r.rows[0] as unknown as Record<string, unknown>;
+      return Object.fromEntries(Object.entries(getTableColumns(csvImports))
+        .map(([property, column]) => [property, physical[column.name]])) as CsvImport;
     }
     const [record] = await db.insert(csvImports).values(importData).returning();
     return record;

@@ -43,7 +43,7 @@ assert.match(ui,/if \(data.status === "processing"\)[\s\S]*?title: "Import Proce
 assert.match(ui,/refetchInterval:[^\n]*imp.status === "processing"/);
 const liveStart=route.indexOf("const liveExecutions = new Set(executionStates.filter");
 const liveEnd=route.indexOf("// Auto-mark",liveStart);
-const branchStart=route.indexOf("if (imp.executionId && liveExecutions.has(imp.executionId))");
+const branchStart=route.indexOf("if (imp.executionId && liveExecutions.has(imp.executionId)");
 const branchEnd=route.indexOf('if (imp.status !== "processing") continue;',branchStart);
 assert(liveStart>=0 && liveEnd>liveStart && branchEnd>branchStart);
 const states=[
@@ -55,6 +55,7 @@ const projections=[
   {executionId:"healthy",status:"interrupted"},
   {executionId:"expired",status:"processing"},
   {executionId:"completed",status:"completed"},
+  {executionId:"healthy",status:"failed"},
 ];
 const derive=new Function("executionStates","imports",`
  ${route.slice(liveStart,liveEnd)}
@@ -65,8 +66,9 @@ const derive=new Function("executionStates","imports",`
 const derived=derive(states,projections);
 assert.deepEqual([...derived.liveExecutions],["healthy"]);
 assert.equal(projections[0].status,"processing");
-assert.equal(derived.staleChecks,2,"Only live native leases skip stale-projection interruption");
-console.log(JSON.stringify({event:"PROVIDER_UPLOAD_HANDOFF_PASS",checks:5,
+assert.equal(projections[3].status,"failed","A lease outliving a failed processor is not healthy work");
+assert.equal(derived.staleChecks,3,"Only live non-failed native leases skip stale-projection interruption");
+console.log(JSON.stringify({event:"PROVIDER_UPLOAD_HANDOFF_PASS",checks:6,
   acceptanceBeforeCompletion:true,exactClaimFailureCleanup:true,existingProcessor:true,
   pendingUiAndPolling:true,liveNativeLeaseOverridesStaleProjection:true,
   databaseWrites:0,providerCalls:0,outboundEffects:0}));

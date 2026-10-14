@@ -144,3 +144,4 @@
 - [Merchant/report ownership](stage3-c4-ownership.md) — C4 owns shared Outreach presentation; A owns data, C3 reuses it, C2 retains Contact shell, C5 sidebar and D serving proof.
 - [Large planning payloads](task-planning-payload-limits.md) — Task plans have a byte ceiling; filter large callback results to avoid notebook resets and preserve original evidence.
 - [Upload boundary verification](upload-boundary-verification.md) — Verify multipart admission; a 300s gateway timeout can hide a committed import. Reconcile exact hashes before resending.
+- [Transaction rollback masking](transaction-rollback-masking.md) — Idle termination may surface only as failed rollback; preserve both errors and never infer healthy work from a lease alone.

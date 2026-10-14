@@ -6,6 +6,7 @@ import {
   claimCsvExecution,
   getExpiredRecoverableCsvExecutions,
   failCsvImportProjection,
+  startCsvImportProjection,
   type ImportExecutionClaim,
 } from "./import-execution";
 import { isRecoverableImportRowFailure } from "./canonical-import-recovery-outcomes";
@@ -68,6 +69,9 @@ export async function resumeExpiredCsvImports(process: PersistedCsvProcessor): P
       importedBy: "startup-resumer",
     });
 
+    if (!await startCsvImportProjection(claim)) {
+      throw new Error(`IMPORT_EXECUTION_LEASE_LOST:${claim.execution.id}`);
+    }
     await process({
       records: records as Array<Record<string, string>>,
       executionClaim: claim,
