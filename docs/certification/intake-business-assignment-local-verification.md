@@ -1008,3 +1008,65 @@ The original task remains open: October fulfillment, full current dispositions,
 production-wide affiliation, complete native restart/replay and representative
 component timings are not established. No new task, replacement pipeline,
 activation gate or publication was performed.
+
+## Cadence publication verification and exact schedule repair — 2026-10-14 UTC
+
+The owner's next publication serves SHA
+`e77b298a4ac1e82cd086af6d76d119921d5bd231`, published build
+`49101ff5-6e39-47c7-b985-aa7abfe07870`, built at 09:03:31 UTC.
+Deployment metadata confirms a successful public Autoscale build. Startup logs
+report all 18 seed targets converged at 09:03:17 UTC.
+
+Authenticated queue telemetry returned HTTP 200 in 2,854 ms, with 13 selected
+and ready workers. Its effective configuration reports Sunbiz 300,000 ms,
+free enrichment 2,700,000 ms, classification 600,000 ms and discovery
+1,800,000 ms. Import recovery remains 60,000 ms. Telemetry remains degraded;
+it does not establish a complete worker fleet or Redis capacity.
+
+Crucially, a separate read-only inspection of the actual shared Redis repeat
+registries found both 60,000 and 300,000 ms Sunbiz schedules, and both
+900,000 and 2,700,000 ms free-enrichment schedules. Returned schedule metadata
+omits the original stable job ID. The existing `job.id` filter therefore did
+not remove the earlier schedules. New interval telemetry alone overstated the
+effect of the scheduling cleanup.
+
+The local repair recognizes only the exact owned BullMQ descriptor/hash using
+the known job name and stable ID plus persisted repeat metadata. It fixes the
+existing base/named startup replacement and interval-update paths. No cadences,
+queue selections, concurrency, dispatcher, heartbeat, import limits, native
+guards, provider or outbound controls change. No production schedule removal
+was executed manually; application replacement requires owner publication.
+
+The installed BullMQ/private disposable Redis regression reproduces the missing
+ID and duplicate intervals, then verifies one replacement, preserved unrelated
+and named schedules, and retained one-off job data. The structural cadence gate
+and all 17 background-profile checks pass. The full build passes with existing
+chunk-size and CJS import.meta warnings.
+
+The production replica still reports all 2,914 October originals retained,
+five running executions and accounting 98, 113, 6, 2 and 2. Renewed claims are
+not fulfillment. The current-qualified audit population is 316 distinct
+September items, latest receipt 09:14:05.756078 UTC; no October execution
+appears in that qualified receipt aggregation.
+
+One existing authorized read-only primary capture started at 09:13:53 UTC and
+failed at 09:14:49 UTC, after 13 samples and five lock snapshots. Its runtime
+window reports 51,105.962 ms elapsed, 530.117 ms consumed CPU and
+33,403.437 ms maximum/p99 event-loop delay; maximum observer round trip is
+33,400.053 ms. The capture is incomplete, not a passed 60-second measurement.
+Snapshots include an import linker idle in transaction/ClientRead holding locks
+while discovery and runtime renewals on another tagged process wait. The
+observer's own process identity is recorded; this is not proof that every
+observed backend belongs to that process or to the new release.
+
+Published recovery still reports SQLSTATE 25P03 and lock-timeout failures,
+interspersed with isolated September fulfillment. The amended safe formatter
+now exposes the nested original SQLSTATE. These observations do not establish
+CPU saturation, hosting causality or a successful cadence effect, especially
+while obsolete installed schedules remain. Original A–G production acceptance,
+October fulfillment, full disposition and restart/replay stay open.
+
+After the local repair, one development restart again converges all 18 seed
+targets, keeps background workers off and serves port 5000. The public login
+renders intact; signed-in UI was not visually verified. This confirms local
+startup/rendering, not removal of production's obsolete schedules.

@@ -16,7 +16,7 @@
 - [Login rate limiter behavior](login-rate-limiter.md) — 401 "Invalid email or password" returned for BOTH wrong password AND rate-limit hits — indistinguishable from logs.
 - [Admin password sync](admin-password-sync.md) — seedAdminUser re-hashes and updates DB password on every startup; use env vars to control it.
 - [Sequence control policy](sequence-control-policy.md) — all sequences default to `paused`; storage layer blocks enrollment into non-active sequences.
-- [Queue runtime decisions](queue-runtime-index.md) — BullMQ infrastructure, retained job deduplication, and partial initialization lessons.
+- [Queue runtime decisions](queue-runtime-index.md) — BullMQ infrastructure, retained-job deduplication, partial initialization and hashed repeat identity.
 - [GHL token & circuit breaker](ghl-token-ops.md) — 401 on expired PIT token, regenerate in GHL settings; breaker persists closed/open/half-open via classifyGhlSyncError().
 - [GHL data-sync authority](ghl-data-sync-authority.md) — One-way GHL-to-production contact sync; no GHL record writes, and outbound communications stay paused.
 - [GHL appointment calendar](ghl-appointment-calendar.md) — User selected Sales Meeting for appointment reads; keep selection independent of outbound booking configuration.

@@ -27,6 +27,7 @@ import { QUEUE_NAMES, type QueueName } from "./queue-names";
 export { QUEUE_NAMES, type QueueName } from "./queue-names";
 import { setDbContext } from "../lib/db-context";
 import { safeCanonicalEnrichmentFailureDiagnostics } from "./cro03/sfp-failure-diagnostics";
+import { isOwnedRepeatableSchedule } from "./owned-repeatable-schedule";
 let seqNoOpAlertCooldown = 0;
 
 interface QueueConfig {
@@ -2868,7 +2869,7 @@ class QueueManager {
       const baseScheduleId = `${config.name}-repeatable`;
       const existing = await queue.getRepeatableJobs();
       // Do not delete schedules that merely share this physical queue.
-      for (const job of existing.filter((job) => job.id === baseScheduleId)) {
+      for (const job of existing.filter((job) => isOwnedRepeatableSchedule(job, config.jobName, baseScheduleId))) {
         await queue.removeRepeatableByKey(job.key);
       }
 
@@ -2917,12 +2918,12 @@ class QueueManager {
       const queue = this.queues.get(sched.queueName);
       if (!queue) continue;
 
-      // Remove only the repeatable job(s) whose BullMQ key matches this entry's jobId.
-      // BullMQ encodes the jobId into the repeatable key as part of the key string.
+      // Match the exact descriptor: BullMQ v5 hashes jobId into the key and
+      // omits it from returned metadata; name-only matching is unsafe.
       const existingJobs = await queue.getRepeatableJobs();
       for (const job of existingJobs) {
         // Exact identity only: substrings can match an unrelated future schedule.
-        if (job.id === sched.jobId) {
+        if (isOwnedRepeatableSchedule(job, sched.jobName, sched.jobId)) {
           await queue.removeRepeatableByKey(job.key);
         }
       }
@@ -2943,7 +2944,7 @@ class QueueManager {
 
   /**
    * Live-update the repeat interval for a queue without restarting the process.
-   * Removes all existing repeatable jobs for the queue and re-adds with the new
+   * Replaces only the owned base repeatable schedule and re-adds with the new
    * interval. The effectiveIntervals map is updated so callers can read back the
    * current value. Cron-pattern queues are not supported (returns false).
    */
@@ -2957,7 +2958,7 @@ class QueueManager {
 
     const baseScheduleId = `${queueName}-repeatable`;
     const existing = await queue.getRepeatableJobs();
-    for (const job of existing.filter((job) => job.id === baseScheduleId)) {
+    for (const job of existing.filter((job) => isOwnedRepeatableSchedule(job, config.jobName, baseScheduleId))) {
       await queue.removeRepeatableByKey(job.key);
     }
 

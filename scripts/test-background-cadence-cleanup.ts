@@ -68,8 +68,19 @@ assert.deepEqual(after.get("QUEUE_NAMES.CANONICAL_IMPORT_RECOVERY"),oldImport,
 // dispatchers, authority heartbeats, transactions or provider/outbound gates.
 const scrub=(source:string)=>{
   const config=array(source,"QUEUE_CONFIGS");
-  return source.slice(0,config.pos)+source.slice(config.end);
+  return (source.slice(0,config.pos)+source.slice(config.end))
+    .replace('import { isOwnedRepeatableSchedule } from "./owned-repeatable-schedule";\n',"")
+    .replaceAll("isOwnedRepeatableSchedule(job, config.jobName, baseScheduleId)","job.id === baseScheduleId")
+    .replaceAll("isOwnedRepeatableSchedule(job, sched.jobName, sched.jobId)","job.id === sched.jobId")
+    .replace(
+      "// Match the exact descriptor: BullMQ v5 hashes jobId into the key and\n      // omits it from returned metadata; name-only matching is unsafe.",
+      "// Remove only the repeatable job(s) whose BullMQ key matches this entry's jobId.\n      // BullMQ encodes the jobId into the repeatable key as part of the key string.",
+    )
+    .replace("Replaces only the owned base repeatable schedule and re-adds with the new",
+      "Removes all existing repeatable jobs for the queue and re-adds with the new");
 };
+assert.equal((current.match(/isOwnedRepeatableSchedule\(job,/g)??[]).length,3,
+  "Startup base/named schedules and interval updates all use exact hashed identity");
 assert.equal(scrub(current),scrub(before),
-  "Only queue configuration changed; dispatchers and all safety/authority logic are untouched");
-console.log(`PASS: four conservative cadences; ${after.size} existing queues preserved; all other config, named schedules, import recovery, heartbeats and controls unchanged`);
+  "Only queue configuration and the exact schedule identity repair changed; dispatchers and safety/authority logic are untouched");
+console.log(`PASS: four conservative cadences; ${after.size} existing queues preserved; exact schedule identity repair; all other config, named schedules, import recovery, heartbeats and controls unchanged`);
