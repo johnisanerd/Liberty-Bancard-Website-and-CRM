@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import {createHash,randomUUID} from "node:crypto";
+import {createHash,randomBytes} from "node:crypto";
 import {mkdir,readFile,writeFile} from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
@@ -15,7 +15,7 @@ export async function runC4BundledRollback(h:Awaited<ReturnType<typeof stage3BHt
   const wrapper=path.resolve("scripts/fixtures/stage3-c4-bundled-rollback-child.ts");
   const tableNames=["contacts","merchant_mids","deals","documents","merchant_residuals",
     "chargebacks","tasks","tickets","rfis","onboarding_checklist_items","residual_imports",
-    "agent_residuals","partner_commissions","statement_reviews","contact_business_link_decisions",
+    "agent_residuals","agent_payouts","partner_commissions","statement_reviews","contact_business_link_decisions",
     "contact_lifecycle_receipts","work_item_command_receipts"];
   const snapshot=async()=>{
     const {rows:existing}=await h.pool.query("SELECT tablename FROM pg_tables WHERE schemaname='public'");
@@ -42,9 +42,10 @@ export async function runC4BundledRollback(h:Awaited<ReturnType<typeof stage3BHt
       });
     });
     const base=`http://127.0.0.1:${port}`;
-    const nonce=randomUUID();
+    const nonce=randomBytes(32).toString("hex");
     const child=spawnCertificationTsx(wrapper,[bundle],{cwd:root,stdio:"pipe",env:{
-      PORT:String(port),BASE_URL:base,NODE_ENV:"test",BACKGROUND_JOB_PROFILE:"off",CERTIFICATION_HTTP_NONCE:nonce,
+      PORT:String(port),BASE_URL:base,NODE_ENV:"test",BACKGROUND_JOB_PROFILE:"off",
+      CERTIFICATION_HTTP_HOST:"127.0.0.1",CERTIFICATION_HTTP_NONCE:nonce,
     }});
     // Retain no raw server logs: constructors/auth errors can contain secrets.
     let exited=false;child.on("exit",()=>{exited=true;});
@@ -59,7 +60,14 @@ export async function runC4BundledRollback(h:Awaited<ReturnType<typeof stage3BHt
         await new Promise(r=>setTimeout(r,500));
       }
       assert.ok(health,`${version} actual bundled server must become healthy`);
-      assert.equal(health.env,"test");assert.equal(health.certificationHttpNonce,nonce);
+      // The verified production recipe inlines NODE_ENV=production into the
+      // business bundle. The separate launcher still verifies the real process
+      // environment is test, its infrastructure is disposable and workers off.
+      assert.equal(health.env,"production");
+      assert.equal(health.certificationHttpNonce,nonce);
+      assert.equal(health.certificationHttpListenerAddress,"127.0.0.1");
+      assert.equal(health.certificationHttpListenerPort,port);
+      assert.equal(health.certificationHttpReusePort,false);
       const response=await h.originalFetch(`${base}/api/portfolio?limit=100`,{
         headers:{Cookie:h.sessions.get("admin")!.cookie},signal:AbortSignal.timeout(10000),
       });
@@ -68,13 +76,15 @@ export async function runC4BundledRollback(h:Awaited<ReturnType<typeof stage3BHt
       assert.ok(body,"Native bundled reader returns a nonempty response");
       assert.deepEqual(await snapshot(),before,`${version} forward-compatible source/artifact rollback preserves business data and latest schema`);
       runs.push({version,sourceHead:version==="candidate"?identity.sourceHead:baselineIdentity.sourceHead,
-        bundleHash:expected.sha256,health:true,authenticatedReaderStatus:response.status,dataInvariant:true});
+        bundleHash:expected.sha256,health:true,compiledEnvironment:health.env,
+        launcherEnvironment:"test",privateListenerVerified:true,
+        authenticatedReaderStatus:response.status,dataInvariant:true});
     }finally{await terminateCertificationChild(child);}
   }
   assert.equal(h.externalCalls(),0);
   await mkdir("generated-artifacts/stage3-c4",{recursive:true});
   await writeFile("generated-artifacts/stage3-c4/bundled-rollback.json",JSON.stringify({
     status:"passed",identity,runs,before,after:await snapshot(),
-    qualification:"Actual candidate→baseline→candidate production server bundles; test runtime, owned latest-schema DB/Redis, worker profile off, fatal provider denial; stored business invariants only, no native transmission or production rollback",
+    qualification:"Actual candidate→baseline→candidate production server bundles with inlined production business branches; separately guarded test launcher, owned latest-schema DB/Redis, verified private listener, worker profile off, fatal provider denial; stored business invariants only, no native transmission or production rollback",
   },null,2)+"\n");
 }
