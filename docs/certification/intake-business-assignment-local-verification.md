@@ -1205,8 +1205,11 @@ maximum-machine controls, with no deployment-type selector. The earlier
 instruction to select Reserved VM directly in that live settings screen did
 not match the available UI. Further official documentation lookups say that
 switching an already-published app requires unpublishing before selecting
-the new type. No shutdown/unpublishing was performed; its downtime requires
-the owner's informed approval. Do not repeat the unavailable-selector instruction.
+the new type. The owner subsequently approved planned downtime for this
+hosting switch. No shutdown/unpublishing was performed. The supplied screenshots
+do not show the deployment-management shutdown control; identify that control
+before directing a live shutdown. Do not repeat the unavailable-selector
+instruction or treat this consent as approval to delete the project/database.
 
 Existing authenticated production readers returned:
 
