@@ -173,7 +173,9 @@ export const QUEUE_CONFIGS: QueueConfig[] = [
     concurrency: 1,
     attempts: 1,
     backoffDelay: 30000,
-    repeatEveryMs: 60_000,
+    // Live batches take 2–4 minutes. Leave headroom between resumable passes;
+    // the existing run-state gate still prevents work after completion/pause.
+    repeatEveryMs: 5 * 60 * 1000,
     jobName: "tick",
   },
   {
@@ -229,7 +231,9 @@ export const QUEUE_CONFIGS: QueueConfig[] = [
     concurrency: 1,
     attempts: 3,
     backoffDelay: 15000,
-    repeatEveryMs: 15 * 60 * 1000,
+    // Recent retained batches average ~31 minutes. This is a periodic sweep,
+    // not a delivery deadline; avoid keeping a successor ready every 15 minutes.
+    repeatEveryMs: 45 * 60 * 1000,
     jobName: "run",
   },
   {
@@ -508,7 +512,9 @@ export const QUEUE_CONFIGS: QueueConfig[] = [
     concurrency: 1,
     attempts: 1,
     backoffDelay: 60_000,
-    repeatEveryMs: 2 * 60 * 1000,
+    // Mostly empty recent ticks: poll less often without changing eligibility,
+    // program state, or the existing bounded classification cursor.
+    repeatEveryMs: 10 * 60 * 1000,
     jobName: "tick",
   },
   {
@@ -516,14 +522,14 @@ export const QUEUE_CONFIGS: QueueConfig[] = [
     // Serper batch per tick is correct — the reservation/settlement path is
     // per-business and idempotent, but running two ticks concurrently would
     // waste a worker slot racing for the same cohort's advisory lock.
-    // 10 min interval keeps daily volume bounded and observable; the tick
+    // 30 min interval leaves headroom beyond observed 12–14 minute runs; the tick
     // itself is a hard no-op unless CRO03_PROVIDER_TRANSPORT_ENABLED,
     // SERPER_API_KEY, and an active SFP program are all already true.
     name: QUEUE_NAMES.SFP_CONTINUOUS_DISCOVERY,
     concurrency: 1,
     attempts: 1,
     backoffDelay: 60_000,
-    repeatEveryMs: 10 * 60 * 1000,
+    repeatEveryMs: 30 * 60 * 1000,
     jobName: "tick",
   },
   {
