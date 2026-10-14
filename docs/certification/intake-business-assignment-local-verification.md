@@ -1206,10 +1206,18 @@ instruction to select Reserved VM directly in that live settings screen did
 not match the available UI. Further official documentation lookups say that
 switching an already-published app requires unpublishing before selecting
 the new type. The owner subsequently approved planned downtime for this
-hosting switch. No shutdown/unpublishing was performed. The supplied screenshots
-do not show the deployment-management shutdown control; identify that control
-before directing a live shutdown. Do not repeat the unavailable-selector
-instruction or treat this consent as approval to delete the project/database.
+hosting switch. No shutdown/unpublishing was performed.
+
+The later full-pane screenshot `IMG_1908_1791980040919.png` identifies the
+actual **Change deployment type** button in **Manage your app**, below
+**Database settings** in expanded **Adjust settings**. Its displayed explanation
+states that changing type requires unpublishing and publishing again. This
+guided flow is distinct from Autoscale sizing, Pause and the standalone
+Unpublish button. The adjacent development-to-production copy checkbox is
+unchecked and explicitly warns of overwriting production data; it must remain
+unchecked. The owner is directed to the guided switch, not project/database
+deletion. Live hosting and all connected domains still need verification after
+the owner completes the publication.
 
 Existing authenticated production readers returned:
 

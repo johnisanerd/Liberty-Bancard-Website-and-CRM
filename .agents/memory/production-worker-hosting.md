@@ -24,8 +24,10 @@ deployment metadata and the publication's configuration diff both showed that
 the hosting change had not taken effect.
 
 **How to apply:** Do not ask for another unchanged Publish click or assume that
-the published app's Adjust settings contains a deployment-type selector. The
-owner's mobile screenshots show Autoscale sizing controls only. Verify the
-existing-deployment switching procedure and obtain consent for any required
-unpublishing/downtime before directing the owner to it. Recheck live metadata,
-not just the file or a successful build.
+the Autoscale resource editor contains a deployment-type selector. The owner's
+full mobile screenshots locate **Change deployment type** under **Manage your
+app**, below **Database settings**, in expanded **Adjust settings**. Prefer that
+guided switch flow over an unrelated Pause or standalone Unpublish action.
+Obtain consent for required downtime and keep **Copy your development database
+to production database** unchecked: it overwrites production data. Recheck live
+metadata and connected domains after publishing, not just the file or build.
