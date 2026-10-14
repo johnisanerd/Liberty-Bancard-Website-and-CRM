@@ -5,10 +5,13 @@ import {privateStage3Browser} from "./fixtures/private-stage3-browser";
 import {verifyCandidateIdentity} from "./fixtures/candidate-build-identity";
 import {c4InventoryCases,c4ControlSnapshotExpression,writeC4ControlInventory} from "./fixtures/stage3-c4-control-inventory";
 import {runC4HealthReadCase} from "./fixtures/stage3-c4-health-read-case";
+import path from "node:path";
+import {runC4MatchedPerformance} from "./fixtures/stage3-c4-matched-performance";
 
 const identity=await verifyCandidateIdentity();
 let browserPreparationFault=false;
 let browserPreparationFaultExecuted=false;
+let clientRoot=path.resolve("dist/public");
 const h=await stage3BHttpFixture(async app=>{
   for(const [file,fn] of [
     ["contacts","registerContactsRoutes"],["deals","registerDealsRoutes"],
@@ -38,8 +41,8 @@ const h=await stage3BHttpFixture(async app=>{
   }:undefined);}
   app.use("/api",(_req,res)=>res.status(501).json({message:"Source not registered in this isolated C4 fixture"}));
   const {static:serveStatic}=await import("express");
-  app.use(serveStatic("dist/public"));
-  app.use((_req,res)=>res.sendFile("index.html",{root:`${process.cwd()}/dist/public`}));
+   app.use((req,res,next)=>serveStatic(clientRoot)(req,res,next));
+   app.use((_req,res)=>res.sendFile("index.html",{root:clientRoot}));
 },undefined,{backgroundProfile:"off"});
 let b:Awaited<ReturnType<typeof privateStage3Browser>>|undefined;
 const rows:Array<Record<string,unknown>>=[];
@@ -888,6 +891,10 @@ try {
     }
   }
   await writeC4ControlInventory(surfaces,identity,h.prefix);
+  await b.close();
+  finishedContexts.push({role:browserRole,requests:b.requests,exceptions:b.exceptions});
+  b=undefined;
+  await runC4MatchedPerformance(h,identity,root=>{clientRoot=root;});
   rows.push({phase:"Actual retained route/panel mounted inventory",surfaces:surfaces.length,
     qualification:"39 route references across six fixture roles plus 70 historical panels in admin context; nested selector absent/denied/loading explicitly retained; no action acceptance or full state-space proof"});
   assert.equal(h.externalCalls(),0);
@@ -895,7 +902,7 @@ try {
   await writeFile("docs/certification/stage3-c4/browser-receipt.json",JSON.stringify({status:"passed",identity,rows,
     contexts:browserContexts(),exceptions:browserContexts().flatMap(c=>c.exceptions),
     requests:browserContexts().flatMap(c=>c.requests.map(request=>({role:c.role,...(request as Record<string,unknown>)}))),externalEgress:0,
-    qualification:"Actual compiled client, authenticated private disposable fixture, registered source readers; unregistered independent sources return501. Not full39/70, all-actions, native200%/keyboard/performance or published-server acceptance."},null,2)+"\n");
+    qualification:"Actual compiled client, authenticated private disposable fixture, registered source readers; unregistered independent sources return501. Named native200%/matched Portfolio performance and reader/client rollback evidence is separate. Not all-actions/full keyboard or published-server acceptance."},null,2)+"\n");
   console.log("C4 bounded mounted browser PASS");
   if(process.argv.includes("--snapshot-hold")){
     console.log(`C4_PUBLIC_SIGNED_OUT_SNAPSHOT_PORT=${new URL(h.base).port}`);

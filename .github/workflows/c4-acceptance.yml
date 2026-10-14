@@ -26,6 +26,8 @@ jobs:
       NODE_OPTIONS: --max-old-space-size=6144
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '22.22.0'
@@ -53,6 +55,13 @@ jobs:
         env:
           NODE_ENV: production
         run: npm run build
+      # Baseline compilation is separate from every test DB/session runtime.
+      - name: Build matched original production client
+        if: matrix.suite == 'scripts/test-stage3-c4-browser.ts'
+        run: |
+          git worktree add --detach ../c4-performance-baseline 85296699ec8d11f22750657dfe5ac34a8fd2577d
+          ln -s "$PWD/node_modules" ../c4-performance-baseline/node_modules
+          (cd ../c4-performance-baseline && NODE_ENV=production npm run build)
       - name: Execute exact suite with test-only private resources
         env:
           NODE_ENV: test
