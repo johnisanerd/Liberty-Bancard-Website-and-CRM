@@ -14,3 +14,15 @@ is part of the original intake and business-assignment acceptance.
 controls. A configured target is not proof of the live hosting type: verify
 deployment metadata after publication. Do not infer that always-on hosting alone
 solves database/runtime delays or establishes production acceptance.
+
+For this already-published app, a supported configuration change to `vm` did
+not by itself switch the next actual publication: publishing retained Autoscale
+and rewrote the workspace target to `cloudrun`.
+
+**Why:** The owner's subsequent publish served the new corrections, but fresh
+deployment metadata and the publication's configuration diff both showed that
+the hosting change had not taken effect.
+
+**How to apply:** Do not ask for another unchanged Publish click. The Publishing
+tool's Adjust settings must explicitly select Reserved VM before republishing.
+Recheck the resulting live metadata, not just the file or a successful build.

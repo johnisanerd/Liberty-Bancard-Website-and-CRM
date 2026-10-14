@@ -1183,3 +1183,81 @@ original A–G production acceptance remain open. After publication, obtain fres
 deployment metadata and serving/build identities before measuring worker
 continuity, original source-scoped progress and the remaining disposition,
 restart and replay obligations.
+
+## Post-publication production observations — 2026-10-14 11:17–11:27 UTC
+
+The owner published the consolidated corrections. The production health response
+serves SHA `584d6acb633f68ee100a553989bd13fbf09f782f`, built at
+11:17:15.311 UTC, with publish build identity
+`5fa23497-da68-402c-bffc-c4f807240bca`. Actual worker readiness logs identify
+that same release. This establishes delivery, not full acceptance.
+
+Publishing **did not apply Reserved VM**. Two fresh deployment metadata reads
+report public Autoscale with a successful build. The publication's sole
+configuration edit changed `deploymentTarget` from `vm` back to `cloudrun`.
+The supported configuration has been restored to `vm`, with the same build/run
+commands. Official documentation identifies Publishing → Adjust settings as
+the place to select the existing deployment's new type before republishing.
+An unchanged Publish click is not verified to perform that switch here.
+
+Existing authenticated production readers returned:
+
+| Actual primary request | HTTP | End-to-end request time |
+| --- | ---: | ---: |
+| Canonical enrichment status | 200 | 2,908 ms |
+| Automatic assignment status | 200 | 612 ms |
+| Existing coverage status | 200 | 221 ms |
+| First human-review page, 50 candidates | 200 | 4,896 ms |
+| Next human-review page using the exact returned cursor | 200 | 3,984 ms |
+| Existing CSV import list with version-1 recovery facts | 200 | 366 ms |
+
+The two review pages contain 50 distinct candidate IDs each with zero overlap.
+Their cursors retain native timestamp microseconds. This is successful deployed
+first/next-page behavior during active ordinary workers, not signed-in rendered
+UI verification, complete returned-fact parity or component/transaction timing
+under a controlled representative load.
+
+The three native relationship function fingerprints match the previously
+certified bodies. At 11:27:30.99428 UTC the separate full identity-bridge
+predicate returned true: exact relation, trigger name/type/enablement,
+no predicate/internal substitution, exact function namespace/name and
+`f0c933f2b332d19ec7d51866e2ad5a7b` body hash. The general status guard was
+not substituted for this separate native check.
+
+At 11:22 UTC the five October executions still have original accounting
+98/113/6/4/2, with pending mailbox fulfillment 54/55/1/1/1. All five executions
+remain running. The fourth execution advanced two original rows beyond the prior
+2-row checkpoint. None appears in the retained current-qualified receipt
+aggregation: retained recovery applies to completed executions, so that
+aggregation is not an assertion that ordinary October materialization is zero.
+September has 352 current-qualified retained item receipts, latest at
+11:18:03.672 UTC; original accounting remains 1,472. These are observed partial
+effects, not full original-row fulfillment or replay/restart acceptance.
+
+The assignment reader reports 155,172 active production contacts, 1,255 current
+verified assignments and 153,917 unresolved, with native contract verified and
+zero legacy projected contacts lacking a current verified assignment. Its
+independent program remains incomplete at cursor 13,159 and last checkpoint
+11:18:26.369 UTC. The separate coverage run remains incomplete at cursor
+153,601, with last recorded progress 04:20:26.683 UTC.
+
+The existing admin read-only primary capture was accepted (HTTP 202), but
+**failed** after 21,397 ms, 43 samples and four blocker snapshots. Observed
+process CPU is 1,076.785 ms; event-loop p99 is 500.433 ms and maximum is
+1,801.454 ms. Snapshots identify the capture's process, an import-materialize
+transaction and ordinary discovery waiting on that transaction. These short
+observed waits do not prove deadlock or the cause of prior delays. The incomplete
+window is not a passing 60-second measurement or proof of VM performance.
+Published ordinary failures still expose SQLSTATE 25P03.
+
+Private HTTP responses/capture evidence are retained under the ignored
+`generated-artifacts/intake-consolidated-stock-evidence/post-publish` directory.
+Session cookies and credentials were not written. Initial collector cookie
+handling was corrected before authenticated measurements; the review overlap
+assertion was corrected to use actual `candidateId` fields, and both saved
+successful responses were independently verified. These collector mistakes
+were not attributed to application defects.
+
+No workbook was re-uploaded, provider/outbound control changed, production SQL
+written or application timeout relaxed. Original production acceptance and
+the failed stock release checks remain open; there is no release GO.
