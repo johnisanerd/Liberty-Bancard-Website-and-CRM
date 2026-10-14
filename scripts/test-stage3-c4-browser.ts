@@ -39,7 +39,7 @@ const h=await stage3BHttpFixture(async app=>{
   app.use("/api",(_req,res)=>res.status(501).json({message:"Source not registered in this isolated C4 fixture"}));
   const {static:serveStatic}=await import("express");
   app.use(serveStatic("dist/public"));
-  app.use((_req,res)=>res.sendFile(`${process.cwd()}/dist/public/index.html`));
+  app.use((_req,res)=>res.sendFile("index.html",{root:`${process.cwd()}/dist/public`}));
 },undefined,{backgroundProfile:"off"});
 let b:Awaited<ReturnType<typeof privateStage3Browser>>|undefined;
 const rows:Array<Record<string,unknown>>=[];

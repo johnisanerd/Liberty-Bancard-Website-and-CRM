@@ -29,7 +29,7 @@ const h=await stage3BHttpFixture(async app=>{
   app.use("/api",(_req,res)=>res.status(501).json({message:"Unregistered isolated service"}));
   const {static:serveStatic}=await import("express");
   app.use(serveStatic("dist/public"));
-  app.use((_req,res)=>res.sendFile(`${process.cwd()}/dist/public/index.html`));
+  app.use((_req,res)=>res.sendFile("index.html",{root:`${process.cwd()}/dist/public`}));
 });
 let b:Awaited<ReturnType<typeof privateStage3Browser>>|undefined;
 let contact=0;
