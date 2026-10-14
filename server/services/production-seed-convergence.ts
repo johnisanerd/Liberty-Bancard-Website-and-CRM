@@ -279,15 +279,16 @@ async function convergeSfpOutreachPolicyV1(): Promise<SeedTargetResult> {
       reason_codes: SFP_OUTREACH_POLICY_V1.reasonCodes,
     };
     // Match the policy-before-document lock order used by staging, bridge and
-    // independent-review commits. A seed that first locks the document could
-    // deadlock with a consumer that owns the control row while waiting on it.
+    // independent-review commits. Existing rows are only verified, never
+    // updated, so SHARE preserves the pin without waiting for every live
+    // policy reader to finish during a rolling publication.
     const control = rows(await tx.execute(sql`
-      SELECT active_policy_id FROM sfp_outreach_policy_control WHERE singleton = TRUE FOR UPDATE
+      SELECT active_policy_id FROM sfp_outreach_policy_control WHERE singleton = TRUE FOR SHARE
     `))[0];
     let document = rows(await tx.execute(sql`
       SELECT id, version, document_hash, validation_ttl_days, accepted_outcomes,
              retryable_outcomes, role_inbox_policy, consent_tier_policy, reason_codes
-        FROM sfp_outreach_policy_documents WHERE version = 1 FOR UPDATE
+        FROM sfp_outreach_policy_documents WHERE version = 1 FOR SHARE
     `))[0];
     let insertedDocument = false;
     if (!document) {
@@ -309,7 +310,7 @@ async function convergeSfpOutreachPolicyV1(): Promise<SeedTargetResult> {
       document = rows(await tx.execute(sql`
         SELECT id, version, document_hash, validation_ttl_days, accepted_outcomes,
                retryable_outcomes, role_inbox_policy, consent_tier_policy, reason_codes
-          FROM sfp_outreach_policy_documents WHERE version = 1 FOR UPDATE
+          FROM sfp_outreach_policy_documents WHERE version = 1 FOR SHARE
       `))[0];
     }
     if (!document || Number(document.version) !== 1 ||
@@ -333,7 +334,7 @@ async function convergeSfpOutreachPolicyV1(): Promise<SeedTargetResult> {
       `);
       insertedControl = true;
       const verified = rows(await tx.execute(sql`
-        SELECT active_policy_id FROM sfp_outreach_policy_control WHERE singleton = TRUE FOR UPDATE
+        SELECT active_policy_id FROM sfp_outreach_policy_control WHERE singleton = TRUE FOR SHARE
       `))[0];
       if (!verified) throw new Error("SEED_CONVERGENCE_VERIFY_FAILED:sfp_outreach_policy_v1:control");
     }

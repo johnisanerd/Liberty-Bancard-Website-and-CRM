@@ -126,4 +126,16 @@ source has rows the backfill should have picked up.
   (not a bare table with no guards) — that is the only way to catch the
   cross-guard ordering contradiction above; a green test against unguarded
   columns proves nothing about the guarded production case.
+- During rolling publication, live consumers retain shared policy-row pins.
+  Insert-only startup verification must use compatible shared locks for
+  existing policy/control rows, not exclusive locks merely to inspect them.
+  **Why:** An otherwise healthy new build waited thirty seconds on policy
+  verification, failed its sole startup seed target and never opened the port.
+  Other red worker logs belonged to the still-serving prior process and were
+  not evidence that the new build had started.
+  **How to apply:** Preserve policy-before-document ordering, exact content
+  verification and fatal mismatch handling. Already-selected newer policies
+  need only a pinned read; actual seed-policy upgrades still acquire an
+  exclusive lock in a fresh transaction and re-read all original conditions.
+  Do not fix publication by making startup return healthy before guards pass.
 </content>

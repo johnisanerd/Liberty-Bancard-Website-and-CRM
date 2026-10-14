@@ -9,7 +9,22 @@ const ORIGINAL_HASH = crypto.createHash("sha256").update(
 
 /** Data-only convergence: immutable documents, no production DDL or send release. */
 export async function convergeSfpRecipientPolicyV2(executor: any = db) {
+  // Routine restarts must not exclusively lock an already-selected newer
+  // policy while live consumers hold their authority-pinning SHARE locks.
+  // Release this read transaction before acquiring any exclusive write lock.
+  const needsUpgrade = await executor.transaction(async (tx: any) => {
+    const current = rows(await tx.execute(sql`
+      SELECT p.version FROM sfp_outreach_policy_control c
+      JOIN sfp_outreach_policy_documents p ON p.id=c.active_policy_id
+      WHERE c.singleton=TRUE FOR SHARE OF c
+    `))[0];
+    return !!current && Number(current.version) === 1;
+  });
+  if (!needsUpgrade) return { activated: false };
+
   return executor.transaction(async (tx: any) => {
+    // Re-read and check the full original content under the exclusive lock.
+    // A writer may have changed selection after the read transaction ended.
     const current = rows(await tx.execute(sql`
       SELECT p.* FROM sfp_outreach_policy_control c
       JOIN sfp_outreach_policy_documents p ON p.id=c.active_policy_id

@@ -867,3 +867,48 @@ publication before live confirmation; all files are already retained and need
 no re-upload. Provider/outbound settings, native SQL definitions, historical
 relationships and task scope were not changed. No release GO or A–G completion
 is claimed.
+
+## Failed rolling publication: policy verification lock — 2026-10-14 UTC
+
+The owner's 02:55 UTC publication built but failed promotion: port 5000 did not
+open before the startup deadline. The prior serving build still returned
+HTTP 200 from its health endpoint. Database reachability was independently
+confirmed; the failure was not proof that the previously published site was down.
+
+The failed process's 30-second statement fingerprint `b0c43b80f2c662bd` exactly
+matches the startup convergence query selecting the outreach policy control
+`FOR UPDATE`. The persisted production seed-convergence audit confirms
+`sfp_outreach_policy_v1` was the **only unexpected target**; its recorded failed
+query is that same control read. Live native/eligibility consumers pin that
+control with `FOR SHARE`, so exclusive verification unnecessarily competes with
+ongoing reads during rolling publication. Production selected policy v2.
+
+The local correction uses shared policy-before-document pins for existing
+immutable v1 seed verification. Content validation, insert-only initialization
+and failure-on-mismatch remain unchanged. Recipient-policy convergence now
+checks a shared pin first: an already-selected non-v1 policy is preserved.
+An actual v1 upgrade releases that read transaction, obtains the original
+exclusive lock in a fresh transaction and re-checks all original content and
+custom-selection conditions. No lock upgrade is attempted while holding the
+shared pin. No early HTTP readiness, timeout increase, worker/provider control
+change, production DDL or manual production repair was introduced.
+
+`scripts/test-startup-policy-reader-contention.ts` runs against fully migrated
+private PostgreSQL with a genuine concurrent policy/document shared lock:
+
+- The old exclusive control read genuinely fails with lock timeout.
+- Both corrected real startup convergence calls finish in **13 ms** while the
+  reader still holds its pin; immutable hash and selected policy remain equal.
+- A real original-seed policy upgrade still executes successfully.
+- Dependency-isolated drift and custom-policy cases retain write-time re-check
+  and no-write preservation.
+- Six checks pass; the private cluster is destroyed. No production writes,
+  provider calls or outbound effects occur.
+
+The full build passes; type checking still reports only the pre-existing
+LiveChat reference. One development restart reports all 18 startup seed
+targets converged, opens 0.0.0.0:5000, and serves the proxied root with HTTP 200
+in 59 ms. The public login render is intact; signed-in UI was not visually
+verified. These are local corrections requiring owner publication; they are
+not production promotion proof or certification of the remaining native
+idle-transaction, five-workbook fulfillment, or full-population work.
