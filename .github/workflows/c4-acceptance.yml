@@ -79,3 +79,4 @@ jobs:
             dist/candidate-integrity.json
             dist/build-recipe.json
             dist/sfp-publish-build.json
+            generated-artifacts/stage3-c4/

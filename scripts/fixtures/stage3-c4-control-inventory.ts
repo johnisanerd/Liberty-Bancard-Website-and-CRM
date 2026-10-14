@@ -9,7 +9,7 @@ export async function c4InventoryCases(){
   ];
   const revenue=["dashboard","by-partner","reconcile","history","payouts"];
   const health=["alerts","churn-risk","nps","signal-settings"];
-  const metrics=["deals","revenue","proposals","calls","closeRate","contacts"];
+  const metrics=["deals","revenue","proposals","calls","responseRate","contacts"];
   for(const c of cases){
     const n=Number(c.id.slice(2));
     if(c.kind==="historical-panel"&&n>=125&&n<=129)c.url+=`&revenueView=${revenue[n-125]}`;

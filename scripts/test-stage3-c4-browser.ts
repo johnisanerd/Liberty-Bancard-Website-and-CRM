@@ -7,6 +7,8 @@ import {c4InventoryCases,c4ControlSnapshotExpression,writeC4ControlInventory} fr
 import {runC4HealthReadCase} from "./fixtures/stage3-c4-health-read-case";
 import path from "node:path";
 import {runC4MatchedPerformance} from "./fixtures/stage3-c4-matched-performance";
+import {applicationStatuses,boardingStatuses,outreachViews,leaderboardMetrics,leaderboardPeriods} from "../client/src/lib/crm-destination-state";
+import {runC4BundledRollback} from "./fixtures/stage3-c4-bundled-rollback";
 
 const identity=await verifyCandidateIdentity();
 let browserPreparationFault=false;
@@ -130,16 +132,27 @@ try {
     assert.equal(headings.length,1,`Persistent unique Onboarding page identity: ${route}`);
     rows.push({phase:"Onboarding unique H1",role:"admin",route,headings});
   }
-  for(const [route,control,parameter,value,ready] of [
-    ["/dashboard/merchant-applications","tab-status-approved","status","approved",/Merchant Applications/],
-    ["/dashboard/boarding","tab-boarding-approved","status","approved",/Boarding/],
-    ["/dashboard/reporting?tab=outreach-analytics","tab-ab-testing","outreachView","ab-testing",/Outreach Analytics/],
-    ["/dashboard/leaderboard","tab-metric-calls","metric","calls",/Leaderboard/],
-  ] as const){
+  const retainedTabCases:Array<[string,string,string,string,RegExp]>=[
+    ...applicationStatuses.map(value=>[
+      `/dashboard/merchant-applications?status=${value==="all"?"approved":"all"}&page=2&cursor=retained-fixture`,
+      `tab-status-${value}`,"status",value,/Merchant Applications/] as [string,string,string,string,RegExp]),
+    ...boardingStatuses.map(value=>[
+      `/dashboard/boarding?status=${value==="all"?"approved":"all"}&page=2&cursor=retained-fixture`,
+      `tab-boarding-${value}`,"status",value,/Boarding/] as [string,string,string,string,RegExp]),
+    ...outreachViews.map(value=>[
+      `/dashboard/reporting?tab=outreach-analytics&outreachView=${value==="campaigns"?"messages":"campaigns"}&page=2&cursor=retained-fixture`,
+      `tab-${value}`,"outreachView",value,/Outreach Analytics/] as [string,string,string,string,RegExp]),
+    ...leaderboardMetrics.map(value=>[
+      `/dashboard/leaderboard?metric=${value==="deals"?"calls":"deals"}&page=2&cursor=retained-fixture`,
+      `tab-metric-${value}`,"metric",value,/Leaderboard/] as [string,string,string,string,RegExp]),
+  ];
+  for(const [route,control,parameter,value,ready] of retainedTabCases){
     await b.navigate(route);await b.waitFor(ready);
     const originalUrl=await b.evaluate("location.href");
     await b.click(`[data-testid="${control}"]`);
     assert.equal(await b.evaluate(`new URLSearchParams(location.search).get(${JSON.stringify(parameter)})`),value);
+    assert.equal(await b.evaluate('["page","cursor","offset"].some(key=>new URLSearchParams(location.search).has(key))'),false,
+      "Retained tab changes reset pagination rather than carrying a stale window");
     await b.call("Page.reload");await b.waitFor(ready);
     assert.equal(await b.evaluate(`document.querySelector('[data-testid="${control}"]').getAttribute("data-state")`),"active");
     await b.evaluate("history.back()");
@@ -149,6 +162,27 @@ try {
     for(let attempt=0;attempt<60 && await b.evaluate(`new URLSearchParams(location.search).get(${JSON.stringify(parameter)})`)!==value;attempt++)await new Promise(resolve=>setTimeout(resolve,50));
     assert.equal(await b.evaluate(`new URLSearchParams(location.search).get(${JSON.stringify(parameter)})`),value,"Forward restores selection");
     rows.push({phase:"Retained URL state reload/Back/Forward",role:"admin",route,parameter,value});
+  }
+  for(const period of leaderboardPeriods){
+    await b.navigate(`/dashboard/leaderboard?period=${period==="week"?"month":"week"}&page=2`);
+    await b.waitFor(/Team Leaderboard/);
+    const originalUrl=await b.evaluate("location.href");
+    await b.click('[data-testid="select-time-period"]');
+    const labels:Record<string,string>={week:"Last 7 Days",month:"This Month",quarter:"This Quarter",all:"All Time"};
+    const option=await b.evaluate(`Array.from(document.querySelectorAll('[role="option"]')).findIndex(e=>e.textContent.trim()===${JSON.stringify(labels[period])})`);
+    assert.ok(option>=0,`Actual period option exists: ${period}`);
+    await b.click(`[role="option"]:nth-child(${option+1})`);
+    assert.equal(await b.evaluate('new URLSearchParams(location.search).get("period")'),period);
+    assert.equal(await b.evaluate('new URLSearchParams(location.search).has("page")'),false);
+    await b.call("Page.reload");await b.waitFor(/Team Leaderboard/);
+    assert.equal(await b.evaluate('document.querySelector("[data-testid=select-time-period]").textContent.trim()'),labels[period]);
+    await b.evaluate("history.back()");
+    for(let attempt=0;attempt<60&&await b.evaluate("location.href")!==originalUrl;attempt++)await new Promise(r=>setTimeout(r,50));
+    assert.equal(await b.evaluate("location.href"),originalUrl);
+    await b.evaluate("history.forward()");
+    for(let attempt=0;attempt<60&&await b.evaluate('new URLSearchParams(location.search).get("period")')!==period;attempt++)await new Promise(r=>setTimeout(r,50));
+    assert.equal(await b.evaluate('new URLSearchParams(location.search).get("period")'),period);
+    rows.push({phase:"Every Leaderboard period physical selection/reload/Back/Forward",period});
   }
   for(const theme of ["light","dark"]) for(const width of [320,390,768,1280,1440]) {
     await b.call("Emulation.setDeviceMetricsOverride",{width,height:1000,deviceScaleFactor:1,mobile:false});
@@ -907,6 +941,7 @@ try {
   finishedContexts.push({role:browserRole,requests:b.requests,exceptions:b.exceptions});
   b=undefined;
   await runC4MatchedPerformance(h,identity,root=>{clientRoot=root;});
+  await runC4BundledRollback(h,identity);
   rows.push({phase:"Actual retained route/panel mounted inventory",surfaces:surfaces.length,
     qualification:"39 route references across six fixture roles plus 70 historical panels in admin context; nested selector absent/denied/loading explicitly retained; no action acceptance or full state-space proof"});
   assert.equal(h.externalCalls(),0);

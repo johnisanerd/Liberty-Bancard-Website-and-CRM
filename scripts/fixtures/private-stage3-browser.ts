@@ -68,7 +68,18 @@ export async function privateStage3Browser(base:string,cookie:string,originalFet
       if(closing)return;
       const m=JSON.parse(String(event.data));
       if(m.id){const p=pending.get(m.id);pending.delete(m.id);m.error?p?.reject(new Error(m.error.message)):p?.resolve(m.result);}
-      if(m.method==="Runtime.exceptionThrown")exceptions.push(m.params.exceptionDetails.text);
+      if(m.method==="Runtime.exceptionThrown"){
+        const detail=m.params.exceptionDetails;
+        const redact=(value:string)=>value.replace(/https?:\/\/[^\s)]+/g,"[url]")
+          .replace(/[\w.+-]+@[\w.-]+\.[a-z]{2,}/gi,"[email]")
+          .replace(/[A-Za-z0-9_=-]{32,}/g,"[opaque]");
+        const message=redact(String(detail.exception?.description||detail.text).split("\n")[0]).slice(0,500);
+        const frames=(detail.stackTrace?.callFrames||[]).slice(0,3).map((frame:any)=>{
+          let file="";try{file=new URL(frame.url).pathname;}catch{}
+          return `${redact(frame.functionName||"<anonymous>")} (${file}:${frame.lineNumber+1}:${frame.columnNumber+1})`;
+        });
+        exceptions.push([detail.text,message,...frames].join(" | "));
+      }
       if(m.method==="Network.requestWillBeSent" && m.params.request.url.startsWith(base+"/api/")){
         const url=new URL(m.params.request.url);
         // No bodies, headers, credentials, cookies or auth response values.

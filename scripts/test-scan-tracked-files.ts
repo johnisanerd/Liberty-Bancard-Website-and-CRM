@@ -15,10 +15,18 @@ import {
   isValidDateOnly,
   normalizeRepoPath,
   scanTree,
+  isReviewedSqlResource,
 } from "./scan-tracked-files";
 
 let pass = 0;
 let fail = 0;
+
+check("reviewed SQL source requires exact blob", isReviewedSqlResource(
+  "docs/certification/canonical-enrichment-native-console.sql", "883c4b565adced5fc8abc344b6c9876b164f6a48"));
+check("modified SQL source is prohibited", !isReviewedSqlResource(
+  "docs/certification/canonical-enrichment-native-console.sql", "0000000000000000000000000000000000000000"));
+check("same SQL blob at another path is prohibited", !isReviewedSqlResource(
+  "exports/copied-console.sql", "883c4b565adced5fc8abc344b6c9876b164f6a48"));
 
 function check(name: string, cond: boolean, detail?: string) {
   if (cond) {
@@ -101,6 +109,7 @@ try {
     "uploads/statement-command/nested/runtime.pdf": "synthetic-runtime",
     "attached_assets/Pasted-new-generated.txt": "synthetic-generated",
     "exports/renamed_export.csv": "a,b",
+    "docs/certification/canonical-enrichment-native-console.sql": "-- unreviewed replacement",
   };
   for (const [rel, content] of Object.entries(fixtures)) writeFixture(blockedRepo, rel, content);
   commitAll(blockedRepo, "forced fixtures");
