@@ -110,9 +110,14 @@ test("paid provider execution keeps activation and dispatch fences without paid 
   has(files.providerOps, "provider_controls");
 });
 test("ZeroBounce execution uses plaintext only inside governed boundary", () => {
-  has(files.validation, "verifyEmail(realEmail)");
+  // The canonical adapter now requires the claimed address/operation dispatch
+  // context. Check that protection, not the obsolete one-argument call text.
+  assert.match(files.validation,
+    /return\s+verifyEmail\s*\(\s*realEmail\s*,\s*\{\s*dispatch\s*:\s*\{\s*addressClaim\s*:\s*addressClaim!\s*,\s*operationId\s*:\s*reservation!\.operationId\s*\}\s*,?\s*\}\s*\)/);
   lacks(files.validation, "verifyEmail(String(cand.masked_value))");
   has(files.validation, "assertCurrentSfpProviderReservation(reservation)");
+  assert.match(files.validation,
+    /invokeSfpProviderTransport\(reservation,\s*async\s*\(\)\s*=>\s*\{[\s\S]*?return\s+verifyTransport\(\);[\s\S]*?\},\s*beforeDispatch\)/);
 });
 test("Serper is bounded and returns domains to the free crawler", () => {
   has(files.paid, "lookupBusinessIdentity");
