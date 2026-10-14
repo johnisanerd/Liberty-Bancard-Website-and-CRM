@@ -47,7 +47,9 @@ export async function privateStage3Browser(base:string,cookie:string,originalFet
   };
   try {
     let port="";
-    for(let i=0;i<Math.ceil((options.startupTimeoutMs??10000)/100);i++){
+    // Browser process startup is not an application response-time measurement.
+    // Fresh hosted runners can take >10s to initialize Chromium's first profile.
+    for(let i=0;i<Math.ceil((options.startupTimeoutMs??30000)/100);i++){
       port=(await readFile(path.join(profile,"DevToolsActivePort"),"utf8").catch(()=>"")).split("\n")[0];
       if(port)break;
       await new Promise(resolve=>setTimeout(resolve,100));

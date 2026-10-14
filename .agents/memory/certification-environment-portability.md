@@ -14,3 +14,9 @@ Serve browser fixture HTML relative to an explicit public root, rather than usin
 **Why:** A checkout under .local produced Express NotFound responses despite a verified existing production index. Absolute paths include dot-directory components that default dotfile protection rejects.
 
 **How to apply:** Retain ordinary dotfile protection. Resolve the public directory as the root and send the index filename relative to it; never expose the checkout with dotfiles: allow.
+
+Separate fresh Chromium process startup from application performance budgets, and await actual nested-modal opening focus before testing one-key Escape dismissal.
+
+**Why:** Hosted CI sometimes needed more than ten seconds to create a debugging port. A separate CI keyboard case observed the dialog title before opening focus had settled; Escape did not reach the new modal.
+
+**How to apply:** Use a bounded startup allowance without relaxing useful-list/local-response limits. Require modal-owned focus and settled animation frames, then keep the single Escape and exact caller-focus assertions.

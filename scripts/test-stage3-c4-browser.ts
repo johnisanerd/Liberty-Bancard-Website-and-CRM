@@ -802,6 +802,18 @@ try {
   assert.equal(await b.evaluate(`document.activeElement?.getAttribute("data-testid")`),`button-open-review-${reviewFixtures[0].id}`);
   await reviewKey("Enter");await b.waitFor(new RegExp(`Quiz Lead — ${h.prefix} pending review read`));
   await b.click('[data-testid="button-approve"]');await b.waitFor(/Confirm Approval/);
+  assert.equal(await b.evaluate(`(async()=>{
+    for(let i=0;i<100;i++){
+      const modal=Array.from(document.querySelectorAll('[role="dialog"]')).find(e=>
+        e.getAttribute("data-state")==="open"&&e.textContent.includes("Confirm Approval"));
+      if(modal?.contains(document.activeElement)){
+        await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+        return true;
+      }
+      await new Promise(r=>setTimeout(r,25));
+    }
+    return false;
+  })()`),true,"Nested modal opening focus must settle before its single Escape");
   await reviewKey("Escape");
   for(let attempt=0;attempt<30&&await b.evaluate('Array.from(document.querySelectorAll("[role=dialog]")).some(el=>el.textContent.includes("Confirm Approval"))');attempt++)
     await new Promise(resolve=>setTimeout(resolve,50));
