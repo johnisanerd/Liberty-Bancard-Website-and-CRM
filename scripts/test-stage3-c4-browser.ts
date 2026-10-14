@@ -160,6 +160,12 @@ try {
   ];
   for(const [route,control,parameter,value,ready] of retainedTabCases){
     await b.navigate(route);await b.waitFor(ready);
+    assert.equal(await b.evaluate(`(async()=>{
+      for(let attempt=0;attempt<120;attempt++){
+        if(document.querySelector('[data-testid="${control}"]'))return true;
+        await new Promise(r=>setTimeout(r,50));
+      }return false;
+    })()`),true,`Conditional retained selector must hydrate from actual settings: ${control}`);
     const originalUrl=await b.evaluate("location.href");
     await b.click(`[data-testid="${control}"]`);
     assert.equal(await b.evaluate(`new URLSearchParams(location.search).get(${JSON.stringify(parameter)})`),value);
