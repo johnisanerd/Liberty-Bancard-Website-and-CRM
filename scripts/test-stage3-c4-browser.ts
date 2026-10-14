@@ -144,6 +144,25 @@ try {
   assert.equal(persistedSettings.status,200);assert.equal(persistedSettings.body.showResponseRate,true);
   rows.push({phase:"Leaderboard optional proxy metric actual settings control and durable readback",role:"admin",
     qualification:"Owned presentation setting, not provider or campaign activation"});
+  const waitForRetainedActive=async(control:string,previousDocumentOrigin?:number)=>{
+    for(let attempt=0;attempt<120;attempt++){
+      try{
+        const state=await b.evaluate(`({
+          origin:performance.timeOrigin,ready:document.readyState,
+          active:document.querySelector('[data-testid="${control}"]')?.getAttribute("data-state")??null
+        })`);
+        if(state.ready==="complete"&&state.active==="active"&&
+          (previousDocumentOrigin===undefined||state.origin!==previousDocumentOrigin))return state.active;
+      }catch(error){
+        // Runtime evaluations can be cancelled while reload replaces a document.
+        // Retry only in this bounded reload observer; never accept a missing tab.
+        if(previousDocumentOrigin===undefined||!(error instanceof Error)||
+          error.message!=="Private browser evaluation failed; expression and response omitted")throw error;
+      }
+      await new Promise(resolve=>setTimeout(resolve,100));
+    }
+    assert.fail(`Retained tab did not become active in the settled document: ${control}`);
+  };
   const retainedTabCases:Array<[string,string,string,string,RegExp]>=[
     ...applicationStatuses.map(value=>[
       `/dashboard/merchant-applications?status=${value==="all"?"approved":"all"}&page=2&cursor=retained-fixture`,
@@ -173,8 +192,10 @@ try {
     assert.equal(await b.evaluate(`new URLSearchParams(location.search).get(${JSON.stringify(parameter)})`),value);
     assert.equal(await b.evaluate('["page","cursor","offset"].some(key=>new URLSearchParams(location.search).has(key))'),false,
       "Retained tab changes reset pagination rather than carrying a stale window");
-    await b.call("Page.reload");await b.waitFor(ready);
-    assert.equal(await b.evaluate(`document.querySelector('[data-testid="${control}"]').getAttribute("data-state")`),"active");
+    const previousDocumentOrigin=await b.evaluate("performance.timeOrigin");
+    await b.call("Page.reload");
+    assert.equal(await waitForRetainedActive(control,previousDocumentOrigin),"active");
+    await b.waitFor(ready);
     await b.evaluate("history.back()");
     for(let attempt=0;attempt<60 && await b.evaluate("location.href")!==originalUrl;attempt++)await new Promise(resolve=>setTimeout(resolve,50));
     assert.equal(await b.evaluate("location.href"),originalUrl,"Back restores original retained selector");
