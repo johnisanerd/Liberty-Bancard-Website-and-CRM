@@ -147,6 +147,19 @@ jobs:
       - name: Validate canonical suite manifest
         run: npx tsx scripts/ci-suite-manifest.ts --check
 
+      - name: Build exact production candidate for integration acceptance
+        # Integration runs in a fresh job, not the static job's isolated build
+        # workspace. Build the exact candidate here; never substitute an old
+        # receipt or relax reader/browser integrity verification.
+        # The build-only process sets production mode while this job's DB,
+        # sessions and test runner remain in test mode.
+        env:
+          VG_PROVIDER_DENY_MODE: "1"
+          CERTIFICATION_COMPILER_ONLY: "1"
+          CERTIFICATION_ALLOWED_NETWORK_ORIGINS: ""
+          CERTIFICATION_ALLOW_LOOPBACK: "0"
+        run: NODE_OPTIONS="${NODE_OPTIONS:-} --require $(pwd)/scripts/certification-provider-deny-preload.cjs" npm run build
+
       - name: Run all deterministic integration suites
         run: npx tsx scripts/run-ci-suites.ts --capability deterministic-integration
 
