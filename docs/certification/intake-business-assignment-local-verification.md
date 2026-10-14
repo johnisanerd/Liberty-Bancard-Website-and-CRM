@@ -1200,6 +1200,14 @@ commands. Official documentation identifies Publishing → Adjust settings as
 the place to select the existing deployment's new type before republishing.
 An unchanged Publish click is not verified to perform that switch here.
 
+The owner's subsequent mobile screenshots show only Autoscale CPU/RAM and
+maximum-machine controls, with no deployment-type selector. The earlier
+instruction to select Reserved VM directly in that live settings screen did
+not match the available UI. Further official documentation lookups say that
+switching an already-published app requires unpublishing before selecting
+the new type. No shutdown/unpublishing was performed; its downtime requires
+the owner's informed approval. Do not repeat the unavailable-selector instruction.
+
 Existing authenticated production readers returned:
 
 | Actual primary request | HTTP | End-to-end request time |

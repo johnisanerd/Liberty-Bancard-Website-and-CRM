@@ -23,6 +23,9 @@ and rewrote the workspace target to `cloudrun`.
 deployment metadata and the publication's configuration diff both showed that
 the hosting change had not taken effect.
 
-**How to apply:** Do not ask for another unchanged Publish click. The Publishing
-tool's Adjust settings must explicitly select Reserved VM before republishing.
-Recheck the resulting live metadata, not just the file or a successful build.
+**How to apply:** Do not ask for another unchanged Publish click or assume that
+the published app's Adjust settings contains a deployment-type selector. The
+owner's mobile screenshots show Autoscale sizing controls only. Verify the
+existing-deployment switching procedure and obtain consent for any required
+unpublishing/downtime before directing the owner to it. Recheck live metadata,
+not just the file or a successful build.
