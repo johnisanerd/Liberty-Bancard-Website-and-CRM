@@ -55,10 +55,13 @@ export async function runC4Accessibility(h:Awaited<ReturnType<typeof stage3BHttp
           await b.call("Input.dispatchKeyEvent",{type:"keyUp",key:"Tab",code:"Tab",windowsVirtualKeyCode:9,modifiers:1});
           await b.call("Input.dispatchKeyEvent",{type:"keyDown",key:"Tab",code:"Tab",windowsVirtualKeyCode:9});
           await b.call("Input.dispatchKeyEvent",{type:"keyUp",key:"Tab",code:"Tab",windowsVirtualKeyCode:9});
+          await b.evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
           const focus=await b.evaluate(`(()=>{const e=document.activeElement,s=getComputedStyle(e);return {
             matched:e.matches(${JSON.stringify(target)}),visible:e.matches(":focus-visible"),
+            tag:e.tagName,testId:e.getAttribute("data-testid"),label:e.getAttribute("aria-label"),
             outlineWidth:parseFloat(s.outlineWidth),outlineStyle:s.outlineStyle};})()`);
-          assert.equal(focus.matched,true);assert.equal(focus.visible,true);
+          assert.equal(focus.matched,true,`${theme}/${width} actual settled Tab return: ${JSON.stringify(focus)}`);
+          assert.equal(focus.visible,true,`${theme}/${width} native keyboard focus-visible: ${JSON.stringify(focus)}`);
           assert.ok(focus.outlineWidth>=2&&focus.outlineStyle!=="none");
           probe.keyboard=focus;
         }
