@@ -31,3 +31,17 @@ guided switch flow over an unrelated Pause or standalone Unpublish action.
 Obtain consent for required downtime and keep **Copy your development database
 to production database** unchecked: it overwrites production data. Recheck live
 metadata and connected domains after publishing, not just the file or build.
+
+Unpublishing to switch hosting removes the published app's custom-domain
+connections; the replacement publication can also use a different generated
+Replit address.
+
+**Why:** After the approved switch, live metadata confirmed Reserved VM but no
+additional URLs, while both previously connected Liberty custom domains returned
+404. Official documentation confirms custom domains must be re-linked after
+unpublishing.
+
+**How to apply:** Include custom-domain reconnection in a hosting-switch
+procedure. Use **Add a domain** for each previous custom hostname, follow the new
+publication's exact DNS instructions, and verify HTTPS afterward. Do not assume
+old DNS records suffice or unpublish again to fix the domain attachments.
