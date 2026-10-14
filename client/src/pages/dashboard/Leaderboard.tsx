@@ -37,7 +37,7 @@ import {
 } from "lucide-react";
 
 type TimePeriod = "week" | "month" | "quarter" | "all";
-type MetricKey = "deals" | "revenue" | "proposals" | "calls" | "responseRate" | "contacts";
+type MetricKey = "deals" | "revenue" | "proposals" | "calls" | "responseRate" | "closeRate" | "contacts";
 type BooleanSettingKey = "showDeals" | "showRevenue" | "showProposals" | "showCallsMade" | "showResponseRate" | "visibleToAgents";
 
 interface LeaderboardEntry {

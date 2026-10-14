@@ -9,6 +9,7 @@ import path from "node:path";
 import {runC4MatchedPerformance} from "./fixtures/stage3-c4-matched-performance";
 import {applicationStatuses,boardingStatuses,outreachViews,leaderboardMetrics,leaderboardPeriods} from "../client/src/lib/crm-destination-state";
 import {runC4BundledRollback} from "./fixtures/stage3-c4-bundled-rollback";
+import {runC4Accessibility} from "./fixtures/stage3-c4-accessibility";
 
 const identity=await verifyCandidateIdentity();
 let browserPreparationFault=false;
@@ -33,6 +34,7 @@ const h=await stage3BHttpFixture(async app=>{
     ["workflows","registerWorkflowsRoutes"],
     ["churn","registerChurnRoutes"],
     ["campaigns","registerCampaignsRoutes"],
+    ["terminal-economics","registerTerminalEconomicsRoutes"],
   ]) {const module=await import(`../server/routes/${file}.ts`);module[fn](app,file==="crm-operations" ? {
     onboardingPreparationAfterStep:async(step:string)=>{
       if(browserPreparationFault && step==="Submit application to processor"){
@@ -132,6 +134,16 @@ try {
     assert.equal(headings.length,1,`Persistent unique Onboarding page identity: ${route}`);
     rows.push({phase:"Onboarding unique H1",role:"admin",route,headings});
   }
+  await b.navigate("/dashboard/leaderboard");await b.waitFor(/Team Leaderboard/);
+  await b.click('[data-testid="button-leaderboard-settings"]');
+  await b.click('[data-testid="switch-showResponseRate"]');
+  await b.click('[data-testid="button-save-settings"]');
+  for(let attempt=0;attempt<100&&await b.evaluate('!!document.querySelector("[data-testid=button-save-settings]")');attempt++)
+    await new Promise(r=>setTimeout(r,50));
+  const persistedSettings=await h.request("admin","GET","/api/leaderboard/settings");
+  assert.equal(persistedSettings.status,200);assert.equal(persistedSettings.body.showResponseRate,true);
+  rows.push({phase:"Leaderboard optional proxy metric actual settings control and durable readback",role:"admin",
+    qualification:"Owned presentation setting, not provider or campaign activation"});
   const retainedTabCases:Array<[string,string,string,string,RegExp]>=[
     ...applicationStatuses.map(value=>[
       `/dashboard/merchant-applications?status=${value==="all"?"approved":"all"}&page=2&cursor=retained-fixture`,
@@ -940,6 +952,7 @@ try {
   await b.close();
   finishedContexts.push({role:browserRole,requests:b.requests,exceptions:b.exceptions});
   b=undefined;
+  await runC4Accessibility(h,rows);
   await runC4MatchedPerformance(h,identity,root=>{clientRoot=root;});
   await runC4BundledRollback(h,identity);
   rows.push({phase:"Actual retained route/panel mounted inventory",surfaces:surfaces.length,
