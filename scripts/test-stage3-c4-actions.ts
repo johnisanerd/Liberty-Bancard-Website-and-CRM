@@ -58,6 +58,25 @@ try {
   for(const role of ["agent","merchant","partner"])
     await check(role,"GET","/api/sequences/ab-test-results",undefined,403,`${role} A/B denial`);
   await check("anonymous","GET","/api/sequences/ab-test-results",undefined,401,"anonymous A/B denial");
+  const {followUpSequences,sequenceSteps}=await import("../shared/schema");
+  const sequenceFixtures=await h.db.insert(followUpSequences).values([
+    {name:`${h.prefix} manager A/B`,createdBy:h.userId("manager"),status:"paused"},
+    {name:`${h.prefix} foreign A/B`,createdBy:h.userId("other"),status:"paused"},
+  ]).returning();
+  await h.db.insert(sequenceSteps).values(sequenceFixtures.map(sequence=>({
+    sequenceId:sequence.id,stepOrder:1,actionType:"email",subject:"A",body:"A body",
+    variantBSubject:"B",variantBBody:"B body",abTestConfig:{splitRatio:50,minSampleSize:100,winnerCriteria:"open_rate"},
+    abTestResults:{variantASent:3,variantBSent:4,aOpens:1,bOpens:2,aClicks:0,bClicks:1,aReplies:0,bReplies:0},
+  })));
+  const populatedAb=await check("admin","GET","/api/sequences/ab-test-results",undefined,200,"real populated A/B aggregation");
+  assert.deepEqual(populatedAb.map((row:any)=>row.sequenceId).sort((a:number,b:number)=>a-b),sequenceFixtures.map(sequence=>sequence.id).sort((a,b)=>a-b));
+  assert.equal(populatedAb[0].abTestResults.variantASent,3);assert.equal(populatedAb[0].abTestResults.variantBSent,4);
+  const ownedAb=await check("manager","GET","/api/sequences/ab-test-results",undefined,200,"manager excludes foreign sequence results");
+  assert.deepEqual(ownedAb.map((row:any)=>row.sequenceId),[sequenceFixtures[0].id]);
+  await check("admin","GET",`/api/sequences/${sequenceFixtures[1].id}`,undefined,200,"numeric sequence route survives literal repair");
+  await check("manager","GET",`/api/sequences/${sequenceFixtures[0].id}`,undefined,200,"manager numeric owned sequence read");
+  await check("manager","GET",`/api/sequences/${sequenceFixtures[1].id}`,undefined,403,"manager numeric foreign sequence denial");
+  assert.equal(h.externalCalls(),0,"A/B reads never activate sequences or dispatch providers");
   const {calendarEvents}=await import("../shared/schema");
   for(const [zone,start,end] of [
     ["UTC","2026-10-01T00:00:00Z","2026-11-01T00:00:00Z"],
