@@ -46,6 +46,7 @@ FROM (
       WHERE csl.stable_key = se.filing_number
         AND ((csl.source_system = 'sunbiz' AND csl.source_type = 'sunbiz_entity')
           OR (csl.source_system = 'sunbiz_entities' AND csl.source_type = 'sunbiz_filing'))
+      OFFSET 0
     )
   UNION ALL
   SELECT se.id AS source_entity_id, se.filing_number, se.entity_name, se.dba,
@@ -61,6 +62,7 @@ FROM (
       WHERE csl.stable_key = se.filing_number
         AND ((csl.source_system = 'sunbiz' AND csl.source_type = 'sunbiz_entity')
           OR (csl.source_system = 'sunbiz_entities' AND csl.source_type = 'sunbiz_filing'))
+      OFFSET 0
     )
 ) matches
 ORDER BY matches.source_entity_id
@@ -302,6 +304,7 @@ raw_unlinked_sunbiz_by_contact AS MATERIALIZED (
           WHERE csl.stable_key = se.filing_number
             AND ((csl.source_system = 'sunbiz' AND csl.source_type = 'sunbiz_entity')
               OR (csl.source_system = 'sunbiz_entities' AND csl.source_type = 'sunbiz_filing'))
+          OFFSET 0
         )
       UNION ALL
       SELECT se.id AS source_entity_id, se.filing_number, se.entity_name, se.dba,
@@ -318,18 +321,56 @@ raw_unlinked_sunbiz_by_contact AS MATERIALIZED (
           WHERE csl.stable_key = se.filing_number
             AND ((csl.source_system = 'sunbiz' AND csl.source_type = 'sunbiz_entity')
               OR (csl.source_system = 'sunbiz_entities' AND csl.source_type = 'sunbiz_filing'))
+          OFFSET 0
         )
     ) matches
     ORDER BY matches.source_entity_id
     LIMIT 21
   ) raw
 ),
--- PostgreSQL cannot infer that an array subscript rejects a NULL-extended
--- outer-join row. Explicitly require the entity for entity-owned keys so the
--- planner can push equality into each source index. Filing-only links below
--- deliberately retain their LEFT JOIN semantics.
+-- Entity-owned keys must probe the indexed entity first, then its exact source
+-- namespace and business PK. Plain joins can rebuild a hash of the entire
+-- source/business universe for each page key. Keep both existence probes
+-- parameterized; do not assume FK validity or drop the business-existence test.
+-- Filing-only keys and payload aggregation below retain the original LEFT JOIN.
 linked_sunbiz_source_entities AS NOT MATERIALIZED (
-  SELECT * FROM all_sunbiz_source_links WHERE source_entity_id IS NOT NULL
+  SELECT
+    csl.id AS source_link_id,
+    csl.business_id,
+    csl.source_system,
+    csl.source_type,
+    csl.stable_key,
+    csl.raw_evidence,
+    se.id AS source_entity_id,
+    se.entity_name,
+    se.dba,
+    se.website,
+    se.filing_number,
+    se.principal_address,
+    se.principal_city,
+    se.principal_state,
+    se.principal_zip,
+    se.phone,
+    se.owner_phone,
+    se.contact_identity_name_key,
+    se.contact_identity_dba_key,
+    se.coverage_keys[1] AS coverage_domain_key,
+    se.coverage_keys[2] AS coverage_phone_key,
+    se.coverage_keys[3] AS coverage_owner_phone_key,
+    se.coverage_keys[4] AS coverage_address_key,
+    se.coverage_keys[5] AS coverage_street_key,
+    se.source AS entity_source
+  FROM sunbiz_entities se
+  CROSS JOIN LATERAL (
+    SELECT matching.* FROM canonical_source_links matching
+    WHERE matching.source_system = 'sunbiz' AND matching.source_type = 'sunbiz_entity'
+      AND matching.stable_key = se.filing_number
+    OFFSET 0
+  ) csl
+  CROSS JOIN LATERAL (
+    SELECT existing.id FROM businesses existing WHERE existing.id = csl.business_id OFFSET 0
+  ) b
+  WHERE se.filing_number IS NOT NULL
 ),
 source_identity_keys AS NOT MATERIALIZED (
   SELECT business_id,'name'::text AS kind,contact_identity_name_key AS key

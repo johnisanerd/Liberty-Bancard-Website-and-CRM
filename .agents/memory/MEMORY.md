@@ -146,3 +146,4 @@
 - [Upload boundary verification](upload-boundary-verification.md) — Verify multipart admission; a 300s gateway timeout can hide a committed import. Reconcile exact hashes before resending.
 - [Transaction rollback masking](transaction-rollback-masking.md) — Idle termination may surface only as failed rollback; preserve both errors and never infer healthy work from a lease alone.
 - [Production worker hosting](production-worker-hosting.md) — Owner selected Reserved VM for continuous workers; configured hosting is not live deployment or acceptance proof.
+- [Coverage nested existence probes](coverage-parameterized-existence.md) — An indexed outer key probe can still rebuild full-universe hashes inside nested source/business joins.

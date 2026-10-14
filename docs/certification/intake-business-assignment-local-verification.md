@@ -1280,3 +1280,86 @@ were not attributed to application defects.
 No workbook was re-uploaded, provider/outbound control changed, production SQL
 written or application timeout relaxed. Original production acceptance and
 the failed stock release checks remain open; there is no release GO.
+
+## Reserved VM and exact coverage correction — 2026-10-14 13:13–13:40 UTC
+
+Fresh deployment metadata confirms public Reserved VM, a successful build,
+primary `https://libertybancard.com`, additional `https://dev.libertybancard.com`
+and the existing Replit production domain. Both Liberty health endpoints returned
+200 with the same SHA `ddb92c501a32892485ed9e4345eb3c86942fe750`,
+build `f8bdeb30-0762-49b7-838a-2a147562723f`, built 13:03:30.696 UTC.
+The owner reconnected the Liberty domains after the hosting switch.
+
+The primary read-only diagnostic completed its full 60-second window:
+216 samples, zero observed blockers and no failure; event-loop p99 21.873 ms,
+maximum 66.781 ms, primary database round-trip maximum 167.718 ms. This is
+a successful observation window, not sustained production acceptance.
+Canonical, assignment and coverage readers returned 200. Actual first/next
+review requests returned 200 in 6,836/5,776 ms, with 50 unique candidates each,
+zero overlap and a lossless microsecond cursor. An earlier collector used the
+wrong query parameter names and repeated the first page; only corrected
+`afterCreatedAt`/`afterId` requests establish that result. Signed-in rendered UI
+remains unverified.
+
+At 13:18 UTC the separate complete bridge verifier returned true and all three
+relationship function fingerprints retained the certified bodies. October
+accounting was 270/119/13/113/166, pending fulfillment 1/1/0/2/1; all five
+executions remained running, with observed advancement in two executions.
+September retained 1,472 originals and 363 distinct current-qualified receipts.
+Assignment reported 155,474 active contacts, 1,556 verified and 153,918
+unresolved, with independent cursor 13,359 still incomplete. These are partial
+observations, not full source/contact disposition.
+
+The **same original coverage run**, cursor 153,601, watermark 159,476 and
+153,000/154,418 processed, was tested through its existing authenticated,
+CSRF-protected resume action. The collector timed out at 25 seconds; actual
+production logs subsequently established SQLSTATE `57014` at 30,070 ms,
+HTTP 500 at 30,597 ms and rollback. Pool state was six total, three idle,
+zero waiting. This is a query statement timeout, not pool exhaustion.
+No scope reset, workbook resend or blind transport-timeout retry occurred.
+
+The actual pure hydration query's plan exposed repeated full-business/source
+hash builds beneath parameterized source-key branches. An entity-first draft
+still rebuilt the full business hash: its executed candidate-only profile
+read 705,565 shared blocks and took 8,920.432 ms. That scalar profile was
+diagnosis, not full hydration acceptance. A baseline replica profile was
+canceled by recovery conflict and is not a completed runtime measurement.
+
+The correction preserves business existence explicitly with a parameterized
+PK probe, pairs it with an exact indexed source-namespace probe, and prevents
+unlinked-source existence checks from flattening into universe hash joins.
+Filing-only missing-entity behavior, payload fields, matching, relationship
+proofs, scope and timeouts remain unchanged. No DDL or native-function changes
+are part of this correction.
+
+The **full corrected query**, including payload/proof extraction, executed on
+the production read replica with exact parameters `[153601,159476,500,null]`:
+500 contact rows, 956 candidate pairs, planning 417.805 ms, execution
+4,021.735 ms, and zero repeatedly executed business/source universe scans
+in the candidate-pair subtree. The compiled workspace SQL equals the measured
+variant after comments/whitespace normalization; its SHA-256 is
+`2c674e9b94d1357abb620f76062b1a21dea90a4359ca1b0e454c79ae52ca7328`.
+This is an uncontrolled replica observation, not a primary request timing,
+causal speedup proof or committed coverage-checkpoint advancement.
+
+The disposable intake batch passed all nine intake suites and the affected
+Florida continuation regression. The review suite now passes 31 checks,
+including full 500-contact result parity against the frozen prior-query oracle
+at 147,003 businesses and 127,003 linked sources, executed source-namespace
+and business-PK indexes, no repeated universe scan in the candidate-pair stage,
+admin hydration/keyset continuation, manager/agent 403 and unsigned 401.
+The local full 500-contact query took 18,938.768 ms; this fixture timing is
+separate from the replica observation and not a production latency claim.
+The automatic-linking certificate passed 51 checks with unchanged native
+fingerprints and zero external network attempts. Application build passed;
+the existing build warnings remain. The restarted development app serves its
+public landing page; development release identity is unverified as expected.
+Startup confirmed no unknown contacts to reclassify.
+
+Evidence is retained under ignored
+`generated-artifacts/intake-consolidated-stock-evidence/post-publish`.
+The corrected query is **not published**. Original run advancement, three
+eligible ordinary production cycles, full source/contact disposition and
+production fresh-process restart/replay remain pending. The previous stock
+release result (124 passes, 60 failures, two skips) is not superseded by this
+focused regression batch. The task remains unfinished and there is no release GO.

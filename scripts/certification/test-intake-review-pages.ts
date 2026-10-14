@@ -101,6 +101,21 @@ try {
   // Capture after every relevant fixture mutation. The missing-entity link is
   // also a real fact on the competing business seen by the original contacts.
   const beforeNoiseSourceRows=(await pool.query(CONTACT_LINK_COVERAGE_BATCH_SQL,edgeParams)).rows;
+  // A few source-backed contacts did not reproduce per-page-key universe hash
+  // rebuilds. Retain the complete 500-contact payload and frozen-query oracle.
+  // Owner-phone evidence deliberately differs from the business main phone:
+  // these remain independent-corroboration holds, not fabricated valid links.
+  const pagePrefix=randomUUID();
+  const fullPageContacts=(await pool.query(`INSERT INTO contacts
+    (first_name,last_name,company_name,email,phone,record_class)
+    SELECT 'Page','Fixture','Owner Phone Only '||n,$1::text||'.'||n||'@gmail.com',
+      '305-555-0199','production' FROM generate_series(1,500) n RETURNING id`,
+    [pagePrefix])).rows;
+  const fullPageParams=[0,2147483647,500,fullPageContacts.map(row=>row.id)];
+  const fullPagePrior=(await pool.query(PRIOR_COVERAGE_SQL,fullPageParams)).rows;
+  assert.equal(fullPagePrior.length,500);checks++;
+  assert(fullPagePrior.every(row=>row.businesses.some((b:any)=>b.businessId===edgeBusiness.id)),
+    "Full-page fixture must actually exercise indexed source-owned keys");checks++;
 
   // Production-sized unrelated population. This is local serving-volume proof,
   // not a replacement for timing the deployed corrected primary request.
@@ -143,6 +158,28 @@ try {
   const planText=JSON.stringify(plan);
   assert(planText.includes("businesses_coverage_name_key_idx"),
     "Actual plan must use the native indexed name key");checks++;
+  const fullPageStart=performance.now();
+  const fullPageRows=(await pool.query(CONTACT_LINK_COVERAGE_BATCH_SQL,fullPageParams)).rows;
+  const fullPageMs=performance.now()-fullPageStart;
+  assert.deepEqual(fullPageRows,fullPagePrior,
+    "Complete 500-contact payload retains frozen-query parity at native serving volume");checks++;
+  const fullPagePlan=(await pool.query("EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+
+    CONTACT_LINK_COVERAGE_BATCH_SQL,fullPageParams)).rows[0]["QUERY PLAN"];
+  function nodes(node:any):any[] {
+    return [node,...(node.Plans ?? []).flatMap(nodes)];
+  }
+  const pairPlan=nodes(fullPagePlan[0].Plan).find(node=>node["Subplan Name"]==="CTE candidate_pairs");
+  assert(pairPlan,"Actual full-page plan must contain the bounded candidate-pair stage");checks++;
+  assert(!nodes(pairPlan).some(node=>node["Node Type"]==="Seq Scan" &&
+    ["businesses","canonical_source_links"].includes(node["Relation Name"]) &&
+    node["Actual Loops"]>1),
+    "Source-owned page keys must not repeatedly scan the full business/source universe");checks++;
+  assert(nodes(pairPlan).some(node=>node["Index Name"]==="canonical_source_links_namespace_key_unique" &&
+    node["Actual Loops"]>0),"Full-page source namespace probe must execute its index");checks++;
+  assert(nodes(pairPlan).some(node=>node["Index Name"]==="businesses_pkey" &&
+    node["Actual Loops"]>0),"Business existence remains an executed PK probe");checks++;
+  console.log(JSON.stringify({event:"intake_review_full_source_page_native_volume",
+    contactIds:500,elapsedMs:fullPageMs,productionExecution:false}));
   assert.equal((await fetch(url+pagePath)).status,401);checks++;
   const password=randomUUID(),hash=await bcrypt.hash(password,4);
   for(const role of ["admin","manager","agent"]) {
