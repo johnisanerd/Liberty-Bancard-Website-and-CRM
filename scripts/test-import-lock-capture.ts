@@ -130,6 +130,26 @@ try {
     && failureEvents[1].failure.causes[0].deadlockEdges[0].blockerPid===22,
     "Nested original SQLSTATE and sanitized deadlock edges survive masking");
   check(!JSON.stringify(failureEvents).includes("private-source@example.test"),"Raw errors and PostgreSQL detail statements are excluded");
+  const callbackFailure=Object.assign(new Error("private-source@example.test"),{code:"25P03"});
+  const rollbackFailure=Object.assign(new Error("private-source@example.test"),{code:"ECONNRESET"});
+  const combined=new Error("CANONICAL_TRANSACTION_CALLBACK_AND_CLEANUP_FAILED",
+    {cause:{originalError:callbackFailure,cleanupError:rollbackFailure}});
+  const combinedSafe=safeDatabaseFailure(new Error("CANONICAL_IMPORT_RECOVERY_ABORTED",{cause:combined}));
+  check(combinedSafe.causes.some(c=>c.sqlState==="25P03")
+    && combinedSafe.causes.some(c=>c.transportCode==="ECONNRESET"),
+    "Combined callback and rollback failures both retain safe diagnosis");
+  check(!JSON.stringify(combinedSafe).includes("private-source@example.test"),
+    "Branched exception diagnostics never emit raw callback or rollback messages");
+  check(safeDatabaseFailure(new Error("PROVIDER_IMPORT_IDENTITY_BRIDGE_NATIVE_GUARD_MISSING"))
+    .causes[0].reasonCode==="PROVIDER_IMPORT_IDENTITY_BRIDGE_NATIVE_GUARD_MISSING",
+    "Exact identity-bridge capability failures remain actionable");
+  const cyclic:any={};cyclic.cause=cyclic;cyclic.originalError=cyclic;
+  check(safeDatabaseFailure(cyclic).causes.length===1,
+    "Repeated and cyclic exception branches are visited once");
+  let deep:any=callbackFailure;
+  for(let depth=0;depth<20;depth++)deep={cause:deep,originalError:deep,cleanupError:deep};
+  check(safeDatabaseFailure(deep).causes.length===5,
+    "Exception traversal retains the depth bound despite branching");
   await assert.rejects(observeRecoveryFailure(original,async()=>{},coordinates,()=>{throw new Error("telemetry unavailable");}),
     error=>error===original);checks++;
   check(true,"Telemetry failures cannot change original throw semantics");

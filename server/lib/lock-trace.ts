@@ -41,8 +41,14 @@ export function readLockTrace(text: string) {
 export function safeDatabaseFailure(error: unknown) {
   const causes: Record<string, unknown>[] = [];
   const seen = new Set<unknown>();
-  let current: any = error;
-  for (let depth = 0; current && typeof current === "object" && depth < 5 && !seen.has(current); depth++) {
+  // Transaction preservation retains callback and rollback failures as named
+  // branches, not a linear Error.cause chain. Visit only these known exception
+  // edges, with bounded depth/count, without exposing arbitrary object fields.
+  const pending: Array<{value: unknown; depth: number}> = [{value: error, depth: 0}];
+  while (pending.length && causes.length < 12) {
+    const {value, depth} = pending.shift()!;
+    if (!value || typeof value !== "object" || depth >= 5 || seen.has(value)) continue;
+    const current: any = value;
     seen.add(current);
     const detail = typeof current.detail === "string" ? current.detail : "";
     const deadlockEdges = [...detail.matchAll(
@@ -58,10 +64,13 @@ export function safeDatabaseFailure(error: unknown) {
       phase: typeof current.canonicalTransactionPhase === "string"
         && /^[a-z_]{1,64}$/.test(current.canonicalTransactionPhase) ? current.canonicalTransactionPhase : null,
       reasonCode: typeof current.message === "string"
-        ? /^(?:CANONICAL|SFP|SYSTEM_LINK)_[A-Z0-9_]+/.exec(current.message)?.[0] ?? null : null,
+        ? /^(?:CANONICAL|SFP|SYSTEM_LINK|PROVIDER_IMPORT)_[A-Z0-9_]+/.exec(current.message)?.[0] ?? null : null,
       deadlockEdges,
     });
-    current = current.cause;
+    for (const edge of ["cause", "originalError", "cleanupError"] as const) {
+      if (current[edge] && typeof current[edge] === "object")
+        pending.push({value: current[edge], depth: depth + 1});
+    }
   }
   return {causes};
 }

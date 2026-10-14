@@ -1,6 +1,6 @@
 # Intake and Business Assignment — local verification
 
-Observed through 2026-10-12 UTC. **The original task remains open. This is not
+Observed through 2026-10-14 UTC. **The original task remains open. This is not
 end-to-end production acceptance, publication authorization or release GO.**
 
 ## Verified locally
@@ -912,3 +912,99 @@ in 59 ms. The public login render is intact; signed-in UI was not visually
 verified. These are local corrections requiring owner publication; they are
 not production promotion proof or certification of the remaining native
 idle-transaction, five-workbook fulfillment, or full-population work.
+
+## Published startup repair and runtime continuation — 2026-10-14 UTC
+
+The owner's corrected publication is served as
+`badd5c2673650f88ebc21d96adee782104f28f64`, build
+`4ace6354-a41d-4af8-9b44-46176b4fe040`. Health returned HTTP 200 in
+301.690 ms. Production startup reports all 18 seed targets converged at
+03:30:30 UTC, including the previously blocked policy target. The public login
+renders; signed-in UI was not visually verified. Authenticated API observations
+are separate from this public screenshot.
+
+The four required native function bodies exactly match the local certified
+hashes, and the precise enabled identity-bridge observation trigger/function
+predicate returns true. No production DDL was performed.
+
+All five executions retain their original 537, 578, 513, 653 and 633 rows,
+respectively: **2,914 rows**, with no re-upload. Primary detail reads return
+HTTP 200 in 227–286 ms, and all five projections have reopened to processing.
+At 04:12 UTC, their accounting counts remain **98, 113, 6, 2 and 2**.
+Repeated claims/heartbeats and processing labels are not new row fulfillment.
+No October execution has a current-qualified recovery audit receipt; the
+scheduled retained-recovery selection requires a completed execution and its
+observed progress belongs to the September execution, not these still-running
+October uploads.
+
+Native retained recovery committed fulfillment in three consecutive ordinary
+ticks at 04:04:30, 04:05:18 and 04:06:03 UTC. Those ticks respectively report
+one fulfilled row with zero, two and one evidenced holds. A read-only audit
+query returned 230 distinct September item identities with the current
+`mailbox_business_identity_v2` receipt qualification. This is source-scoped
+progress, not complete accounting of 1,472 originals, proof of every receipt's
+current graph, ordinary-upload fresh-process restart, or fulfilled full replay.
+
+The same coverage run advanced to 152,000/154,418, cursor 152,093, without
+resetting its committed scope. Its primary status read returned in 250 ms.
+The automatic-linker population read took 12,005 ms: 155,111 active production
+contacts, 1,193 currently verified and 153,918 unresolved. These population
+counts are not outreach qualification or a full unresolved disposition.
+Authenticated human-review first/next pages each return 50 candidates with
+HTTP 200 in 12,639 and 7,165 ms, retaining native-microsecond cursors.
+These are uncontrolled primary HTTP observations under live worker activity,
+not isolated transaction/component timings or a speedup claim.
+
+### Runtime evidence and its limits
+
+Idle-transaction SQLSTATE 25P03 still occurs after publication, including native
+materialization/finalization and owner heartbeat phases. Existing statement,
+lock and idle limits remain unchanged. Available pool slots during failures
+do not support a pool-exhaustion diagnosis.
+
+An existing authenticated, read-only primary capture at 04:02 UTC bound SQL
+tags and process metrics to the same process. It captured three real blocker
+snapshots, with a native materializer in ClientRead and no blockers while
+another worker awaited its transaction. The observation itself subsequently
+failed after 16 samples; it is not a successful full 60-second capture.
+Over 23.378 seconds, process CPU was only 287.282 ms, while event-loop maximum
+delay reached 4,601.151 ms and p99 reached 1,400.898 ms. An observer round trip
+took 2,200.517 ms.
+
+A separate controlled comparison used 60 shallow public health GETs over
+approximately 65 seconds; all returned 200, maximum HTTP latency 120 ms.
+The same process's capture completed, with 106 samples and nine blocked
+samples. Its event-loop maximum was 880.280 ms and p99 552.075 ms over
+60.209 seconds; total process CPU was 2,897.440 ms. The maximum observer round
+trip was 621.870 ms. This comparison shows substantially different scheduling
+conditions, not a controlled proof of CPU throttling or the exact cause of
+each idle termination. No keepalive traffic loop remains running, and none
+was added to the application.
+
+Deployment metadata confirms Autoscale. Official platform documentation
+describes Autoscale as traffic-driven/scaling to zero and Reserved VM as
+dedicated always-on compute suitable for continuous background work. It does
+not document the precise idle CPU allocation. Changing hosting would have a
+fixed monthly cost and requires the owner's decision; no deployment target,
+machine resources, provider settings or outbound controls were changed.
+
+### Diagnostic follow-through, local only
+
+Combined callback/rollback errors retained both exceptions, but their safe
+formatter followed only linear cause edges, concealing nested SQLSTATEs again.
+The formatter now follows only cause/originalError/cleanupError edges, bounded
+by depth, node count and a visited set. Exact provider-import capability codes
+remain actionable. No raw messages/SQL/parameters are emitted, and no retry,
+failure classification, native guard or transaction limit is changed.
+
+The focused branched-diagnostic regression passes. The actual disposable native
+blocker/privacy/observer certificate passes all 33 checks on a serial rerun.
+Its first run, concurrent with the production build, timed out without a
+completed certificate and is not counted as a pass. Full build passes. One
+development restart reports all 18 seeds converged, background workers off
+and port 5000 serving; this diagnostic amendment is not yet published.
+
+The original task remains open: October fulfillment, full current dispositions,
+production-wide affiliation, complete native restart/replay and representative
+component timings are not established. No new task, replacement pipeline,
+activation gate or publication was performed.
