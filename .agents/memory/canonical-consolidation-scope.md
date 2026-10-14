@@ -42,6 +42,16 @@ qualification, validation and scheduled production convergence are not
 interchangeable. An owner publish is a continuation signal; resume unresolved
 acceptance rather than ending at a deployment status report.
 
+Do not use repeated owner publications as a debugging loop. Consolidate and
+verify available in-scope corrections before the next publication request.
+
+**Why:** The user again objected to repeated requests to publish partial fixes
+while this original task remained unfinished.
+
+**How to apply:** Do not imply that another isolated fix will complete the task.
+Any necessary release request must distinguish the consolidated verified
+corrections from exact remaining production-only blockers and acceptance proof.
+
 An isolated implementation may be submitted for review, with the user's
 approval, while production acceptance remains explicitly unfinished.
 
