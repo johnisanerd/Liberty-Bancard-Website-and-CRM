@@ -683,6 +683,7 @@ export default function LeadImports() {
     refetch: refetchImports,
   } = useQuery<CsvImport[]>({
     queryKey: ["/api/csv-imports"],
+    refetchInterval: (query) => query.state.data?.some(imp => imp.status === "processing") ? 15_000 : false,
   });
   const imports = Array.isArray(importsRaw) ? importsRaw : [];
 
@@ -818,6 +819,13 @@ export default function LeadImports() {
       setSelectedLeadSource("");
       if (fileInputRef.current) fileInputRef.current.value = "";
 
+      if (data.status === "processing") {
+        toast({
+          title: "Import Processing",
+          description: `${Number(data.totalRows).toLocaleString()} original rows accepted. Processing continues automatically; progress is shown in Import History. This is not a completed import.`,
+        });
+        return;
+      }
       const inserted = data.inserted || 0;
       const alreadyExists = (data.duplicatesSkipped || 0) + (data.skippedRows || 0);
       const invalidOrErrored = (data.invalidRows || 0) + (data.errors || 0);

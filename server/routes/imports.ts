@@ -7,7 +7,7 @@ import { db, pool } from "../db";
 import { z } from "zod";
 import { authStorage } from "../replit_integrations/auth/storage";
 import { contacts, users } from "@shared/schema";
-import { and, eq, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { INDUSTRY_SLUGS, LOCATION_CITIES, LOCATION_VERTICALS, STATIC_BLOG_SLUGS } from "@shared/blog-slugs";
 import { getSerperUsage, isSerperConfigured } from "../services/serper";
 import { calculateQuizBonusFn, calculateRevenuePotentialFn, calculateSwitchabilityFn, calculateUnderwritingConfidenceFn, scoreContact } from "../services/lead-scoring";
@@ -1320,6 +1320,15 @@ Guidelines:
   // === CSV IMPORT PIPELINE ===
   app.get("/api/csv-imports", isDashboardUser, requireRole("admin", "manager"), async (req, res) => {
     const imports = await storage.getCsvImports();
+    const executionIds = imports.flatMap(imp => imp.executionId ? [imp.executionId] : []);
+    const executionStates = executionIds.length ? await db.select({
+      id: importExecutions.id,
+      status: importExecutions.status,
+      leaseExpiresAt: importExecutions.leaseExpiresAt,
+    }).from(importExecutions).where(inArray(importExecutions.id, executionIds)) : [];
+    const liveExecutions = new Set(executionStates.filter(execution =>
+      execution.status === "running" && execution.leaseExpiresAt &&
+      execution.leaseExpiresAt.getTime() > Date.now()).map(execution => execution.id));
 
     // Auto-mark any import that has been stuck in "processing" for longer than
     // the configurable threshold with no progress heartbeat as "interrupted".
@@ -1331,6 +1340,13 @@ Guidelines:
     const now = Date.now();
     const staleUpdates: Promise<any>[] = [];
     for (const imp of imports) {
+      // A resumed native processor can be healthy before its next projection
+      // checkpoint. Render its actual live lease; never mark it interrupted
+      // solely because an older projection timestamp is stale.
+      if (imp.executionId && liveExecutions.has(imp.executionId)) {
+        imp.status = "processing";
+        continue;
+      }
       if (imp.status !== "processing") continue;
       const progressAt = imp.lastProgressAt ? new Date(imp.lastProgressAt).getTime() : null;
       const createdAt = imp.createdAt ? new Date(imp.createdAt).getTime() : now;
@@ -1747,8 +1763,13 @@ Guidelines:
 
       const batchSize = 100;
       const contactInserts: any[] = [];
+      const isProviderExport = sourceFormat === "google_maps_outscraper" || sourceFormat === "apollo_lead_list";
       for (const [rowIndex, record] of records.entries()) {
-        if (rowIndex % batchSize === 0 && !await heartbeatImportExecution(importExecution.id, executionClaim.claimToken!)) {
+        // Provider rows perform native transactions during this first loop,
+        // unlike the fast generic mapping pass. Renew per row, as the existing
+        // request-free provider recovery does, rather than losing a five-minute
+        // lease before a slow 100-row batch finishes.
+        if ((isProviderExport || rowIndex % batchSize === 0) && !await heartbeatImportExecution(importExecution.id, executionClaim.claimToken!)) {
           throw new Error(`IMPORT_EXECUTION_LEASE_LOST:${importExecution.id}`);
         }
         // Logical CSV rows are one-based and allocated before validation. The
@@ -1764,7 +1785,6 @@ Guidelines:
             : Object.hasOwn(columnMap, original) ? columnMap[original] : undefined;
           if (field && value) mapped[field] = value.trim();
         }
-        const isProviderExport = sourceFormat === "google_maps_outscraper" || sourceFormat === "apollo_lead_list";
         if (isProviderExport) {
           const { materializeCanonicalProviderImportRow } = await import("../services/canonical-provider-import");
           const transition=await materializeCanonicalProviderImportRow({
@@ -2189,18 +2209,41 @@ Guidelines:
       };
       };
       registerPersistedCsvProcessor(processCsvImport);
-      const response = await processPersistedCsvImport({
+      const processingArgs = {
         records,
         executionClaim,
         importRecord,
         sourceFormat,
         actor: {
-          actorType: "user",
+          actorType: "user" as const,
           actorId: String(principal?.id ?? ""),
           userId: String(principal?.id ?? ""),
         },
         filename: fileName,
-      });
+      };
+      if (sourceFormat === "google_maps_outscraper" || sourceFormat === "apollo_lead_list") {
+        // The originals and permanent claim are already committed. Keep the
+        // same request-free processor/restart recovery; do not hold an HTTP
+        // gateway open for native row processing or report it as completed.
+        void processPersistedCsvImport(processingArgs).catch(async (err: any) => {
+          console.error("CSV import processing error:", err);
+          try {
+            await failCsvImportProjection(executionClaim);
+          } catch (cleanupError) {
+            console.error("CSV import execution-specific cleanup failed:", cleanupError);
+            if (err && typeof err === "object") Object.defineProperty(err, "cleanupError", {value:cleanupError});
+          }
+        });
+        return res.status(202).json({
+          status: "processing",
+          executionId: executionClaim.execution.id,
+          fileHash: csvHash,
+          import: importRecord,
+          sourceFormat,
+          totalRows: records.length,
+        });
+      }
+      const response = await processPersistedCsvImport(processingArgs);
       res.status(201).json(response);
     } catch (err: any) {
       console.error("CSV import error:", err);

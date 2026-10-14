@@ -741,3 +741,50 @@ stops for reconciliation on any ambiguous or partial upload response rather
 than blindly retrying. This is not a new application pipeline or activation
 gate. Successful row accounting alone will not close remaining native
 fulfillment/held-revision or full-population acceptance.
+
+## Real October timeout reconciliation and upload continuation — 2026-10-14 UTC
+
+The scoped admission correction is served as
+`a5a82f14d8813bc56fd233e48187ea77b7ec3078`. The production authenticated
+unsupported-type probe returned the exact scoped HTTP 400 before processing.
+The first two original workbook requests subsequently received HTTP 504 after
+approximately 300 seconds each. These were not pre-claim failures.
+
+Read-only exact-hash production reconciliation establishes two distinct
+executions and UI projections, retaining all 537 and 578 original rows
+(1,115 total). Current primary GET independently confirmed the first execution
+and its partial immutable ledger. At 00:39:50 UTC both executions had 61
+accounted-for rows, remained running and had been reclaimed by the existing
+resumer. Neither original file was resent. These observations are **not**
+completed fulfillment, current complete hold disposition, production restart
+acceptance or five-file acceptance.
+
+The first live request's error was correlated to
+`IMPORT_EXECUTION_LEASE_LOST`: the interactive provider branch renewed every
+100 rows despite executing native transactions per row, exceeding the
+five-minute execution lease before the first batch finished. Existing
+request-free provider recovery already renewed per row.
+
+The correction renews that same token-fenced lease per provider row. Ordinary
+provider uploads now return HTTP 202 with committed original-byte file hash,
+execution/projection identity and explicit processing state, while the same
+existing processor continues. No alternate intake or recovery worker was
+introduced. Errors retain exact-claim cleanup and original/cleanup diagnostics.
+Generic import responses remain awaited. The existing import UI distinguishes
+processing from complete and refreshes active history; live native leases
+prevent stale projection timestamps from incorrectly reporting interruption.
+
+Targeted checks pass: 18 real multipart/parser checks, three actual-route
+lease-block guard units and five actual-route handoff/reader/UI-wiring units.
+The latter are dependency-isolated units, not authenticated native HTTP
+persistence certificates. Build succeeds; type checking reports only the
+unchanged missing `LiveChat` type. One development restart came up successfully;
+login rendered, but signed-in UI rendering was not verified.
+
+The remaining three original attachments (1,799 rows) are queued for the same
+already-authorized ordinary HTTP uploader after a serving build newer than
+the admission-only correction is detected. The wait is limited to 30 minutes.
+No first/second-file resend, provider/outbound setting change, production SQL
+write, native-function alteration, new task or approval gate was performed.
+The original A–G task remains open; full disposition, primary timings,
+full-population convergence and actual production restart/replay remain required.

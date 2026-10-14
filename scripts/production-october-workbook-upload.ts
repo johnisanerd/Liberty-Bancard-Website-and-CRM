@@ -12,6 +12,12 @@ import {classifyCsvSourceFormat} from "../server/services/import-normalizer";
 const base=new URL(process.argv[2] ?? "");
 assert(base.protocol==="https:" && base.origin==="https://dev.libertybancard.com","VERIFIED_PRODUCTION_ORIGIN_REQUIRED");
 assert(process.argv.includes("--authorized-five-october-imports"),"EXPLICIT_IMPORT_AUTHORIZATION_REQUIRED");
+const onlyArgument=process.argv.find(value=>value.startsWith("--only-index="));
+const onlyIndex=onlyArgument ? Number(onlyArgument.split("=")[1]) : undefined;
+assert(onlyIndex===undefined || (Number.isInteger(onlyIndex) && onlyIndex>=0 && onlyIndex<5),"INVALID_AUTHORIZED_FILE_INDEX");
+const fromArgument=process.argv.find(value=>value.startsWith("--from-index="));
+const fromIndex=fromArgument ? Number(fromArgument.split("=")[1]) : 0;
+assert(Number.isInteger(fromIndex) && fromIndex>=0 && fromIndex<5,"INVALID_AUTHORIZED_START_INDEX");
 const fixtures=[
   ["Outscraper-20261002160911s8d6b_1791037870877.xlsx","5079ea20012d1ca5e8c0eae9c0aa8460a6ce4c91eb10784587f36026675cf833",537],
   ["Outscraper-20261002160955s00ed_1791037870876.xlsx","506fe8119590a0ab821167e50f15584aea29da441a2f393ff64f9b32837940a4",578],
@@ -50,7 +56,9 @@ if(process.argv.includes("--await-published-admission")){
   // One-off operator wait, not an application worker or alternate intake path.
   // Only public reads until a new serving build appears; then confirm the real
   // scoped policy before sending any authorized original workbook.
-  const oldSha="a7b51b19a9c97b31a812e1260260008bbed06af9";
+  const oldSha=process.argv.find(value=>value.startsWith("--previous-sha="))?.split("=")[1]
+    ?? "a7b51b19a9c97b31a812e1260260008bbed06af9";
+  assert(/^[a-f0-9]{40}$/.test(oldSha),"INVALID_PREVIOUS_SERVING_SHA");
   const deadline=Date.now()+30*60_000;
   console.log(JSON.stringify({event:"WAITING_FOR_PUBLISHED_INTAKE_CORRECTION",previousSha:oldSha,
     sourceRows:2914,waitMinutes:30}));
@@ -101,10 +109,12 @@ if(existsSync(`${dir}/upload-0.json`) && !existsSync(`${dir}/upload-0-original-a
 }
 const before=await request("/api/canonical-enrichment/status");
 assert.equal(before.status,200,"PRIMARY_STATUS_REQUIRED");
-save("status-before",before);
-console.log(JSON.stringify({event:"authorized_october_upload_preflight",files:5,sourceRows:2914}));
+save(onlyIndex===undefined && fromIndex===0 ? "status-before" : `status-before-${onlyIndex ?? fromIndex}`,before);
+console.log(JSON.stringify({event:"authorized_october_upload_preflight",files:5,sourceRows:2914,onlyIndex}));
 
 for(const [index,[file,hash,rows]] of fixtures.entries()){
+  if(onlyIndex!==undefined && index!==onlyIndex)continue;
+  if(index<fromIndex)continue;
   const form=new FormData();
   form.append("file",new Blob([readFileSync(`attached_assets/${file}`)],{
     type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -116,7 +126,14 @@ for(const [index,[file,hash,rows]] of fixtures.entries()){
     elapsedMs:result.elapsedMs,importId:result.body.import?.id,executionId:result.body.import?.executionId ?? result.body.execution?.id,
     replayed:result.body.replayed ?? false,counts:result.body.counts,at:new Date().toISOString()}));
   // Do not hide partial/ambiguous HTTP outcomes or blindly send another upload.
-  assert(result.status===201 || (result.status===200 && result.body.replayed),"ORDINARY_UPLOAD_NEEDS_RECONCILIATION");
+  assert(result.status===201 || result.status===202 || (result.status===200 && result.body.replayed),"ORDINARY_UPLOAD_NEEDS_RECONCILIATION");
+  if(result.status===202){
+    assert.equal(result.body.status,"processing");
+    assert.equal(result.body.fileHash,hash);
+    assert.equal(result.body.totalRows,rows);
+    assert.equal(result.body.executionId,result.body.import.executionId);
+    assert(result.body.import.id,"ACCEPTED_IMPORT_ID_REQUIRED");
+  }
   const importId=result.body.import?.id;
   if(importId){
     const ledger=await request(`/api/csv-imports/${importId}`);
@@ -124,11 +141,16 @@ for(const [index,[file,hash,rows]] of fixtures.entries()){
     assert.equal(ledger.status,200);
     assert.equal(ledger.body.executionId,result.body.import.executionId);
     assert.equal(ledger.body.totalRows,rows);
-    assert.equal(ledger.body.processedRows,rows);
+    if(result.status!==202)assert.equal(ledger.body.processedRows,rows);
+    else console.log(JSON.stringify({event:"ordinary_upload_durably_accepted",index,hash,rows,
+      executionId:result.body.executionId,importId,pendingFulfillment:true,
+      processedRows:ledger.body.processedRows}));
   }
 }
 const after=await request("/api/canonical-enrichment/status");
-save("status-after",after);
+save(onlyIndex===undefined && fromIndex===0 ? "status-after" : `status-after-${onlyIndex ?? fromIndex}`,after);
 assert.equal(after.status,200);
-console.log(JSON.stringify({event:"authorized_october_uploads_complete",files:5,sourceRows:2914,
-  qualification:"Ordinary HTTP and original row accounting; full native mailbox/hold disposition requires separate receipt reconciliation."}));
+console.log(JSON.stringify({event:"authorized_october_upload_requests_reconciled",
+  files:onlyIndex===undefined ? 5-fromIndex : 1,
+  sourceRows:onlyIndex===undefined ? fixtures.slice(fromIndex).reduce((n,f)=>n+f[2],0) : fixtures[onlyIndex][2],
+  qualification:"Original-byte ordinary HTTP acceptance or completed/replayed response only; pending row accounting and full native mailbox/hold disposition require separate receipt reconciliation."}));

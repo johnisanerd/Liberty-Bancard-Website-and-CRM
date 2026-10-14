@@ -143,4 +143,4 @@
 - [Useful-list evidence](useful-list-evidence.md) — Time visible hydrated records, not shell headings or offscreen DOM; declare volume, hardware, network and cache conditions.
 - [Merchant/report ownership](stage3-c4-ownership.md) — C4 owns shared Outreach presentation; A owns data, C3 reuses it, C2 retains Contact shell, C5 sidebar and D serving proof.
 - [Large planning payloads](task-planning-payload-limits.md) — Task plans have a byte ceiling; filter large callback results to avoid notebook resets and preserve original evidence.
-- [Upload boundary verification](upload-boundary-verification.md) — Parser/native certificates do not prove multipart admission; keep workbook policies route-scoped and preserve original-byte identity.
+- [Upload boundary verification](upload-boundary-verification.md) — Verify multipart admission; a 300s gateway timeout can hide a committed import. Reconcile exact hashes before resending.
