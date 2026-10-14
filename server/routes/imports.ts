@@ -35,6 +35,7 @@ import bcrypt from "bcryptjs";
 import path from "path";
 import fs from "fs";
 import { uploadLarge, normalizePhoneForImport, classifyVerticalForImport } from "./helpers";
+import { uploadTabularLarge } from "../lib/tabular-upload";
 import { recordPewcDecision } from "../services/consent-evidence";
 import { syncAffiliateSignupToGhl } from "../services/ghl-form-sync";
 import { sanitizeFirstName } from "../services/contact-name-utils";
@@ -1555,7 +1556,7 @@ Guidelines:
     });
   });
 
-  app.post("/api/leads/import-csv", isDashboardUser, requireRole("admin", "manager"), uploadLarge.single("file"), async (req, res) => {
+  app.post("/api/leads/import-csv", isDashboardUser, requireRole("admin", "manager"), uploadTabularLarge.single("file"), async (req, res) => {
     let requestClaim: ImportExecutionClaim | undefined;
     try {
       if (!req.file) return res.status(400).json({ message: "No file uploaded" });

@@ -692,3 +692,52 @@ The new isolated full-row certificates are retained in ignored
 `intake-post-domain-native-recovery-report.json`,
 `intake-post-domain-native-replay-report.json` and
 `intake-post-domain-native-upload-restart-report.json`.
+
+## Authorized October production upload: admission failure and correction
+
+The owner explicitly authorized importing all five original October workbooks
+through the existing production pipeline, with provider/outbound settings
+unchanged. The first real multipart request at `2026-10-13T23:48:41.048Z`
+used the original `5079ea…cf833` bytes, original `.xlsx` filename, official
+workbook MIME, an authenticated admin session and CSRF token. It returned HTTP
+500 after 446 ms. A subsequent exact-hash production execution census returned
+its actual header and zero executions: no import claim was created.
+
+Root cause: the intake handler already parses XLSX, but its shared CSV/ZIP
+multipart filter intentionally excluded workbooks before the handler ran.
+The correction supplies a dedicated CSV/XLSX disk-upload policy to this
+intake route only. The other CSV/ZIP and CSV-only policies remain unchanged;
+the authenticated role/CSRF boundary, original-byte hashing, source coordinates,
+claiming, native writer and permanent replay key remain unchanged. Unsupported
+intake types now return a typed HTTP 400 rather than an opaque 500.
+
+The actual loopback HTTP multipart/parser regression passed 18 checks:
+all five original-byte workbook hashes, all 2,914 rows and source coordinates,
+recognized Outscraper format, binary/legacy-browser workbook MIME compatibility,
+four supported CSV MIME variants, rejected ZIP/image/legacy XLS/type-mismatch
+inputs before parser entry, corrupt workbook HTTP 400, and route-policy
+isolation. This test makes no DB/provider/outbound writes. Full native workbook
+persistence and retained replay remain independently certified, not inferred
+from this transport test.
+
+The failed request and its original control/status baseline are retained
+privately. No CSV conversion, renamed-file bypass, new import pipeline, provider
+control change or blanket validation was attempted. The five authorized
+production imports remain pending delivery of this scoped route correction.
+
+Verification: the production build succeeds; the only full-project type-check
+error is the unchanged `LiveChat` type reference in the unrelated live-chat
+route (confirmed in HEAD). After one application restart, the real running
+intake route with admin session and CSRF returns the expected HTTP 400 for an
+unsupported extension before any import claim. The public app also renders;
+signed-in import UI rendering was not verified.
+
+The already-authorized one-off HTTP operator is waiting up to 30 minutes for a
+new production serving SHA, then confirms the scoped admission policy on the
+real authenticated route before uploading the five original attachments.
+Until those checks pass it only performs public health reads. It uses a local
+single-process lock, preserves the first failed request/control baseline, and
+stops for reconciliation on any ambiguous or partial upload response rather
+than blindly retrying. This is not a new application pipeline or activation
+gate. Successful row accounting alone will not close remaining native
+fulfillment/held-revision or full-population acceptance.
