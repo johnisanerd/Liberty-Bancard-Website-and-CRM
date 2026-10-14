@@ -168,6 +168,8 @@ try {
     })()`),true,`Conditional retained selector must hydrate from actual settings: ${control}`);
     const originalUrl=await b.evaluate("location.href");
     await b.click(`[data-testid="${control}"]`);
+    for(let attempt=0;attempt<60&&await b.evaluate(`new URLSearchParams(location.search).get(${JSON.stringify(parameter)})`)!==value;attempt++)
+      await new Promise(resolve=>setTimeout(resolve,50));
     assert.equal(await b.evaluate(`new URLSearchParams(location.search).get(${JSON.stringify(parameter)})`),value);
     assert.equal(await b.evaluate('["page","cursor","offset"].some(key=>new URLSearchParams(location.search).has(key))'),false,
       "Retained tab changes reset pagination rather than carrying a stale window");

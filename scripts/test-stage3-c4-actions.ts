@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {randomUUID,createHash} from "node:crypto";
-import {mkdir,writeFile,readFile} from "node:fs/promises";
+import {mkdir,writeFile,readFile,rm} from "node:fs/promises";
 import {stage3BHttpFixture} from "./fixtures/stage3-b-http";
 import {verifyCandidateIdentity} from "./fixtures/candidate-build-identity";
 import {operationsReportSchema} from "../shared/operations-report";
@@ -590,6 +590,54 @@ try {
     const docs=await check(role,"GET","/api/merchant-documents",undefined,200,"Real document metadata reader, no parse/preview/delete");
     assert.ok(docs.some((row:any)=>row.id===document.id&&row.contactId===contact.id));
   }
+  const ownedDocumentDirectory=`uploads/${h.prefix}-document-proof`;
+  const documentBytes=Buffer.from("Owned C4 document byte/version observation.\n");
+  await mkdir(ownedDocumentDirectory,{recursive:true});
+  try{
+    await writeFile(`${ownedDocumentDirectory}/observation.txt`,documentBytes);
+    const previewContact=(await h.db.insert(contacts).values({
+      firstName:h.prefix,lastName:"Document permission proof",email:h.email("merchant"),
+      phone:"",assignedTo:h.email("agent"),recordClass:"production",
+    }).returning())[0];
+    const previewDocument=(await h.db.insert(documents).values({
+      contactId:previewContact.id,type:"statement",fileName:"observation.txt",
+      mimeType:"text/plain",fileSize:documentBytes.length,
+      storageKey:`${h.prefix}-document-proof/observation.txt`,
+      category:"Processing Statement",accessScope:"merchant",status:"approved",
+    }).returning())[0];
+    for(const role of ["admin","manager","agent","merchant"]){
+      const access=await h.request(role as any,"GET",`/api/merchant-documents/${previewDocument.id}/access-token`);
+      assert.equal(access.status,200,`${role} document capability respects current object and document scope`);
+      assert.equal(access.body.expiresInSeconds,900);
+      assert.match(access.body.url,/^\/api\/merchant-documents\/serve\//);
+      const served=await h.originalFetch(`${h.base}${access.body.url}`);
+      assert.equal(served.status,200);
+      assert.deepEqual(Buffer.from(await served.arrayBuffer()),documentBytes);
+      assert.equal(served.headers.get("cache-control"),"no-store");
+      assert.equal(served.headers.get("x-content-type-options"),"nosniff");
+      assert.match(served.headers.get("content-disposition")!,/attachment/);
+      rows.push({role,method:"GET",path:"/api/merchant-documents/serve/[redacted-capability]",
+        status:200,note:"Actual signed document bytes, persisted metadata and current authorization; attachment serving, not inline-preview UI",
+        documentId:previewDocument.id,bytes:documentBytes.length,contentHash:createHash("sha256").update(documentBytes).digest("hex")});
+    }
+    for(const role of ["other","partner","anonymous"])
+      await check(role,"GET",`/api/merchant-documents/${previewDocument.id}/access-token`,undefined,
+        role==="anonymous"?401:403,"Foreign/internal-scope document capability denied");
+    await check("admin","GET",`/api/merchant-documents/${previewDocument.id}/download`,undefined,401,
+      "Direct download does not bypass signed current-authorization reader");
+    const issued=await h.request("merchant","GET",`/api/merchant-documents/${previewDocument.id}/access-token`);
+    assert.equal(issued.status,200);
+    // A capability cannot retain access after its document's current scope changes.
+    const {eq:documentEq}=await import("drizzle-orm");
+    await h.db.update(documents).set({accessScope:"internal"}).where(documentEq(documents.id,previewDocument.id));
+    const revoked=await h.originalFetch(`${h.base}${issued.body.url}`);
+    assert.equal(revoked.status,403);
+    rows.push({role:"merchant",method:"GET",path:"/api/merchant-documents/serve/[redacted-capability]",
+      status:403,note:"Issued capability rechecks current persisted document scope; scope revocation is not cached permission"});
+    const invalid=await h.originalFetch(`${h.base}/api/merchant-documents/serve/invalid-capability`);
+    assert.equal(invalid.status,401);
+    assert.equal(h.externalCalls(),0,"Actual owned legacy document byte serving uses no object-storage/provider transport");
+  }finally{await rm(ownedDocumentDirectory,{recursive:true,force:true});}
   await check("agent","GET","/api/merchant-documents",undefined,403,"Denied vault read is not an empty result");
   for(const role of ["admin","manager","agent","other"]){
     const reviews=await check(role,"GET","/api/statement-reviews",undefined,200,"Statement version and typed relationships remain scoped");
