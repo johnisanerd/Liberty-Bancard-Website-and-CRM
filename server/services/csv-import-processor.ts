@@ -234,32 +234,18 @@ async function recoverProviderCsvImport(args: Parameters<PersistedCsvProcessor>[
       throw new Error(`IMPORT_EXECUTION_LEASE_LOST:${executionId}`);
     }
     const sourceRowNumber = index + 1;
-    const rowFingerprint = computeFileHash(Buffer.from(JSON.stringify(rawRow)));
-    try {
-      await materializeCanonicalProviderImportRow({
-        executionId, sourceRowNumber, sourceFormat,
-        claimToken,
-        actorId: actor.actorId ?? executionId, rawRow,
-        sourceCoordinate: (executionClaim.execution.metadata as any)?.sourceCoordinates?.[index],
-        fileName: (executionClaim.execution.metadata as any)?.fileName,
-      });
-    } catch (error: any) {
-      // An idle-session termination, unknown commit/connection result or lost
-      // authority is not a definitive row outcome. Retain the original for the
-      // same claim-fenced resumer instead of poisoning its immutable ledger.
-      if (!isRecoverableImportRowFailure(error)) throw error;
-      try {
-        await recordImportRowDisposition({
-          executionId, claimToken, sourceRowNumber, rowFingerprint,
-          disposition: "failed",
-          reasonCode: "RECOVERY_PROVIDER_STAGING_FAILED",
-          diagnostic: { error: String(error?.message ?? "staging_failed").slice(0, 200) },
-        });
-      } catch (cleanupError) {
-        throw new Error("CSV_IMPORT_RECOVERY_ROW_FAILURE_WRITE_FAILED",
-          {cause:{originalError:error,cleanupError}});
-      }
-    }
+    // The canonical writer records definitive evidence-backed row holds.
+    // Infrastructure/constraint aborts are execution failures, not immutable
+    // row dispositions: even a confirmed rollback can follow an earlier
+    // mailbox commit. Preserve that accounting and pending fulfillment.
+    // The outer execution boundary alone decides whether another independently
+    // claimed execution may proceed; unknown commits still stop this boundary.
+    await materializeCanonicalProviderImportRow({
+      executionId, sourceRowNumber, sourceFormat, claimToken,
+      actorId: actor.actorId ?? executionId, rawRow,
+      sourceCoordinate: (executionClaim.execution.metadata as any)?.sourceCoordinates?.[index],
+      fileName: (executionClaim.execution.metadata as any)?.fileName,
+    });
   }
 
   const completion = await completeImportExecution({

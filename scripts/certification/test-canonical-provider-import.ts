@@ -210,10 +210,21 @@ try {
    const firstResolution=await resolveOrganization(firstIdentity);
    check(firstResolution.kind==="created","Independent organization fixture exists");
    const conflictingIdentity={...firstIdentity,googlePlaceId:`different_${label}`};
-   check((await peekOrganizationResolution(conflictingIdentity)).kind==="deferred",
-     "Read-only matching observes real camelCase identity fields and refuses conflicting place IDs");
-   check((await resolveOrganization(conflictingIdentity)).kind==="deferred",
-     "Writing resolver does not falsely merge different places sharing a website");
+   check((await peekOrganizationResolution(conflictingIdentity)).kind==="would_create",
+     "Read-only matching keeps a distinct supported place separate despite its shared brand website");
+   const separatePlace=await resolveOrganization(conflictingIdentity);
+   check(separatePlace.kind==="created" && firstResolution.kind==="created"
+     && separatePlace.business.id!==firstResolution.business.id,
+     "Writing resolver creates the distinct supported place without merging the original location");
+   const separateReplay=await resolveOrganization(conflictingIdentity);
+   check(separateReplay.kind==="matched" && separatePlace.kind==="created"
+     && separateReplay.business.id===separatePlace.business.id,
+     "The distinct place is materialized once and its replay matches the same business");
+   const contradictoryExactPlace={...firstIdentity,websiteDomain:`conflicting-${label}.example.com`};
+   check((await peekOrganizationResolution(contradictoryExactPlace)).kind==="deferred",
+     "Contradictory exact-place evidence remains held in the read-only preview");
+   check((await resolveOrganization(contradictoryExactPlace)).kind==="deferred",
+     "Contradictory exact-place evidence cannot alter the original business");
    const allFlagsClaim=await newClaim();
    const restrictiveRow={name:`All flags ${label}`,place_id:`all_flags_${label}`,city:"Miami",state:"FL",
      email:`all-flags.${label}@example.com`,do_not_contact:"yes",do_not_auto_contact:"yes",

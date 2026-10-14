@@ -77,10 +77,14 @@ const scrub=(source:string)=>{
       "// Remove only the repeatable job(s) whose BullMQ key matches this entry's jobId.\n      // BullMQ encodes the jobId into the repeatable key as part of the key string.",
     )
     .replace("Replaces only the owned base repeatable schedule and re-adds with the new",
-      "Removes all existing repeatable jobs for the queue and re-adds with the new");
+      "Removes all existing repeatable jobs for the queue and re-adds with the new")
+    // This existing dispatch case's independent-boundary repair is exercised
+    // from its actual shipped body by the disposable execution-isolation gate.
+    .replace(/case QUEUE_NAMES\.CANONICAL_IMPORT_RECOVERY:\s*\{[\s\S]*?\n\s*break;/,
+      "case QUEUE_NAMES.CANONICAL_IMPORT_RECOVERY: /* separately certified independent boundaries */ break;");
 };
 assert.equal((current.match(/isOwnedRepeatableSchedule\(job,/g)??[]).length,3,
   "Startup base/named schedules and interval updates all use exact hashed identity");
 assert.equal(scrub(current),scrub(before),
-  "Only queue configuration and the exact schedule identity repair changed; dispatchers and safety/authority logic are untouched");
-console.log(`PASS: four conservative cadences; ${after.size} existing queues preserved; exact schedule identity repair; all other config, named schedules, import recovery, heartbeats and controls unchanged`);
+  "Outside the separately certified import case, only configuration and exact schedule identity repair changed");
+console.log(`PASS: four conservative cadences; ${after.size} existing queues preserved; exact schedule identity repair; import dispatch isolation separately certified; remaining schedules, cadence, heartbeats and controls unchanged`);

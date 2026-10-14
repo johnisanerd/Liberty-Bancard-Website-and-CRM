@@ -1374,7 +1374,8 @@ Guidelines:
     // projections because they predate the execution ledger.
     const withDurableOutcomes = await Promise.all(imports.map(async (imp) => {
       if (!imp.executionId) return imp;
-      const outcomes = importDispositionCompatibility((await getImportLedgerSummary(imp.executionId)).counts);
+      const ledger = await getImportLedgerSummary(imp.executionId);
+      const outcomes = importDispositionCompatibility(ledger.counts);
       return {
         ...imp,
         ...outcomes,
@@ -1386,6 +1387,7 @@ Guidelines:
         errorsCount: outcomes.failed,
         processedRows: outcomes.total,
         dispositionCounts: outcomes.counts,
+        recovery: ledger.recovery,
       };
     }));
     res.json(withDurableOutcomes);
@@ -1557,7 +1559,8 @@ Guidelines:
     const record = await storage.getCsvImport(Number(req.params.id));
     if (!record) return res.status(404).json({ message: "Not found" });
     if (!record.executionId) return res.json(record);
-    const outcomes = importDispositionCompatibility((await getImportLedgerSummary(record.executionId)).counts);
+    const ledger = await getImportLedgerSummary(record.executionId);
+    const outcomes = importDispositionCompatibility(ledger.counts);
     res.json({
       ...record,
       ...outcomes,
@@ -1569,6 +1572,7 @@ Guidelines:
       errorsCount: outcomes.failed,
       processedRows: outcomes.total,
       dispositionCounts: outcomes.counts,
+      recovery: ledger.recovery,
     });
   });
 

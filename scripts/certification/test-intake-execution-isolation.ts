@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {randomUUID} from "node:crypto";
 import {readFileSync} from "node:fs";
+import ts from "typescript";
 import {assertDisposableTestInfrastructure} from "../test-infrastructure-guard";
 await assertDisposableTestInfrastructure({operation:"intake-execution-isolation",requireRedis:false});
 const {pool}=await import("../../server/db");
@@ -19,7 +20,10 @@ try {
       VALUES($1,$2,'custom',1,'processing')`,[claim.execution.id,`isolation-${i}.csv`]);
   }
   assert(!await failCsvImportProjection({...claims[2],claimed:false,claimToken:null}));checks++;
-  assert(await failCsvImportProjection(claims[2]));checks++;
+   assert(await failCsvImportProjection(claims[2],new Error("CERT_FAILURE")));checks++;
+   const recorded=(await pool.query(`SELECT metadata->'canonicalRecoveryLastFailure' failure
+     FROM import_executions WHERE id=$1`,[claims[2].execution.id])).rows[0].failure;
+   assert.equal(recorded.version,1);assert(recorded.observedAt);checks+=2;
   assert.equal((await pool.query("SELECT count(*)::int n FROM csv_imports WHERE status='processing'")).rows[0].n,2);checks++;
   assert(!await failCsvImportProjection({...claims[0],claimToken:randomUUID()}));checks++;
   // Expire the first two; a real confirmed constraint abort in one must not
@@ -45,12 +49,23 @@ try {
   await pool.query("UPDATE import_executions SET lease_expires_at=now()-INTERVAL '1 minute' WHERE id=$1",[claims[0].execution.id]);
   await assert.rejects(()=>resumeExpiredCsvImports(async()=>{throw new Error("IMPORT_EXECUTION_LEASE_LOST");}),
     /LEASE_LOST/);checks++;
+   const {getImportLedgerSummary}=await import("../../server/services/import-execution");
+   const failureSummary=await getImportLedgerSummary(claims[0].execution.id);
+   assert(failureSummary.recovery?.lastFailure);
+   assert.equal(failureSummary.recovery?.nextAutomaticAction,"claim_expired_persisted_execution");
+   assert.equal(failureSummary.recovery?.executionStatus,"running");checks+=3;
+   await pool.query("UPDATE import_executions SET source_payload=NULL WHERE id=$1",[claims[2].execution.id]);
+   const missingSource=await getImportLedgerSummary(claims[2].execution.id);
+   assert.equal(missingSource.recovery?.persistedSourceAvailable,false);
+   assert.equal(missingSource.recovery?.nextAutomaticAction,null);
+   assert.equal(missingSource.recovery?.nextEligibleAt,null);checks+=3;
   // Execute the shipped queue case with controlled dependencies. This proves
   // scheduling/error isolation, separately from the real native commits above.
   const queueSource=readFileSync("server/services/queue-manager.ts","utf8");
   const queueBody=queueSource.match(/case QUEUE_NAMES\.CANONICAL_IMPORT_RECOVERY:\s*\{([\s\S]*?)\n\s*break;/)?.[1];
   assert(queueBody,"Actual serial recovery queue case must exist");
-  const executable=queueBody.replace(/await import\("([^"]+)"\)/g,(_,path)=>`deps[${JSON.stringify(path)}]`);
+   const executable=ts.transpile(queueBody.replace(/await import\("([^"]+)"\)/g,
+     (_,path)=>`deps[${JSON.stringify(path)}]`),{target:ts.ScriptTarget.ES2022});
   const invoke=new Function("deps","console",`return (async()=>{${executable}})()`);
   const calls:string[]=[];
   const fallback=async()=>{};
@@ -69,7 +84,26 @@ try {
   dependencies["./canonical-import-recovery-worker"].processCanonicalImportRecoveryTick=async()=>{
     calls.push("canonical");throw new Error("CANONICAL_OWNER_LOST");
   };
-  await assert.rejects(()=>invoke(dependencies,{log:()=>{}}),/CANONICAL_OWNER_LOST/);
-  assert.deepEqual(calls,["canonical"]);checks++;
+   await assert.rejects(()=>invoke(dependencies,{log:()=>{}}),(error:any)=>{
+     assert.equal(error.message,"CANONICAL_IMPORT_INDEPENDENT_BOUNDARIES_FAILED");
+     assert.equal(error.cause.originalError.message,"CANONICAL_OWNER_LOST");
+     assert.equal(error.cause.cleanupError.message,"CSV_UNKNOWN_COMMIT");return true;
+   });
+   assert.deepEqual(calls,["canonical","upload"]);checks+=3;
+   calls.length=0;
+   dependencies["./csv-import-recovery"].resumeExpiredCsvImports=async()=>{
+     calls.push("upload");return 1;
+   };
+   await assert.rejects(()=>invoke(dependencies,{log:()=>{}}),/CANONICAL_OWNER_LOST/);
+   assert.deepEqual(calls,["canonical","upload"]);checks+=2;
+   calls.length=0;
+   dependencies["./canonical-import-recovery-worker"].processCanonicalImportRecoveryTick=async()=>{
+     calls.push("canonical");throw null;
+   };
+   let rejected=false;
+   try {await invoke(dependencies,{log:()=>{}});}
+   catch(error){rejected=true;assert.equal(error,null);}
+   assert(rejected,"Falsy thrown failures must not report success");
+   assert.deepEqual(calls,["canonical","upload"]);checks+=2;
   console.log(`Intake execution isolation: ${checks} checks passed`);
 } finally {await pool.end();}

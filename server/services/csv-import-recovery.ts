@@ -84,12 +84,12 @@ export async function resumeExpiredCsvImports(process: PersistedCsvProcessor): P
     } catch (error) {
       // Only a confirmed local abort may yield to the next execution. Unknown
       // commit/connection results and authority denials retain the fatal boundary.
-      if (!isRecoverableImportRowFailure(error)) throw error;
       try {
-        if (liveClaim) await failCsvImportProjection(liveClaim);
+        if (liveClaim) await failCsvImportProjection(liveClaim,error);
       } catch (cleanupError) {
         throw new Error("CSV_IMPORT_RECOVERY_CLEANUP_FAILED",{cause:{originalError:error,cleanupError}});
       }
+      if (!isRecoverableImportRowFailure(error)) throw error;
       console.warn(JSON.stringify({event:"csv_import_execution_deferred",executionId:execution.id,
         failure:safeDatabaseFailure(error)}));
     }

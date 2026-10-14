@@ -1070,3 +1070,100 @@ After the local repair, one development restart again converges all 18 seed
 targets, keeps background workers off and serves port 5000. The public login
 renders intact; signed-in UI was not visually verified. This confirms local
 startup/rendering, not removal of production's obsolete schedules.
+
+## Consolidated intake correction and final local evidence — 2026-10-14 UTC
+
+The subsequent owner publication serves SHA
+`a7ad926932deeea8721ea637fb4b0b81b5cd6f41`, build
+`b4067caa-fe75-411b-bd5f-623097641877`. Actual repeat-registry inspection
+confirms only the owned Sunbiz 300,000 ms and free-enrichment 2,700,000 ms
+schedules; the obsolete owned intervals are gone. This is schedule proof,
+not proof that all imports or the full contact population have converged.
+
+The consolidated corrections below are still unpublished:
+
+- A retained-recovery failure no longer skips independent ordinary upload
+  recovery. Either fatal boundary remains fatal; simultaneous failures retain
+  both causes, including falsy thrown values.
+- Confirmed ordinary native aborts do not manufacture immutable failed row
+  dispositions. Every ordinarily fulfilled mailbox must have its actual native
+  business link. A current hold preserves earlier original accounting, pins
+  native evidence and clears pending work atomically. Claim-releasing hold
+  transitions validate their token before clearing it, rather than rejecting
+  their own completed transition afterward.
+- Existing CSV list/detail readers expose additive version-1 recovery facts:
+  observation time, execution status, pending mailbox fulfillment, bounded
+  claim-fenced last failure, persisted-array/file-hash availability and the next
+  eligible claim action/time. These are execution facts, not proof of provider
+  readiness, guaranteed scheduling or B2's assembled status.
+
+Final denied, private native evidence:
+
+| Verification | Result |
+| --- | --- |
+| All five exact original October workbooks | PASS: 2,914 rows; 2,548 native fulfilled outcomes and 366 native evidenced holds; all 93-column originals retained |
+| September native recovery | PASS: 1,472 originals; 1,311 fulfilled; 75 affiliation holds and 86 organization-ambiguity holds; 1,117 proven mailbox occurrences |
+| September native replay | PASS: 1,312 fulfilled; 74 affiliation holds and 86 organization-ambiguity holds; 1,118 proven mailbox occurrences; no new contact, business or provenance duplicates |
+| Historical protection | All 917 captured business projections, decisions and evidence rows, including both protected foreign relationships, preserved |
+| Final ordinary fresh-process interruption/restart | PASS: all three expected mailboxes and their actual business links resumed; no duplicate people/businesses |
+| Final nine-suite intake batch | PASS: native hold/55P03 retry, organization 15, execution isolation 24, source-only 6, source-family 30, authenticated review 24, blank correction 24, mailbox identity 24, affected Florida followup |
+| External effects | Zero provider/outbound/nonselective-validation attempts in native recovery, replay, restart and workbook certificates |
+| Final application build | PASS; existing chunk-size/CJS import.meta warnings remain |
+
+Replay legitimately resolves one earlier affiliation hold as current graph
+evidence changes. Neither pass rewrites immutable original dispositions.
+The private reports distinguish mailbox occurrences from new people.
+These certificates do not establish production October fulfillment.
+
+The configured stock release run is **FAILED**, not release GO: 124 passes,
+60 failures and two explicit opt-in skips across its 186-entry roster, with
+zero gate-control failures. In individual fresh-database comparisons,
+contact-link automation and the compiled C4 browser pass on both candidate
+and unchanged HEAD. The older provider-import fixture's distinct-place
+expectation fails identically on both. Its assertions now match approved
+separate-location creation, replay and contradictory exact-place holds;
+those assertions pass, but its later full 1,472-row bulk loop exceeds the
+existing 180-second stock-suite ceiling. The separately completed full native
+certificate above is not substituted for a passing stock gate.
+
+The CSV reconciliation fixture failed on both versions because it treated
+asynchronous provider admission as immediate HTTP 201 completion. Its existing
+scenarios now verify HTTP 202 admission identity/hash/denominator, bounded
+authenticated polling of the actual existing reader and reconciled terminal
+counts; the isolated stock CSV suite passes. Business-only rows still create
+no fabricated contacts. This does not waive any other stock failure.
+
+The stock artifact gate reports one type error in the unchanged
+server/routes/live-chat.ts at line 309. The three pre-existing native-console
+SQL documents also fail the tracked-file exposure scan on unchanged HEAD.
+The earlier standalone typecheck timeout was not a pass. The remaining stock
+failures have not all been individually certified; no blanket baseline waiver
+or production release GO is claimed.
+
+After the final backend batch, development restart converges all 18 seed
+targets, leaves background workers off and serves port 5000. The public landing
+page renders intact. Signed-in Intake UI was not visually verified; authenticated
+review/read API coverage and separate C4 fixture-browser evidence retain their
+stated scopes.
+
+Fresh deployment metadata confirms public Autoscale hosting. Official Replit
+documentation says Autoscale is request-driven and can scale to zero; Reserved
+VM is the continuously running option for background workers. This is an
+architectural constraint, not proof that hosting caused the observed 25P03,
+lock waits or event-loop delays. Hosting remains unchanged pending an actual
+owner decision. Native limits, provider/outbound controls and production schema
+have not been relaxed or changed.
+
+Production remains on the earlier build. The last verified October execution
+accounting is 98/113/6/2/2 with pending fulfillment 60/55/1/1/1; earlier September
+isolated committed cycles do not establish full disposition. The latest primary
+capture failed after 5.09 seconds with zero database observations, so it provides
+no performance-improvement proof. Recent published logs still show runtime
+renewal/acquisition and native import delays.
+
+Original A–G production acceptance remains open: deploy the consolidated
+verified corrections through the existing supported publication path, establish
+ordinary sustained execution, prove three consecutive eligible source-scoped
+committed cycles, then reconcile the full production-contact population and
+each actual October execution, with production fresh-process restart and
+retained replay. No new task, recovery service or approval gate is created.

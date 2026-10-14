@@ -10,7 +10,7 @@
  *  1. Generic mixed and all-invalid files stay custom and reconcile durably.
  *  2. Same content replays the original execution without duplicate effects.
  *  3. Common provider-overlap headers remain custom.
- *  4. Distinctive Outscraper and Apollo exports are deferred to CRO-03 staging.
+ *  4. Provider exports are admitted asynchronously, then reconcile their actual durable outcomes.
  *  5. Case, space, underscore, and hyphen normalization is deterministic.
  *
  * Run with the dev server up:
@@ -182,6 +182,41 @@ function assertCompletedProgress(label: string, body: any) {
   );
 }
 
+async function assertAsyncImport(label: string, response: any, cookie: string, expectedRows: number) {
+  assert(response.status === 202, `${label}: asynchronous admission returns HTTP 202 (got ${response.status})`);
+  assert(response.body.status === "processing", `${label}: admission does not claim completion`);
+  assert(response.body.executionId === response.body.import?.executionId,
+    `${label}: admission identifies the exact durable execution`);
+  assert(/^[a-f0-9]{64}$/.test(response.body.fileHash ?? ""),
+    `${label}: admission preserves the original file hash`);
+  assert(response.body.totalRows === expectedRows, `${label}: source denominator is retained`);
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    const read = await fetch(`${BASE_URL}/api/csv-imports/${response.body.import.id}`, {
+      headers: { Cookie: cookie },
+    });
+    if (!read.ok) throw new Error(`${label}: durable read failed with HTTP ${read.status}`);
+    const record = await read.json();
+    assert(record.executionId === response.body.executionId, `${label}: reader stays on the admitted execution`);
+    if (record.status === "failed") throw new Error(`${label}: admitted execution failed`);
+    if (record.status === "completed") {
+      const completed = {
+        import: record, counts: record.dispositionCounts,
+        inserted: record.newRecords, duplicatesSkipped: record.duplicatesSkipped,
+        invalidRows: record.invalidRows, skippedRows: record.skippedRows,
+        errors: record.errorsCount,
+      };
+      assertReconciled(label, completed);
+      assertCompletedProgress(label, completed);
+      assert(record.recovery?.pendingFulfillmentRows === 0,
+        `${label}: completion has no pending mailbox fulfillment`);
+      return record;
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  throw new Error(`${label}: durable completion was not observed within the bounded test budget`);
+}
+
 async function main() {
   console.log(`\nCSV Import Reconciliation Smoke Test (against ${BASE_URL})\n`);
 
@@ -237,7 +272,7 @@ async function main() {
   assertCompletedProgress("Scenario 3", third.body);
 
   console.log(
-    "\nScenario 4: Outscraper-shaped file is staged as deferred evidence, not promoted",
+     "\nScenario 4: Outscraper business-only input is admitted and reconciled asynchronously",
   );
   // Generated fresh (unique company names + phone numbers) on every run so
   // this scenario is idempotent regardless of leftover data from prior runs.
@@ -251,20 +286,13 @@ async function main() {
     "",
   ].join("\n");
   const fourth = await uploadCsvContent(cookie, csrf, outscraperCsv, `outscraper_missing_emails_${runId}.csv`);
-  assert(fourth.status === 201, `Scenario 4: HTTP 201 (got ${fourth.status})`);
-  assertReconciled("Scenario 4", fourth.body);
+   await assertAsyncImport("Scenario 4", fourth, cookie, 4);
   assert(
     fourth.body.sourceFormat === "google_maps_outscraper",
     `Scenario 4: distinctive Outscraper headers are recognized (got ${fourth.body.sourceFormat})`,
   );
-  assert(
-    fourth.body.inserted === 0 && fourth.body.skippedRows === 4,
-    `Scenario 4: all 4 provider rows are deferred with zero direct inserts (inserted=${fourth.body.inserted}, deferred=${fourth.body.skippedRows})`,
-  );
-  assert(fourth.body.dealsCreated === 0, `Scenario 4: no deals are created (got ${fourth.body.dealsCreated})`);
   const outscraperContacts = await findContacts(cookie, `Zzq ${runId}`);
   assert(outscraperContacts.length === 0, `Scenario 4: provider rows created no contacts (found ${outscraperContacts.length})`);
-  assertCompletedProgress("Scenario 4", fourth.body);
 
   console.log(
     "\nScenario 5: common headers alone stay custom",
@@ -283,7 +311,7 @@ async function main() {
   assertCompletedProgress("Scenario 5", ambiguous.body);
 
   console.log(
-    "\nScenario 6: Known Outscraper format is staged without provider promotion",
+     "\nScenario 6: Outscraper business-only input retains its provenance URL",
   );
   // An Outscraper CSV with a `source` column containing a provenance URL.
   // A recognized provider row must not create a contact or inherit the source
@@ -295,23 +323,16 @@ async function main() {
     "",
   ].join("\n");
   const fifth = await uploadCsvContent(cookie, csrf, outscraperWithSourceCsv, `outscraper_source_col_${runId5}.csv`);
-  assert(fifth.status === 201, `Scenario 6: HTTP 201 (got ${fifth.status})`);
-  assertReconciled("Scenario 6", fifth.body);
-  assert(
-    fifth.body.inserted === 0 && fifth.body.skippedRows === 1,
-    `Scenario 6: provider row is deferred with zero direct inserts (inserted=${fifth.body.inserted}, deferred=${fifth.body.skippedRows})`,
-  );
+   await assertAsyncImport("Scenario 6", fifth, cookie, 1);
   assert(
     fifth.body.sourceFormat === "google_maps_outscraper",
     `Scenario 6: sourceFormat detected as google_maps_outscraper (got ${fifth.body.sourceFormat})`,
   );
-  assert(fifth.body.dealsCreated === 0, `Scenario 6: no deals are created (got ${fifth.body.dealsCreated})`);
   const outscraperSourceContacts = await findContacts(cookie, `Zzq ${runId5}`);
   assert(outscraperSourceContacts.length === 0, `Scenario 6: provider row created no contact (found ${outscraperSourceContacts.length})`);
-  assertCompletedProgress("Scenario 6", fifth.body);
 
   console.log(
-    "\nScenario 7: Apollo-shaped file is staged as deferred evidence",
+     "\nScenario 7: Apollo input reconciles its current native outcome asynchronously",
   );
   const runId6 = Date.now().toString(36) + "6";
   const apolloCsv = [
@@ -320,20 +341,14 @@ async function main() {
     "",
   ].join("\n");
   const apollo = await uploadCsvContent(cookie, csrf, apolloCsv, `apollo_export_${runId6}.csv`);
-  assert(apollo.status === 201, `Scenario 7: HTTP 201 (got ${apollo.status})`);
-  assertReconciled("Scenario 7", apollo.body);
+   const apolloRecord = await assertAsyncImport("Scenario 7", apollo, cookie, 1);
   assert(
     apollo.body.sourceFormat === "apollo_lead_list",
     `Scenario 7: Apollo signature is recognized (got ${apollo.body.sourceFormat})`,
   );
-  assert(
-    apollo.body.inserted === 0 && apollo.body.skippedRows === 1,
-    `Scenario 7: Apollo row is deferred with zero direct inserts (inserted=${apollo.body.inserted}, deferred=${apollo.body.skippedRows})`,
-  );
-  assert(apollo.body.dealsCreated === 0, `Scenario 7: no deals are created (got ${apollo.body.dealsCreated})`);
   const apolloContacts = await findContacts(cookie, `Apolly ${runId6}`);
-  assert(apolloContacts.length === 0, `Scenario 7: provider row created no contact (found ${apolloContacts.length})`);
-  assertCompletedProgress("Scenario 7", apollo.body);
+   assert(apolloContacts.length === apolloRecord.newRecords,
+     `Scenario 7: actual contact creation agrees with the durable native outcome`);
 
   console.log(
     "\nScenario 8: normalized provider headers still classify consistently",

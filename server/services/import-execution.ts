@@ -2,6 +2,7 @@ import crypto from "crypto";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { db } from "../db";
 import { importExecutions, importRowDispositions } from "@shared/schema";
+import {safeDatabaseFailure} from "../lib/lock-trace";
 import {
   IMPORT_DISPOSITIONS,
   summarizeImportDispositionCounts,
@@ -100,7 +101,7 @@ export async function heartbeatImportExecution(executionId: string, claimToken: 
 }
 
 /** Failure is a projection of this exact live execution, never "first processing". */
-export async function failCsvImportProjection(claim: ImportExecutionClaim): Promise<boolean> {
+export async function failCsvImportProjection(claim: ImportExecutionClaim, failure?: unknown): Promise<boolean> {
   if (!claim.claimed || !claim.claimToken) return false;
   return db.transaction(async tx=>{
     const changed=await tx.execute(sql`WITH pinned AS MATERIALIZED (
@@ -110,6 +111,17 @@ export async function failCsvImportProjection(claim: ImportExecutionClaim): Prom
     ) UPDATE csv_imports projection SET status='failed'
       FROM pinned WHERE projection.execution_id=pinned.id
         AND pinned.lease_expires_at>clock_timestamp() RETURNING projection.id`);
+    if (((changed as any).rows ?? []).length && failure !== undefined) {
+      // Failure evidence is mutable execution state, never a row disposition.
+      // The same locked, live claim owns both its projection and this bounded
+      // diagnostic; no source values, raw SQL or ownership tokens are stored.
+      const evidence={version:1,observedAt:new Date().toISOString(),
+        diagnostic:safeDatabaseFailure(failure)};
+      await tx.execute(sql`UPDATE import_executions SET metadata=jsonb_set(
+        COALESCE(metadata,'{}'::jsonb),'{canonicalRecoveryLastFailure}',
+        ${JSON.stringify(evidence)}::jsonb,TRUE) WHERE id=${claim.execution.id}::uuid
+        AND claim_token=${claim.claimToken}::uuid AND status='running'`);
+    }
     return ((changed as any).rows ?? []).length>0;
   });
 }
@@ -206,7 +218,21 @@ export async function getImportLedgerSummary(executionId: string) {
   `);
   const counts: Record<string, number> = {};
   for (const row of ((rows as any).rows ?? [])) counts[row.disposition] = Number(row.count);
-  return summarizeImportDispositionCounts(counts);
+  const execution=(await db.execute(sql`SELECT status,lease_expires_at,
+    (jsonb_typeof(source_payload)='array' AND file_hash IS NOT NULL) IS TRUE can_recover,
+    metadata->'canonicalRecoveryLastFailure' last_failure,
+    (SELECT count(*)::int FROM jsonb_object_keys(
+      COALESCE(metadata->'canonicalProviderPendingRows','{}'::jsonb))) pending_rows,
+    clock_timestamp() observed_at FROM import_executions WHERE id=${executionId}::uuid`) as any).rows?.[0];
+  return {...summarizeImportDispositionCounts(counts),recovery:execution ? {
+    version:1,observedAt:execution.observed_at,executionStatus:execution.status,
+    persistedSourceAvailable:execution.can_recover,
+    pendingFulfillmentRows:Number(execution.pending_rows),
+    lastFailure:execution.last_failure ?? null,
+    nextEligibleAt:execution.status==='running' && execution.can_recover ? execution.lease_expires_at : null,
+    nextAutomaticAction:execution.status==='running' && execution.can_recover
+      ? 'claim_expired_persisted_execution' : null,
+  } : null};
 }
 
 export async function completeImportExecution(args: {

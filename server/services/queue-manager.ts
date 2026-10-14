@@ -2675,18 +2675,31 @@ class QueueManager {
           break;
         }
         case QUEUE_NAMES.CANONICAL_IMPORT_RECOVERY: {
-          // An unsafe expired upload stops its own boundary, but cannot deny
-          // independent retained recovery its ordinary committed opportunity.
+          // Each boundary keeps its own fatal outcome and claim fences. A
+          // retained-row failure must not skip independently claimed uploads.
           const { processCanonicalImportRecoveryTick } = await import("./canonical-import-recovery-worker");
-          const recovered = await processCanonicalImportRecoveryTick();
-          if (recovered.ran) console.log(`[CanonicalImportRecovery] ${JSON.stringify(recovered)}`);
+          let recovered;
+          let retainedFailure;
+          let retainedFailed = false;
+          try { recovered = await processCanonicalImportRecoveryTick(); }
+          catch (error) { retainedFailure = error; retainedFailed = true; }
+          if (recovered?.ran) console.log(`[CanonicalImportRecovery] ${JSON.stringify(recovered)}`);
           // Reuse request-free ordinary upload recovery on the existing serial
           // schedule; no customer restart or second recovery queue is required.
           const { resumeExpiredCsvImports } = await import("./csv-import-recovery");
           const { processPersistedCsvImport } = await import("./csv-import-processor");
-          const uploadsResumed = await resumeExpiredCsvImports(processPersistedCsvImport);
+          let uploadsResumed = 0;
+          let uploadFailure;
+          let uploadFailed = false;
+          try { uploadsResumed = await resumeExpiredCsvImports(processPersistedCsvImport); }
+          catch (error) { uploadFailure = error; uploadFailed = true; }
           if (uploadsResumed) console.log(`[CsvImportRecovery] Resumed ${uploadsResumed} expired executions`);
-          if (recovered.ran && recovered.budgetExhausted) {
+          if (retainedFailed && uploadFailed)
+            throw new Error("CANONICAL_IMPORT_INDEPENDENT_BOUNDARIES_FAILED",
+              {cause:{originalError:retainedFailure,cleanupError:uploadFailure}});
+          if (retainedFailed) throw retainedFailure;
+          if (uploadFailed) throw uploadFailure;
+          if (recovered?.ran && recovered.budgetExhausted) {
             const { canonicalImportContinuationOptions } = await import("./canonical-import-recovery-scheduling");
             // Serial continuation: no extra concurrency, no provider work and
             // no ten-minute wait between batches. Deduplicate repeat-triggered

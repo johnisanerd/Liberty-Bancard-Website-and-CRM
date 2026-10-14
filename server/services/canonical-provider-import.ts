@@ -6,7 +6,6 @@ import { mapProviderCsvRow } from "./provider-import-columns";
 import { resolveOrganization } from "./organization-resolver";
 import { normalizeDomain, normalizePhoneE164 } from "./sdr/dedupe";
 import { writeContact } from "./contact-writer";
-import { recordImportRowDisposition } from "./import-execution";
 import type { ImportSourceCoordinate } from "./tabular-import-reader";
 import {hasCanonicalImportRecoveryClaim,type CanonicalImportRecoveryClaim} from "./canonical-import-recovery-contract";
 import {runCanonicalTransaction,boundCanonicalWriteTransaction,preserveCanonicalTransactionFailure} from "./canonical-transaction-retry";
@@ -146,24 +145,54 @@ export async function materializeCanonicalProviderImportRow(input:{
   const name=mapped.companyName?.trim();
   const hold=async(reasonCode:string,diagnostic?:Record<string,unknown>,
     recheck?:(tx:any)=>Promise<void>)=>{
-    if (input.recoveryClaim) {
-      await runCanonicalTransaction("import_materialize",()=>db.transaction(async tx=>{
+      await runCanonicalTransaction("import_materialize",()=>preserveCanonicalTransactionFailure(
+        callback=>db.transaction(callback),async tx=>{
         if (!await authorityCheck(tx)) throw new Error("CANONICAL_IMPORT_RECOVERY_CLAIM_LOST");
         await recheck?.(tx);
         const identity=await verifyProviderImportIdentity(tx,input);
         if(!identity || identity.fingerprint!==fingerprint)
           throw new Error("CANONICAL_IMPORT_HOLD_IDENTITY_CHANGED");
+        // A mailbox may already have committed the immutable original
+        // accounting before later evidence requires a hold. Record the current
+        // hold on that same retained item, never replace its historical receipt.
+        let itemId=input.recoveryClaim?.itemId;
+        if (!itemId) {
+          const retained=rows(await tx.execute(sql`SELECT item.id,item.state,item.terminal_code,
+            item.claim_token,item.current_provider FROM cro03_enrichment_items item
+            JOIN cro03_enrichment_batches batch ON batch.id=item.batch_id
+            WHERE batch.idempotency_key=${`csv-source:${input.executionId}:${input.sourceRowNumber}`}
+            ORDER BY item.id LIMIT 2 FOR UPDATE OF item`));
+          if (retained.length!==1) throw new Error("CANONICAL_IMPORT_HOLD_ITEM_IDENTITY_MISSING");
+          const item=retained[0];
+          if (item.claim_token || item.current_provider || !["blocked","completed"].includes(item.state)
+            || !(item.terminal_code==="STAGING_RECIPE_DISABLED"
+              || String(item.terminal_code ?? "").startsWith("CANONICAL_")))
+            throw new Error("CANONICAL_IMPORT_HOLD_ITEM_AUTHORITY_BUSY");
+          itemId=String(item.id);
+        }
         if (!await authorityCheck(tx)) throw new Error("CANONICAL_IMPORT_RECOVERY_CLAIM_LOST");
+        if (!input.recoveryClaim) {
+          // Re-read under the execution fence: this call may have committed
+          // its first mailbox since the original receipt was loaded above.
+          const receipt=rows(await tx.execute(sql`SELECT row_fingerprint FROM import_row_dispositions
+            WHERE execution_id=${input.executionId}::uuid AND source_row_number=${input.sourceRowNumber}`))[0];
+          if (receipt && receipt.row_fingerprint!==fingerprint)
+            throw new Error("IMPORT_ROW_FINGERPRINT_MISMATCH");
+          if (!receipt) await tx.execute(sql`INSERT INTO import_row_dispositions
+            (execution_id,source_row_number,row_fingerprint,disposition,reason_code,diagnostic)
+            VALUES(${input.executionId}::uuid,${input.sourceRowNumber},${fingerprint},'deferred',
+              ${reasonCode},${diagnostic ? JSON.stringify(diagnostic) : null}::jsonb)`);
+        }
         await tx.execute(sql`UPDATE cro03_enrichment_items SET state='blocked',terminal_code=${reasonCode},
           claim_token=NULL,lease_expires_at=NULL,current_provider=NULL,completed_at=NULL,
           next_attempt_at=clock_timestamp()+INTERVAL '1 hour',updated_at=clock_timestamp()
-          WHERE id=${input.recoveryClaim!.itemId}::uuid`);
+          WHERE id=${itemId}::uuid`);
         await tx.execute(sql`INSERT INTO audit_logs(action,entity_type,entity_key,details,actor_type,actor_id)
-          VALUES('canonical_import_row_held','cro03_enrichment_item',${input.recoveryClaim!.itemId},
+          VALUES('canonical_import_row_held','cro03_enrichment_item',${itemId},
             ${JSON.stringify({executionId:input.executionId,sourceRowNumber:input.sourceRowNumber,
               rowFingerprint:fingerprint,reasonCode,diagnostic})}::jsonb,'system',${input.actorId})`);
         await tx.execute(sql`INSERT INTO audit_logs(action,entity_type,entity_key,details,actor_type,actor_id)
-          VALUES('canonical_import_hold_evidence','cro03_enrichment_item',${input.recoveryClaim!.itemId},
+          VALUES('canonical_import_hold_evidence','cro03_enrichment_item',${itemId},
             ${JSON.stringify({holdEvidenceVersion:"native_revision_bound_v1",
               executionId:input.executionId,sourceRowNumber:input.sourceRowNumber,
               originalObservationId:identity.id,originalPayloadHash:identity.payload_hash,
@@ -171,13 +200,13 @@ export async function materializeCanonicalProviderImportRow(input:{
               rawEvidenceHash:identity.rawEvidenceHash,bridgeHash:identity.bridgeHash ?? null,
               coordinate:identity.coordinate ?? {format:"retained_logical",recordNumber:input.sourceRowNumber},
               reasonCode,diagnostic})}::jsonb,'system',${input.actorId})`);
+        await pendingRow(tx,false);
+        // Recovery deliberately relinquishes its item claim above. It is
+        // checked immediately before that transition, not after clearing its
+        // own token. Ordinary-upload ownership remains live and is rechecked.
+        if (!input.recoveryClaim && !await authorityCheck(tx))
+          throw new Error("IMPORT_EXECUTION_LEASE_LOST");
       }));
-    } else {
-      if (!input.claimToken) throw new Error("IMPORT_EXECUTION_CLAIM_REQUIRED");
-      await recordImportRowDisposition({...input,claimToken:input.claimToken,rowFingerprint:fingerprint,
-        disposition:"deferred",reasonCode,diagnostic});
-      await commit(tx=>pendingRow(tx,false));
-    }
     return {disposition:"deferred",fulfillmentState:"held",contactIds:[] as number[],
       businessId:typeof diagnostic?.businessId==="number" ? diagnostic.businessId : null};
   };
@@ -344,12 +373,12 @@ export async function materializeCanonicalProviderImportRow(input:{
     throw error;
   }
   const affiliationOutcomes=await resumeImportedAffiliations(result.contactIds,authorityCheck);
-  const incomplete=input.recoveryClaim ? await commit(async tx=>{
+  const incomplete=await commit(async tx=>{
     if (!result.contactIds.length) return [];
     return rows(await tx.execute(sql`SELECT id,business_id,record_class FROM contacts
       WHERE id IN (${sql.join(result.contactIds.map(id=>sql`${id}`),sql`,`)})
         AND business_id IS DISTINCT FROM ${businessId}`));
-  }) : [];
+  });
   if (incomplete.length) {
     // Shared mailboxes can already belong to a different approved business;
     // a created contact/provenance receipt is NOT authority to transfer it.
