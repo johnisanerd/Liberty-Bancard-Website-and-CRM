@@ -68,6 +68,8 @@ export interface SuiteManifestEntry {
   workspace: "read-only" | "repository-build";
   completion: "runner-owned" | "module-receipt";
   preDeploy: "execute" | "delegated-disposable";
+  /** Own fresh local PG/Redis per suite, rather than the integration group's DB. */
+  isolateInfrastructure?: boolean;
   requiredEnv?: Readonly<Record<string, string>>;
   /** For server-optional: why real credentials are needed */
   providerNote?: string;
@@ -84,18 +86,24 @@ const RAW_SUITE_MANIFEST: SuiteManifestDefinition[] = [
   {name:"Stage 3 C4 Source and Codec Contracts",script:"scripts/test-stage3-c4-contracts.ts",
     capability:"deterministic-static",providerDenial:"source/codec only; no DB, browser, server or provider"},
   {name:"Stage 3 C4 Real Handler Actions",script:"scripts/test-stage3-c4-actions.ts",
+    isolateInfrastructure:true,
     capability:"deterministic-integration",providerDenial:"guarded disposable PG/Redis; denied external transport; simulated delayed ledger states, no native execution"},
   {name:"Stage 3 C4 Bounded Mounted Browser",script:"scripts/test-stage3-c4-browser.ts",
+    isolateInfrastructure:true,
     capability:"deterministic-integration",providerDenial:"private compiled client/authenticated disposable readers and local preparation POST/readback/retry; named source faults, scoped report/Calendar/agent links, Review Queue native overlay keys and 304 route/panel role surfaces; control appearances remain untested actions, external/native transport denied"},
   {name:"Stage 3 C4 Focused Health Read Browser",script:"scripts/test-stage3-c4-health-browser.ts",
+    isolateInfrastructure:true,
     capability:"deterministic-integration",providerDenial:"private compiled admin Health read/source handlers only; isolated PG/Redis, actual session and named 503s; non-seeding config GET; other sources explicit 501, computation/native/external denied; not whole C4"},
   {name:"C2 Postmerge Date and Task Helper Contracts",script:"scripts/test-c2-postmerge-repairs.ts",
     capability:"deterministic-static",providerDenial:"AST/helpers/injected callbacks only; not registered-handler or browser proof"},
   {name:"C2 Postmerge Real Handler and Mounted Browser",script:"scripts/test-c2-postmerge-browser.ts",
+    isolateInfrastructure:true,
     capability:"deterministic-integration",providerDenial:"guarded disposable PG/Redis/private Chromium; actual handlers, external transport denied"},
   {name:"C2 Compact Contact Header Mounted Browser",script:"scripts/test-c2-contact-header.ts",
+    isolateInfrastructure:true,
     capability:"deterministic-integration",providerDenial:"guarded disposable PG/Redis/private Chromium; provider attempts denied before egress"},
   {name:"Toast Viewport Frontend Browser",script:"scripts/test-toast-viewport-layout.mjs",
+    isolateInfrastructure:true,
     capability:"deterministic-integration",providerDenial:"Vite/private Chromium loopback fixture; no DB, login or providers"},
   {name:"Stage 3 C2 Destination and Source Contracts",script:"scripts/test-stage3-c2-contracts.ts",capability:"deterministic-static",
     providerDenial:"Pure codecs/time windows/provider payloads and temporary output tamper tests; no DB or provider I/O"},

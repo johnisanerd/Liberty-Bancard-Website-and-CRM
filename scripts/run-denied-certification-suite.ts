@@ -73,8 +73,27 @@ replaceWithCertificationEnvironment();
   const externalSecurity = capability === "external-security";
   if (!externalSecurity) applyCertificationProviderDenyBoundary({ fatal: true });
   const absoluteSuitePath = path.resolve(process.cwd(), suitePath);
-  process.argv = [process.argv[0], absoluteSuitePath, ...process.argv.slice(4)];
-  await import(pathToFileURL(absoluteSuitePath).href);
+  const { SUITE_MANIFEST } = await import("./ci-suite-manifest");
+  const registration = SUITE_MANIFEST.find(suite => suite.script === suitePath && suite.capability === capability);
+  if (registration?.isolateInfrastructure) {
+    if(capability!=="deterministic-integration")
+      throw new Error("Private fixture isolation is only valid for deterministic integration suites");
+    const {spawnCertificationTsx,terminateCertificationChild}=await import("./certification-child-process");
+    await new Promise<void>((resolve,reject)=>{
+      const child=spawnCertificationTsx("scripts/run-sfp2060-predeploy-disposable.ts",["--only",suitePath],{stdio:"pipe"});
+      child.stdout?.on("data",chunk=>console.log(String(chunk)));
+      child.stderr?.on("data",chunk=>console.error(String(chunk)));
+      child.once("error",reject);
+      child.once("exit",(code,signal)=>{
+        if(code===0&&!signal)resolve();
+        else reject(new Error(`Owned private suite failed: exit=${code}; signal=${signal??"none"}`));
+      });
+      process.once("SIGTERM",()=>{void terminateCertificationChild(child).finally(()=>process.exit(143));});
+    });
+  } else {
+    process.argv = [process.argv[0], absoluteSuitePath, ...process.argv.slice(4)];
+    await import(pathToFileURL(absoluteSuitePath).href);
+  }
   const { getBlockedCertificationNetworkAttemptCount } = await import("./certification-provider-deny");
   if (!externalSecurity && getBlockedCertificationNetworkAttemptCount() !== 0) {
     throw new Error("Certification suite attempted a blocked external-provider request.");

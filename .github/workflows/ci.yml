@@ -57,7 +57,7 @@ jobs:
   integration:
     name: Integration Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     needs: static
 
     services:
@@ -133,6 +133,9 @@ jobs:
 
       - name: Prepare private Chromium for registered browser suites
         run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-16 redis-server
+          echo /usr/lib/postgresql/16/bin >> "$GITHUB_PATH"
           chrome_bin="$(command -v google-chrome || command -v chromium || true)"
           test -n "$chrome_bin"
           sudo mkdir -p /repl/tools/bin
@@ -167,6 +170,19 @@ jobs:
           CERTIFICATION_ALLOWED_NETWORK_ORIGINS: ""
           CERTIFICATION_ALLOW_LOOPBACK: "0"
         run: NODE_OPTIONS="${NODE_OPTIONS:-} --require $(pwd)/scripts/certification-provider-deny-preload.cjs" npm run build
+
+      - name: Build matched original production baseline
+        env:
+          VG_PROVIDER_DENY_MODE: "1"
+          CERTIFICATION_COMPILER_ONLY: "1"
+          CERTIFICATION_ALLOWED_NETWORK_ORIGINS: ""
+          CERTIFICATION_ALLOW_LOOPBACK: "0"
+        run: |
+          git fetch origin 85296699ec8d11f22750657dfe5ac34a8fd2577d
+          git worktree add --detach ../c4-performance-baseline 85296699ec8d11f22750657dfe5ac34a8fd2577d
+          ln -s "$PWD/node_modules" ../c4-performance-baseline/node_modules
+          deny_preload="$PWD/scripts/certification-provider-deny-preload.cjs"
+          (cd ../c4-performance-baseline && NODE_OPTIONS="${NODE_OPTIONS:-} --require $deny_preload" npm run build)
 
       - name: Run all deterministic integration suites
         run: npx tsx scripts/run-ci-suites.ts --capability deterministic-integration
