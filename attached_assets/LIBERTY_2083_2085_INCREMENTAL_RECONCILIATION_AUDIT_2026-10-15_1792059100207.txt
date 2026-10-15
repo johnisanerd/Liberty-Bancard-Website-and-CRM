@@ -1,0 +1,257 @@
+LIBERTY BANCARD — #2083 / #2085 FOLLOW-ON ASSIGNMENT AUDIT
+Date: 2026-10-15, America/New_York
+Repository: scottpstevenson/Liberty-Bancard-Website-and-CRM
+Pinned main: 4c5cb9d865ef924087302bfbea6152a0e5a79d89
+Git tree: b28c9b7d00c9e8ee5923d87e91a615c426956b4b
+
+VERDICT
+
+The central diagnosis in the supplied Replit account is supported by current repository source: the incremental changed-contact selection is still expensive work before LIMIT, and the quoted publication did not change that path. The proposed direction is appropriate, but the repair must cover the page loader, preview contract and worker checkpoint together.
+
+Keep this within the existing business-assignment continuation the user identifies as #2085. Do not reset the completed initial scan, upload the workbooks again, raise timeouts, create another pipeline or open a separate testing project.
+
+Three points need explicit correction:
+1. An inspected-ID cursor and an actual end-of-pass signal must be separate from the filtered changed-contact list. Changing SQL alone is unsafe.
+2. A source-link OR branch currently bypasses the changed-since timestamp. Correct this false-positive selection as part of the same query repair.
+3. Faster incremental processing does not establish disposition of the reported 153,910 unresolved assignments or reconcile the 713 original import exceptions. Those are separate outcome obligations within the same continuation.
+
+This audit changed no application source, production data, controls, schedules, leases or deployments.
+
+WHAT WAS INDEPENDENTLY CHECKED
+
+- Refreshed current main twice; it remained 4c5cb9d865ef924087302bfbea6152a0e5a79d89, committed at 2026-10-15 08:55:06 UTC.
+- Resolved both quoted revisions:
+  f28dce470a2462f07d87d8ae08ac70be1c13be53
+  ab6304eca6e42831e12fab2cb0a2415e1692e334
+- Current main and ab6304ec have exactly the same Git tree, b28c9b7d00c9e8ee5923d87e91a615c426956b4b. The main publication commit is not a further query repair.
+- Compared the selector, automation worker, candidate retrieval, population reader, queue manager and domain-index migration between f28dce47 and current main: all six files have identical blobs.
+- Confirmed retained-replay worker and imports-route files DID change between those builds. Publication can therefore bring other corrections live while leaving this selector unchanged.
+- Read current selection/worker/candidate/materialization/population/queue/recovery source, relevant schema and certification tests, and the repository's saved closure/restart evidence.
+- Executed four source-level probes using the actual downloaded TypeScript functions with injected SQL/executor/authority dependencies. No database or real writer was invoked.
+
+Not independently refreshed: production health, serving SHA, current database catalogs, counts, logs, actual saved production checkpoint or EXPLAIN. The production observations quoted by the user remain attributed observations. Git's publication metadata is not an independent live health probe.
+
+CLAIM-BY-CLAIM REVIEW
+
+Claim: The task was closed while production reconciliation remained unfinished.
+Verdict: Supported by the committed closure record.
+Evidence: docs/certification/intake-business-assignment-local-verification.md, “Owner-approved closure and resume record.” It explicitly records owner-directed closure, deferred production acceptance and continuation obligations. The exact external task-store identity/archive state of #2085 was not independently retrieved.
+
+Claim: The initial pass finished October 14 at 7:21 p.m. Eastern.
+Verdict: Not freshly verified here.
+Evidence limit: The committed closure checkpoint predates that reported finish. At October 14 20:09:37 UTC / 4:09:37 p.m. Eastern it still recorded 91,626 scanned, 13 committed, 91,613 held and an incomplete pass. These times are compatible with a later finish; the repository alone does not prove that later event.
+
+Claim: 157,446 active production contacts, 3,536 verified, 153,910 unresolved.
+Verdict: Arithmetic is consistent; current values are not freshly verified.
+Evidence limit: The saved closure record reports 157,446 total, 3,531 verified and 153,915 unresolved. The quoted newer figures represent five additional verified assignments relative to that snapshot.
+
+Definition correction: readContactLinkAssignmentPopulation counts non-archived contacts with a non-null record class excluding test/demo/synthetic. A verified assignment requires a current unsuperseded verified decision, a matching projected business_id, and a canonical business. “Unresolved” is total minus that verified count. It can include contacts with an existing business_id but no matching current audited assignment. It is not synonymous with “all have no business,” “all have production email,” or “all are outreach-ready.” The reader exposes legacyProjectedWithoutCurrentVerifiedAssignment separately.
+
+Claim: 713 holds, comprising 626 organization-resolution and 87 affiliation holds.
+Verdict: Supported as a retained historical coordinate set by the saved verification.
+Important detail: The 87 affiliation snapshots covered 76 contacts. This alone demonstrates why work-item counts are not distinct-contact counts. Earlier observations qualified 647 hold coordinates, then 17 more in separate windows, leaving 49 unqualified at that checkpoint. These were not a simultaneous full-set convergence proof.
+
+Claim: 553 October plus 160 September hold rows, now 712 blocked and one retrying.
+Verdict: Supplied newer observations; not independently regenerated here.
+553 + 160 = 713. Exact current per-execution joins and item states are still required. Do not add these 713 work items to the 153,910 contact denominator. Contacts can span rows, rows can have multiple mailboxes, and an import exception may coexist with an existing verified contact assignment.
+
+Claim: All six summaries are completed.
+Verdict: Supported at the saved closure checkpoint, not freshly refreshed.
+The documentation explicitly says this does not prove native original-row fulfillment, fresh holds, full restart recovery or retained replay. Six original sources comprise the five October workbooks (2,914 rows) and September workbook (1,472 rows): 4,386 original rows in separate executions.
+
+Claim: Publishing ab6304ec repaired the deployment gap but not this query.
+Verdict: The unchanged source claim is verified. Live serving identity is attributed to the supplied production check.
+The repository confirms the query and worker are unchanged across both cited builds. The exact runtime symptom and current checkpoint must still be measured after publication.
+
+FINDING 1 — LIMIT DOES NOT BOUND THE EXPENSIVE CHANGE SELECTION
+
+Priority: Required for the repair.
+Source:
+  server/services/contact-business-evidence-page.ts:18–51
+  server/services/contact-business-evidence-candidates.ts
+  migrations/0356_contact_linker_indexed_domain.sql
+
+loadEvidenceRelationshipPage requests 25 contacts plus a lookahead, but first applies an OR across:
+- contact updated_at;
+- new contact source events;
+- changed canonical source links joined to businesses, using normalized names/domains or retained identifiers;
+- Sunbiz entity revisions and identity matches;
+- changed businesses.
+
+These predicates are in WHERE before ORDER BY/LIMIT. A result limit of 26 does not cap the number of contacts or registry/source candidates examined to find those results.
+
+The Sunbiz revision check additionally extracts updated_at through to_jsonb(changed_entity), although shared/schema.ts declares a typed updated_at column. This is a concrete expression to investigate in the exact plan; changing it alone is not a proven repair.
+
+The candidate retrieval CTE used AFTER selection already contains bounded contact IDs and parameterized lateral lookups. Earlier successful candidate timings therefore do not certify the incremental selection statement. Repairing or benchmarking that CTE again would miss the current first-stage risk.
+
+Safe direction:
+Read an ordered bounded raw contact-ID page independently of expensive change predicates, then evaluate changes only for that page using relevant indexed identity/source probes. Keep raw page size, lookahead and evidence hydration explicit. Reuse the already introduced normalized identity indexes where their expression and partial predicate actually match.
+
+A bounded query is not automatically fast: each bounded contact must still avoid unindexed full-registry probes. Require the actual selector and hydration plans, not just a generic EXPLAIN or another pool-size change.
+
+No fresh production plan was executed here, so the supplied “full scans” and approximately 30-second cancellations are not newly reproduced performance measurements.
+
+FINDING 2 — AN OLD SOURCE IDENTIFIER CAN BYPASS THE CHANGE TIMESTAMP
+
+Priority: Fix in the same selector.
+Source:
+  server/services/contact-business-evidence-page.ts:33–42
+
+The changed-link WHERE has this logical shape:
+  (link_revision >= changedSince AND business/name/domain_match)
+  OR retained_source_identifier_match
+
+The retained-identifier EXISTS is outside the timestamp-qualified group. SQL AND precedence means a matching historical filing/place key can admit an unchanged source link. This can repeatedly select otherwise unchanged contacts and overstate changed work. It is a false-positive change-selection defect; it does not establish authority to link a business.
+
+Apply the intended timestamp condition to the relevant identifier alternative too, while keeping genuinely new contact-source events eligible through their own branch. Do not remove the retained identifier route to improve speed.
+
+Parity requirement:
+Preserve all legitimately changed candidates and the evidence/writer outcomes. Exact byte-for-byte selector parity with this false-positive behavior is not the goal. Record the deliberate correction and test old unchanged identifiers separately from fresh source-only changes.
+
+FINDING 3 — THE CURRENT WORKER CANNOT SAFELY CONSUME AN EMPTY BOUNDED PAGE
+
+Priority: Coordinated loader/preview/worker change.
+Source:
+  server/services/contact-business-evidence-page.ts:119–125
+  server/services/contact-business-system-links.ts:263–271
+  server/services/contact-link-automation.ts:128–142, 197–205, 219–227
+
+Today the loader returns the last selected changed contact, and preview.nextCursor depends on whether another selected contact exists. The worker advances per processed candidate and unconditionally sets complete=true when preview.rows is empty.
+
+That is valid only while an empty selector result means there are no changed contacts anywhere beyond the cursor. After bounding raw IDs first, an empty changed list can mean merely “none of these inspected IDs changed,” with later IDs still pending.
+
+Executed probe:
+The actual worker was supplied a hypothetical bounded page with rows=[], later inspected IDs, and a non-null continuation. It marked the pass complete and left its cursor at 10. This proves that changing the loader alone would be unsafe. It is not a claim that the current unmodified loader returns that hypothetical contract in production.
+
+Required additive page semantics:
+- inspected-through raw ID and a reliable pass-exhaustion/lookahead result;
+- changed/evidence rows within that inspected scope;
+- checkpoint advancement across unchanged IDs;
+- no advancement past a changed candidate whose processing did not complete;
+- end-of-pass only when the inspected population is actually exhausted.
+
+The existing deadline protection for an unprocessed nonempty tail worked in the source probe and must survive the repair.
+
+Keep current completed-initial-pass status, run identity, cumulative counters, operator pause and live lease/token authority. A raw inspected-page cursor is not an assignment count. Do not add inspected unchanged contacts to “held” merely to make counters advance.
+
+FINDING 4 — PRESERVE THE CHANGE WINDOW UNTIL THAT PASS IS EXHAUSTED
+
+Priority: Required regression boundary, not a separate project.
+Source:
+  server/services/contact-link-automation.ts:128–136, 197–227
+
+The existing worker rolls changedSince forward only when starting the next pass, using the previous scanStartedAt. This lets later changes behind the ID cursor be considered in a subsequent pass.
+
+The proposed paging change must preserve that window through empty pages, sparse results, restarts, failed queries and partial processing. Do not set changedSince to publication time or current wall time to escape the timeout. Do not reset the completed initial pass or rewrite the saved cursor to a guessed value.
+
+Capture the current stored state before implementation/publication. Continue the actual saved incremental state. The existing automatic rollover between incremental passes can start its next ID traversal normally; that is different from manually restarting the initial backfill.
+
+Test an initially unchanged page, a later changed contact, a source-only change, a change behind the current cursor and restart at each checkpoint boundary. Include concurrent evidence updates and prove the chosen revision/window semantics do not lose work.
+
+FINDING 5 — QUERY RECOVERY DOES NOT PROVE BUSINESS-ASSIGNMENT RECOVERY
+
+Priority: Preserve within the existing continuation.
+Source:
+  server/services/contact-business-materialization-policy.ts
+  server/services/contact-business-materialization.ts:37–66
+  shared/relationship-evidence-sql.ts:22–25
+  server/services/contact-link-population.ts
+
+Current code has source-family relationship support and supported missing-business materialization; the older audit's “Sunbiz-only native authority” or “no business creation” diagnosis must not be repeated as current fact.
+
+However, creation is conditional on retained supported source events with a businessEvidence object, identity agreement and corroborating location/domain/phone combinations. Re-running selection faster cannot manufacture that missing evidence or guarantee every one of the reported unresolved contacts can be linked.
+
+After selection resumes, reconcile current unique-contact outcomes: already verified, existing legacy assignment needing reconciliation, supported new/existing-business assignment, genuinely insufficient retained evidence, conflicting identity/location and technical failure/retry. Use the actual current rule/source revisions and measurable automatic next action.
+
+Do not treat all 153,910 as correctly held simply because a full scan ended. Equally, do not force associations to improve the count. Ordinary recoverable source-backed relationships should advance automatically; genuine conflicts remain exceptions.
+
+The saved 713 import coordinates need an independent original-row reconciliation: exact execution/row/fingerprint, expected business/mailboxes, actual contact/assignment, current work-item state and current-version fulfillment or hold evidence. Preserve protected historical relationships and immutable source data.
+
+FINDING 6 — KEEP LOCAL STAGE FAILURE ISOLATION AND HONEST ACCEPTANCE
+
+Priority: Verify around the same correction.
+Source:
+  server/services/queue-manager.ts:2679–2730
+  server/services/canonical-import-recovery-worker.ts
+  docs/certification/intake-business-assignment-live-restart-procedure.md
+
+The existing recovery queue already attempts local linking, retained recovery and ordinary-upload recovery as separate boundaries, then reports failures. A linker failure does not simply mean all import recovery code was skipped. Preserve that behavior.
+
+A thirty-second selector timeout can nevertheless delay later serial work, so test ordinary concurrent cycles and independently committed outcomes after the repair. Do not fix this by increasing concurrency, leases, pool size or timeouts without separate measured evidence.
+
+The replay implementation exists and changed in the cited merge. Its presence is not proof that production retained replay or the controlled physical ordinary-upload restart has occurred. The saved procedure explicitly keeps these distinct and deferred. Do not conflate query performance acceptance with those remaining obligations or execute a live fault test through this read-only audit.
+
+VERIFICATION PERFORMED IN THIS AUDIT
+
+Four actual-source probes, all assertions matched observed current behavior:
+1. The actual empty page loader returns no cursor advancement and has expensive change predicates before LIMIT; requested lookahead is 26 for a limit of 25.
+2. Under a hypothetical bounded unchanged-page contract, the current worker incorrectly completes despite continuation. This is the repair-integration hazard.
+3. A genuinely exhausted empty page correctly completes.
+4. A deadline before processing a nonempty page preserves the unprocessed cursor/tail.
+
+Dependencies were injected; SQL, native authority, writes and performance were not exercised. These are source-level control-flow probes, not a disposable PostgreSQL certification or evidence that a correction passes.
+
+Existing candidate tests exercise indexed candidate retrieval after contact selection. That does not supply the missing exact changedSince-selector performance and empty-page contract evidence.
+
+Implementation acceptance should include:
+- Actual saved incremental checkpoint and change window, first sparse/unchanged pages and later eligible IDs.
+- Source-only new events, source-link revisions, registry revisions, domain/name/filing/place and supported source-family routes.
+- Old unchanged stable-key match no longer masquerades as changed; real changed matches remain present.
+- Same changed/evidence decisions and native writer protections, with the intentional false-positive selector correction documented.
+- Empty pages checkpoint inspected progress without false completion; actual end completes once.
+- Deadline/crash/lease/owner boundaries preserve unprocessed changed rows and cannot clear another claim.
+- Exact primary selector and hydration latency/plan with representative cardinalities and ordinary load, comfortably within existing bounds.
+- At least three eligible ordinary post-publication cycles with checkpoint movement, fresh diagnostics and independently verified outcomes. When work is eligible for linking, count committed links rather than only inspected IDs or queue completions.
+- Current unique-contact disposition and original-row reconciliation, with original populations kept separate.
+
+MISSING EVIDENCE TO REQUEST, NOT ASSUME
+
+From the exact production build and observation window:
+- Served SHA/build identity and timestamp.
+- Saved program runId, cursor, changedSince, scanStartedAt, complete/backfillComplete, counters, lease state and lastError; distinguish observation freshness from last committed progress.
+- Current population reader result including legacyProjectedWithoutCurrentVerifiedAssignment.
+- Actual first-stage SQL, bound parameters, SQL fingerprint and the plan/error for that checkpoint; separate query execution from connection acquisition and evidence hydration.
+- Source-scoped original coordinates and current-qualified receipt/snapshot joins for the 713 retained exceptions, including the claimed 553/160 split.
+- Whether physical restart and live retained replay are still deferred or have since been independently completed.
+
+None of these require a new upload, manual link sweep, blanket provider calls or arbitrary new approval ceremony.
+
+COPY-READY REPLIT CONTINUATION
+
+Continue the existing #2085 reconciliation scope for #2083. Audit current main and preserve the completed initial scan and exact incremental checkpoint. Implement the targeted changed-contact selector repair in the existing loader, preview DTO and worker together.
+
+Bound raw contact-ID inspection before expensive source checks, use relevant indexed identity lookups, and fix the changed-link OR branch that currently bypasses changedSince. Return/checkpoint inspected progress separately from changed rows and true pass exhaustion. Empty unchanged pages must advance without completing early; partial/deadline processing must not skip changed contacts. Preserve the existing change window, owner/token fences and operator pause.
+
+Test the actual saved failure scope, sparse/empty pages, source-only changes, unchanged stable identifiers, restart and concurrent evidence updates. Measure the exact selector and hydration on representative data under normal load. Do not raise timeouts, reset backfill, re-upload workbooks, force ambiguous assignments or create another pipeline/task.
+
+After the verified correction is published through the existing owner-controlled process, independently confirm the served revision and several ordinary committed cycles. Then reconcile current unique-contact dispositions and all 713 original import exception coordinates separately, including overlap and current evidence freshness. Completed summaries and scanned counts are not accepted assignments.
+
+Keep outbound paused. This audit and planning message do not authorize production replay, physical fault testing or other deferred live writes. Report source-fixed, tested, merged, deployed and production-accepted states separately.
+
+SOURCE REFERENCES
+
+Pinned repository:
+https://github.com/scottpstevenson/Liberty-Bancard-Website-and-CRM/tree/4c5cb9d865ef924087302bfbea6152a0e5a79d89
+
+Relevant files and Git blobs unchanged between f28dce47 and ab6304ec/current:
+- server/services/contact-business-evidence-page.ts
+  f60e4777308caf8d87b535c23d1809c3c69b63a5
+- server/services/contact-link-automation.ts
+  8aa9a51400a96b8419d056eafc8a66523477f6c1
+- server/services/contact-business-evidence-candidates.ts
+  840eb6b52d080b2c9ffa10f38b3d742c59913790
+- server/services/contact-link-population.ts
+  9798d256f1604082fdaf42935d83b7d2eaeda100
+- server/services/queue-manager.ts
+  4f09c7045458ff3c2ad2a9afb7f626b7df484592
+- migrations/0356_contact_linker_indexed_domain.sql
+  405613e4ba3c98fd24060379d59997145e8d6e93
+
+Saved, dated evidence:
+- docs/certification/intake-business-assignment-local-verification.md
+  especially “Published linker continuation,” “Continued hold qualification,”
+  “Bounded native retained replay correction,” and “Owner-approved closure and resume record.”
+- docs/certification/intake-business-assignment-live-restart-procedure.md
+
+Do not use canonical-enrichment-production-population-refresh.json as a fresh census: its embedded observation is October 4. The October 9 #2083 audit is historical context, not a current-code defect inventory.
+
