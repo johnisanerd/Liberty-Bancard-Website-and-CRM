@@ -20,7 +20,7 @@ export function hasMaterializableSourceEvidence(events:unknown):boolean {
 /** Bump when materializer decisions are repaired. Outcome rows recorded by an
  * older rule never defer re-evaluation, so a policy repair reaches previously
  * held contacts through the ordinary worker without a manual reset. */
-export const MATERIALIZATION_RULE_VERSION="source_family_identity_v2";
+export const MATERIALIZATION_RULE_VERSION="source_family_identity_v3";
 
 /** The provider place identifier retained on the ORIGINAL source event. This is
  * the same value the ordinary provider import passes to the organization resolver. */

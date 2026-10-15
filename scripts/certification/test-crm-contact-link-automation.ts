@@ -219,6 +219,31 @@ try {
   check((await outcomeRows(olderHeld)).length===1,
     "An unchanged recent outcome is not re-evaluated every cycle");
 
+  // Ordinary incremental worker completes a retained legacy partial promotion,
+  // not just a direct materializer invocation. The old hold remains immutable.
+  {
+    const name=`${prefix} retained registry`,filing=`retained-${randomUUID()}`;
+    const id=Number((await pool.query(`INSERT INTO contacts(first_name,last_name,email,phone,company_name,city,state,
+      record_class,updated_at) VALUES('Legacy','Retained',$1,'',$2,'Miami','FL','production',now()-interval '30 days')
+      RETURNING id`,[`${randomUUID()}@gmail.com`,name])).rows[0].id);
+    const p=(await pool.query(`INSERT INTO prospects(company_name,contact_id,status) VALUES($1,$2,'converted')
+      RETURNING id`,[name,id])).rows[0].id;
+    const se=(await pool.query(`INSERT INTO sunbiz_entities(filing_number,entity_name,score,source,prospect_id,
+      principal_address,principal_city,principal_state) VALUES($1,$2,'hot','sunbiz',$3,'15 Registry Rd','Miami','FL')
+      RETURNING id`,[filing,name,p])).rows[0].id;
+    await pool.query(`INSERT INTO sunbiz_bootstrap_claims(filing_number,sunbiz_entity_id,status,deferred_reason_code)
+      VALUES($1,$2,'deferred_collision','legacy_sunbiz_promotion_exists')`,[filing,se]);
+    const before=(await pool.query("SELECT to_jsonb(c) v FROM sunbiz_bootstrap_claims c WHERE filing_number=$1",[filing])).rows[0].v;
+    await processContactLinkAutomationTick();
+    check(await decisionCount(id)===1,"Ordinary worker commits retained registry relationship without a cursor reset");
+    check((await pool.query("SELECT business_id IS NOT NULL linked FROM contacts WHERE id=$1",[id])).rows[0].linked,
+      "Retained registry materialization is followed by an actual committed contact assignment");
+    check(JSON.stringify((await pool.query("SELECT to_jsonb(c) v FROM sunbiz_bootstrap_claims c WHERE filing_number=$1",
+      [filing])).rows[0].v)===JSON.stringify(before),"Original registry terminal hold is unchanged");
+    await processContactLinkAutomationTick();
+    check(await decisionCount(id)===1,"Ordinary registry completion replays without another relationship decision");
+  }
+
   // Real graph contention and queued owner renewal. The automatic writer must
   // pin owner authority BEFORE waiting for the commercial graph, then retain
   // its fresh snapshot recheck after acquiring that graph.
@@ -303,7 +328,7 @@ try {
   const classCounts=(await pool.query(`SELECT count(*)::int total,count(*) FILTER(WHERE record_class='production')::int production
     FROM contacts WHERE archived_at IS NULL AND record_class IS NOT NULL AND record_class NOT IN ('test','demo','synthetic')`)).rows[0];
   assert.equal(population.totalActiveNonTest,classCounts.total);assert.equal(population.totalActiveProduction,classCounts.production);checks++;
-  check(population.state==="current" && population.currentVerified===7+await decisionCount(olderReady),
+  check(population.state==="current" && population.currentVerified===8+await decisionCount(olderReady),
     "Current audited population is separate from cumulative attempts");
   await pool.query("ALTER FUNCTION crm_source_family_relationship_reasons(integer,integer,uuid) RENAME TO cert_missing_source_family");
   try {

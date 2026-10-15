@@ -160,10 +160,10 @@ export async function processContactLinkAutomationTick(
     await db.transaction(async tx=>{
       await authorityCheck(tx);
       const mirrored=await mirrorEstablishedPlaceIdentities(tx);
-      if(mirrored>0) {
+      for(const identity of mirrored) {
         await tx.execute(sql`INSERT INTO audit_logs(action,entity_type,entity_key,details,actor_type,actor_id)
           VALUES('business_place_identity_mirrored','contact_link_program',${state.runId},
-            ${JSON.stringify({businesses:mirrored,rule:MATERIALIZATION_RULE_VERSION,paidProviderCalls:0,outboundChanges:0})}::jsonb,
+            ${JSON.stringify({...identity,rule:MATERIALIZATION_RULE_VERSION,paidProviderCalls:0,outboundChanges:0})}::jsonb,
             'system','system:contact-link-automation')`);
       }
     });

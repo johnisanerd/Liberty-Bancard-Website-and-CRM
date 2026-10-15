@@ -817,7 +817,127 @@ rule version so contacts held by an older rule are revisited without waiting 24 
 corroboration; the ordinary canonical writer still applies the link. Certification: source-family materialization
 42 checks, source-only reconsideration 13 checks, CRM link automation suite passed, `tsc` clean.
 
-Remaining not recoverable by this path (specific limits): 1,397 contacts have structural Sunbiz provenance
-(prospect or identical email to an entity record) but only a raw Sunbiz entity exists; creating the business from a
-registry entity is the governed Sunbiz bootstrap (typed-confirmation admin route, not wired to workers), not the
-contact materializer. 108,631 contacts have no retained organization evidence and no canonical or Sunbiz match.
+Correction to the original path assessment: the structural Sunbiz cohort is still in scope. The Sunbiz bootstrap
+IS wired to the ordinary full-backfill worker, not only an admin route. The investigation below replaces the
+incorrect admin-only conclusion; it does not defer these cases to manual review or discovery.
+
+## Place-ownership correction and retained Sunbiz worker trace (2026-10-15 ~22:40–22:47 UTC)
+
+The first batch mirror was unsafe: a per-business distinct-key count did not establish global ownership across
+`outscraper`, `google_maps`, and `google` namespaces. Both single and batch now use the resolver's place advisory
+lock (seed 1642), reject any other business's place source link even if both columns are blank, reject multiple
+distinct place keys on the same business, and recheck source/column ownership in a fresh statement after row-lock
+waits. Batch candidates are hints only; all their place locks are acquired in sorted order before any business-row
+locks. The resolver also treats retained place links across all three namespaces as exact ownership evidence,
+including contradictory links (which defer instead of creating another root).
+
+Successful mirrors return `{businessId, placeId, sourceLinkIds}`. The worker writes one audit event per identity
+inside the same transaction; the single materializer includes that identity in its existing per-contact audit.
+The provider import re-resolves in its separate source-insertion transaction to retain the same place-lock fence
+across that handoff. No changed-row audit is inferred from a batch count.
+
+Disposable PostgreSQL certification: 26 ownership/concurrency assertions, including conflicting pairs of all
+three namespaces, same owner across namespaces, multiple place keys on one root, resolver-first and mirror-first
+operations with observed PostgreSQL advisory-lock waits, commit-time ownership revalidation, idempotency, and
+competing single/batch mirrors with exactly one identity receipt. Source-family materialization: 42 checks;
+source-only reconsideration: 13 checks; CRM relationship certification passed with zero external network attempts
+and unchanged native fingerprints. These are local certification results, not production relationship receipts.
+
+Read-only production preflight: 23 blank businesses have one place key, with **zero cross-namespace ownership
+conflicts** in this current set. All 11 diagnosed contacts remain unassigned. **19 contacts clear corroboration;
+eight also fail the company-name check, leaving 11 fully clear**, not 19 expected links. The ordinary contact-link
+cursor was 98,649 at 22:46:04 UTC; no elapsed-time or “tick or two” forecast is established.
+
+### Why the ordinary Sunbiz path misses the retained-source cohort
+
+Definition: distinct active production contacts with NULL business_id, reached by
+`contacts.id = prospects.contact_id -> sunbiz_entities.prospect_id = prospects.id`.
+This is **1,397 distinct contacts**, not the sum of potentially overlapping entity-level statuses. The earlier
+description “prospect or identical email” conflated separate diagnostic joins; this cohort is the structural
+prospect chain specifically. These are existing source relationships, not name-only discovery matches.
+
+The registered `SUNBIZ_FULL_BACKFILL` queue executes `runSunbizBackfillMicrobatch`, which selects a bounded window
+and invokes `runSunbizBootstrapBatch`. Production is `running`, phase `remaining`, remaining cursor 729,726 and
+processed count 187,676 at 22:40:15 UTC. It is not disabled and does not require another admin confirmation.
+
+One priority-ordered partition of the structural cohort:
+
+| Current contact-level situation | Distinct contacts |
+| --- | ---: |
+| Terminal `legacy_sunbiz_promotion_exists` claim, no canonical source lineage | 1,375 |
+| Unclaimed hot/warm, ahead of remaining-lane cursor | 17 |
+| Claimed, no existing source link | 2 |
+| Existing canonical source link, relationship still unverified | 2 |
+| Unclaimed cold (excluded by hot/warm eligibility) | 1 |
+| **Total** | **1,397** |
+
+The 1,375 terminal-held contacts span 1,421 entity rows. None of these contacts has an original filing-number
+source event and none of those filings has ANY canonical source link. `wasPromotedByLegacySunbiz` treats
+`p.id IS NOT NULL` as completed legacy promotion; the retained prospect alone therefore makes the bootstrap
+finalize `deferred_collision/legacy_sunbiz_promotion_exists` without creating a business. The selector excludes
+that terminal claim on every later pass. This is a legacy partial-promotion handoff gap, not missing discovery
+and not a stopped worker. The 17 unclaimed eligible contacts' entity IDs are 2,008,641–2,014,799, all ahead of the
+remaining-lane cursor, so they are pending ordinary traversal, not demonstrated cursor skips.
+
+The contact materializer separately admits only retained `businessEvidence` events, not the prospect-to-entity
+chain, so it cannot complete the legacy partial promotion either. Merely removing the bootstrap's prospect
+guard would NOT recover old terminal claims. Resetting those claims would destroy the held-state evidence;
+merely changing its status would also bypass the existing bootstrap claim fence. The completion below instead
+uses the canonical contact-materializer's source policy, leaving the bootstrap's commercial classification
+and terminal claims unchanged.
+
+The two existing-link contacts are 38 (business 5972) and 72 (business 5719). The complete read-only evaluator
+returns exactly `company_or_trade_name_conflict` for each. They are not forced.
+
+An append-only completion path is now implemented for supported legacy partial promotions. The bounded ordinary
+contact page admits the original prospect-to-entity chain; a contact with exactly one retained terminal legacy
+claim may reach the materializer. It independently requires a permitted registry source, hot/warm source status,
+company/trade-name agreement and no contrary city/state evidence. Ambiguous retained filings, contradictory
+names, locations and unsupported sources stay held with specific reason codes.
+
+The materializer resolves using original registry facts and the filing's source identity, locks/rechecks the
+original source/prospect/claim/contact snapshot, writes canonical lineage, and appends a source event documenting
+that ORIGINAL relationship. It does not copy contact fields as business corroboration. New roots use the same
+resolver-owned `canonical` organization class as the existing contact/provider materializers, only after the
+retained source policy passes. The separate commercial `production` classification is not substituted for
+organization canonicality: the native relationship evaluator explicitly requires `canonical`. No commercial
+classification override was added. The original terminal claim and all hold/accounting evidence remain unchanged.
+The existing native relationship preview/writer still decide and commit the contact link; source materialization
+is not reported as a link.
+
+Two sparse relationship-probe indexes are defined in migration 0358 and the schema for ordinary bounded pages.
+There is no runtime/startup DDL. Production needs the owner-published schema/code before this path can run.
+No discovery handoff or new Human Review prerequisite is justified for this structural cohort.
+
+The unintended external port-6000 mapping is removed. The C1 command is unchanged; its eager `waitForPort=6000`
+declaration was also removed because platform configuration otherwise automatically restored the mapping.
+Production access in this investigation was read-only. No claim resets, cursor/window resets, accounting rewrites,
+forced assignments, provider calls, outbound changes or production writes were performed. Assignment remains open
+through production committed relationship outcomes.
+
+### Completion-path local acceptance (2026-10-15 ~23:01 UTC)
+
+The selected disposable suite run now passes:
+
+- Candidate retrieval: 32 checks, including 50,001 unrelated businesses.
+- Source-family materialization: 42 checks.
+- Place ownership/concurrent resolver-mirror operations: 26 checks.
+- Retained Sunbiz completion: 39 checks. Supported missing-business creation AND existing-business linkage commit
+  via the native writer; original terminal claims and contact identity fields remain byte-for-byte equivalent
+  as JSON. Ambiguous filings, cold sources, name/state conflicts, noncanonical matched roots and lost authority
+  do not create relationship evidence or forced assignments.
+- CRM ordinary-worker certification: 69 checks, including a real older-contact retained-registry relationship
+  committed by the ordinary incremental worker without a cursor reset, original terminal hold preserved,
+  replay without another relationship decision, zero external network attempts and unchanged native fingerprints.
+- Source-only reconsideration: 13 checks.
+
+TypeScript checking passed. The development application starts with background jobs off and the pause authority
+reports paused; the public homepage renders. No signed-in UI was changed or visually verified.
+
+A separate whole-import regression consumed all 2,914 retained fixture rows with zero row failures, but failed
+its final duplicate-email assertion. This is NOT reported as a green whole-import certification; baseline
+comparison with unchanged main completed in a separate disposable PostgreSQL/Redis environment using the same
+five retained workbooks. Unchanged main also consumed all 2,914 rows with zero row failures and failed the SAME
+normalized duplicate-email assertion at `test-provider-import-recovery.ts:147`. This establishes a pre-existing
+whole-import certification failure, not a green gate and not a newly introduced relationship-repair regression.
+No contacts were deleted/merged and no assertion was removed or weakened to conceal it.

@@ -92,8 +92,8 @@ try {
     const bare=(await pool.query(`INSERT INTO businesses(canonical_name,normalized_name,record_class)
       VALUES($1,$2,'canonical') RETURNING id`,[`Bare ${randomUUID()}`,`bare${randomUUID()}`])).rows[0].id;
     await db.transaction(async tx=>{
-      assert.equal(await mirrorEstablishedPlaceIdentity(tx,bare,`ChIJ${randomUUID()}`),"not_applicable");
-      assert.equal(await mirrorEstablishedPlaceIdentity(tx,biz,"ChIJother"),"not_applicable");
+      assert.equal(await mirrorEstablishedPlaceIdentity(tx,bare,`ChIJ${randomUUID()}`),null);
+      assert.equal(await mirrorEstablishedPlaceIdentity(tx,biz,"ChIJother"),null);
     });
     assert.equal((await pool.query("SELECT google_place_id FROM businesses WHERE id=$1",[biz])).rows[0].google_place_id,placeId);checks+=2;
     // Set-based mirror: one place link, blank column, unique owner only.
@@ -110,10 +110,10 @@ try {
     await pool.query(`INSERT INTO canonical_source_links(business_id,source_system,source_type,stable_key,raw_evidence)
       VALUES($1,'outscraper','place',$2,'{}'::jsonb)`,[rival,heldLink]);
     const count=await db.transaction(tx=>mirrorEstablishedPlaceIdentities(tx));
-    assert(count>=1);checks++;
+    assert(count.some(r=>r.businessId===sole && r.placeId===key && r.sourceLinkIds.length===1));checks++;
     assert.equal((await pool.query("SELECT google_place_id FROM businesses WHERE id=$1",[sole])).rows[0].google_place_id,key);checks++;
     assert.equal((await pool.query("SELECT google_place_id FROM businesses WHERE id=$1",[rival])).rows[0].google_place_id,null);checks++;
-    assert.equal(await db.transaction(tx=>mirrorEstablishedPlaceIdentities(tx)),0);checks++;
+    assert.deepEqual(await db.transaction(tx=>mirrorEstablishedPlaceIdentities(tx)),[]);checks++;
   }
   console.log(`Source-family materialization: ${checks} checks passed; personal email allowed; shared-brand locations separate; no providers/outbound`);
 } finally {await pool.end();}

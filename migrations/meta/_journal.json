@@ -2527,6 +2527,13 @@
       "when":1800400024000,
       "tag":"0357_contact_incremental_change_probes",
       "breakpoints":true
+    },
+    {
+      "idx":361,
+      "version":"7",
+      "when":1800400025000,
+      "tag":"0358_retained_sunbiz_contact_chain",
+      "breakpoints":true
     }
   ]
 }

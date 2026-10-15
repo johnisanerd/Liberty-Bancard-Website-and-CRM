@@ -33,9 +33,13 @@ async function readCandidates(executor: any, input: ReturnType<typeof identity>,
     WHERE source_link.business_id=businesses.id
       AND source_link.source_system=${input.sourceIdentity?.sourceSystem ?? null}::text
       AND source_link.source_type=${input.sourceIdentity?.sourceType ?? null}::text
-      AND source_link.stable_key=${input.sourceIdentity?.stableKey ?? null}::text)`;
+      AND source_link.stable_key=${input.sourceIdentity?.stableKey ?? null}::text)
+    OR (${input.googlePlaceId}::text IS NOT NULL AND EXISTS(
+      SELECT 1 FROM canonical_source_links place_link WHERE place_link.business_id=businesses.id
+        AND place_link.source_system IN ('outscraper','google_maps','google')
+        AND place_link.source_type='place' AND place_link.stable_key=${input.googlePlaceId}::text))`;
   const query = executor.select({business: businesses, exactSource: sourceMatch}).from(businesses).where(sql`
-    ${sourceMatch}
+    (${sourceMatch})
     OR (${input.googlePlaceId}::text IS NOT NULL AND google_place_id=${input.googlePlaceId}::text)
     OR (${input.websiteDomain}::text IS NOT NULL AND lower(btrim(website_domain))=${input.websiteDomain}::text)
     OR (${input.mainPhone}::text IS NOT NULL
@@ -99,31 +103,47 @@ export async function peekOrganizationResolution(raw: OrganizationIdentity): Pro
 
 /**
  * Mirror an ALREADY ESTABLISHED provider place identity onto the business row.
- * canonical_source_links is unique per (system,type,stable_key), so a place
- * link proves which single business owns that Google place. Businesses that
+ * Namespace-local uniqueness does NOT prove global place ownership. Businesses that
  * were matched (not created) by an earlier import carry the link but a NULL
  * google_place_id, which the relationship evaluator reads as "no stable
  * identifier". Writes only when the business owns the exact place link, the
  * column is blank, and no other business holds the identifier. Never overwrites.
  */
 export async function mirrorEstablishedPlaceIdentity(tx: ResolutionTransaction, businessId: number, place: string | null | undefined):
-  Promise<"mirrored" | "not_applicable"> {
+  Promise<MirroredPlaceIdentity | null> {
   const key = place?.trim();
-  if (!key) return "not_applicable";
+  if (!key) return null;
   await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`place:${key}`}::text,1642))`);
+  // Acquire the row only AFTER the shared resolver place lock, then perform
+  // ownership revalidation in a fresh READ COMMITTED statement after any wait.
+  await tx.execute(sql`SELECT id FROM businesses WHERE id=${businessId} FOR UPDATE`);
+  const links: any = await tx.execute(sql`SELECT id FROM canonical_source_links
+    WHERE business_id=${businessId} AND source_system IN ('outscraper','google_maps','google')
+      AND source_type='place' AND stable_key=${key}::text ORDER BY id FOR SHARE`);
   const result: any = await tx.execute(sql`UPDATE businesses b
     SET google_place_id=${key}::text, updated_at=clock_timestamp()
     WHERE b.id=${businessId} AND b.record_class='canonical' AND nullif(btrim(b.google_place_id),'') IS NULL
       AND EXISTS(SELECT 1 FROM canonical_source_links l WHERE l.business_id=b.id
         AND l.source_system IN ('outscraper','google_maps','google') AND l.source_type='place'
         AND l.stable_key=${key}::text)
+      AND NOT EXISTS(SELECT 1 FROM canonical_source_links l
+        WHERE l.source_system IN ('outscraper','google_maps','google') AND l.source_type='place'
+          AND ((l.stable_key=${key}::text AND l.business_id<>b.id)
+            OR (l.business_id=b.id AND l.stable_key<>${key}::text)))
       AND NOT EXISTS(SELECT 1 FROM businesses o WHERE o.id<>b.id AND o.google_place_id=${key}::text)
     RETURNING b.id`);
-  return (result?.rows ?? result ?? []).length ? "mirrored" : "not_applicable";
+  return (result?.rows ?? result ?? []).length
+    ? {businessId,placeId:key,sourceLinkIds:(links.rows ?? links).map((l:any)=>String(l.id))} : null;
 }
 
-/** Set-based, bounded form of mirrorEstablishedPlaceIdentity for businesses with exactly one place link. */
-export async function mirrorEstablishedPlaceIdentities(tx: ResolutionTransaction, limit = 200): Promise<number> {
+export type MirroredPlaceIdentity = {businessId:number;placeId:string;sourceLinkIds:string[]};
+
+/** Bounded candidates are only hints. Lock ALL place keys in resolver order
+ * before ANY row lock, then use the same fresh ownership check as the single
+ * path. In particular, two blank businesses in different namespaces must not
+ * both acquire the same place identity in a single UPDATE. */
+export async function mirrorEstablishedPlaceIdentities(tx: ResolutionTransaction, limit = 200): Promise<MirroredPlaceIdentity[]> {
+  if(!Number.isInteger(limit) || limit<1 || limit>200)throw new Error("INVALID_PLACE_MIRROR_LIMIT");
   const result: any = await tx.execute(sql`WITH one AS (
       SELECT business_id, min(stable_key) k FROM canonical_source_links
       WHERE source_system IN ('outscraper','google_maps','google') AND source_type='place' AND stable_key<>''
@@ -132,8 +152,18 @@ export async function mirrorEstablishedPlaceIdentities(tx: ResolutionTransaction
       SELECT b.id, one.k FROM businesses b JOIN one ON one.business_id=b.id
       WHERE b.record_class='canonical' AND nullif(btrim(b.google_place_id),'') IS NULL
         AND NOT EXISTS(SELECT 1 FROM businesses o WHERE o.id<>b.id AND o.google_place_id=one.k)
-      ORDER BY b.id LIMIT ${limit} FOR UPDATE OF b SKIP LOCKED)
-    UPDATE businesses b SET google_place_id=pick.k, updated_at=clock_timestamp()
-    FROM pick WHERE b.id=pick.id AND nullif(btrim(b.google_place_id),'') IS NULL RETURNING b.id`);
-  return (result?.rows ?? result ?? []).length;
+        AND NOT EXISTS(SELECT 1 FROM canonical_source_links other
+          WHERE other.source_system IN ('outscraper','google_maps','google') AND other.source_type='place'
+            AND other.stable_key=one.k AND other.business_id<>b.id)
+      ORDER BY b.id LIMIT ${limit})
+    SELECT id,k FROM pick`);
+  const candidates=result.rows ?? result;
+  for(const key of [...new Set<string>(candidates.map((r:any)=>`place:${r.k}`))].sort())
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}::text,1642))`);
+  const mirrored:MirroredPlaceIdentity[]=[];
+  for(const candidate of candidates){
+    const identity=await mirrorEstablishedPlaceIdentity(tx,Number(candidate.id),candidate.k);
+    if(identity)mirrored.push(identity);
+  }
+  return mirrored;
 }

@@ -11,10 +11,6 @@ localPort = 5000
 externalPort = 80
 
 [[ports]]
-localPort = 6000
-externalPort = 6000
-
-[[ports]]
 localPort = 23636
 externalPort = 3000
 
@@ -121,7 +117,6 @@ outputType = "console"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "npx tsx scripts/start-stage3-c1-cloud-preview.ts --reuse-build --public-port=6000"
-waitForPort = 6000
 
 [agent]
 integrations = ["javascript_log_in_with_replit:2.0.0", "javascript_openai_ai_integrations:2.0.0", "google-docs:1.0.0", "google-drive:1.0.0"]

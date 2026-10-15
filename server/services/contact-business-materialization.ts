@@ -8,6 +8,7 @@ import {normalizeStateIdentity} from "../../shared/state-identity";
 import {normalizeDomain,normalizePhoneE164} from "./sdr/dedupe";
 import {normalOrganizationName,normalOrganizationValue} from "./organization-resolution-policy";
 import {MATERIALIZATION_SOURCE_CATEGORIES,MATERIALIZATION_SOURCE_TYPES,retainedProviderPlaceId} from "./contact-business-materialization-policy";
+import {materializeRetainedSunbizContact} from "./retained-sunbiz-contact-materialization";
 
 const rows=(result:any):any[]=>result?.rows ?? result ?? [];
 const address=(value:unknown)=>String(value ?? "").toLowerCase().replace(/[^a-z0-9]/g,"");
@@ -46,7 +47,7 @@ export async function materializeSupportedContactBusiness(contactId:number,
           OR source_type IN (${sql.join(MATERIALIZATION_SOURCE_TYPES.map(value=>sql`${value}`),sql`, `)}))
       ORDER BY source_category,source_type,coalesce(source_external_id,''),id DESC
       ) latest ORDER BY id DESC`));
-    if(!events.length)return {status:"held",reasonCode:"RETAINED_ORGANIZATION_EVIDENCE_MISSING"};
+    if(!events.length)return materializeRetainedSunbizContact(tx,contact,assertAuthority);
     const event=events[0],proof=event.proof as BusinessEvidence;
     const place=retainedProviderPlaceId(event.event_metadata);
     const domain=normalizeDomain(proof.websiteDomain),phone=normalizePhoneE164(proof.mainPhone);
@@ -100,7 +101,7 @@ export async function materializeSupportedContactBusiness(contactId:number,
     await tx.execute(sql`INSERT INTO audit_logs(action,entity_type,entity_key,details,actor_type,actor_id)
       VALUES('contact_business_source_materialized','contact',${String(contactId)},
         ${JSON.stringify({businessId:resolution.business.id,sourceLinkId:link.id,sourceEventId:event.id,
-          outcome:resolution.kind,rule:"source_family_identity_v1",placeIdentity:placeMirror,paidProviderCalls:0,outboundChanges:0})}::jsonb,
+           outcome:resolution.kind,rule:"source_family_identity_v1",placeIdentity:placeMirror,paidProviderCalls:0,outboundChanges:0})}::jsonb,
         'system','system:contact-link-automation')`);
     return {status:resolution.kind==="created" ? "materialized" : "matched",
       businessId:resolution.business.id,sourceLinkId:String(link.id),sourceEventId:Number(event.id)};

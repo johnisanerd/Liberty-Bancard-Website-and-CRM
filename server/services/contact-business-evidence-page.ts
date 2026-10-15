@@ -5,6 +5,7 @@ import { identityNameSql, identityDomainSql, relationshipReasonsSql } from "../.
 import { evidenceRelationshipCandidateCte } from "./contact-business-evidence-candidates";
 import { hasMaterializableSourceEvidence, MATERIALIZATION_RULE_VERSION } from "./contact-business-materialization-policy";
 import { contactBusinessChangeFilter } from "./contact-business-change-filter";
+import {retainedSunbizCompletionExistsSql} from "./retained-sunbiz-contact-materialization";
 
 const rows = (result: any): any[] => result?.rows ?? result ?? [];
 const hash = (value: unknown) => crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -35,6 +36,7 @@ export async function loadEvidenceRelationshipPage(
     SELECT c.id contact_id,c.company_name,c.website contact_website,c.email contact_email,
       c.record_class contact_record_class,c.email_status,c.archived_at,c.address,c.city,c.state,c.phone,
       c.updated_at::text AS contact_revision,c.business_id projected_business_id,
+      ${retainedSunbizCompletionExistsSql(sql`c.id`)} has_retained_sunbiz_completion,
       c.existing_merchant_customer,c.do_not_contact,c.do_not_auto_contact,c.opted_out_email,
       c.opt_out_status,c.unsubscribe_status,c.bounce_status,c.complaint_status,c.suppression_reason,
       (${changedSince && onlyContactId === undefined ? contactBusinessChangeFilter(changedSince) : sql`TRUE`})
@@ -116,7 +118,8 @@ export async function loadEvidenceRelationshipPage(
       snapshotHash: hash([c,alternatives,reasons]),
       contactRevision:c.contact_revision,currentDecisionId:c.current_decision_id ?? null,
       projectedBusinessId:c.projected_business_id ?? null,
-      hasSupportedMaterializationEvidence:hasMaterializableSourceEvidence(c.source_event_revisions),
+       hasSupportedMaterializationEvidence:hasMaterializableSourceEvidence(c.source_event_revisions) ||
+         c.has_retained_sunbiz_completion===true,
       materializationEvidenceRevision:hash(c.source_event_revisions),
       candidateEvidence:alternatives.map((m:any)=>({businessId:Number(m.business_id),
         sourceLinkId:String(m.source_link_id),sourceEntityId:m.source_entity_id ?? null,

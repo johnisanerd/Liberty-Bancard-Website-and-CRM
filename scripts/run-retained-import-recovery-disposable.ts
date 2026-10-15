@@ -40,7 +40,9 @@ try {
     await migrateRetainedSourceEpoch(env);
     await verifyRetainedSourceEpochContract(env);
   }else await run(["scripts/migrate.ts"]);
-   if(process.argv.includes("--intake-review-only")){
+   if(process.argv.includes("--retained-sunbiz-only")){
+     await run(["scripts/certification/test-retained-sunbiz-contact-completion.ts"]);
+   } else if(process.argv.includes("--intake-review-only")){
      await run(["scripts/certification/test-intake-review-pages.ts"]);
     } else if(process.argv.includes("--intake-geography-only")){
       await run(["scripts/test-sfp-free-continuation-certification.ts"]);
@@ -59,6 +61,8 @@ try {
      const scripts=process.argv.includes("--linker-performance-only")?[
        "test-contact-business-evidence-candidates.ts",
        "test-source-family-business-materialization.ts",
+       "test-place-identity-mirror.ts",
+       "test-retained-sunbiz-contact-completion.ts",
        "test-crm-contact-link-automation.ts",
        "test-source-only-link-reconsideration.ts",
      ]:[

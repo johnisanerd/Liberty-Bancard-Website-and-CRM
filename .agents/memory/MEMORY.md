@@ -1,4 +1,7 @@
 - [Canonical consolidation completion](canonical-consolidation-scope.md) — Finish independent work; owner-approved intake closure defers production acceptance rather than claiming it passed.
+- [Provider place ownership](provider-place-ownership.md) — Namespace-local source uniqueness is not global ownership; share resolver locks and audit each mirrored identity.
+- [Retained registry recovery](retained-registry-recovery.md) — Append partial-promotion completions without resetting holds; organization canonicality is not commercial production.
+- [Workflow port restoration](workflow-port-restoration.md) — An inactive workflow's waitForPort can restore a removed external mapping; verify removal persists.
 - [C2 Contact header scope](c2-contact-header-scope.md) — Header/action hierarchy remains C2; final eleven-entry sidebar stays C5; qualify rendered/action evidence separately.
 - [Multi-mailbox restart proof](multi-mailbox-restart-proof.md) — Certify ordinary upload restart separately from deferred-item recovery; immutable row accounting is not fulfillment.
 - [Original-row claim planning](original-row-claim-planning.md) — Verify the full payload-extraction plan; limit scalar work before opening workbook JSON.

@@ -2720,6 +2720,7 @@ export const prospects = pgTable("prospects", {
   updatedAt: timestamp("updated_at").defaultNow(),
 }, (table) => [
   index("prospects_list_id_idx").on(table.listId),
+  index("prospects_retained_contact_idx").on(table.contactId).where(sql`contact_id IS NOT NULL`),
   index("prospects_status_idx").on(table.status),
   index("prospects_created_at_idx").on(table.createdAt),
   // Provenance + retry protection: same (importExecutionId, sourceRowIndex) cannot be inserted twice.
@@ -3607,6 +3608,7 @@ export const sunbizEntities = pgTable("sunbiz_entities", {
 }, (table) => [
   uniqueIndex("sunbiz_entities_source_fn_unique").on(table.source, table.filingNumber).where(sql`source IS NOT NULL AND filing_number IS NOT NULL`),
   index("sunbiz_entities_entity_name_idx").on(table.entityName),
+  index("sunbiz_entities_retained_prospect_idx").on(table.prospectId).where(sql`prospect_id IS NOT NULL`),
   index("sunbiz_entities_enrichment_status_idx").on(table.enrichmentStatus),
   index("sunbiz_entities_list_id_idx").on(table.listId),
   index("sunbiz_entities_created_at_idx").on(table.createdAt),

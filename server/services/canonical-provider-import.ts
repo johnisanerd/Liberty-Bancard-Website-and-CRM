@@ -252,6 +252,14 @@ export async function materializeCanonicalProviderImportRow(input:{
   let result;
   try {
   const source=await commit(async tx=>{
+    if(place){
+      // Resolution and source insertion use separate bounded transactions.
+      // Re-resolve under the SAME place lock here, before locking any source
+      // row: a mirror/other namespace may have established ownership meanwhile.
+      const current=await resolveOrganization({...organizationInput,transaction:tx});
+      if(current.kind==="deferred" || current.business.id!==businessId)
+        throw new Error("CANONICAL_IMPORT_STABLE_SOURCE_CONFLICT");
+    }
     const source=rows(await tx.execute(sql`INSERT INTO canonical_source_links
       (business_id,source_system,source_type,stable_key,raw_evidence)
       VALUES(${businessId},${sourceSystem},${place ? "place" : "provider_import"},${stableKey},
