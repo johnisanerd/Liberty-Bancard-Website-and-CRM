@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { stage3BHttpFixture } from "./fixtures/stage3-b-http";
@@ -12,6 +13,7 @@ import { cpus, availableParallelism } from "node:os";
 
 await assertDisposableTestInfrastructure({operation:"C2 protected compiled browser",requireRedis:true});
 const identity=await verifyCandidateIdentity();
+const clientRoot=path.resolve("dist/public");
 const directory="docs/certification/stage3-c2/browser";
 const receipts:Array<Record<string,unknown>>=[];
 const visualFailures:Array<Record<string,unknown>>=[];
@@ -30,8 +32,8 @@ const h=await stage3BHttpFixture(async app=>{
   ]) {const module=await import(`../server/routes/${file}.ts`);module[fn](app);}
   app.use("/api",(_req,res)=>res.status(501).json({message:"Unregistered isolated C2 service; blocked, not empty"}));
   const {static:serveStatic}=await import("express");
-  app.use(serveStatic("dist/public"));
-  app.use((_req,res)=>res.sendFile(`${process.cwd()}/dist/public/index.html`));
+  app.use(serveStatic(clientRoot));
+  app.use((_req,res)=>res.sendFile("index.html",{root:clientRoot}));
 });
 let browser:Awaited<ReturnType<typeof privateStage3Browser>>|undefined;
 async function checkpoint(phase:string){
