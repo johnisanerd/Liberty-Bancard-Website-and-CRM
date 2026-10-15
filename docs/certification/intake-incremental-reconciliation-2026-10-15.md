@@ -741,7 +741,7 @@ no administrative run/replay was invoked, no paid call or re-upload was made, an
 | 83e594ce | 537 | 7 → 36 → 49 | 369 → 356 |
 | 9cd520f7 | 513 | 0 → 3 → 3 | 419 → 419 |
 | b070a72b | 578 | 3 → 46 → 46 | 407 → 407 |
-| All six | 4,386 | 1,320 → 1,437 → 1,465 | 2,238 → 2,190 |
+| All six | 4,386 | 1,320 → 1,437 → 1,465 | 2,238 → 2,210 |
 
 The 14:17 reads recorded only the 2,353 total of staging-disabled originals (not per upload), so that column starts at
 the first post-publication read at 18:19. Receipts rose by 145 from 14:17 and by 28 in the six minutes between the
