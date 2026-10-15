@@ -511,11 +511,11 @@ try{
     receipts.push({role,control:"Contact inline note actual UI save/reload",outcome:"passed",recordId:contactId});
     await browser.navigate(`/dashboard/contacts/${contactId}?area=sales-work&section=tasks`);await browser.waitFor(/C2 Person/);await wait();
     const recordTaskTitle=`C2 record task ${role} ${randomUUID()}`;
-    await browser.click('[data-testid="button-create-task"]');await wait();
+    await browser.click('[data-testid="contact-secondary-new-task"]');await wait();
     await browser.set('[data-testid="input-task-title"]',recordTaskTitle);
     await browser.click('[data-testid="button-cancel-task"]');await wait();
     assert.equal((await h.pool.query("SELECT count(*)::int n FROM tasks WHERE title=$1",[recordTaskTitle])).rows[0].n,0);
-    await browser.click('[data-testid="button-create-task"]');await wait();
+    await browser.click('[data-testid="contact-secondary-new-task"]');await wait();
     await browser.set('[data-testid="input-task-title"]',recordTaskTitle);
     const recordLossBefore=h.responseLossCount();h.loseNextSuccessfulResponse("POST","/api/tasks","truncate");
     await browser.click('[data-testid="button-submit-task"]');
