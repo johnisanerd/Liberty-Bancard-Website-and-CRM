@@ -733,23 +733,22 @@ definitions: a current receipt is a completed `CANONICAL_LOCAL_IMPORT_FULFILLED`
 `canonical_import_row_fulfilled` audit row at `mailbox_business_identity_v2`. No row, setting or cursor was changed,
 no administrative run/replay was invoked, no paid call or re-upload was made, and outbound stays paused.
 
-| Upload (execution) | Rows | Current receipts: 14:17 → 18:25 | `STAGING_RECIPE_DISABLED` open: 14:17 → 18:25 |
+| Upload (execution) | Rows | Current receipts, 14:17 → 18:19 → 18:25 | `STAGING_RECIPE_DISABLED` open, 18:19 → 18:25 |
 | --- | ---: | ---: | ---: |
-| 6623a227 | 653 | 0 → 55 | 516 → 501 (at 18:19: 516 → 516 before first receipts) |
-| 6b28085c | 633 | 0 → 2 | 527 → 527 |
-| 79356e0b (September CSV) | 1,472 | 1,310 → 1,310 | 0 → 0 |
-| 83e594ce | 537 | 7 → 49 | 369 → 356 |
-| 9cd520f7 | 513 | 0 → 3 | 419 → 419 |
-| b070a72b | 578 | 3 → 46 | 407 → 407 |
+| 6623a227 | 653 | 0 → 40 → 55 | 516 → 501 |
+| 6b28085c | 633 | 0 → 2 → 2 | 527 → 527 |
+| 79356e0b (September CSV) | 1,472 | 1,310 → 1,310 → 1,310 | 0 → 0 |
+| 83e594ce | 537 | 7 → 36 → 49 | 369 → 356 |
+| 9cd520f7 | 513 | 0 → 3 → 3 | 419 → 419 |
+| b070a72b | 578 | 3 → 46 → 46 | 407 → 407 |
+| All six | 4,386 | 1,320 → 1,437 → 1,465 | 2,238 → 2,190 |
 
-The 14:17 `STAGING_RECIPE_DISABLED` baseline per upload was not recorded; only the 2,353 total was. The per-upload
-baselines in the column above are the open-item counts at the first post-publication read (18:19), when receipts
-were 40, 2, 1,310, 36, 3 and 46 (total 1,437 against 1,320 at 14:17). By 18:25 the six uploads had 1,465 receipts,
-so the ordinary recovery worker is committing created originals that were previously unreachable; the rate was
-about 25 receipts in six minutes. Verified-contact counts per upload moved only at 6623a227 (556 → 558); the others
-are unchanged (6b28085c 524, 79356e0b 1,101, 83e594ce 443, 9cd520f7 391, b070a72b 487). Distinct attributable
-contacts and rows are unchanged. Organization holds (626 → 626) and affiliation holds (87 → 85 at 18:19) are
-separate from the staging-disabled population and were not forced.
+The 14:17 reads recorded only the 2,353 total of staging-disabled originals (not per upload), so that column starts at
+the first post-publication read at 18:19. Receipts rose by 145 from 14:17 and by 28 in the six minutes between the
+two post-publication reads, so the ordinary recovery worker is committing created originals that were previously
+unreachable. Verified-contact counts per upload moved only at 6623a227 (556 → 558); the others are unchanged
+(6b28085c 524, 79356e0b 1,101, 83e594ce 443, 9cd520f7 391, b070a72b 487). Organization holds (626 → 626) and
+affiliation holds (87 → 85 at 18:19) are separate from the staging-disabled population and were not forced.
 
 Population: active production-class contacts 157,449 with 3,547 current verified links (3,547 at 18:19 and 18:25;
 14:17 was 157,446 / 3,540). The contact-link automation program is enabled, cursor 14,543, `lastError` null,
