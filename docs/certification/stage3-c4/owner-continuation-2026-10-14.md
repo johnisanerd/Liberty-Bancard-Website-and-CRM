@@ -1,14 +1,52 @@
 # C4 owner-authorized implementation continuation — 2026-10-14
 
-## Decision
+## Current verification amendment — controls all superseded records below
 
-**Implemented and verified in a separate branch; NOT merged, NOT published, NOT fully accepted.**
+**Compiled implementation pushed and six-suite verified; NOT merged, NOT published, NOT fully accepted.**
 
-The owner authorized scoped implementation, branch push and merge/push only after required checks pass. Normal CI is still red on a failure reproduced on unchanged main. That gate is not waived. No new task ladder was created.
+- Exact compiled source: `b4810727c371c9e4b49e394c5dfc7af045b19767`, branch `codex/2074-acceptance-reconcile-20261014`. Subsequent documentation metadata is not this artifact's source identity.
+- Production build: `e87f5f9c-7337-4aba-a120-5314da480330`; artifact identity `publish-build:e87f5f9c-7337-4aba-a120-5314da480330` is **not publication evidence**.
+- Source-input hash: `1ef298f3de0960d1f91c6319034f40e77242fdcfd57884e0f3b98780abcb41ed`; recipe-bound input hash: `d3a0b29970502c04afda156eab327ae4e0158aa6ef9f52bbf8cb40a9fffd38a0`; output hash: `f7d71ad6a3d4a2aa7e33c141bddeb12434444d854c73b188bf7136751faf5c49`.
+- Recipe: Node `v22.22.0`, npm `10.9.4`, explicit production compiler/NODE_ENV, Vite production client and esbuild production server. Database/session/browser runtimes remain test-mode and provider-denied.
+- All 66 deterministic-static suites, whole-project typecheck, direct denied production build, candidate integrity and frozen local **six of six** suite batch passed. Zero child, setup/teardown or shared-launcher failures.
+- [Exact-source remote isolated acceptance 38665072643](https://github.com/scottpstevenson/Liberty-Bancard-Website-and-CRM/actions/runs/38665072643): **six of six jobs passed**. Each remote job retains its own clean-install/build identity and uploaded evidence; the local build ID above is not its build ID.
+- [Exact-source normal CI 38665072299](https://github.com/scottpstevenson/Liberty-Bancard-Website-and-CRM/actions/runs/38665072299): Static Checks passed; full Integration Tests remain in progress at this amendment. Pending integration is not a pass.
+- Current local evidence: 318 real-handler cases, 102 named browser rows, all 40 responsive/theme probes and genuine 200% zoom. Terminal coverage now verifies all four actual header callbacks, settled modal focus, one native Escape and overflow-caller focus restoration for both dialogs, selected-tier USD forecast SQL/reader/actual-Blob parity, explicit failed-report export suppression and recovery. Forecast/stored observations are **not native settlement/payment proof**.
+- Fresh matched baseline/candidate/candidate/baseline useful-list times: `436.786 / 914.618 / 722.980 / 1402.657 ms`; browser input-event→two-render-frame feedback: `21.9 / 20.5 / 21.6 / 122.2 ms`. Both candidate trials pass the retained `2,500 / 200 ms` targets. Same machine/recipe/network/cache and 110 eligible fixture businesses; controller round trips remain separate.
+- Native zoom was DPR `2`, CSS viewport `720`, body CSS zoom `1`, with no document-wide horizontal overflow. Reader/client rollback retained 223 scoped rows with identical before/after hash `369eada8407e807866f2d3834a9d4eee7888ba82de5898264324a029e4bc7f56`.
+- Separately, the same frozen browser run executed actual candidate→baseline→candidate production server bundles, private-listener health and authenticated Portfolio HTTP 200 reads, and schema/business invariants. `generated-artifacts/stage3-c4/bundled-rollback.json` has status passed and exact source `b4810727`; generated evidence is uploaded by CI, not committed as large assets. No destructive down-migration or production rollback occurred.
+- Required C2 workspace-browser gate remains unresolved. Owned execution at `83cccfd768690b4b8dd196581b2e8404fd3a5f40` stopped at the agent editor's expected `DEAL_STAGE_ILLEGAL` text; current main's unchanged UI performs structural preflight before PUT. A separate, unaccepted test-only reconciliation retains SQL unchanged-stage proof and adds no-PUT proof. Its owned run at `e46e1fd5b82c834d5eb1783f7576fa35800e7de2` instead stopped earlier at the keyboard Quick Edit Sheet's connected-focus return assertion. Neither failed case is certified.
+- Additional C2 reconciliations remain separate and unaccepted in `.local/worktrees/c4-terminal-focus`, not pushed or bundled into this six-suite candidate. Pipeline UI, preflight, deal PUT and stage service have zero diff from freshly fetched main `85296699ec8d11f22750657dfe5ac34a8fd2577d`. No pipeline authority or C2 compact-header design was changed to force a pass; the legacy retry loop stopped after distinct failures.
+- The 304 mounted surfaces and 7,047 repeated conditional control observations remain **inventory, not action passes**. Full applicable retained-state, role/object/loading/error/empty/denied and financial-scope qualification remains open in this same bounded continuation.
+- **Merge SHA: none.** Required normal CI, C2 workspace-browser and full applicable C4 qualification prevent full acceptance/merge. Original 95-finding/14-group lineage and existing ownership remain intact. Outbound PAUSED, proposals HELD and independently ENABLED/no-echo incoming GHL remain the standing operating contract; no production mutations or publication occurred.
+
+## Superseded decision record
+
+**Scoped implementation pushed; expanded verification in progress. NOT merged, NOT published, NOT fully accepted.**
+
+The owner authorized scoped implementation, branch push and merge/push only after required checks pass. Obsolete static assertions were reconciled against the actual canonical validation/persisted-import chain without restoring retired spending, approval or eligibility gates. The combined candidate at `77662cad` passed all six isolated suites locally and remotely, including the actual bundled rollback. Its normal integration run passed the C4 cases but stopped at a stateless Toast runner resource mismatch. That runner correction is now independently verified and pushed at `c5ee15ba`; its normal CI and isolated acceptance are still running. No gate is waived and no new task ladder was created.
 
 Main was freshly fetched and remained `85296699ec8d11f22750657dfe5ac34a8fd2577d`, the supplied audit baseline. The primary worktree's separate uncommitted intake work was preserved. All C4 implementation occurred in `.local/worktrees/c4-acceptance`, branch `codex/2074-acceptance-reconcile-20261014`.
 
-## Exact compiled implementation identity
+## Superseded candidate and gate history
+
+- Latest pushed source: `c5ee15ba2393a67aea51a330e6c1912916e1a831`.
+- [Latest normal CI 38660366151](https://github.com/scottpstevenson/Liberty-Bancard-Website-and-CRM/actions/runs/38660366151): Static Checks passed, including all 66 deterministic-static suites, dependency audit and production artifact build/scan; Integration Tests are pending.
+- [Latest isolated acceptance 38660365949](https://github.com/scottpstevenson/Liberty-Bancard-Website-and-CRM/actions/runs/38660365949): five jobs passed; expanded mounted browser is pending. These pending results are not acceptance passes.
+- Last fully executed local/remote six-suite source: `77662cadf8be9519325eb349b16aa71e1ea95420`; local production build `d2d50121-3f08-4ee6-882c-2efdc20dfd9b`, artifact identity `publish-build:d2d50121-3f08-4ee6-882c-2efdc20dfd9b` (**not publication evidence**).
+- That source's source-input hash: `c306296359e531f03d56787931c6dd12a0d68730caf33c9640d9592d8499c16a`; recipe-bound input hash: `bed1fdbabed7f8308cf54529e501bb7af5fe5cd3e269fbe6166e10a529b04993`; emitted-output hash: `22b7172b81dca36f59a2490f380b7556e65f8ffc66a42187cf0b70237dffeaa8`.
+- [Isolated acceptance 38658649909](https://github.com/scottpstevenson/Liberty-Bancard-Website-and-CRM/actions/runs/38658649909): **six of six jobs passed** at `77662cad`. The frozen local six-suite batch also passed with zero child, setup/teardown or shared-launcher failures.
+- That local batch recorded 318 real-handler cases, 101 named browser rows, all 40 responsive/theme accessibility cases, genuine 200% zoom, and 304 mounted route/panel role observations containing 7,047 repeated control observations. The latter remain **inventory, not action passes**.
+- Matched baseline/candidate useful-list times were 439.194/574.282/420.092/558.368 ms. Browser input-event→two-render-frame feedback times were 24.6/24.3/22.4/17.9 ms. Both candidate trials passed the retained 2,500/200 ms targets; controller round-trip time is separately retained rather than represented as paint time.
+- Actual candidate→baseline→candidate production server bundles became healthy on verified private listeners, returned authenticated Portfolio reads with HTTP 200, and preserved latest-schema/data hashes after every switch. Their test-only launchers verified disposable infrastructure before pinning workers off. No down-migration or production rollback occurred.
+- [Normal CI 38658650011](https://github.com/scottpstevenson/Liberty-Bancard-Website-and-CRM/actions/runs/38658650011): Static Checks passed and the registered C4/C2 integration cases passed; the roster stopped at Toast because the stateless parent incorrectly required database variables. The correction uses registered resource requirements, keeps database-backed disposable guards, and leaves frontend-only Toast outside the private database launcher. Its actual denied child runner passed all four widths with no database/Redis variables.
+- Merge SHA: **none**. Latest normal CI, latest expanded browser and full applicable control/state-space qualification remain unresolved; no full-acceptance claim is made.
+
+Later scoped repairs also resolved the nested Terminal ROI H1, tablet Portfolio input geometry/icon hit interception, retained-tab complete-document reload proof, bounded persisted-theme settling, exact integration-job build preparation and portable Chromium preparation. The compiler-only denial exception remains network-fatal and excludes runtime fixture processes.
+
+The following sections preserve the earlier execution record at `401d7bdad4c76172736a9a76bb33b3fd7abfd216`. Their timings, six-suite result and old static blocker are **historical, not current c5ee15ba acceptance evidence**.
+
+## Historical compiled implementation identity
 
 - Source: `401d7bdad4c76172736a9a76bb33b3fd7abfd216`.
 - Local build ID: `b4ce8687-dad1-4c0f-9451-17572501279f`.
@@ -48,7 +86,7 @@ Native Chromium page zoom was 200%: DPR `2`, CSS viewport width `720`, body CSS 
 
 Rollback switched baseline→candidate→candidate→baseline→candidate production clients against the latest disposable schema and the actual unchanged Portfolio reader/storage/schema, with source-byte equivalence checked. The 223 scoped contact/MID rows retained identical before/after hash `7849d1ead0d47d3ffaab4978251c2b81ae2363304ce8330aac07c0f10fd7c5fb`. No down-migration or production rollback occurred. **This is bounded Portfolio reader/client rollback, not whole bundled-server rollback certification.**
 
-## Required gate blocker and remaining acceptance
+## Historical gate blocker and remaining acceptance
 
 - Latest normal CI: [run 38637895423](https://github.com/scottpstevenson/Liberty-Bancard-Website-and-CRM/actions/runs/38637895423), failed Static Checks; Integration Tests skipped by normal dependency ordering.
 - Exact blocker: deterministic-static suite 12/66, `scripts/test-sfp-pipeline-correction.mjs`, assertion “ZeroBounce execution uses plaintext only inside governed boundary”, expects obsolete source text `verifyEmail(realEmail)`.
@@ -61,6 +99,6 @@ These obligations remain in the **same bounded C4 continuation under existing ow
 
 ## Safety and lineage
 
-No production durable test writes, native payments/submissions, real sends/enrollments/activation/provider generation, purges, integration/worker/schedule changes or publication were performed. Product migrations, dependency lockfiles, worker/service controls and `.replit` were unchanged by C4. Outbound PAUSED, proposals HELD and incoming GHL independently ENABLED/no-echo remain the owner’s standing operating contract; isolated fixture settings are not proof of current production controls.
+No production durable test writes, native payments/submissions, real sends/enrollments/activation/provider generation, purges, integration changes or publication were performed. Product migrations, worker handlers/schedules/activation and `.replit` remain unchanged. The owner-approved recovery-worker change is registry manifest classification only. The lockfile received patch-only Sharp/source-map-js resolutions after the required audit found new high vulnerabilities; package.json is unchanged, public clean installation and native image conversion passed, and high/critical audit findings are zero. Outbound PAUSED, proposals HELD and incoming GHL independently ENABLED/no-echo remain the owner’s standing operating contract; isolated fixture settings are not proof of current production controls.
 
 The supplied evidence archive's 28 manifest hashes were verified without extracting over source. The original 95-finding lineage, 14 repair groups and C2/C3/C4/C5/A/B/D ownership are preserved. This amendment supersedes old provisional C4 source/build identities only for its explicitly executed cases, not historical evidence or unresolved acceptance.
