@@ -539,6 +539,12 @@ try{
     await browser.set(`[data-testid="input-record-task-title-${recordTask.id}"]`,editedTitle);
     await browser.click(`[data-testid="button-save-record-task-${recordTask.id}"]`);await browser.waitFor(new RegExp(editedTitle));await wait();
     assert.equal((await h.pool.query("SELECT title FROM tasks WHERE id=$1",[recordTask.id])).rows[0].title,editedTitle);
+    for(let notification=0;notification<10&&await browser.evaluate('!!document.querySelector(\'[role="status"][data-state="open"] [toast-close]\')');notification++){
+      await browser.click('[role="status"][data-state="open"] [toast-close]');
+      await waitForDom('!document.querySelector(\'[role="status"][data-state="closed"]\')');
+    }
+    assert.equal(await browser.evaluate('!!document.querySelector(\'[role="status"] [toast-close]\')'),false,
+      "Real feedback dismissal settles before the next record task pointer action");
     await browser.click(`[data-testid="button-complete-record-task-${recordTask.id}"]`);
     await waitForDom(`!document.querySelector('[data-testid="button-complete-record-task-${recordTask.id}"]')`);
     assert.equal((await h.pool.query("SELECT status FROM tasks WHERE id=$1",[recordTask.id])).rows[0].status,"completed");
