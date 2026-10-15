@@ -345,6 +345,8 @@ try{
     await waitForDom(`!document.querySelector('[data-testid="sheet-deal-quick-edit"]') &&
       getComputedStyle(document.body).pointerEvents!=="none"`);
     await waitForDom("document.activeElement!==document.body && document.activeElement?.isConnected");
+    assert.equal(await browser.evaluate(`document.activeElement?.getAttribute('data-testid')`),
+      `button-deal-actions-${keyboardDealId}`,"Quick Edit returns focus to its own live record action");
     assert.equal(await browser.evaluate("document.activeElement!==document.body && document.activeElement?.isConnected"),true,
       "Closing the keyboard Sheet with a detached menu trigger restores a connected focus target");
     receipts.push({role,control:"Pipeline quick edit exact protected contact / Cancel zero writes / actual unavailable read hides editable placeholders",recordId:contactId,outcome:"passed"});
