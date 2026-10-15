@@ -70,6 +70,8 @@ export interface SuiteManifestEntry {
   preDeploy: "execute" | "delegated-disposable";
   /** Own fresh local PG/Redis per suite, rather than the integration group's DB. */
   isolateInfrastructure?: boolean;
+  /** Whole-workload budget; individual browser performance gates remain unchanged. */
+  executionTimeoutMs?: number;
   requiredEnv?: Readonly<Record<string, string>>;
   /** For server-optional: why real credentials are needed */
   providerNote?: string;
@@ -109,6 +111,7 @@ const RAW_SUITE_MANIFEST: SuiteManifestDefinition[] = [
   {name:"Stage 3 C2 Real Handler Actions",script:"scripts/test-stage3-c2-actions.ts",capability:"deterministic-integration",
     providerDenial:"Disposable DB and reserved private Redis before imports; actual sessions/CSRF/object guards; outbound/public egress denied"},
   {name:"Stage 3 C2 Protected Workspace Browser",script:"scripts/test-stage3-c2-browser.mjs",capability:"deterministic-integration",
+    executionTimeoutMs:1_200_000,
     providerDenial:"Compiled current candidate; private migrated DB/Redis, actual fresh browser sign-in/CSRF and real handlers; public egress denied. Full-workload timeout 1200s; useful-list 2500ms and local-input 200ms gates unchanged"},
   {name:"Stage 3 C1 Protected Query Runtime",script:"scripts/test-stage3-c1-query-runtime.mjs",capability:"deterministic-static",
     providerDenial:"Mounted jsdom hooks and injected delayed fetch; no real sessions, DB or providers"},

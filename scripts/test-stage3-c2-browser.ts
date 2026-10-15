@@ -344,6 +344,7 @@ try{
     await browser.call("Network.setBypassServiceWorker",{bypass:false});
     await waitForDom(`!document.querySelector('[data-testid="sheet-deal-quick-edit"]') &&
       getComputedStyle(document.body).pointerEvents!=="none"`);
+    await waitForDom("document.activeElement!==document.body && document.activeElement?.isConnected");
     assert.equal(await browser.evaluate("document.activeElement!==document.body && document.activeElement?.isConnected"),true,
       "Closing the keyboard Sheet with a detached menu trigger restores a connected focus target");
     receipts.push({role,control:"Pipeline quick edit exact protected contact / Cancel zero writes / actual unavailable read hides editable placeholders",recordId:contactId,outcome:"passed"});
@@ -362,12 +363,19 @@ try{
         }
         await keyboardKey("Enter","Enter",13);await wait();
         assert.equal(await browser.evaluate("document.querySelector('[data-testid=\"select-edit-stage\"]').textContent"),stage);
+        const beforeStageSave=browser.requests.filter(request=>
+          request.method==="PUT" && new URL(request.url,h.base).pathname===`/api/deals/${keyboardDealId}`).length;
         await browser.evaluate("document.querySelector('[data-testid=\"button-save-deal\"]').focus()");
         await keyboardKey("Enter","Enter",13);
         if(stage===expectedStage)await waitForDom("!document.querySelector('[data-testid=\"button-save-deal\"]')");
-        else await browser.waitFor(/DEAL_STAGE_ILLEGAL/);
+        else await browser.waitFor(/The existing structural policy does not permit this move; no command was sent/);
         assert.equal((await h.pool.query("SELECT stage FROM deals WHERE id=$1",[keyboardDealId])).rows[0].stage,expectedStage);
-        if(stage!==expectedStage)assert.match(await browser.text(),/DEAL_STAGE_ILLEGAL/);
+        if(stage!==expectedStage){
+          assert.match(await browser.text(),/The existing structural policy does not permit this move; no command was sent/);
+          assert.equal(browser.requests.filter(request=>request.method==="PUT" &&
+            new URL(request.url,h.base).pathname===`/api/deals/${keyboardDealId}`).length,beforeStageSave,
+            "Agent structural rejection occurs before any deal PUT and preserves durable stage");
+        }
         await browser.navigate("/dashboard/pipeline");
         await waitForDom(`!!document.querySelector('[data-testid="card-deal-${keyboardDealId}"]')`);
         return;
