@@ -103,7 +103,6 @@ const RAW_SUITE_MANIFEST: SuiteManifestDefinition[] = [
     isolateInfrastructure:true,
     capability:"deterministic-integration",providerDenial:"guarded disposable PG/Redis/private Chromium; provider attempts denied before egress"},
   {name:"Toast Viewport Frontend Browser",script:"scripts/test-toast-viewport-layout.mjs",
-    isolateInfrastructure:true,
     capability:"deterministic-integration",providerDenial:"Vite/private Chromium loopback fixture; no DB, login or providers"},
   {name:"Stage 3 C2 Destination and Source Contracts",script:"scripts/test-stage3-c2-contracts.ts",capability:"deterministic-static",
     providerDenial:"Pure codecs/time windows/provider payloads and temporary output tamper tests; no DB or provider I/O"},

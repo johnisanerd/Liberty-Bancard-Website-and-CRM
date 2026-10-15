@@ -62,19 +62,23 @@ if (
   throw new Error("A recognized certification suite capability is required.");
 }
 
-if (capability === "deterministic-integration" || capability === "server-required") {
+const { SUITE_MANIFEST } = await import("./ci-suite-manifest");
+const registration = SUITE_MANIFEST.find(suite => suite.script === suitePath && suite.capability === capability);
+if(!registration)throw new Error("Certification suite must match a registered path and capability");
+if (
+  (capability === "deterministic-integration" || capability === "server-required") &&
+  (registration.database!=="none" || registration.redis!=="none")
+) {
   const { assertDisposableTestInfrastructure } = await import("./test-infrastructure-guard");
   await assertDisposableTestInfrastructure({
     operation: `Certification suite ${capability}`,
-    requireRedis: true,
+    requireRedis: registration.redis!=="none",
   });
 }
 replaceWithCertificationEnvironment();
   const externalSecurity = capability === "external-security";
   if (!externalSecurity) applyCertificationProviderDenyBoundary({ fatal: true });
   const absoluteSuitePath = path.resolve(process.cwd(), suitePath);
-  const { SUITE_MANIFEST } = await import("./ci-suite-manifest");
-  const registration = SUITE_MANIFEST.find(suite => suite.script === suitePath && suite.capability === capability);
   if (registration?.isolateInfrastructure) {
     if(capability!=="deterministic-integration")
       throw new Error("Private fixture isolation is only valid for deterministic integration suites");
