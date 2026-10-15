@@ -10,8 +10,8 @@
     "fixture_registry_name",
     "fixture_registry_dba"
   ],
-  "executionMs": 189.196,
-  "planningMs": 1.849,
+  "executionMs": 153.284,
+  "planningMs": 1.363,
   "candidatePairs": 9,
   "productionWrites": false,
   "taskComplete": false
