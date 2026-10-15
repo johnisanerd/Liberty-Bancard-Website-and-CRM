@@ -142,6 +142,7 @@ export async function processContactLinkAutomationTick(
     });
     pages++;
     if (!preview.schemaReady) throw new Error("COMMERCIAL_SYSTEM_LINK_DATABASE_GUARD_MISSING");
+    let processed=0;
     for (let candidate of preview.rows) {
       if (Date.now()>=deadline) break;
        const current = await getContactLinkAutomationStatus(false);
@@ -196,13 +197,17 @@ export async function processContactLinkAutomationTick(
       state.cursor = candidate.contactId;
       // Save after every canonical writer receipt; a crash cannot lose page progress.
       await checkpoint(state, token);
+       processed++;
     }
-    if (state.scanned > 0 && preview.nextCursor === null &&
-        state.cursor === preview.rows.at(-1)?.contactId) state.complete = true;
-    if (!preview.rows.length) state.complete = true;
+     // Never checkpoint past an unfinished changed contact. Once all changed
+     // rows finish, also persist the unchanged tail (including empty pages).
+     if (processed!==preview.rows.length) break;
+     state.cursor=preview.inspectedThroughContactId;
+     state.complete=preview.passExhausted;
+     await checkpoint(state,token);
     // Do not skip the unprocessed tail after deadline/hold, nor start another
     // incremental cycle inside this lease after reaching the real end.
-    if (state.complete || state.cursor!==preview.rows.at(-1)?.contactId) break;
+     if (state.complete) break;
     }
     state.lastError = null;
     return { ran: true, scanned: state.scanned, committed: state.committed, held: state.held, complete: state.complete };

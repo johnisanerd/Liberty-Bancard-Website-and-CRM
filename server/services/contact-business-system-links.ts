@@ -257,13 +257,16 @@ export async function previewContactBusinessSystemLinks(
     sfpTypedLinkSchemaReady = false;
   }
    if (!schemaReady) return {
-     rows: [],nextCursor: null,schemaReady,sfpTypedLinkSchemaReady,writes: 0,paidProviderCalls: 0,
+     rows: [],nextCursor: null,inspectedThroughContactId:input.afterContactId,passExhausted:false,
+     schemaReady,sfpTypedLinkSchemaReady,writes: 0,paidProviderCalls: 0,
      unavailableReason: "COMMERCIAL_SYSTEM_LINK_DATABASE_GUARD_MISSING",
    };
    const page = await loadPage(executor, input.afterContactId, limit, undefined, input.changedSince);
   return {
     rows: page.previews,
     nextCursor: page.hasMore ? page.lastContactId : null,
+    inspectedThroughContactId: page.inspectedThroughContactId,
+    passExhausted: page.passExhausted,
     schemaReady,
     sfpTypedLinkSchemaReady,
     writes: 0,

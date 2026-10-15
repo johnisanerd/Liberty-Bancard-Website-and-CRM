@@ -25,3 +25,15 @@ evidence for the others.
 
 **Why:** Active linking retained a small contact page and passed fixture index
 checks while production still scanned the full canonical-business population.
+
+Bounded contact pages and name indexes are insufficient for incremental change
+checks when normalized empty names match a large NULL alias population. Keep the
+revision predicate inside each alias branch and cover equality plus revision
+together; test realistic empty/NULL keys as well as selective names.
+
+**Why:** A supposedly bounded, indexed page still enumerated a large historical
+NULL-DBA population for every blank-name contact.
+
+**How to apply:** Inspect executed branch cardinalities, including unchanged
+pages and NULL aliases. Do not drop blank-key matches to make the query faster
+if that would silently narrow the established change-detection contract.

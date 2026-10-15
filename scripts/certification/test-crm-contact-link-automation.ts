@@ -142,6 +142,11 @@ try {
     (first_name,last_name,email,phone,company_name,record_class)
     SELECT 'Unresolved','Batch',$1||n::text||'@example.invalid','','','production'
       FROM generate_series(1,51) n RETURNING id`,[`${prefix}.batch.`])).rows;
+  // This assertion is about a full changed page, not the preceding unchanged
+  // raw IDs from an earlier pass.
+  await pool.query(`UPDATE system_settings SET value=value ||
+    jsonb_build_object('cursor',$2::int,'complete',false) WHERE key=$1`,
+    [KEY,Number(unbound[0].id)-1]);
   const beforeBatch=(await getContactLinkAutomationStatus())!;
   await assert.rejects(processContactLinkAutomationTick({maxPages:201}),
     /CONTACT_LINK_AUTOMATION_INVALID_TICK_BUDGET/);checks++;
@@ -155,6 +160,30 @@ try {
     "Default tick processes multiple real pages without waiting for another schedule");
   check(drained.cursor===Number(unbound.at(-1).id),"Multi-page linking records the real final contact, not a fabricated cursor");
   check(drained.committed===1,"Read-only unresolved coverage does not fabricate relationships");
+
+  // Continue the saved completed-backfill program across unchanged pages.
+  // Exact window and run identity survive process/tick boundaries.
+  const window=(await pool.query("SELECT clock_timestamp()::text value")).rows[0].value;
+  await pool.query(`UPDATE system_settings SET value=value || jsonb_build_object(
+    'cursor',$2::int,'complete',false,'backfillComplete',true,'changedSince',$3::text,
+    'scanStartedAt',$3::text) WHERE key=$1`,[KEY,Number(unbound[0].id)-1,window]);
+  const incrementalBefore=(await getContactLinkAutomationStatus())!;
+  await processContactLinkAutomationTick({maxPages:1});
+  const unchangedPage=(await getContactLinkAutomationStatus())!;
+  check(unchangedPage.cursor===Number(unbound[24].id) && !unchangedPage.complete,
+    "Actual worker advances unchanged IDs without premature completion");
+  check(unchangedPage.scanned===incrementalBefore.scanned && unchangedPage.held===incrementalBefore.held,
+    "Inspected IDs are neither assignment attempts nor holds");
+  check(unchangedPage.changedSince===window && unchangedPage.runId===incrementalBefore.runId &&
+    unchangedPage.backfillComplete===true,"Saved incremental identity/window/backfill preserved");
+  const late=await fixture("incremental_late");
+  await processContactLinkAutomationTick({maxPages:1});
+  const resumed=(await getContactLinkAutomationStatus())!;
+  check(resumed.cursor===Number(unbound[49].id) && !resumed.complete && resumed.changedSince===window,
+    "A new tick resumes the exact raw-ID checkpoint and change window");
+  await processContactLinkAutomationTick();
+  check(await decisionCount(late.contactId)===1,"Later changed contact commits after unchanged pages");
+  check((await getContactLinkAutomationStatus())!.complete,"Only exhausted population completes");
 
   // Real graph contention and queued owner renewal. The automatic writer must
   // pin owner authority BEFORE waiting for the commercial graph, then retain
@@ -235,7 +264,7 @@ try {
     "The serial continuation releases only its own linking lease");
   const {readContactLinkAssignmentPopulation}=await import("../../server/services/contact-link-population");
   const population=await readContactLinkAssignmentPopulation();
-  check(population.state==="current" && population.currentVerified===6,
+  check(population.state==="current" && population.currentVerified===7,
     "Current audited population is separate from cumulative attempts");
   await pool.query("ALTER FUNCTION crm_source_family_relationship_reasons(integer,integer,uuid) RENAME TO cert_missing_source_family");
   try {

@@ -51,6 +51,8 @@ async function main(): Promise<void> {
     baseEnv.CREDENTIAL_ENCRYPTION_KEY = "task-2060-disposable-only";
 
     const certifications = [
+      { name: "contact-incremental-pages", script: "scripts/certification/test-contact-incremental-pages.ts", database: true },
+      { name: "contact-source-only-reconsideration", script: "scripts/certification/test-source-only-link-reconsideration.ts", database: true },
       { name: "canonical-evidence-candidates", script: "scripts/certification/test-contact-business-evidence-candidates.ts", database: true },
       { name: "canonical-contact-link-automation", script: "scripts/certification/test-crm-contact-link-automation.ts", database: true },
       { name: "canonical-flow-progression", script: "scripts/certification/test-canonical-flow-progression.ts", database: true },
@@ -113,6 +115,11 @@ async function main(): Promise<void> {
     }
     for (const certification of selectedCertifications) {
       const env: NodeJS.ProcessEnv = { ...baseEnv };
+      if(certification.name==="canonical-contact-link-automation") {
+        // Queue topology is an authority pin; enable the serial queue before
+        // the first fixture Publish rather than changing topology mid-test.
+        env.BACKGROUND_JOB_PROFILE="selective:sfp-campaign-staging,sfp-continuous-discovery";
+      }
       if ("poolMax" in certification) env.DB_POOL_MAX=String(certification.poolMax);
       if (certification.database) {
         const dbName = `test_sfp2060_${certification.name.replace(/[^a-z0-9]/gi, "_")}_${randomUUID().replace(/-/g, "").slice(0, 12)}`;

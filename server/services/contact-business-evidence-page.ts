@@ -4,6 +4,7 @@ import type { SystemLinkFacts } from "./contact-business-system-link-policy";
 import { identityNameSql, identityDomainSql, relationshipReasonsSql } from "../../shared/relationship-evidence-sql";
 import { evidenceRelationshipCandidateCte } from "./contact-business-evidence-candidates";
 import { hasMaterializableSourceEvidence } from "./contact-business-materialization-policy";
+import { contactBusinessChangeFilter } from "./contact-business-change-filter";
 
 const rows = (result: any): any[] => result?.rows ?? result ?? [];
 const hash = (value: unknown) => crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -15,6 +16,21 @@ const hash = (value: unknown) => crypto.createHash("sha256").update(JSON.stringi
 export async function loadEvidenceRelationshipPage(
   executor: any, afterContactId: number, limit: number, onlyContactId?: number, changedSince?: string,
 ) {
+  // Bound inspection BEFORE change/evidence predicates. Lookahead is raw IDs,
+  // not changed rows: an unchanged page is progress, not end-of-pass.
+  const inspected = rows(await executor.execute(sql`
+    SELECT id FROM contacts
+    WHERE ${onlyContactId === undefined ? sql`id>${afterContactId}` : sql`id=${onlyContactId}`}
+    ORDER BY id LIMIT ${limit + (onlyContactId === undefined ? 1 : 0)}
+  `));
+  const inspectedIds = inspected.slice(0, limit).map((c: any) => Number(c.id));
+  const inspectedThroughContactId = inspectedIds.at(-1) ?? afterContactId;
+  const passExhausted = inspected.length <= limit;
+  if (!inspectedIds.length) return {
+    previews: [], selectedFacts: undefined, selectedFactsForPage: [],
+    lastContactId: inspectedThroughContactId, inspectedThroughContactId, passExhausted,
+    hasMore: !passExhausted,
+  };
   const contacts = rows(await executor.execute(sql`
     SELECT c.id contact_id,c.company_name,c.website contact_website,c.email contact_email,
       c.record_class contact_record_class,c.email_status,c.archived_at,c.address,c.city,c.state,c.phone,
@@ -26,29 +42,9 @@ export async function loadEvidenceRelationshipPage(
       d.id current_decision_id,d.decision current_decision
     FROM contacts c LEFT JOIN contact_business_link_decisions d
       ON d.contact_id=c.id AND d.superseded_at IS NULL
-    WHERE ${onlyContactId === undefined ? sql`c.id>${afterContactId}` : sql`c.id=${onlyContactId}`}
-      AND ${changedSince && onlyContactId === undefined ? sql`(c.updated_at>=${changedSince}::timestamptz OR
-        EXISTS (SELECT 1 FROM contact_source_events ev WHERE ev.contact_id=c.id
-          AND ev.created_at>=${changedSince}::timestamptz) OR
-        EXISTS (SELECT 1 FROM canonical_source_links changed_link
-          JOIN businesses changed_business ON changed_business.id=changed_link.business_id
-          WHERE greatest(changed_link.created_at,changed_link.updated_at)>=${changedSince}::timestamptz
-            AND (changed_business.id=c.business_id
-              OR ${sql.raw(identityNameSql("changed_business.canonical_name"))}=${sql.raw(identityNameSql("c.company_name"))}
-              OR (${sql.raw(identityDomainSql("c.website"))} IS NOT NULL
-                AND ${sql.raw(identityDomainSql("changed_business.website_domain"))}=${sql.raw(identityDomainSql("c.website"))})
-              OR EXISTS(SELECT 1 FROM contact_source_events ev WHERE ev.contact_id=c.id
-                AND changed_link.stable_key IN (ev.metadata->>'filingNumber',ev.metadata->>'filing_number',
-                  ev.metadata->>'place_id',ev.metadata->>'placeId',ev.metadata->>'google_place_id')))) OR
-        EXISTS (SELECT 1 FROM sunbiz_entities changed_entity
-          WHERE (to_jsonb(changed_entity)->>'updated_at')::timestamptz>=${changedSince}::timestamptz
-            AND (${sql.raw(identityNameSql("c.company_name"))} IN (
-              ${sql.raw(identityNameSql("changed_entity.entity_name"))},${sql.raw(identityNameSql("changed_entity.dba"))})
-              OR EXISTS(SELECT 1 FROM contact_source_events ev WHERE ev.contact_id=c.id
-                AND changed_entity.filing_number IN (ev.metadata->>'filingNumber',ev.metadata->>'filing_number')))) OR
-        EXISTS (SELECT 1 FROM businesses changed WHERE changed.updated_at>=${changedSince}::timestamptz
-          AND ${sql.raw(identityNameSql("changed.canonical_name"))}=${sql.raw(identityNameSql("c.company_name"))}))` : sql`TRUE`}
-    ORDER BY c.id LIMIT ${limit + (onlyContactId === undefined ? 1 : 0)}
+    WHERE c.id=ANY(ARRAY[${sql.join(inspectedIds.map(id => sql`${id}`),sql`, `)}]::integer[])
+      AND ${changedSince && onlyContactId === undefined ? contactBusinessChangeFilter(changedSince) : sql`TRUE`}
+    ORDER BY c.id
   `));
   const page = contacts.slice(0, limit);
   const ids = page.map((c: any) => Number(c.contact_id));
@@ -121,6 +117,6 @@ export async function loadEvidenceRelationshipPage(
     };
   });
   return { previews,selectedFacts: onlyContactId === undefined ? undefined : selected[0],
-    selectedFactsForPage: selected,lastContactId: page.length ? Number(page.at(-1).contact_id) : afterContactId,
-    hasMore: contacts.length > limit };
+    selectedFactsForPage: selected,lastContactId: inspectedThroughContactId,
+    inspectedThroughContactId,passExhausted,hasMore: !passExhausted };
 }
