@@ -67,6 +67,22 @@ try {
   assert(edgeIndexed.every(row=>row.businesses.some((b:any)=>b.businessId===edgeBusiness.id)),
     "Each independently selected identity-key branch must hydrate the same real business");checks++;
 
+  // One unlinked raw Sunbiz entity is ONE source-recovery identity, however
+  // many name-key rows its target business exposes (canonical and normalized
+  // names normally produce the same key) or whether its legal name and DBA both match.
+  const dupBusiness=(await pool.query(`INSERT INTO businesses(canonical_name,normalized_name,record_class)
+    VALUES('Dupsrc Probe','dupsrc probe','canonical') RETURNING id`)).rows[0];
+  const dupFiling=`DUP-${randomUUID()}`;
+  await pool.query(`INSERT INTO sunbiz_entities(entity_name,dba,filing_number,source)
+    VALUES('Dupsrc Probe LLC','Dupsrc Probe Inc',$1,'sunbiz')`,[dupFiling]);
+  const dupContact=(await pool.query(`INSERT INTO contacts(first_name,last_name,company_name,email,phone,row_provenance,record_class)
+    VALUES('Dup','Fixture','Dupsrc Probe',$1,'','{}','production') RETURNING id`,[`${randomUUID()}@gmail.com`])).rows[0];
+  const dupRows=(await pool.query(CONTACT_LINK_COVERAGE_BATCH_SQL,[0,2147483647,500,[dupContact.id]])).rows;
+  const dupBusinessEntry=dupRows[0].businesses.find((b:any)=>b.businessId===dupBusiness.id);
+  assert(dupBusinessEntry,"The raw-source fixture reaches its business candidate");
+  assert.deepEqual(dupBusinessEntry.rawSunbizMatches.map((m:any)=>m.filingNumber),[dupFiling],
+    "A raw Sunbiz entity is returned once per contact/business, not once per name key");checks++;
+
   // Exercise the rewritten competing-address evaluator, not only lookups that
   // never enter that branch. The prior helper retains its original broad scan.
   const competitor=(await pool.query(`INSERT INTO businesses(canonical_name,normalized_name,record_class)

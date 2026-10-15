@@ -390,9 +390,9 @@ function testOverlappingReasonsAndResumableDenominator() {
 function testBatchedSqlShape() {
   assert.equal(SERVICE_BATCH_SQL, CONTACT_LINK_COVERAGE_BATCH_SQL,
     "the workflow service and replica CLI share the optimized read-only SQL");
-  assert.match(CONTACT_LINK_COVERAGE_BATCH_SQL, /business_identity_keys AS MATERIALIZED/);
-  assert.match(CONTACT_LINK_COVERAGE_BATCH_SQL, /JOIN business_identity_keys business_keys/);
-  assert.match(CONTACT_LINK_COVERAGE_BATCH_SQL, /business_keys\.key = contact_keys\.key/);
+  assert.match(CONTACT_LINK_COVERAGE_BATCH_SQL, /business_identity_keys AS (?:NOT )?MATERIALIZED/);
+  assert.match(CONTACT_LINK_COVERAGE_BATCH_SQL, /FROM business_identity_keys business_keys/);
+  assert.match(CONTACT_LINK_COVERAGE_BATCH_SQL, /business_keys\.key=contact_keys\.key/);
   assert.match(CONTACT_LINK_COVERAGE_BATCH_SQL, /se\.filing_number = csl\.stable_key/);
   assert.match(CONTACT_LINK_COVERAGE_BATCH_SQL, /LEFT JOIN sunbiz_entities se ON se\.filing_number = csl\.stable_key/);
   assert.match(CONTACT_LINK_COVERAGE_BATCH_SQL, /p\.projected_business_id/);
@@ -400,8 +400,8 @@ function testBatchedSqlShape() {
   assert.doesNotMatch(CONTACT_LINK_COVERAGE_BATCH_SQL, /lower\s*\(\s*se\.filing_number/i);
   assert.doesNotMatch(CONTACT_LINK_COVERAGE_BATCH_SQL, /OR\s+b\.website_domain/i);
   assert.doesNotMatch(CONTACT_LINK_COVERAGE_BATCH_SQL, /SELECT DISTINCT source FROM sunbiz_entities/);
-  assert.match(CONTACT_LINK_COVERAGE_BATCH_SQL, /canonical_domain_counts AS MATERIALIZED/);
-  assert.match(CONTACT_LINK_COVERAGE_BATCH_SQL, /lower\(regexp_replace\(trim\(website_domain\), '\^www\[\.\]'/);
+  // Domain uniqueness uses the database-generated, indexed coverage key.
+  assert.match(CONTACT_LINK_COVERAGE_BATCH_SQL, /counted\.coverage_keys\[4\]=b\.coverage_keys\[4\]/);
   assert.doesNotMatch(CONTACT_LINK_COVERAGE_BATCH_SQL, /SELECT count\(\*\)::int FROM businesses same_domain/);
   assert.match(CONTACT_LINK_COVERAGE_BATCH_SQL, /source_links_by_business AS MATERIALIZED/);
   assert.match(CONTACT_LINK_COVERAGE_BATCH_SQL, /GROUP BY source\.business_id/);

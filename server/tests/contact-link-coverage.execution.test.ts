@@ -35,6 +35,7 @@ class FakeQueryClient {
     if (sql === CONTACT_LINK_COVERAGE_WATERMARK_SQL) {
       return { rows: [{ watermark: this.watermark, total: this.total }] };
     }
+    if (normalized === "SET LOCAL jit = off") return { rows: [] };
     if (sql === CONTACT_LINK_COVERAGE_BATCH_SQL) {
       if (this.failBatchWith) throw this.failBatchWith;
       assert.equal(params[2], CONTACT_LINK_COVERAGE_PROCESSING_PAGE_SIZE,

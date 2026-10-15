@@ -486,7 +486,7 @@ source_links_by_business AS MATERIALIZED (
 raw_sunbiz_by_contact_business AS MATERIALIZED (
   SELECT
     raw.contact_id,
-    business_name.business_id,
+    raw.business_id,
     jsonb_agg(jsonb_build_object(
       'sourceEntityId', raw.source_entity_id,
       'filingNumber', raw.filing_number,
@@ -501,20 +501,28 @@ raw_sunbiz_by_contact_business AS MATERIALIZED (
       'ownerPhone', raw.owner_phone,
       'entitySource', raw.source
     ) ORDER BY raw.source_entity_id) AS matches
-  FROM raw_unlinked_sunbiz_by_contact raw
-  CROSS JOIN LATERAL (VALUES (raw.entity_name), (raw.dba)) source_name(value)
-   CROSS JOIN LATERAL (
-     SELECT business_id FROM business_name_keys candidate_name
-     WHERE candidate_name.key = trim(regexp_replace(
-      regexp_replace(
-        lower(regexp_replace(coalesce(source_name.value, ''), '[^a-zA-Z0-9]+', ' ', 'g')),
-        '\\m(incorporated|inc|limited|ltd|llc|llp|corp|corporation|company|co)\\M', ' ', 'g'
-      ),
-      '\\s+', ' ', 'g'
-     ))
-     OFFSET 0
-   ) business_name
-  GROUP BY raw.contact_id, business_name.business_id
+  -- One raw source entity is one match per contact and business. The legal
+  -- name and DBA both match, and a business exposes one name-key row per
+  -- canonical/normalized name, so the join alone repeats the same entity.
+  FROM (
+    SELECT DISTINCT ON (candidate.contact_id, business_name.business_id, candidate.source_entity_id)
+      candidate.*, business_name.business_id
+    FROM raw_unlinked_sunbiz_by_contact candidate
+    CROSS JOIN LATERAL (VALUES (candidate.entity_name), (candidate.dba)) source_name(value)
+     CROSS JOIN LATERAL (
+       SELECT business_id FROM business_name_keys candidate_name
+       WHERE candidate_name.key = trim(regexp_replace(
+        regexp_replace(
+          lower(regexp_replace(coalesce(source_name.value, ''), '[^a-zA-Z0-9]+', ' ', 'g')),
+          '\\m(incorporated|inc|limited|ltd|llc|llp|corp|corporation|company|co)\\M', ' ', 'g'
+        ),
+        '\\s+', ' ', 'g'
+       ))
+       OFFSET 0
+     ) business_name
+    ORDER BY candidate.contact_id, business_name.business_id, candidate.source_entity_id
+  ) raw
+  GROUP BY raw.contact_id, raw.business_id
 ),
 contact_data AS (
   SELECT
@@ -555,12 +563,8 @@ contact_data AS (
       'ownerPhone', raw.owner_phone,
       'entitySource', raw.source
     ) ORDER BY raw.source_entity_id) AS raw_candidates
-    -- A contact with several name keys matches the same entity once per key;
-    -- one source entity is one recovery candidate.
-    FROM (SELECT DISTINCT ON (dedup.source_entity_id) dedup.*
-      FROM raw_unlinked_sunbiz_by_contact dedup
-      WHERE dedup.contact_id = p.contact_id
-      ORDER BY dedup.source_entity_id) raw
+    FROM raw_unlinked_sunbiz_by_contact raw
+    WHERE raw.contact_id = p.contact_id
   ) raw_sources ON true
 ),
 business_data AS (

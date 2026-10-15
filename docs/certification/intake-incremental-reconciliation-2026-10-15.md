@@ -679,16 +679,33 @@ already committed and are regression checks only.
   name no longer covers a wider population than it claims.
 * The Contact Link Coverage panel labels the full-pool census as frozen history (it classifies contacts at its
   watermark and does not change afterward), replaces the "rerun the separate preview/apply policy" instructions with
-  the automatic workflow, and shows one card per source-recovery identity. Cause of the duplicate cards: the
-  candidate query's raw-Sunbiz subquery matched the same entity once per contact name key, and the panel keyed
-  cards by candidate:entity:filing without de-duplication. Fixed in the SQL (`DISTINCT ON` source entity) and in the
-  client. The duplicate was not reproduced in a rendered production page (sign-in required); the server cause was
-  confirmed from the query and the client de-duplication is covered by construction.
+  the automatic workflow, and shows one card per source-recovery identity.
+* Duplicate source-recovery cards, reproduced and fixed. A first diagnosis (several name keys per contact) was wrong:
+  a contact has exactly one name key. The real cause is `raw_sunbiz_by_contact_business`, which joined each raw
+  Sunbiz entity to its legal name AND its DBA and then to `business_name_keys`, where 142,602 of 167,687 production
+  businesses emit the same key twice (canonical and normalized name). One unlinked entity was therefore aggregated
+  up to four times per contact and business, and each copy became a separate card and a separate
+  `rawSunbizMatches` entry (which also fed the "more than one raw match" ambiguity check). Reproduced first in
+  disposable PostgreSQL (`test-intake-review-pages.ts`: four copies of one filing before the fix, one after), then
+  measured with the real batch query on production (read-only, four 500-contact pages): 43/43, 76/76, 66/66 and
+  84/84 contacts with raw matches carried a duplicated entity before; 0 after. Execution time did not regress
+  (5.5 s old, 2.5 s new on the first production page). The client also de-duplicates by identity key, and the
+  rendered-panel test feeds duplicated raw candidates and fails without that de-duplication.
+  Consequence: contacts that were flagged ambiguous only because one entity appeared several times are now
+  evaluated as the single match they are.
 * Checks run: `npx tsc --noEmit -p .` clean; `npm run build` succeeds; the ledger component renders in jsdom with
-  paging, multi-mailbox, business-only and stale-receipt states (`UploadLedger.test.tsx`). The older
-  `ContactLinkCoveragePanel.test.tsx` predates the server-processing panel and fails before reaching these changes
-  (stale "Resume + auto-process pages" control); only its manual-loop text assertion was updated.
-  The signed-in rendered page was not verified in a browser.
+  paging, multi-mailbox, business-only and stale-receipt states (`UploadLedger.test.tsx`).
+* `ContactLinkCoveragePanel.test.tsx` was stale and is repaired against the current panel: it now authenticates
+  through `transitionProtectedActor`, drives the server-owned census (resume, pause, completion observed by
+  refresh, and no browser-driven step), expects automatic evidence attachment instead of a manual evidence picker,
+  and covers the frozen-history note, the automatic-workflow text and the duplicated-candidate case. It passes.
+* `contact-link-coverage.source.test.ts` and `contact-link-coverage.execution.test.ts` had drifted from the current
+  query (CTE shapes, `SET LOCAL jit`) and fail at baseline; both are updated and pass.
+* Not repaired: `test-intake-review-pages.ts` fails at baseline at the plan assertion "Full-page source namespace
+  probe must execute its index" (same failure at the original baseline commit). Every assertion before it,
+  including frozen-query parity with the prior implementation and the new duplicate check, passes.
+* The signed-in rendered page was not opened in a browser (sign-in required); the panel and ledger are verified
+  by jsdom renders against mocked API responses and the SQL by real PostgreSQL and production read-only runs.
 
 ### Remaining action and acceptance
 

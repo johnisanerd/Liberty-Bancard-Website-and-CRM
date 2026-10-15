@@ -3,7 +3,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { z } from "zod";
-import { queryClient } from "@/lib/queryClient";
+import { queryClient, transitionProtectedActor } from "@/lib/queryClient";
 
 const jsdomModule = await import(["js", "dom"].join("")) as {
   JSDOM: new (html: string, options: { url: string; pretendToBeVisual: boolean }) => { window: any };
@@ -61,11 +61,9 @@ let status = {
   counts: { ...categoryCounts },
   reasonCounts: { filing_identifier_missing: 4 },
   complete: false,
+  serverProcessing: false,
 };
-let stepCount = 0;
-let releaseFirstStep: () => void = () => { throw new Error("First page has not started"); };
-let signalFirstStepStarted: (() => void) | null = null;
-const firstStepStarted = new Promise<void>((resolve) => { signalFirstStepStarted = resolve; });
+let completeOnNextStatus = false;
 const requests: Array<{ url: URL; method: string; body?: unknown; csrf?: string }> = [];
 let acceptedReviewPayload: unknown = null;
 
@@ -121,13 +119,14 @@ function candidate(candidateId: string, contactId: number, businessId: number) {
       }],
       sourceEvents: [{ eventId: 902, sourceCategory: "business_registry", sourceType: "filing_reference" }],
       ...(contactId === 104 ? {
-        rawSunbizCandidates: [{
+        // The same source entity can be returned once per contact name key.
+        rawSunbizCandidates: [1, 2].map(() => ({
           sourceEntityId: 505,
           filingNumber: "FL-2025-005",
           entityName: "Cypress Garden Supply LLC",
           dba: "Cypress Outdoor",
           canonicalSourceLinkMaterialized: false,
-        }],
+        })),
       } : {}),
       matchedSignals: [{ kind: "filing_identifier", matched: true, detail: "Retained filing identifier matches the canonical source link." }],
     },
@@ -150,7 +149,12 @@ globalThis.fetch = async (input: RequestInfo | URL, init: RequestInit = {}) => {
     return jsonResponse({ message: "CSRF missing" }, 403);
   }
 
-  if (method === "GET" && url.pathname.endsWith("/status")) return jsonResponse(status);
+  if (method === "GET" && url.pathname.endsWith("/status")) {
+    if (completeOnNextStatus) {
+      status = { ...status, status: "completed", complete: true, serverProcessing: false, processed: status.total, cursor: status.watermark };
+    }
+    return jsonResponse(status);
+  }
   if (method === "GET" && url.pathname.endsWith("/candidates")) {
     assert.equal(url.searchParams.get("limit"), "25");
     const afterCreatedAt = url.searchParams.get("afterCreatedAt");
@@ -164,23 +168,15 @@ globalThis.fetch = async (input: RequestInfo | URL, init: RequestInit = {}) => {
     return jsonResponse({ candidates: [candidate(candidateIds[0], 103, 203)], nextCursor: cursor, limit: 25 });
   }
   if (method === "POST" && url.pathname.endsWith("/resume")) {
-    status = { ...status, status: "running" };
-    return jsonResponse(status);
-  }
-  if (method === "POST" && url.pathname.endsWith("/step")) {
-    stepCount += 1;
-    if (stepCount === 1) {
-      signalFirstStepStarted?.();
-      await new Promise<void>((resolve) => { releaseFirstStep = resolve; });
-      status = { ...status, status: "ready", processed: 25, cursor: 25 };
-    } else {
-      status = { ...status, status: "completed", complete: true, processed: status.total, cursor: status.watermark };
-    }
+    status = { ...status, status: "running", serverProcessing: true };
     return jsonResponse(status);
   }
   if (method === "POST" && url.pathname.endsWith("/pause")) {
-    status = { ...status, status: "paused" };
+    status = { ...status, status: "paused", serverProcessing: false };
     return jsonResponse(status);
+  }
+  if (method === "POST" && url.pathname.endsWith("/step")) {
+    return jsonResponse({ message: "The browser no longer drives census pages" }, 410);
   }
   if (method === "POST" && url.pathname.endsWith("/review-batch")) {
     const parsed = reviewBatchSchema.safeParse(parsedBody);
@@ -274,8 +270,10 @@ async function changeSelect(element: HTMLSelectElement, value: string): Promise<
 
 try {
   document.cookie = "csrf_token=test-csrf-token; path=/";
+  const agent = { id: "agent-test", role: "agent" };
+  await transitionProtectedActor(agent as any);
   await act(async () => {
-    queryClient.setQueryData(["/api/auth/user"], { id: "agent-test", role: "agent" });
+    queryClient.setQueryData(["/api/auth/user"], agent);
     root.render(
       <QueryClientProvider client={queryClient}>
         <ContactLinkCoveragePanel />
@@ -285,8 +283,10 @@ try {
   await waitFor(() => visibleText("available to admins only"), "non-admin contact-link census access message");
   assert.equal([...document.querySelectorAll("button")].some((button) => button.textContent?.includes("Start full-pool census")), false);
 
+  const admin = { id: "admin-test", role: "admin" };
+  await transitionProtectedActor(admin as any);
   await act(async () => {
-    queryClient.setQueryData(["/api/auth/user"], { id: "admin-test", role: "admin" });
+    queryClient.setQueryData(["/api/auth/user"], admin);
   });
   await waitFor(() => visibleText("ready") && visibleText("Cypress Garden Supply"), "ready census and candidate render");
   assert.ok(visibleText("154,418"), "full-pool denominator is visible");
@@ -305,16 +305,21 @@ try {
   assert.ok(visibleText("902"), "source event reference is rendered");
   assert.ok(visibleText("•••-•••-0188"), "phone reference is privacy masked");
 
-  await click(findButton("Resume + auto-process pages"));
-  await firstStepStarted;
-  await waitFor(() => visibleText("running"), "running state while a census page is in flight");
-  await click(findButton("Pause census"));
-  releaseFirstStep();
-  await waitFor(() => visibleText("paused"), "paused state after the bounded page completes");
+  assert.ok(visibleText("Frozen history"), "the full-pool census is labelled as frozen history");
+  assert.equal([...document.querySelectorAll("button")].some((button) => /auto-process pages|Pause census/.test(button.textContent ?? "")), false,
+    "the browser no longer drives census pages");
+  await click(findButton("Resume server processing"));
+  await waitFor(() => visibleText("Server processing enabled"), "server processing enabled after resume");
+  await click(findButton("Pause server processing"));
+  await waitFor(() => visibleText("Server processing paused") && visibleText("paused"), "paused state after server pause");
 
-  await click(findButton("Resume + auto-process pages"));
-  await waitFor(() => visibleText("completed"), "completed state after resumed census");
+  await click(findButton("Resume server processing"));
+  await waitFor(() => visibleText("Server processing enabled"), "server processing enabled again");
+  completeOnNextStatus = true;
+  await click(findButton("Refresh status"));
+  await waitFor(() => visibleText("completed"), "completed state after the server finishes the census");
   assert.equal(status.complete, true);
+  assert.equal(requests.some((request) => request.url.pathname.endsWith("/step")), false, "the browser never posts a census step");
 
   await click(findButton("Next page"));
   await waitFor(() => requests.some((request) =>
@@ -328,13 +333,13 @@ try {
   assert.ok(checkbox);
   await click(checkbox);
   const decision = document.getElementById(`decision-${candidateIds[1]}`);
-  const evidence = document.getElementById(`evidence-${candidateIds[1]}`);
   assert.ok(decision);
-  assert.ok(evidence);
   assert.ok(visibleText("Bounded raw-to-canonical source recovery"));
   assert.ok(visibleText("applies the system link policy automatically"));
   assert.ok(visibleText("Only the normal independent Human Review queue"));
   assert.ok(visibleText("Cypress Outdoor"), "retained source DBA appears in bounded recovery UI");
+  assert.equal(document.querySelectorAll('[aria-label="Select raw Sunbiz filing FL-2025-005 for source recovery"]').length, 1,
+    "one source entity renders exactly one source-recovery card");
   await click(document.querySelector('[aria-label="Select raw Sunbiz filing FL-2025-005 for source recovery"]')!);
   await click(findButton("Preview 1 selected raw identities"));
   await waitFor(() => visibleText("READY"), "actual rendered source-recovery preview state");
@@ -352,7 +357,7 @@ try {
   assert.equal(recoveryApplyRequest.csrf, "test-csrf-token", "rendered source-recovery apply carries the cookie-matched CSRF header");
   assert.equal((recoveryApplyRequest.body as any).items[0].expectedSnapshotHash, "c".repeat(64));
   await changeSelect(decision as HTMLSelectElement, "verified");
-  await changeSelect(evidence as HTMLSelectElement, "902");
+  assert.ok(visibleText("Eligible retained evidence will be attached automatically."), "retained evidence is attached without a manual picker");
   await click(findButton("Submit 1 review"));
   await waitFor(() => Boolean(document.querySelector('[role="alertdialog"]')), "review confirmation dialog");
   const confirmation = findButton("Submit 1 decisions");
@@ -362,7 +367,7 @@ try {
   // The fetch mock rejects missing CSRF headers; successful route simulation
   // proves the rendered mutation carried the cookie-matched token.
   const renderedMutations = requests.filter((request) => request.method === "POST");
-  assert.equal(renderedMutations.length, 8);
+  assert.equal(renderedMutations.length, 6);
   assert.ok(renderedMutations.every((request) => request.csrf === "test-csrf-token"), "all rendered mutations use the cookie-matched CSRF token");
   await waitFor(() => visibleText("Result: applied"), "server per-item review outcome");
 
