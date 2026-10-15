@@ -298,12 +298,17 @@ try {
     "The serial continuation releases only its own linking lease");
   const {readContactLinkAssignmentPopulation}=await import("../../server/services/contact-link-population");
   const population=await readContactLinkAssignmentPopulation();
+  assert(population.state==="current");
+  assert.equal(population.totalActiveNonTest,population.totalActiveProduction!+population.otherNonTestClass!);checks++;
+  const classCounts=(await pool.query(`SELECT count(*)::int total,count(*) FILTER(WHERE record_class='production')::int production
+    FROM contacts WHERE archived_at IS NULL AND record_class IS NOT NULL AND record_class NOT IN ('test','demo','synthetic')`)).rows[0];
+  assert.equal(population.totalActiveNonTest,classCounts.total);assert.equal(population.totalActiveProduction,classCounts.production);checks++;
   check(population.state==="current" && population.currentVerified===7+await decisionCount(olderReady),
     "Current audited population is separate from cumulative attempts");
   await pool.query("ALTER FUNCTION crm_source_family_relationship_reasons(integer,integer,uuid) RENAME TO cert_missing_source_family");
   try {
     const unavailable=await readContactLinkAssignmentPopulation();
-    check(unavailable.state==="unavailable" && unavailable.currentVerified===null && unavailable.totalActiveProduction===null,
+    check(unavailable.state==="unavailable" && unavailable.currentVerified===null && unavailable.totalActiveProduction===null && unavailable.totalActiveNonTest===null,
       "Missing native authority is unavailable, never a healthy zero");
   } finally {
     await pool.query("ALTER FUNCTION cert_missing_source_family(integer,integer,uuid) RENAME TO crm_source_family_relationship_reasons");

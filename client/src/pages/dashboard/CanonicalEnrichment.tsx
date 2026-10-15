@@ -21,10 +21,11 @@ import {
   Users,
   XCircle,
 } from "lucide-react";
-import type { CanonicalEnrichmentStatus, CanonicalImportOutcome } from "@shared/canonical-enrichment-status";
+import type { CanonicalEnrichmentStatus } from "@shared/canonical-enrichment-status";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/hooks/use-auth";
+import { UploadLedger } from "./UploadLedger";
 import {
   Card,
   CardContent,
@@ -174,35 +175,6 @@ function StateList({
       )}
     </div>
   );
-}
-
-function ImportOutcomeList({rows}: {rows: CanonicalImportOutcome[]}) {
-  return <div className="my-5 space-y-3">
-    <p className="text-sm text-muted-foreground">Up to 25 recorded rows. Original accounting and later fulfillment are separate facts; this is not a complete population count.</p>
-    {!rows.length && <p className="rounded-xl border p-4 text-sm text-muted-foreground">No rows in this bounded result.</p>}
-    {rows.map(row=><details key={`${row.executionId}:${row.sourceRowNumber}`} className="rounded-xl border border-border/70 bg-card p-4">
-      <summary className="cursor-pointer text-sm font-medium">
-        Row {row.sourceRowNumber} · {stateLabel(row.disposition)} · {stateLabel(row.fulfillmentState ?? row.reasonCode)}
-      </summary>
-      <dl className="mt-3 grid gap-2 text-sm sm:grid-cols-2">
-        <div><dt className="text-muted-foreground">Import execution</dt><dd className="break-all font-mono">{row.executionId}</dd></div>
-        <div><dt className="text-muted-foreground">Original reason</dt><dd className="break-words">{row.reasonCode}</dd></div>
-        <div><dt className="text-muted-foreground">Retained original row</dt><dd>{row.originalAvailable ? "Available" : "Unavailable"}</dd></div>
-        <div><dt className="text-muted-foreground">Accounting recorded</dt><dd>{formatDate(row.completedAt)}</dd></div>
-        <div><dt className="text-muted-foreground">Later source fulfillment</dt><dd>{row.fulfillmentState ?? "Not recorded"}</dd></div>
-        <div><dt className="text-muted-foreground">Source next-attempt timestamp</dt><dd>{formatOptionalDate(row.nextAttemptAt)} · not a promise of retry</dd></div>
-        <div><dt className="text-muted-foreground">Committed identifiers in original accounting</dt>
-          <dd>
-            {row.businessId ? <Link href={`/dashboard/lead-ops/business/${row.businessId}`} className="text-primary underline">Business #{row.businessId}</Link> : "Business not recorded"}
-            {" · contact "}{row.contactId ?? "not recorded"}
-          </dd></div>
-        <div><dt className="text-muted-foreground">Current CRM business association</dt>
-          <dd>{row.currentBusinessId ? <Link href={`/dashboard/lead-ops/business/${row.currentBusinessId}`} className="text-primary underline">Business #{row.currentBusinessId}</Link> : "No current association recorded"}</dd>
-          <dd className="text-xs text-muted-foreground">Current affiliation is separate from the original import accounting.</dd>
-        </div>
-      </dl>
-    </details>)}
-  </div>;
 }
 
 function SectionHeading({
@@ -411,7 +383,7 @@ export default function CanonicalEnrichment() {
             title="Imports and source history"
             description="Use the existing import, lead operations, and integration surfaces for batch details and provider history. No source records are created or edited here."
           />
-          <ImportOutcomeList rows={data.recentImportOutcomes} />
+          <UploadLedger />
           <Card>
             <CardHeader>
               <CardTitle>Source-registry canonical projection</CardTitle>
@@ -474,7 +446,7 @@ export default function CanonicalEnrichment() {
             title="Exceptions stay visible"
             description="Current held reasons and observed inventory exceptions point toward focused existing review tools. This page does not resolve, suppress, approve, or advance records."
           />
-          <ImportOutcomeList rows={data.importExceptions} />
+          <UploadLedger initialFilter="unfulfilled" />
           <section className="mb-5 rounded-xl border border-border/70 bg-card p-5">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>

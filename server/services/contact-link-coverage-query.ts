@@ -555,8 +555,12 @@ contact_data AS (
       'ownerPhone', raw.owner_phone,
       'entitySource', raw.source
     ) ORDER BY raw.source_entity_id) AS raw_candidates
-    FROM raw_unlinked_sunbiz_by_contact raw
-    WHERE raw.contact_id = p.contact_id
+    -- A contact with several name keys matches the same entity once per key;
+    -- one source entity is one recovery candidate.
+    FROM (SELECT DISTINCT ON (dedup.source_entity_id) dedup.*
+      FROM raw_unlinked_sunbiz_by_contact dedup
+      WHERE dedup.contact_id = p.contact_id
+      ORDER BY dedup.source_entity_id) raw
   ) raw_sources ON true
 ),
 business_data AS (

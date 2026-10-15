@@ -26,7 +26,8 @@ export async function readCanonicalEnrichmentStatus(): Promise<CanonicalEnrichme
         OR EXISTS(SELECT 1 FROM cro03_enrichment_batches raw_batch
           JOIN cro03_batch_memberships raw_member ON raw_member.batch_id=raw_batch.id
           JOIN cro03_source_observations original ON original.id=raw_member.source_observation_id
-          WHERE raw_batch.idempotency_key='csv-source-raw-v2:'||execution.id::text||':'||accounting.source_row_number::text
+          WHERE raw_batch.idempotency_key IN ('csv-source-raw-v2:'||execution.id::text||':'||accounting.source_row_number::text,
+            'csv-source-raw-v3:'||execution.id::text||':'||accounting.source_row_number::text)
             AND jsonb_typeof(original.payload->'rawSourceRow')='object')) original_available,
       accounting.completed_at::text completed_at
     FROM import_row_dispositions accounting JOIN import_executions execution ON execution.id=accounting.execution_id

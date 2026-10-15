@@ -1,6 +1,6 @@
 {
-  "observedAt": "2026-10-15T12:53:34.840Z",
-  "checks": 59,
+  "observedAt": "2026-10-15T16:36:01.556Z",
+  "checks": 65,
   "scope": "Disposable real-DB automatic relationship linking only",
   "cohortIndependent": true,
   "automaticNativeRepairRecovery": true,

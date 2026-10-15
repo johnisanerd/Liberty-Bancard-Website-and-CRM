@@ -249,6 +249,17 @@ function sourceRecoveryKey(identity: SourceRecoveryIdentity): string {
   return `${identity.candidateId}:${identity.sourceEntityId}:${identity.filingNumber}`;
 }
 
+/** One card per recovery identity. Repeated raw candidates must not render
+ * twice or share a React key. */
+export function dedupeSourceRecoveryOptions<T extends { key: string }>(options: T[]): T[] {
+  const seen = new Set<string>();
+  return options.filter((option) => {
+    if (seen.has(option.key)) return false;
+    seen.add(option.key);
+    return true;
+  });
+}
+
 export function ContactLinkCoveragePanel() {
   const { user, isLoading } = useAuth();
   if (isLoading) {
@@ -374,7 +385,7 @@ function ContactLinkCoveragePanelAdmin() {
   const nextCandidatesCursor = candidatesQuery.data?.nextCursor ?? null;
   const selectedRows = visibleCandidates.filter((candidate) =>
     selectedCandidateIds.includes(candidate.candidateId) && !getReviewBlockReason(candidate));
-  const sourceRecoveryOptions = visibleCandidates.flatMap((candidate) =>
+  const sourceRecoveryOptions = dedupeSourceRecoveryOptions(visibleCandidates.flatMap((candidate) =>
     getRawSunbizCandidates(candidate).map((source) => {
       const identity: SourceRecoveryIdentity = {
         candidateId: candidate.candidateId,
@@ -384,7 +395,7 @@ function ContactLinkCoveragePanelAdmin() {
         filingNumber: source.filingNumber,
       };
       return { key: sourceRecoveryKey(identity), identity, source };
-    }));
+    })));
   const selectedSourceRecoveryOptions = sourceRecoveryOptions.filter((option) =>
     sourceRecoverySelectedKeys.includes(option.key));
   const readySourceRecoveryOptions = selectedSourceRecoveryOptions.filter((option) =>
@@ -436,7 +447,7 @@ function ContactLinkCoveragePanelAdmin() {
       }));
       toast({
         title: "Source-recovery results received",
-        description: `${result.results.filter((item) => item.status === "MATERIALIZED" || item.status === "ALREADY_MATERIALIZED").length} materialized/already present · ${result.results.filter((item) => item.status === "HOLD" || item.status === "STALE_PREVIEW").length} held or stale.${materialized ? " Next: run the separate system-link policy preview/apply, then start a fresh census; this did not approve the contact relationship." : ""}`,
+        description: `${result.results.filter((item) => item.status === "MATERIALIZED" || item.status === "ALREADY_MATERIALIZED").length} materialized/already present · ${result.results.filter((item) => item.status === "HOLD" || item.status === "STALE_PREVIEW").length} held or stale.${materialized ? " The ordinary contact-link worker evaluates the new source link automatically; this did not approve the contact relationship." : ""}`,
       });
       invalidateCoverage();
       queryClient.invalidateQueries({ queryKey: candidatesQueryKey });
@@ -547,6 +558,12 @@ function ContactLinkCoveragePanelAdmin() {
                 {status.cursor != null ? ` · cursor ${status.cursor}` : ""}
               </span>
             </div>
+            <p className="text-xs text-muted-foreground" data-testid="census-frozen-history-note">
+              <strong>Frozen history:</strong> this census classified the contacts that existed at its watermark
+              {status.watermark != null ? ` (${status.watermark.toLocaleString()})` : ""} and does not change as contacts are
+              imported or linked afterwards. Current linked and unresolved counts are reported separately by the automatic
+              contact-link worker on the Canonical Enrichment page.
+            </p>
             <div className="space-y-1" aria-label={`${progressPercent}% census progress`}>
               <div className="h-2 overflow-hidden rounded-full bg-muted" role="progressbar"
                 aria-valuemin={0} aria-valuemax={100} aria-valuenow={progressPercent}
@@ -786,7 +803,7 @@ function ContactLinkCoveragePanelAdmin() {
               The server rechecks the full snapshot before each apply; every result is independently audited to the authenticated admin.
             </p>
             <p className="mt-1 text-xs font-medium text-amber-900 dark:text-amber-100">
-              After a materialization, rerun the separate System Contact Business Links preview/apply policy and start a fresh full-pool census.
+              After a materialization, the ordinary contact-link worker evaluates the new source link and applies the system link policy automatically; no manual preview/apply loop is needed. Census counts refresh the next time a census runs.
               Only the normal independent Human Review queue can approve or reject the contact↔business relationship.
             </p>
           </div>

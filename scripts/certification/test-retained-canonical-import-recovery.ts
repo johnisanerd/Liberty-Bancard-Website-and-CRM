@@ -357,6 +357,31 @@ try {
       [fixtures[2].rawRow.name])).rows[0].n===1,"A business-only original still materializes its business");
     assert.deepEqual(await accountingOf(target),accountingBefore);
     check(await holdEvidence(target)===0,"Immutable accounting and hold evidence are unchanged by fulfillment");
+    // Paginated original-coordinate ledger: every coordinate, stable keyset, bounded evidence.
+    const ledger=await import("../../server/services/canonical-upload-ledger");
+    const page1=await ledger.readUploadLedgerPage({executionId:target,limit:2});
+    const page2=await ledger.readUploadLedgerPage({executionId:target,after:page1.nextAfter,limit:2});
+    const allRows=[...page1.rows,...page2.rows];
+    check(page1.nextAfter===2 && page2.nextAfter===null &&
+      allRows.map(row=>row.sourceRowNumber).join()==="1,2,3,4","The ledger pages every original coordinate in stable order without gaps or repeats");
+    const again=await ledger.readUploadLedgerPage({executionId:target,limit:2});
+    assert.deepEqual(again.rows,page1.rows);
+    check(allRows.every(row=>/^raw-v[23]$/.test(String(row.originalFormat))),"The ledger recognizes the retained raw-v2/v3 original of every row");
+    check(allRows[0].mailboxes.length===3 && allRows[0].mailboxes.every(m=>m.hasProvenance && m.verifiedLink),
+      "The ledger shows every mailbox of a multi-mailbox row with its verified link");
+    check(allRows[2].businessOnly && allRows[2].mailboxes.length===0 && allRows[2].receipt.status==="current",
+      "The ledger shows a business-only row without inventing a mailbox");
+    check(allRows.every(row=>row.receipt.status==="current"),"Receipts validate against coordinate, fingerprint and qualification version");
+    const summary=await ledger.readUploadLedgerSummary(target);
+    check(summary.rows===4 && summary.receiptsCurrent===4 && summary.receiptsStale===0 && summary.receiptsInconsistent===0 &&
+      summary.distinctContacts===(await probe.query(`SELECT count(DISTINCT contact_id)::int n FROM contact_source_events
+        WHERE import_execution_id=$1`,[target])).rows[0].n && summary.verifiedLinks===summary.distinctContacts,
+      "Rows, distinct contacts, verified links and receipts are reported separately");
+    const unfulfilledNow=await ledger.readUploadLedgerPage({executionId:target,filter:"unfulfilled"});
+    check(unfulfilledNow.rows.length===0,"The unfulfilled filter excludes fulfilled rows");
+    for(const bad of [{limit:101},{limit:0},{after:-1},{filter:"x"},{executionId:"nope"}])
+      await assert.rejects(()=>ledger.readUploadLedgerPage({executionId:target,...bad}),/INVALID_/);
+    check(true,"The ledger rejects unbounded or malformed requests");
     check(getBlockedCertificationNetworkAttemptCount()===0,"Recovery performs no provider I/O");
 
     // Replay: no duplicate logical effects; fresh claim/fulfillment audit rows are intentional.
@@ -372,6 +397,25 @@ try {
       AND entity_key=ANY($1::text[])`,[after.map(row=>row.id)])).rows[0].n===receiptsBefore+4,
       "Replay creates no duplicate contacts, businesses or provenance and records only fresh claim/fulfillment audit rows");
     check((await processCanonicalImportRecoveryTick()).attempted===0,"Ordinary scheduling does not reselect qualified originals");
+    // Rejected originals are never admitted, so these fixtures stay inert for later ticks.
+    const inertRows=syntheticRows(2);
+    inertRows.forEach(row=>{row.disposition="rejected";row.reasonCode="FIXTURE_INERT_REJECTED";});
+    const stale=await seedExecution(inertRows,"ledger_stale_receipts");
+    const staleItems=await items(stale);
+    const staleAccounting=await accountingOf(stale);
+    const receipt=(item:any,version:string,fingerprint:string)=>probe.query(`INSERT INTO audit_logs(action,entity_type,entity_key,details,actor_type,actor_id)
+      VALUES('canonical_import_row_fulfilled','cro03_enrichment_item',$1,$2::jsonb,'system','system:canonical-import-recovery')`,
+      [item.id,JSON.stringify({executionId:stale,sourceRowNumber:Number(item.row_number),qualificationVersion:version,rowFingerprint:fingerprint})]);
+    const staleRows=staleAccounting.map(row=>({number:Number(row.source_row_number),fingerprint:row.row_fingerprint}));
+    const byNumber=new Map(staleItems.map((item:any)=>[Number(item.row_number),item]));
+    await receipt(byNumber.get(1),"mailbox_business_identity_v1",staleRows[0].fingerprint);
+    await receipt(byNumber.get(2),"mailbox_business_identity_v2","f".repeat(64));
+    const staleLedger=await ledger.readUploadLedgerPage({executionId:stale,limit:10});
+    check(staleLedger.rows[0].receipt.status==="stale" && staleLedger.rows[1].receipt.status==="inconsistent",
+      "Stale and inconsistent receipts are shown separately and never counted as current");
+    const staleSummary=await ledger.readUploadLedgerSummary(stale);
+    check(staleSummary.receiptsCurrent===0 && staleSummary.receiptsStale===1 && staleSummary.receiptsInconsistent===1,
+      "The upload summary separates stale from inconsistent receipts");
 
     // Protected conflicting assignment: genuine foreign affiliation stays held.
     const firstMailbox=(await contactsByRow(target,1))[0];

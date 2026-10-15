@@ -608,3 +608,92 @@ The existing continuation therefore remains open.
 Private independent decision, population/pause, worker-cycle and original-item
 evidence is retained under
 `generated-artifacts/intake-incremental/five-recovered-*`.
+
+## Upload recovery, older-contact linking and the per-upload ledger (not yet published)
+
+Status: implemented, committed and verified in disposable PostgreSQL plus read-only production plans. Nothing below
+is a production claim. Publication is performed by the owner; no production row, setting, cursor or provider
+was changed. Outbound remains paused at epoch 1.
+
+### What was wrong, and the reproduction
+
+* Created/matched originals whose item sat in `STAGING_RECIPE_DISABLED` (no hold evidence, because the obsolete
+  staging recipe never ran) were not admitted by the shared recovery predicate, so the ordinary worker never
+  reached them. The new disposable phase `staging_disabled_created` first FAILED at the selection check before the
+  predicate change, and passes after it.
+* The replay-retained route (`/api/imports/.../replay-retained`) returned 500 because its scope query did not
+  provide the predicate's `item`/`accounting`/`observation` aliases. Fixed together with the predicate.
+* A recovery failure echoing predicate SQL containing the literal `..._NATIVE_GUARD_MISSING` was classified fatal by
+  the row-failure classifier (which pattern-matched the Drizzle "Failed query" message). A lock timeout on that
+  statement aborted the whole tick instead of yielding. The classifier now ignores the echoed statement text and
+  classifies on the database error itself; a regression assertion covers both directions.
+
+### Admission contract (one predicate for selection, claim verification and renewal)
+
+Created/matched originals in blocked/running/completed state are admitted only when the retained observation
+fingerprint equals the immutable accounting fingerprint, the original raw row is retained (raw-v2/v3 or execution
+payload), and the item is in one of: `STAGING_RECIPE_DISABLED`; a fulfilled item (explicit replay); or one of the
+worker-authored retry codes accompanied by this worker's own receipt for the same execution/row/fingerprint.
+Accounting and existing hold-evidence rows are untouched; no item is reset; the obsolete staging recipe stays
+disabled; no hold evidence is fabricated.
+
+### Disposable evidence (`run-retained-import-recovery-disposable.ts`)
+
+* `--partial-accounting-only`: partial_accounting 13 checks; staging_disabled_created 43 checks (existing-record
+  reuse with address/phone corroboration, multiple mailboxes, business-only, matched_noop, protected conflicting
+  assignment held, retryable failure then ordinary-worker recovery, capability hold and restoration, owner/lease
+  loss and resume, changed payload rejection on a retained coordinate, retained raw evidence governing replay over a
+  mutated execution payload, replay without duplicate logical effects, ledger checks below).
+* `--recovery-faults-only` (faults 8, restart 5, legacy 4), `--scoped-replay-only` (including HTTP replay) and
+  `--linker-performance-only` pass.
+* `--audited-only` / `--identity-only` fail at the "58 hold receipts" assertion (`0 !== 58`). The same failure
+  occurs with these changes stashed, so it is pre-existing and not related; it is not being widened here.
+
+### Older unchanged contacts reach the materializer
+
+The change window no longer hides an older contact with supported materialization evidence, no assignment and no
+decision. It is re-evaluated at most once per 24 hours per unchanged (contact revision, evidence revision) pair using
+the materializer's own recorded outcome (`contact_link_materialization_outcome`, observation only, never
+relationship authority). The recorded status and reason code are counted per contact as
+`materialization:<reasonCode>`. A pre-existing contact without independent corroboration is correctly held
+(`INDEPENDENT_ORGANIZATION_CORROBORATION_REQUIRED`); nothing is forced. Contacts 494, 1057, 1074, 4741 and 8964 were
+already committed and are regression checks only.
+
+### CRM changes
+
+* New read-only, admin/manager endpoints: `/api/canonical-enrichment/uploads`, `.../uploads/:id/summary`,
+  `.../uploads/:id/rows?after=&limit=&filter=`. The existing `/status` contract is unchanged (the capped 25-row
+  lists remain for compatibility; the UI no longer uses them, and the original-availability probe now recognizes
+  raw-v3 as well as raw-v2).
+* The ledger pages every original coordinate of one upload in `source_row_number` order (stable keyset, limit 1..100),
+  shows all mailboxes and business-only rows, recognizes raw-v2 and raw-v3, and validates receipts against
+  coordinate, fingerprint and qualification version, reporting stale and inconsistent receipts separately.
+  The summary reports rows, distinct contacts, verified links and receipts as separate measures that are never added.
+* Production-scale plan check (read-only `EXPLAIN ANALYZE` on the 1,472-row September upload, 100-row page):
+  accounting page 116 ms, retained originals 165 ms, mailbox provenance/links 49 ms, summary links 230 ms,
+  summary receipts 187 ms after removing a redundant `entity_type` predicate that had caused a 2.9 s plan. The
+  execution-payload fallback is read only for coordinates without a retained observation (extracting 100 elements
+  from the large payload cost 1.5 s).
+* `contact-link-population.ts` now reports `totalActiveNonTest` (production plus any other non-test class such as
+  `unknown`), `totalActiveProduction` (production class only) and `otherNonTestClass` separately; the former
+  name no longer covers a wider population than it claims.
+* The Contact Link Coverage panel labels the full-pool census as frozen history (it classifies contacts at its
+  watermark and does not change afterward), replaces the "rerun the separate preview/apply policy" instructions with
+  the automatic workflow, and shows one card per source-recovery identity. Cause of the duplicate cards: the
+  candidate query's raw-Sunbiz subquery matched the same entity once per contact name key, and the panel keyed
+  cards by candidate:entity:filing without de-duplication. Fixed in the SQL (`DISTINCT ON` source entity) and in the
+  client. The duplicate was not reproduced in a rendered production page (sign-in required); the server cause was
+  confirmed from the query and the client de-duplication is covered by construction.
+* Checks run: `npx tsc --noEmit -p .` clean; `npm run build` succeeds; the ledger component renders in jsdom with
+  paging, multi-mailbox, business-only and stale-receipt states (`UploadLedger.test.tsx`). The older
+  `ContactLinkCoveragePanel.test.tsx` predates the server-processing panel and fails before reaching these changes
+  (stale "Resume + auto-process pages" control); only its manual-loop text assertion was updated.
+  The signed-in rendered page was not verified in a browser.
+
+### Remaining action and acceptance
+
+The owner must publish the committed revision. After publication: verify the served revision; observe ordinary
+workers committing assignments and receipts for created originals and older contacts; report before/after rows,
+distinct contacts, verified links and receipts per upload (five workbooks, 2,914 rows; September import
+`79356e0b`, 1,472 rows) and for the contact population. Counters, passing tests and completed jobs are not recovery
+evidence; per-contact materializer outcomes and committed rows are.

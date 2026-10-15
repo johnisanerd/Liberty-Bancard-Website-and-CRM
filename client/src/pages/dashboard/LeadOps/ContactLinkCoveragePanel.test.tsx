@@ -332,7 +332,7 @@ try {
   assert.ok(decision);
   assert.ok(evidence);
   assert.ok(visibleText("Bounded raw-to-canonical source recovery"));
-  assert.ok(visibleText("rerun the separate System Contact Business Links preview/apply policy"));
+  assert.ok(visibleText("applies the system link policy automatically"));
   assert.ok(visibleText("Only the normal independent Human Review queue"));
   assert.ok(visibleText("Cypress Outdoor"), "retained source DBA appears in bounded recovery UI");
   await click(document.querySelector('[aria-label="Select raw Sunbiz filing FL-2025-005 for source recovery"]')!);
