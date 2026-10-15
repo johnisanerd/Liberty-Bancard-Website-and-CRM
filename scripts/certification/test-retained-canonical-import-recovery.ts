@@ -24,7 +24,7 @@ let afterCommit:(()=>Promise<void>)|null=null;
 const {pool,db}=await import("../../server/db");
 const {sql}=await import("drizzle-orm");
 const {claimSfpRuntimeDeploymentOwner,renewSfpRuntimeDeploymentOwner}=await import("../../server/services/cro03/sfp-provider-operations");
-const {processCanonicalImportRecoveryTick}=await import("../../server/services/canonical-import-recovery-worker");
+const {processCanonicalImportRecoveryTick,canonicalImportRecoveryClaimSql}=await import("../../server/services/canonical-import-recovery-worker");
 const {providerImportEmails,materializeCanonicalProviderImportRow}=await import("../../server/services/canonical-provider-import");
 const {LADDER_BUDGET_LOCK_KEY}=await import("../../server/services/cro03/shared-paid-budget-ledger");
 const {CanonicalImportRecoveryFailure}=await import("../../server/services/canonical-import-recovery-outcomes");
@@ -60,7 +60,135 @@ const originalWarn=console.warn;
 console.warn=(...args:any[])=>{diagnostics.push(args.join(" "));originalWarn(...args);};
 let status=0;
 try {
-  if(phase==="faults"){
+  if(phase==="scoped_replay"){
+    const target=await seedExecution(syntheticRows(2),"scoped_replay_target");
+    const unrelated=await seedExecution(syntheticRows(1),"scoped_replay_unrelated");
+    const immutable=(await probe.query("SELECT source_row_number,disposition,reason_code,row_fingerprint FROM import_row_dispositions WHERE execution_id=$1 ORDER BY source_row_number",[target])).rows;
+    const first=await processCanonicalImportRecoveryTick({maxItems:1,
+      replay:{executionId:target,sourceRowNumbers:[1,2]}});
+    assert.equal(first.fulfilled,1);
+    assert.deepEqual(first.replay?.remainingSourceRowNumbers,[2]);
+    assert.equal(first.replay?.scopeAttempted,false);
+    check(true,"Bounded replay reports the exact unattempted original coordinates");
+    const second=await processCanonicalImportRecoveryTick({maxItems:1,
+      replay:{executionId:target,sourceRowNumbers:[2]}});
+    assert.equal(second.fulfilled,1);
+    assert.equal(second.replay?.scopeAttempted,true);
+    const before=await baseline();
+    const targetBefore=await items(target),unrelatedBefore=await items(unrelated);
+    assert(targetBefore.every(item=>item.state==="completed" && item.qualified));
+    const ordinary=(await db.execute(canonicalImportRecoveryClaimSql()) as any).rows;
+    assert(!ordinary.some((row:any)=>row.execution_id===target));
+    check(true,"Ordinary scheduling still excludes current-qualified completions");
+    const replay=await processCanonicalImportRecoveryTick({maxItems:2,
+      replay:{executionId:target,sourceRowNumbers:[1,2]}});
+    assert.equal(replay.fulfilled,2);
+    assert.equal(replay.replay?.scopeAttempted,true);
+    assert.deepEqual(replay.replay?.rowOutcomes.map(row=>row.sourceRowNumber).sort(),[1,2]);
+    assert.deepEqual(await baseline(),before);
+    assert.deepEqual((await probe.query("SELECT source_row_number,disposition,reason_code,row_fingerprint FROM import_row_dispositions WHERE execution_id=$1 ORDER BY source_row_number",[target])).rows,immutable);
+    assert.deepEqual(await items(unrelated),unrelatedBefore);
+    const targetAfter=await items(target);
+    for(let index=0;index<targetBefore.length;index++) {
+      assert.equal(targetAfter[index].execution_fence,targetBefore[index].execution_fence+1);
+      assert.equal(targetAfter[index].attempt_count,targetBefore[index].attempt_count+1);
+    }
+    check(true,"Current-qualified originals replay through normal new claims without resetting items, changing accounting or duplicating graph/provenance");
+    check(true,"Source-scoped replay never claims the unrelated execution");
+    const rejectedScopes=[
+      {executionId:"not-a-uuid",sourceRowNumbers:[1]},
+      {executionId:target,sourceRowNumbers:[]},
+      {executionId:target,sourceRowNumbers:[0]},
+      {executionId:target,sourceRowNumbers:[1,1]},
+      {executionId:target,sourceRowNumbers:[Number.MAX_SAFE_INTEGER+1]},
+      {executionId:target,sourceRowNumbers:[2_147_483_648]},
+      {executionId:target,sourceRowNumbers:Array.from({length:251},(_,i)=>i+1)},
+    ];
+    for(const replay of rejectedScopes)
+      await assert.rejects(()=>processCanonicalImportRecoveryTick({replay}),/REPLAY_INVALID_SCOPE/);
+    check(true,"Malformed, duplicate, unsafe and oversized replay scopes fail before native claims");
+    const heldRows=syntheticRows(1);
+    delete heldRows[0].rawRow.name;
+    heldRows[0].rowFingerprint=createHash("sha256").update(JSON.stringify(heldRows[0].rawRow)).digest("hex");
+    const heldExecution=await seedExecution(heldRows,"scoped_replay_hold");
+    const heldFirst=await processCanonicalImportRecoveryTick({maxItems:1,
+      replay:{executionId:heldExecution,sourceRowNumbers:[1]}});
+    assert.equal(heldFirst.held,1);
+    const heldBefore=(await items(heldExecution))[0];
+    assert(new Date(heldBefore.next_attempt_at).getTime()>Date.now());
+    const heldReplay=await processCanonicalImportRecoveryTick({maxItems:1,
+      replay:{executionId:heldExecution,sourceRowNumbers:[1]}});
+    assert.equal(heldReplay.held,1);
+    const heldAfter=(await items(heldExecution))[0];
+    assert.equal(heldAfter.terminal_code,heldBefore.terminal_code);
+    assert.equal(heldAfter.execution_fence,heldBefore.execution_fence+1);
+    check(true,"Future-scheduled holds are genuinely re-evaluated and remain held, never forced into fulfillment");
+    const busy=targetAfter[0],token=randomUUID();
+    await probe.query(`UPDATE cro03_enrichment_items SET state='running',current_provider='canonical_local_import',
+      claim_token=$2::uuid,lease_expires_at=clock_timestamp()+interval '10 minutes' WHERE id=$1`,
+      [busy.id,token]);
+    const busyBefore=(await items(target))[0];
+    const denied=await processCanonicalImportRecoveryTick({maxItems:1,
+      replay:{executionId:target,sourceRowNumbers:[1]}});
+    assert.equal(denied.attempted,0);
+    assert.equal(denied.replay?.scopeAttempted,false);
+    assert.deepEqual(denied.replay?.remainingSourceRowNumbers,[1]);
+    assert.deepEqual((await items(target))[0],busyBefore);
+    check(true,"Explicit replay cannot take or reset another live claim and reports the incomplete scope");
+    // Exercise the actual HTTP boundary with a real local-auth session and
+    // double-submit CSRF cookies, not a mocked principal or direct handler call.
+    const {default:express}=await import("express");
+    const {default:cookieParser}=await import("cookie-parser");
+    const {default:bcrypt}=await import("bcryptjs");
+    const {users}=await import("../../shared/schema");
+    const {setupAuth,registerAuthRoutes}=await import("../../server/replit_integrations/auth");
+    const {csrfTokenEndpoint}=await import("../../server/middleware/csrf");
+    const {registerImportsRoutes}=await import("../../server/routes/imports");
+    const fixtureUserId=randomUUID(),fixtureEmail=`replay-http-${fixtureUserId}@example.test`;
+    const fixturePassword=`fixture-only-${randomUUID()}`;
+    await db.insert(users).values({id:fixtureUserId,email:fixtureEmail,role:"admin",
+      passwordHash:await bcrypt.hash(fixturePassword,10),authProvider:"local",emailVerified:new Date()});
+    const app=express();app.use(express.json());app.use(cookieParser());
+    await setupAuth(app);registerAuthRoutes(app);
+    app.get("/api/csrf-token",csrfTokenEndpoint);registerImportsRoutes(app);
+    const server=app.listen(0,"127.0.0.1");
+    await new Promise<void>((resolve,reject)=>{server.once("listening",resolve);server.once("error",reject);});
+    try {
+      const address=server.address();assert(address && typeof address!=="string");
+      const origin=`http://127.0.0.1:${address.port}`;
+      const login=await fetch(`${origin}/api/auth/login`,{method:"POST",
+        headers:{"content-type":"application/json","x-forwarded-proto":"https"},
+        body:JSON.stringify({email:fixtureEmail,password:fixturePassword})});
+      assert.equal(login.status,200,"Real fixture admin sign-in must succeed");
+      const cookie=login.headers.getSetCookie().map(value=>value.split(";")[0]).join("; ");
+      assert(cookie);
+      const csrf=await fetch(`${origin}/api/csrf-token`,
+        {headers:{cookie,"x-forwarded-proto":"https"}});
+      assert.equal(csrf.status,200);
+      const {token:csrfToken}=await csrf.json() as {token:string};assert(csrfToken);
+      const csrfCookie=csrf.headers.getSetCookie().map(value=>value.split(";")[0]).join("; ");
+      const httpBefore=await baseline(),httpRowsBefore=await items(target);
+      const response=await fetch(`${origin}/api/import-executions/${target}/replay-retained`,{
+        method:"POST",headers:{"content-type":"application/json","x-forwarded-proto":"https",
+          cookie:[cookie,csrfCookie].filter(Boolean).join("; "),"x-csrf-token":csrfToken},
+        body:JSON.stringify({sourceRowNumbers:[2]})});
+      assert.equal(response.status,200,"Authenticated retained replay must reach normal native fulfillment");
+      const body=await response.json() as Awaited<ReturnType<typeof processCanonicalImportRecoveryTick>>;
+      assert.equal(body.fulfilled,1);assert.equal(body.replay?.scopeAttempted,true);
+      assert.deepEqual(body.replay?.rowOutcomes.map(row=>row.sourceRowNumber),[2]);
+      assert.deepEqual(await baseline(),httpBefore);
+      const httpRowsAfter=await items(target);
+      assert.deepEqual(httpRowsAfter[0],httpRowsBefore[0]);
+      assert.equal(httpRowsAfter[1].execution_fence,httpRowsBefore[1].execution_fence+1);
+      const requests=(await probe.query(`SELECT actor_id,details FROM audit_logs
+        WHERE action='canonical_import_replay_requested' AND entity_key=$1`,[target])).rows;
+      assert(requests.some(row=>row.actor_id===fixtureUserId &&
+        JSON.stringify(row.details.sourceRowNumbers)==="[2]" && row.details.selectionOnly===true));
+      check(true,"Real authenticated CSRF-protected HTTP replay fulfills only the requested original row and records its requesting actor");
+    }finally {
+      await new Promise<void>((resolve,reject)=>server.close(error=>error?reject(error):resolve()));
+    }
+  }else if(phase==="faults"){
     const rows=syntheticRows(),execution=await seedExecution(rows,"faults");
     const target=(await items(execution))[0];
     await probe.query(`CREATE FUNCTION fixture_recovery_claim_notification() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -306,13 +434,17 @@ try {
     const original=(await executions("retained_original"))[0];assert(original);
     const rows=inputRows(),before=await baseline();
     const accountingBefore=(await probe.query("SELECT source_row_number,disposition,reason_code,row_fingerprint FROM import_row_dispositions WHERE execution_id=$1 ORDER BY source_row_number",[original.id])).rows;
-    if(phase==="replay")await probe.query(`UPDATE cro03_enrichment_items item SET state='blocked',
-      terminal_code='STAGING_RECIPE_DISABLED',next_attempt_at=clock_timestamp()-interval '1 hour'
-      FROM cro03_enrichment_batches batch WHERE batch.id=item.batch_id AND batch.idempotency_key LIKE $1`,
-    [`csv-source:${original.id}:%`]);
+    const remainingReplayRows=new Set(rows.map(row=>row.sourceRowNumber));
     let transientFailures=0,cycles=0;
     for(;cycles<100;cycles++){
-      const results=await Promise.allSettled([processCanonicalImportRecoveryTick(),processCanonicalImportRecoveryTick()]);
+      const replayScope=phase==="replay"
+        ? {executionId:original.id,sourceRowNumbers:[...remainingReplayRows].slice(0,250)} : undefined;
+      const results=await Promise.allSettled(replayScope
+        ? [processCanonicalImportRecoveryTick({replay:replayScope})]
+        : [processCanonicalImportRecoveryTick(),processCanonicalImportRecoveryTick()]);
+      if(replayScope)for(const result of results)if(result.status==="fulfilled")
+        for(const row of result.value.replay?.rowOutcomes ?? [])
+          if(row.outcome!=="failed")remainingReplayRows.delete(row.sourceRowNumber);
       for(const result of results)if(result.status==="rejected"){
         // No arbitrary error becomes acceptable just because another worker
         // happened to reclaim the owner before this result was observed.
@@ -330,13 +462,13 @@ try {
          completed:state.filter(item=>item.state==="completed"&&item.qualified).length,
         running:state.filter(item=>item.state==="running").length}));
       const retry=state.filter(item=>item.state==="running" || item.terminal_code==="CANONICAL_IMPORT_RECOVERY_RETRY_REQUIRED");
-      if(retry.length)await probe.query(`UPDATE cro03_enrichment_items SET
+      if(phase!=="replay" && retry.length)await probe.query(`UPDATE cro03_enrichment_items SET
         lease_expires_at=CASE WHEN state='running' THEN clock_timestamp()-interval '1 second' ELSE lease_expires_at END,
         next_attempt_at=clock_timestamp()-interval '1 second' WHERE id=ANY($1::uuid[])`,[retry.map(item=>item.id)]);
        const eligible=state.filter(item=>(item.state==="completed"&&!item.qualified) ||
          item.terminal_code==="STAGING_RECIPE_DISABLED" || item.state==="running" ||
         item.terminal_code==="CANONICAL_IMPORT_RECOVERY_RETRY_REQUIRED");
-      if(!eligible.length)break;
+      if(phase==="replay" ? remainingReplayRows.size===0 : !eligible.length)break;
     }
     check(cycles<100,"Concurrent real recovery workers converge without unresolved retry/running work");
     const final=await items(original.id);
@@ -386,7 +518,11 @@ try {
     const protectedRelationships=await verifyRetainedBusinessRelationships(probe);
     check(true,"Every original projected relationship, decision and evidence row is preserved");
     check(true,"Every original row, expected mailbox, business link and fingerprint-bound provenance is reconciled; immutable dispositions unchanged");
-    if(phase==="replay"){assert.deepEqual(await baseline(),before);check(true,"Full retained-workload materialization replay creates no contact, business or provenance duplicates");}
+    if(phase==="replay"){
+      assert.equal(remainingReplayRows.size,0,"Every original must traverse the actual native replay selector");
+      assert.deepEqual(await baseline(),before);
+      check(true,"Full retained-workload materialization replay creates no contact, business or provenance duplicates without item rearming or lease expiry");
+    }
     const report={phase,rows:1472,fulfilled:final.filter(item=>item.state==="completed").length,
       held,provenMailboxes:mailboxes,cycles:cycles+1,explicitLeaseExpiryFailures:transientFailures,
       ...protectedRelationships,

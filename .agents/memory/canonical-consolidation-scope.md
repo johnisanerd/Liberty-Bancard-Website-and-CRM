@@ -3,6 +3,22 @@ name: Canonical consolidation acceptance
 description: Finish the original scope and distinguish implementation handoff from actual production acceptance.
 ---
 
+## Owner-approved intake closure exception
+
+The owner permitted closing Intake and Business Assignment while returning to
+the remaining contacts and results reconciliation later. This is an explicit
+exception to the earlier requirement to keep that task open through all
+production acceptance; it is not a system-wide abandonment of acceptance.
+Task closure must remain distinct from verified production acceptance.
+
+**Why:** The user requested closure and deferral after receiving the estimated
+remaining scan time.
+
+**How to apply:** Preserve the deferred production obligations and original
+evidence without presenting them as passed. A background full-pass notification
+does not itself authorize resuming deferred production writes or tests. Refer
+to the intake certification and live-restart documents when the user returns.
+
 Make the normal enrichment workflow understandable without requiring the owner
 to navigate separate programs, run jobs, approve routine rows or link records
 manually. Navigation and automatic record progression are both part of completion.
@@ -36,6 +52,7 @@ actual access, authorization or scope decision.
 and requesting incremental publishes without end-to-end progress, and explicitly
 rejected stopping after identifying a confirmed production deadlock.
 They repeated: “I need you to finish the task then and quit stopping.”
+They again objected: “Yet you've stopped 50+ times for no reason.”
 
 **How to apply:** Keep scope-specific proof separate: ingestion, discovery,
 qualification, validation and scheduled production convergence are not

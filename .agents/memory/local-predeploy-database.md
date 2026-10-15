@@ -30,3 +30,14 @@ sequentially without that deadline.
 
 **How to apply:** Monitor the final exit result, inspect each certificate's
 completion output and verify disposable cleanup before claiming a pass.
+
+Freeze versioned application, build and fixture inputs for the entire acceptance
+batch, not just while building. Keep parallel source edits in another worktree.
+
+**Why:** Changing a protected browser fixture between two suites invalidated
+the production artifact's input identity even though application code stayed
+unchanged. The integrity rejection was correct, not a test to waive.
+
+**How to apply:** Commit the coherent batch, build once, and make no bound-input
+edits until all selected suites finish. Rebuild after verification repairs and
+do not carry prior passing receipts across the changed input identity.

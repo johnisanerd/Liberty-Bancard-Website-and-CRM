@@ -115,6 +115,9 @@ try {
       if(phase==="recover"||phase==="upload_interrupt")await run(["scripts/migrate.ts"]);
       await run(["scripts/certification/test-retained-canonical-import-recovery.ts",phase]);
     }
+  } else if(process.argv.includes("--scoped-replay-only")) {
+    env.SESSION_SECRET=randomBytes(32).toString("hex");
+    await run(["scripts/certification/test-retained-canonical-import-recovery.ts","scoped_replay"]);
   } else if(process.argv.includes("--recovery-faults-only")) {
     await withLocalClient(cluster.admin,client=>client.query(
       'CREATE DATABASE "test_retained_faults" TEMPLATE "test_retained_template"'));

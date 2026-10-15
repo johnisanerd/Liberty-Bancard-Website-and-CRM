@@ -1,4 +1,4 @@
-- [Canonical consolidation completion](canonical-consolidation-scope.md) — Finish the original scope; production blockers do not justify stopping independent local work.
+- [Canonical consolidation completion](canonical-consolidation-scope.md) — Finish independent work; owner-approved intake closure defers production acceptance rather than claiming it passed.
 - [C2 Contact header scope](c2-contact-header-scope.md) — Header/action hierarchy remains C2; final eleven-entry sidebar stays C5; qualify rendered/action evidence separately.
 - [Multi-mailbox restart proof](multi-mailbox-restart-proof.md) — Certify ordinary upload restart separately from deferred-item recovery; immutable row accounting is not fulfillment.
 - [Original-row claim planning](original-row-claim-planning.md) — Verify the full payload-extraction plan; limit scalar work before opening workbook JSON.
@@ -147,3 +147,4 @@
 - [Transaction rollback masking](transaction-rollback-masking.md) — Idle termination may surface only as failed rollback; preserve both errors and never infer healthy work from a lease alone.
 - [Production worker hosting](production-worker-hosting.md) — Owner selected Reserved VM for continuous workers; configured hosting is not live deployment or acceptance proof.
 - [Coverage nested existence probes](coverage-parameterized-existence.md) — An indexed outer key probe can still rebuild full-universe hashes inside nested source/business joins.
+- [Denied production compilation](denied-production-compilation.md) — Production compilation inherits test deny preloads; isolate compiler purpose without relaxing fixture/runtime safety.

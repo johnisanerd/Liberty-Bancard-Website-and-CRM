@@ -514,3 +514,73 @@ mtime_ms = 1791481871418
 storage_uri = "gcs://replit-rams-assets-riker/rams/assets/repl:92fd513c-d028-45ae-b664-31ad54630ef0/12da8a19-2f3b-489b-9265-5c6c800ff121/c6180ee2-1a4c-4762-9555-46afefe19b0d"
 storage_version_token = "1791482003470637"
 content_type = "text/markdown"
+
+[[outputs]]
+id = "2gRlGopO0tMbqrw8IIFxb"
+uri = "file://generated-artifacts/git-integration-audit/README.md"
+type = "text"
+title = "Git integration audit — findings and interpretation"
+description = "Confirmed gaps, all screenshot branches, historical differences, and safety limits for both local main and origin/main."
+logical_id = "c2e0c6ff-cbcf-425c-81bc-23290f2c2642"
+content_hash = "sha256:6ee6d128f19dd8a0c5f8bc2a1b53fd751bcf3deb136e3ff1298e6f41e3863e26"
+size = 10736
+mtime_ms = 1792030072846
+storage_uri = "gcs://replit-rams-assets-riker/rams/assets/repl:92fd513c-d028-45ae-b664-31ad54630ef0/c2e0c6ff-cbcf-425c-81bc-23290f2c2642/4e7cb8b2-298b-4456-8a58-2b0aa81fdd9a"
+storage_version_token = "1792030198226019"
+content_type = "text/markdown"
+
+[[outputs]]
+id = "WJcgJBIy31qQhiTOIO-mB"
+uri = "file://generated-artifacts/git-integration-audit/all-branches.csv"
+type = "table"
+title = "All 702 branches — local and remote main"
+description = "1,404 comparisons with ancestry, patch equivalence, file-state counts, and review status."
+logical_id = "e0001fbd-9137-4723-9740-0818bfdf41f6"
+content_hash = "sha256:13b30b337f73a25685415b51b46dc77dcf5fea2ccb5578136930be2332e8edd1"
+size = 403162
+mtime_ms = 1792029740214
+storage_uri = "gcs://replit-rams-assets-riker/rams/assets/repl:92fd513c-d028-45ae-b664-31ad54630ef0/e0001fbd-9137-4723-9740-0818bfdf41f6/a1c73f99-ab30-4624-8829-4a19232e7114"
+storage_version_token = "1792030199177319"
+content_type = "text/csv"
+
+[[outputs]]
+id = "tE9VPiY5gY0ILelRBFYsX"
+uri = "file://generated-artifacts/git-integration-audit/absent-file-versions.csv"
+type = "table"
+title = "Absent historical file versions"
+description = "Every deduplicated absence signal against both mains, grouped by application, tests/config, and documentation. Not an automatic merge list."
+logical_id = "b81e4e00-0b20-4138-b866-a9663bd502b6"
+content_hash = "sha256:1f58cf4192c81c8198d0f6b5e2584bba5269fbf1a73d2b7e6b2bff59995be110"
+size = 264140
+mtime_ms = 1792029856442
+storage_uri = "gcs://replit-rams-assets-riker/rams/assets/repl:92fd513c-d028-45ae-b664-31ad54630ef0/b81e4e00-0b20-4138-b866-a9663bd502b6/14fcb174-2339-4e61-ad68-482deb535a78"
+storage_version_token = "1792030200257763"
+content_type = "text/csv"
+
+[[outputs]]
+id = "UbTFeShFgiF9FLAupLyvU"
+uri = "file://generated-artifacts/git-integration-audit/missing-and-overlapping-files.csv"
+type = "table"
+title = "Complete nonmatching file inventory"
+description = "10,655 file comparisons separating absent deltas from overlapping or superseded versions."
+logical_id = "3392d1a8-da53-4f7f-b145-ef234eb73973"
+content_hash = "sha256:7421a9e283c0638807dfac88693ab259ab444160641315e87e019ccb52572def"
+size = 2959773
+mtime_ms = 1792029776246
+storage_uri = "gcs://replit-rams-assets-riker/rams/assets/repl:92fd513c-d028-45ae-b664-31ad54630ef0/3392d1a8-da53-4f7f-b145-ef234eb73973/c2b12bbd-0186-4f85-bc1b-5729a1730875"
+storage_version_token = "1792030201254979"
+content_type = "text/csv"
+
+[[outputs]]
+id = "eifp6o2PPazwjjIddYGJw"
+uri = "file://generated-artifacts/git-integration-audit/commits-outside-main.csv"
+type = "table"
+title = "Complete outstanding commit-history ledger"
+description = "3,299 commits classified separately against local main and origin/main, including copied patches and historical merges."
+logical_id = "319b0a6d-6e3a-4278-b3ce-a17cbfdc7700"
+content_hash = "sha256:6b76b9f5a1fec6e70047ee68960a64be488eccc9678e96470f33e585bf11f55e"
+size = 712779
+mtime_ms = 1792029740358
+storage_uri = "gcs://replit-rams-assets-riker/rams/assets/repl:92fd513c-d028-45ae-b664-31ad54630ef0/319b0a6d-6e3a-4278-b3ce-a17cbfdc7700/174ae913-cca4-4280-ba39-de857b5ce750"
+storage_version_token = "1792030202342926"
+content_type = "text/csv"

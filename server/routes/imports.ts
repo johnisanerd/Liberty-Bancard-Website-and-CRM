@@ -42,6 +42,8 @@ import { sanitizeFirstName } from "../services/contact-name-utils";
 import { publicLeadRateLimit } from "../middleware/public-rate-limit";
 import { serverError } from "../utils/server-error";
 import { registerPersistedCsvProcessor, processPersistedCsvImport } from "../services/csv-import-processor";
+import { processCanonicalImportRecoveryTick } from "../services/canonical-import-recovery-worker";
+import { canonicalRecoverableImportAccountingSql } from "../services/canonical-import-recovery-contract";
 import { recordContactBusinessLinkCandidate } from "../services/commercial-link-authority";
 import { importDispositionCompatibility } from "@shared/import-disposition-summary";
 import { claimInboundRequest, orchestrateInboundRequest, setInboundRequestLifecycle } from "../services/inbound-request-authority";
@@ -1391,6 +1393,48 @@ Guidelines:
       };
     }));
     res.json(withDurableOutcomes);
+  });
+
+  // Bounded replay uses the existing retained worker and its normal native
+  // claims, never item resets or a second import execution. CSRF is global.
+  app.post("/api/import-executions/:executionId/replay-retained",
+    isDashboardUser, requireRole("admin"), async (req,res) => {
+    const parsed=z.object({
+      executionId:z.string().uuid(),
+      sourceRowNumbers:z.array(z.number().int().positive().max(2_147_483_647)).min(1).max(250)
+        .refine(values=>new Set(values).size===values.length,"Duplicate source rows"),
+    }).safeParse({executionId:req.params.executionId,sourceRowNumbers:req.body?.sourceRowNumbers});
+    if(!parsed.success)return res.status(400).json({code:"CANONICAL_IMPORT_REPLAY_INVALID_SCOPE"});
+    const {executionId,sourceRowNumbers}=parsed.data;
+    try {
+      const execution=(await db.execute(sql`SELECT id,status,total_rows FROM import_executions
+        WHERE id=${executionId}::uuid`) as any).rows[0];
+      if(!execution)return res.status(404).json({code:"IMPORT_EXECUTION_NOT_FOUND"});
+      if(execution.status!=="completed" || sourceRowNumbers.some(row=>row>Number(execution.total_rows)))
+        return res.status(409).json({code:"CANONICAL_IMPORT_REPLAY_SCOPE_NOT_RECOVERABLE"});
+      const scoped=(await db.execute(sql`SELECT accounting.source_row_number
+        FROM import_row_dispositions accounting
+        WHERE accounting.execution_id=${executionId}::uuid
+          AND accounting.source_row_number IN (${sql.join(sourceRowNumbers.map(row=>sql`${row}`),sql`,`)})
+          AND ${canonicalRecoverableImportAccountingSql()}
+          AND EXISTS (SELECT 1 FROM cro03_enrichment_batches batch
+            JOIN cro03_batch_memberships member ON member.batch_id=batch.id
+            JOIN cro03_source_observations observation ON observation.id=member.source_observation_id
+            WHERE batch.idempotency_key='csv-source:'||accounting.execution_id::text||':'||accounting.source_row_number::text
+              AND batch.purpose='staging_review'
+              AND observation.payload->>'sourceFormat' IN ('google_maps_outscraper','apollo_lead_list'))`) as any).rows;
+      if(scoped.length!==sourceRowNumbers.length)
+        return res.status(409).json({code:"CANONICAL_IMPORT_REPLAY_SCOPE_NOT_RECOVERABLE"});
+      await db.execute(sql`INSERT INTO audit_logs(action,entity_type,entity_key,details,actor_type,actor_id)
+        VALUES('canonical_import_replay_requested','import_execution',${executionId},
+          ${JSON.stringify({sourceRowNumbers,selectionOnly:true})}::jsonb,
+          'user',${String((req.user as any).id)})`);
+      const result=await processCanonicalImportRecoveryTick({
+        maxItems:sourceRowNumbers.length,replay:{executionId,sourceRowNumbers}});
+      // Attempted is not acceptance. Callers still reconcile physical evidence,
+      // holds and unchanged accounting; remaining rows can be busy/ineligible.
+      return res.json(result);
+    }catch(error){serverError(res,error);}
   });
 
   // Admin: manually mark a processing import as interrupted (e.g. if stale
