@@ -225,10 +225,12 @@ deployed application or require another publication.
 Sustained successful inspection is established. Three distinct ordinary
 assignment-writing cycles are not yet established: the four confirmed new
 assignments occurred in two early cycles, followed by unchanged/held work.
-The existing read-only observer continues, bounded to the next new commit,
-current-pass completion or its observation deadline. Full current hold
-qualification and ordinary-upload restart acceptance remain separate and
-unproven; no live fault or controlled replay was run.
+The existing read-only observer was bounded to the next new commit,
+current-pass completion or its observation deadline; its terminal result is
+recorded below. Current hold qualification was unfinished at this observation
+and was subsequently performed as documented below. Ordinary-upload restart
+acceptance remains separate and unproven; no live fault or controlled replay
+was run.
 
 ## Current-facts qualification and consolidated recovery correction
 
@@ -329,9 +331,42 @@ and `repaired-original-claim-plan.json`.
 
 These application corrections require one consolidated publication before the
 ordinary production workers can demonstrate their effects. They have not been
-published or force-applied by this audit. The original bounded observer remains
-active and its result is separate: advancing scanned/held counters do not prove
-a third assignment-writing cycle. Keep the continuation open for the observer's
-terminal result and subsequent production receipt/assignment reconciliation.
+published or force-applied by this audit. The original bounded observer's
+terminal result is recorded below: advancing scanned/held counters do not prove
+a third assignment-writing cycle. Keep the continuation open for subsequent
+production receipt/assignment reconciliation after the consolidated publication.
 Outbound remains paused. No new task/pipeline, reset, re-upload, forced link,
 live fault or controlled production replay was introduced.
+
+## Bounded observer terminal reconciliation
+
+The observer exited with code 0 after its observation window elapsed, not
+because an assignment or full-pass acceptance condition succeeded. Its 128
+retained authenticated samples span **11:10:16–13:16:41 UTC on October 15**,
+including the earlier samples carried forward by the resumed observation.
+
+- Every sample served `95ba3eaf34d69beaa79e4151fa4b0470329d8099`.
+  A fresh public health request after the observer exited still served that
+  revision. The consolidated recovery repairs are therefore not yet live.
+- The cursor advanced from **7,678 to 162,936** while preserving the original
+  run ID and exact pass-start/change-window strings.
+- Scanned attempts rose by **17,953**, and held attempts rose by the same
+  amount. Committed assignments stayed at **22** throughout these samples.
+- Every sample had `lastError=null` and current population evidence. No sample
+  reported current-pass completion.
+- The terminal population remained **157,446 active contacts, 3,540 currently
+  verified assignments, 153,906 unresolved contacts**, and zero legacy-only
+  projected assignments.
+
+This establishes continued error-free checkpoint progress during the observed
+interval, not a third distinct assignment-writing cycle, a completed incremental
+pass or original-row fulfillment. The observer's import summaries do not replace
+coordinate-level fulfillment receipts. Its clean process exit must not be
+reported as production acceptance.
+
+The existing continuation remains open. After the owner publishes the tested
+consolidated corrections, verify the actual served identity and ordinary-worker
+assignment/receipt outcomes without changing the retained run, cursor, window or
+original import accounting. No additional old-build observation was started,
+and no production reset, replay, forced link or outbound-control change was
+made to obtain this result.
