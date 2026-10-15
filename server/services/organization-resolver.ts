@@ -96,3 +96,44 @@ export async function peekOrganizationResolution(raw: OrganizationIdentity): Pro
   return result.kind==="create" ? {kind:"would_create"} :
     {kind:"matched",business:candidates.find(c=>c.business.id===result.id)!.business};
 }
+
+/**
+ * Mirror an ALREADY ESTABLISHED provider place identity onto the business row.
+ * canonical_source_links is unique per (system,type,stable_key), so a place
+ * link proves which single business owns that Google place. Businesses that
+ * were matched (not created) by an earlier import carry the link but a NULL
+ * google_place_id, which the relationship evaluator reads as "no stable
+ * identifier". Writes only when the business owns the exact place link, the
+ * column is blank, and no other business holds the identifier. Never overwrites.
+ */
+export async function mirrorEstablishedPlaceIdentity(tx: ResolutionTransaction, businessId: number, place: string | null | undefined):
+  Promise<"mirrored" | "not_applicable"> {
+  const key = place?.trim();
+  if (!key) return "not_applicable";
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`place:${key}`}::text,1642))`);
+  const result: any = await tx.execute(sql`UPDATE businesses b
+    SET google_place_id=${key}::text, updated_at=clock_timestamp()
+    WHERE b.id=${businessId} AND b.record_class='canonical' AND nullif(btrim(b.google_place_id),'') IS NULL
+      AND EXISTS(SELECT 1 FROM canonical_source_links l WHERE l.business_id=b.id
+        AND l.source_system IN ('outscraper','google_maps','google') AND l.source_type='place'
+        AND l.stable_key=${key}::text)
+      AND NOT EXISTS(SELECT 1 FROM businesses o WHERE o.id<>b.id AND o.google_place_id=${key}::text)
+    RETURNING b.id`);
+  return (result?.rows ?? result ?? []).length ? "mirrored" : "not_applicable";
+}
+
+/** Set-based, bounded form of mirrorEstablishedPlaceIdentity for businesses with exactly one place link. */
+export async function mirrorEstablishedPlaceIdentities(tx: ResolutionTransaction, limit = 200): Promise<number> {
+  const result: any = await tx.execute(sql`WITH one AS (
+      SELECT business_id, min(stable_key) k FROM canonical_source_links
+      WHERE source_system IN ('outscraper','google_maps','google') AND source_type='place' AND stable_key<>''
+      GROUP BY business_id HAVING count(DISTINCT stable_key)=1),
+    pick AS (
+      SELECT b.id, one.k FROM businesses b JOIN one ON one.business_id=b.id
+      WHERE b.record_class='canonical' AND nullif(btrim(b.google_place_id),'') IS NULL
+        AND NOT EXISTS(SELECT 1 FROM businesses o WHERE o.id<>b.id AND o.google_place_id=one.k)
+      ORDER BY b.id LIMIT ${limit} FOR UPDATE OF b SKIP LOCKED)
+    UPDATE businesses b SET google_place_id=pick.k, updated_at=clock_timestamp()
+    FROM pick WHERE b.id=pick.id AND nullif(btrim(b.google_place_id),'') IS NULL RETURNING b.id`);
+  return (result?.rows ?? result ?? []).length;
+}

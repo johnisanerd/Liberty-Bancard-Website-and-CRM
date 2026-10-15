@@ -3,7 +3,7 @@ import { sql } from "drizzle-orm";
 import type { SystemLinkFacts } from "./contact-business-system-link-policy";
 import { identityNameSql, identityDomainSql, relationshipReasonsSql } from "../../shared/relationship-evidence-sql";
 import { evidenceRelationshipCandidateCte } from "./contact-business-evidence-candidates";
-import { hasMaterializableSourceEvidence } from "./contact-business-materialization-policy";
+import { hasMaterializableSourceEvidence, MATERIALIZATION_RULE_VERSION } from "./contact-business-materialization-policy";
 import { contactBusinessChangeFilter } from "./contact-business-change-filter";
 
 const rows = (result: any): any[] => result?.rows ?? result ?? [];
@@ -143,7 +143,8 @@ export async function loadEvidenceRelationshipPage(
       {contactRevision:row.contactRevision,evidenceRevision:row.materializationEvidenceRevision}]));
     for(const outcome of outcomes) {
       const current=revisions.get(Number(outcome.entity_key));
-      if(outcome.recent && current && outcome.details?.contactRevision===current.contactRevision &&
+      if(outcome.recent && current && outcome.details?.materializerRule===MATERIALIZATION_RULE_VERSION &&
+        outcome.details?.contactRevision===current.contactRevision &&
         outcome.details?.evidenceRevision===current.evidenceRevision)
         recentlyAttempted.add(Number(outcome.entity_key));
     }

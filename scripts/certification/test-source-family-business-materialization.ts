@@ -59,5 +59,61 @@ try {
   assert.equal((await pool.query("SELECT count(*)::int n FROM businesses WHERE website_domain=$1",[domain])).rows[0].n,3);checks++;
   const weak=await fixture("ghl_sync","Fort Lauderdale","40 Main St",true);
   assert.equal((await materializeSupportedContactBusiness(weak,async()=>{})).status,"held");checks++;
+  // A business matched (not created) by an earlier import owns the exact provider
+  // place source link but a NULL google_place_id. The original retained place_id
+  // plus that link must reach the relationship evaluator.
+  {
+    const {normalOrganizationName}=await import("../../server/services/organization-resolution-policy");
+    const {mirrorEstablishedPlaceIdentity}=await import("../../server/services/organization-resolver");
+    const placeName=`Registry Origin ${randomUUID()} LLC`,placeId=`ChIJ${randomUUID()}`,placeDomain=`${randomUUID()}.test`;
+    const biz=(await pool.query(`INSERT INTO businesses(canonical_name,normalized_name,city,state,record_class)
+      VALUES($1,$2,'Boca Raton','FL','canonical') RETURNING id`,[placeName,normalOrganizationName(placeName)])).rows[0].id;
+    await pool.query(`INSERT INTO canonical_source_links(business_id,source_system,source_type,stable_key,raw_evidence)
+      VALUES($1,'outscraper','place',$2,'{}'::jsonb)`,[biz,placeId]);
+    const proof={canonicalName:placeName,websiteDomain:placeDomain,mainPhone:"+15615550142",
+      streetAddress:"1120 Holland Dr Ste 07, Boca Raton, FL 33487",city:"Boca Raton",state:"Florida"};
+    const contactId=(await pool.query(`INSERT INTO contacts(first_name,last_name,email,phone,company_name,address,city,state,website,record_class)
+      VALUES('Place','Origin',$1,$2,$3,$4,'Boca Raton','Florida',$5,'production') RETURNING id`,
+      [`${randomUUID()}@gmail.com`,proof.mainPhone,placeName,proof.streetAddress,`http://${placeDomain}/`])).rows[0].id;
+    await pool.query(`INSERT INTO contact_source_events(contact_id,event_key,source_category,source_type,source_external_id,actor_type,metadata)
+      VALUES($1,$2,'csv_import','outscraper',$3,'system',$4::jsonb)`,
+      [contactId,randomUUID(),placeId,JSON.stringify({place_id:placeId,sourceFormat:"google_maps_outscraper",businessEvidence:proof})]);
+    const before=(await pool.query("SELECT google_place_id FROM businesses WHERE id=$1",[biz])).rows[0];
+    assert.equal(before.google_place_id,null);checks++;
+    const result=await materializeSupportedContactBusiness(contactId,async()=>{});
+    assert.equal(result.status,"matched");
+    assert.equal((result as any).businessId,biz);checks+=2;
+    assert.equal((await pool.query("SELECT google_place_id FROM businesses WHERE id=$1",[biz])).rows[0].google_place_id,placeId);checks++;
+    const preview=(await loadEvidenceRelationshipPage(db,0,1,contactId)).previews[0];
+    assert(preview.eligible,`expected eligible, got ${JSON.stringify(preview.reasons)}`);checks++;
+    const applied=await applyContactBusinessSystemLink(preview as any);
+    assert.equal(applied.status,"applied");checks++;
+    // No mirror without the exact place link, and never an overwrite.
+    const bare=(await pool.query(`INSERT INTO businesses(canonical_name,normalized_name,record_class)
+      VALUES($1,$2,'canonical') RETURNING id`,[`Bare ${randomUUID()}`,`bare${randomUUID()}`])).rows[0].id;
+    await db.transaction(async tx=>{
+      assert.equal(await mirrorEstablishedPlaceIdentity(tx,bare,`ChIJ${randomUUID()}`),"not_applicable");
+      assert.equal(await mirrorEstablishedPlaceIdentity(tx,biz,"ChIJother"),"not_applicable");
+    });
+    assert.equal((await pool.query("SELECT google_place_id FROM businesses WHERE id=$1",[biz])).rows[0].google_place_id,placeId);checks+=2;
+    // Set-based mirror: one place link, blank column, unique owner only.
+    const {mirrorEstablishedPlaceIdentities}=await import("../../server/services/organization-resolver");
+    const key=`ChIJ${randomUUID()}`,sole=(await pool.query(`INSERT INTO businesses(canonical_name,normalized_name,record_class)
+      VALUES($1,$2,'canonical') RETURNING id`,[`Sole ${randomUUID()}`,`sole${randomUUID()}`])).rows[0].id;
+    await pool.query(`INSERT INTO canonical_source_links(business_id,source_system,source_type,stable_key,raw_evidence)
+      VALUES($1,'outscraper','place',$2,'{}'::jsonb)`,[sole,key]);
+    const taken=(await pool.query(`INSERT INTO businesses(canonical_name,normalized_name,record_class,google_place_id)
+      VALUES($1,$2,'canonical',$3) RETURNING id`,[`Held ${randomUUID()}`,`held${randomUUID()}`,`ChIJheld${randomUUID()}`])).rows[0];
+    const heldLink=(await pool.query("SELECT google_place_id FROM businesses WHERE id=$1",[taken.id])).rows[0].google_place_id;
+    const rival=(await pool.query(`INSERT INTO businesses(canonical_name,normalized_name,record_class) VALUES($1,$2,'canonical') RETURNING id`,
+      [`Rival ${randomUUID()}`,`rival${randomUUID()}`])).rows[0].id;
+    await pool.query(`INSERT INTO canonical_source_links(business_id,source_system,source_type,stable_key,raw_evidence)
+      VALUES($1,'outscraper','place',$2,'{}'::jsonb)`,[rival,heldLink]);
+    const count=await db.transaction(tx=>mirrorEstablishedPlaceIdentities(tx));
+    assert(count>=1);checks++;
+    assert.equal((await pool.query("SELECT google_place_id FROM businesses WHERE id=$1",[sole])).rows[0].google_place_id,key);checks++;
+    assert.equal((await pool.query("SELECT google_place_id FROM businesses WHERE id=$1",[rival])).rows[0].google_place_id,null);checks++;
+    assert.equal(await db.transaction(tx=>mirrorEstablishedPlaceIdentities(tx)),0);checks++;
+  }
   console.log(`Source-family materialization: ${checks} checks passed; personal email allowed; shared-brand locations separate; no providers/outbound`);
 } finally {await pool.end();}

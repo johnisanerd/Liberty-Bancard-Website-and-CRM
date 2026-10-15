@@ -764,3 +764,60 @@ are not attributed per contact, so this does not show why. They were not forced.
 
 Not yet shown: that all unfulfilled originals are fulfilled, and any link for the 11 older contacts above. This
 continues as ordinary worker progress; the item stays open.
+
+## Unlinked-contact reconciliation and the matched-but-unlinked cause (read-only production, 2026-10-15 ~21:00 UTC)
+
+One mutually exclusive partition of the 153,902 active production contacts without a business, using the evaluator's
+own name/domain normalization and canonical businesses only (priority order, each contact in exactly one bucket;
+sums to 153,902):
+
+| Bucket | Contacts |
+| --- | ---: |
+| Retained structured business evidence (reached the materializer) | 11 |
+| Domain and name agree on one unique canonical business | 15,246 |
+| Domain and name agree, several businesses share a key | 2,160 |
+| Domain and name point to different businesses | 89 |
+| Domain only, one business | 8,538 |
+| Domain only, several businesses | 1,393 |
+| Name only, one business | 784 |
+| Name only, several businesses | 1,020 |
+| No canonical match; Sunbiz name and phone/address/website agree | 1,464 |
+| No canonical match; Sunbiz name only, one entity | 13,301 |
+| No canonical match; Sunbiz name only, several entities | 1,238 |
+| No canonical or Sunbiz match | 108,631 |
+| No company name | 27 |
+
+The earlier figures (26,032 unique + ~3,800 ambiguous + 126,156 unmatched; 15,187 versus 15,240; 76 conflicts) were
+overlapping sets built with different normalizations, which is why they exceeded the population. The 15,246 /
+89 above replace them. The worker's cumulative `reasons` counters count contact-passes across the backfill and
+incremental cycles; they are not a contact population and must not be compared with these buckets.
+
+Why the 15,246 "domain+name agree" contacts are not links: for 14,794 of them the matching business has no
+canonical source link at all (a candidate row from SDR dedupe exists for 14,817), i.e. the business was derived from
+the same contact data, and copying that agreement would be self-corroboration. Only 452 of the 15,246 have a business
+with any independent source link; all 452 fail `independent_corroboration_required`, and 294 also fail
+`location_state_conflict` (253 contacts recorded in Alabama against a Florida business), 2 fail registry/trade name
+conflicts. They stay held for those specific reasons.
+
+Cause for the 11 matched-but-unlinked contacts (160787, 160788, 160876, 160877, 160879, 161230, 161232, 161535,
+162964-162966; businesses 47089, 40238, 10205, 17851, 71053): the materializer matched existing Sunbiz-bootstrap
+businesses by name+city+state but did not pass the original Outscraper `place_id` to the resolver. Those businesses
+already own an `outscraper/place` source link with that exact key, but `businesses.google_place_id` was NULL, so the
+evaluator's maps branch saw no stable identifier and every alternative failed `independent_corroboration_required`.
+Substituting the established place key makes all 11 evaluate with no rejection reasons. System-wide 23 businesses
+(27 unlinked contacts with exact event place ids) are in that state; 19 contacts clear corroboration, 8 of those also
+carry a real `company_or_trade_name_conflict` and stay held; 18 other contacts whose business already has the column
+set fail `company_or_trade_name_conflict` and stay held.
+
+Repair (code, certified on a disposable database, not yet in production): (1) the materializer passes the original
+retained place id to the resolver; (2) a blank-only, exact-source-link, unique-owner mirror of the established place
+identity (`mirrorEstablishedPlaceIdentity` / `mirrorEstablishedPlaceIdentities`, audited as
+`business_place_identity_mirrored`) runs in the ordinary worker before each scan; (3) materializer outcomes carry a
+rule version so contacts held by an older rule are revisited without waiting 24 hours. No contact field is copied as
+corroboration; the ordinary canonical writer still applies the link. Certification: source-family materialization
+42 checks, source-only reconsideration 13 checks, CRM link automation suite passed, `tsc` clean.
+
+Remaining not recoverable by this path (specific limits): 1,397 contacts have structural Sunbiz provenance
+(prospect or identical email to an entity record) but only a raw Sunbiz entity exists; creating the business from a
+registry entity is the governed Sunbiz bootstrap (typed-confirmation admin route, not wired to workers), not the
+contact materializer. 108,631 contacts have no retained organization evidence and no canonical or Sunbiz match.

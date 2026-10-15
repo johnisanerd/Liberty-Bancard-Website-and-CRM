@@ -11,6 +11,8 @@ import { runCanonicalTransaction } from "./canonical-transaction-retry";
 import { materializeSupportedContactBusiness } from "./contact-business-materialization";
 import { loadEvidenceRelationshipPage } from "./contact-business-evidence-page";
 import {readContactLinkAssignmentPopulation} from "./contact-link-population";
+import {mirrorEstablishedPlaceIdentities} from "./organization-resolver";
+import {MATERIALIZATION_RULE_VERSION} from "./contact-business-materialization-policy";
 
 const KEY = "contact_link_automation_v1";
 const RULE = "independent_guarded_system_links_v2";
@@ -137,6 +139,34 @@ export async function processContactLinkAutomationTick(
       state.scanStartedAt = claim[0].scan_time;
       await checkpoint(state, token);
     }
+    const authorityCheck = async (tx:any) => {
+      const currentOwner = await lockCurrentSfpRuntimeOwner(tx);
+      if (currentOwner.ownerEpoch !== owner.ownerEpoch || currentOwner.ownerToken !== owner.ownerToken) {
+        throw new Error("CONTACT_LINK_AUTOMATION_RUNTIME_OWNER_CHANGED");
+      }
+      const result = await tx.execute(sql`SELECT value,
+        (value->>'leaseUntil')::timestamptz > NOW() AS live
+        FROM system_settings WHERE key=${KEY} FOR SHARE`);
+      const pinned = (result as any).rows?.[0];
+      if (pinned?.value?.leaseToken !== token || pinned?.live !== true) {
+        throw new Error("CONTACT_LINK_AUTOMATION_LEASE_LOST");
+      }
+      if (pinned.value.enabled !== true) throw new Error("CONTACT_LINK_AUTOMATION_DISABLED");
+      return true;
+    };
+    // Mirror already-established provider place identities onto businesses that
+    // were matched (not created) by an earlier import. Blank-only, exact place
+    // source link required; makes stable place evidence visible to the evaluator.
+    await db.transaction(async tx=>{
+      await authorityCheck(tx);
+      const mirrored=await mirrorEstablishedPlaceIdentities(tx);
+      if(mirrored>0) {
+        await tx.execute(sql`INSERT INTO audit_logs(action,entity_type,entity_key,details,actor_type,actor_id)
+          VALUES('business_place_identity_mirrored','contact_link_program',${state.runId},
+            ${JSON.stringify({businesses:mirrored,rule:MATERIALIZATION_RULE_VERSION,paidProviderCalls:0,outboundChanges:0})}::jsonb,
+            'system','system:contact-link-automation')`);
+      }
+    });
     let pages=0;
     while (pages<maxPages && Date.now()<deadline) {
     const preview = await previewContactBusinessSystemLinks({
@@ -151,21 +181,6 @@ export async function processContactLinkAutomationTick(
       if (!current?.enabled || current.leaseToken !== token) break;
       let outcome: any = null;
       let materializerOutcome: any = null;
-      const authorityCheck = async (tx:any) => {
-        const currentOwner = await lockCurrentSfpRuntimeOwner(tx);
-        if (currentOwner.ownerEpoch !== owner.ownerEpoch || currentOwner.ownerToken !== owner.ownerToken) {
-          throw new Error("CONTACT_LINK_AUTOMATION_RUNTIME_OWNER_CHANGED");
-        }
-        const result = await tx.execute(sql`SELECT value,
-          (value->>'leaseUntil')::timestamptz > NOW() AS live
-          FROM system_settings WHERE key=${KEY} FOR SHARE`);
-        const pinned = (result as any).rows?.[0];
-        if (pinned?.value?.leaseToken !== token || pinned?.live !== true) {
-          throw new Error("CONTACT_LINK_AUTOMATION_LEASE_LOST");
-        }
-        if (pinned.value.enabled !== true) throw new Error("CONTACT_LINK_AUTOMATION_DISABLED");
-        return true;
-      };
       if(!candidate.eligible && candidate.projectedBusinessId==null && candidate.currentDecisionId==null &&
         candidate.hasSupportedMaterializationEvidence) {
         const materialized=await materializeSupportedContactBusiness(candidate.contactId,authorityCheck);
@@ -182,7 +197,7 @@ export async function processContactLinkAutomationTick(
                 businessId:"businessId" in materialized ? materialized.businessId ?? null : null,
                 contactRevision:candidate.contactRevision,
                 evidenceRevision:(candidate as any).materializationEvidenceRevision ?? null,
-                runId:state.runId,paidProviderCalls:0,outboundChanges:0})}::jsonb,
+                runId:state.runId,materializerRule:MATERIALIZATION_RULE_VERSION,paidProviderCalls:0,outboundChanges:0})}::jsonb,
               'system','system:contact-link-automation')`);
         });
         state.materialization=state.materialization ?? {};

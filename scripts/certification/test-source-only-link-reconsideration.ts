@@ -4,6 +4,7 @@ import {assertDisposableTestInfrastructure} from "../test-infrastructure-guard";
 await assertDisposableTestInfrastructure({operation:"source-only-link-reconsideration",requireRedis:false});
 const {pool,db}=await import("../../server/db");
 const {loadEvidenceRelationshipPage}=await import("../../server/services/contact-business-evidence-page");
+const {MATERIALIZATION_RULE_VERSION}=await import("../../server/services/contact-business-materialization-policy");
 let checks=0;
 try {
   const label=`Source revision ${randomUUID()}`;
@@ -55,9 +56,14 @@ try {
     pool.query(`INSERT INTO audit_logs(action,entity_type,entity_key,details,actor_type,actor_id,created_at)
       VALUES('contact_link_materialization_outcome','contact',$1,$2::jsonb,'system','system:contact-link-automation',
         ${createdAt})`,[String(old.id),JSON.stringify({status:"held",
-        reasonCode:"INDEPENDENT_ORGANIZATION_CORROBORATION_REQUIRED",contactRevision:revision,evidenceRevision:evidence})]);
+        reasonCode:"INDEPENDENT_ORGANIZATION_CORROBORATION_REQUIRED",contactRevision:revision,evidenceRevision:evidence,
+        materializerRule:MATERIALIZATION_RULE_VERSION})]);
   await record("now()");
   assert(!await reaches(),"A recent outcome for the same revision defers repeat evaluation");checks++;
+  // An outcome recorded by an older materializer rule never defers re-evaluation.
+  await pool.query(`UPDATE audit_logs SET details=details-'materializerRule' WHERE action='contact_link_materialization_outcome' AND entity_key=$1`,[String(old.id)]);
+  assert(await reaches(),"A repaired materializer rule re-evaluates contacts held by an older rule");checks++;
+  await record("now()");
   await addEvidence("Orlando");
   assert(await reaches(),"New retained evidence makes the contact reachable again");checks++;
   await pool.query("DELETE FROM audit_logs WHERE action='contact_link_materialization_outcome' AND entity_key=$1",[String(old.id)]);

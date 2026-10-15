@@ -16,3 +16,20 @@ export function hasMaterializableSourceEvidence(events:unknown):boolean {
        MATERIALIZATION_SOURCE_TYPES.some(type=>type===event.source_type));
   });
 }
+
+/** Bump when materializer decisions are repaired. Outcome rows recorded by an
+ * older rule never defer re-evaluation, so a policy repair reaches previously
+ * held contacts through the ordinary worker without a manual reset. */
+export const MATERIALIZATION_RULE_VERSION="source_family_identity_v2";
+
+/** The provider place identifier retained on the ORIGINAL source event. This is
+ * the same value the ordinary provider import passes to the organization resolver. */
+export function retainedProviderPlaceId(metadata:unknown):string|null {
+  const m=metadata as Record<string,unknown>|null;
+  if(!m || typeof m!=="object" || Array.isArray(m))return null;
+  for(const key of ["place_id","placeId","google_place_id"]) {
+    const value=m[key];
+    if(typeof value==="string" && value.trim())return value.trim();
+  }
+  return null;
+}

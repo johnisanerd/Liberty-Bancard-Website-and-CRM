@@ -1,13 +1,13 @@
 import {createHash} from "node:crypto";
 import {sql} from "drizzle-orm";
 import {db} from "../db";
-import {resolveOrganization} from "./organization-resolver";
+import {resolveOrganization,mirrorEstablishedPlaceIdentity} from "./organization-resolver";
 import {runCanonicalTransaction} from "./canonical-transaction-retry";
 import {assertSystemLinkDatabaseGuard} from "./commercial-link-authority";
 import {normalizeStateIdentity} from "../../shared/state-identity";
 import {normalizeDomain,normalizePhoneE164} from "./sdr/dedupe";
 import {normalOrganizationName,normalOrganizationValue} from "./organization-resolution-policy";
-import {MATERIALIZATION_SOURCE_CATEGORIES,MATERIALIZATION_SOURCE_TYPES} from "./contact-business-materialization-policy";
+import {MATERIALIZATION_SOURCE_CATEGORIES,MATERIALIZATION_SOURCE_TYPES,retainedProviderPlaceId} from "./contact-business-materialization-policy";
 
 const rows=(result:any):any[]=>result?.rows ?? result ?? [];
 const address=(value:unknown)=>String(value ?? "").toLowerCase().replace(/[^a-z0-9]/g,"");
@@ -40,7 +40,7 @@ export async function materializeSupportedContactBusiness(contactId:number,
     const events=rows(await tx.execute(sql`SELECT * FROM (
       SELECT DISTINCT ON (source_category,source_type,coalesce(source_external_id,''))
         id,source_category,source_type,source_external_id,
-        metadata->'businessEvidence' proof FROM contact_source_events
+        metadata->'businessEvidence' proof,metadata event_metadata FROM contact_source_events
       WHERE contact_id=${contactId} AND jsonb_typeof(metadata->'businessEvidence')='object'
         AND (source_category IN (${sql.join(MATERIALIZATION_SOURCE_CATEGORIES.map(value=>sql`${value}`),sql`, `)})
           OR source_type IN (${sql.join(MATERIALIZATION_SOURCE_TYPES.map(value=>sql`${value}`),sql`, `)}))
@@ -48,6 +48,7 @@ export async function materializeSupportedContactBusiness(contactId:number,
       ) latest ORDER BY id DESC`));
     if(!events.length)return {status:"held",reasonCode:"RETAINED_ORGANIZATION_EVIDENCE_MISSING"};
     const event=events[0],proof=event.proof as BusinessEvidence;
+    const place=retainedProviderPlaceId(event.event_metadata);
     const domain=normalizeDomain(proof.websiteDomain),phone=normalizePhoneE164(proof.mainPhone);
     const name=normalOrganizationName(proof.canonicalName ?? "");
     const location=!!(address(proof.streetAddress) && proof.city?.trim() && normalizeStateIdentity(proof.state));
@@ -79,7 +80,7 @@ export async function materializeSupportedContactBusiness(contactId:number,
     ])).digest("hex")}`;
     const sourceIdentity={sourceSystem,sourceType:"organization_location",stableKey};
     const resolution=await resolveOrganization({canonicalName:proof.canonicalName,websiteDomain:domain,
-      mainPhone:phone,streetAddress:proof.streetAddress,city:proof.city,state:proof.state,sourceIdentity,
+      googlePlaceId:place,mainPhone:phone,streetAddress:proof.streetAddress,city:proof.city,state:proof.state,sourceIdentity,
       create:{recordClass:"canonical",lastSourceType:sourceSystem},transaction:tx,
       authorityCheck:async()=>{await assertAuthority(tx);return true;}});
     if(resolution.kind==="deferred")return {status:"held",reasonCode:resolution.reasonCode};
@@ -87,6 +88,7 @@ export async function materializeSupportedContactBusiness(contactId:number,
     if(!pinned || pinned.business_id!=null ||
       JSON.stringify(pinned)!==JSON.stringify(contact))throw new Error("CONTACT_BUSINESS_MATERIALIZATION_EVIDENCE_CHANGED");
     await assertAuthority(tx);
+    const placeMirror=await mirrorEstablishedPlaceIdentity(tx,resolution.business.id,place);
     const link=rows(await tx.execute(sql`INSERT INTO canonical_source_links
       (business_id,source_system,source_type,stable_key,raw_evidence)
       VALUES(${resolution.business.id},${sourceSystem},'organization_location',${stableKey},
@@ -98,7 +100,7 @@ export async function materializeSupportedContactBusiness(contactId:number,
     await tx.execute(sql`INSERT INTO audit_logs(action,entity_type,entity_key,details,actor_type,actor_id)
       VALUES('contact_business_source_materialized','contact',${String(contactId)},
         ${JSON.stringify({businessId:resolution.business.id,sourceLinkId:link.id,sourceEventId:event.id,
-          outcome:resolution.kind,rule:"source_family_identity_v1",paidProviderCalls:0,outboundChanges:0})}::jsonb,
+          outcome:resolution.kind,rule:"source_family_identity_v1",placeIdentity:placeMirror,paidProviderCalls:0,outboundChanges:0})}::jsonb,
         'system','system:contact-link-automation')`);
     return {status:resolution.kind==="created" ? "materialized" : "matched",
       businessId:resolution.business.id,sourceLinkId:String(link.id),sourceEventId:Number(event.id)};
