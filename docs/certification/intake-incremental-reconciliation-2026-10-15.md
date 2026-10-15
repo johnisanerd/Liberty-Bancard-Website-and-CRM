@@ -704,8 +704,18 @@ already committed and are regression checks only.
 * Not repaired: `test-intake-review-pages.ts` fails at baseline at the plan assertion "Full-page source namespace
   probe must execute its index" (same failure at the original baseline commit). Every assertion before it,
   including frozen-query parity with the prior implementation and the new duplicate check, passes.
-* The signed-in rendered page was not opened in a browser (sign-in required); the panel and ledger are verified
-  by jsdom renders against mocked API responses and the SQL by real PostgreSQL and production read-only runs.
+* Signed-in rendered pages, verified in a cloud browser. A private, disposable app (its own PostgreSQL and Redis,
+  synthetic accounts, real login form, provider calls denied, no session injection) served the production build of
+  commit 8d4c4066 over the public preview host, and an isolated cloud browser signed in through the real form as a
+  synthetic admin. On the Canonical Enrichment page, Imports & Sources tab, the upload ledger rendered for a six-row
+  upload: original rows 6, distinct contacts 0, verified links 0, current receipts 0, stale 0, "Deferred 6", and the
+  expanded row showed the original business name, the original reason, `STAGING RECIPE DISABLED`, "No receipt" and
+  each mailbox with "no provenance for this row". On Lead Ops, the Contact Link Coverage panel rendered the "Frozen
+  history" note, the automatic-workflow text (no manual preview/apply loop), and, for one unlinked Sunbiz entity
+  whose legal name and DBA both match a business, exactly one source-recovery card (one checkbox, one filing) with
+  no ambiguity conflict; the same page's candidate API returned one raw candidate. The fixture cannot show recovery
+  outcomes, receipts for fulfilled rows, or production numbers; those need the published build and its workers.
+  Not exercised there: the unrelated "Find company matches" preview (its route is not registered in the isolated app).
 
 ### Remaining action and acceptance
 
