@@ -104,6 +104,7 @@ const CASES: GuardCase[] = [
   { method: "GET",  path: "/api/companies",                  anon: [401], merchant: [403], admin: [200], description: "companies list" },
   { method: "GET",  path: "/api/serper/status",              anon: [401], merchant: [403], admin: [200], description: "serper status" },
   { method: "GET",  path: "/api/proxycurl/status",           anon: [401], merchant: [403], admin: [200], description: "proxycurl status" },
+  { method: "POST", path: "/api/import-executions/00000000-0000-4000-8000-000000000000/replay-retained", anon: [401], merchant: [403], admin: [403], agent: [403], manager: [403], description: "retained replay (admin only; CSRF required)" },
   { method: "POST", path: "/api/contacts/999999/archive",    anon: [401], merchant: [403], admin: [403], agent: [403], manager: [403], description: "contact archive (admin/manager; CSRF required)" },
   { method: "POST", path: "/api/contacts/999999/restore",    anon: [401], merchant: [403], admin: [403], agent: [403], manager: [403], description: "contact restore (admin/manager; CSRF required)" },
 
@@ -665,6 +666,25 @@ async function run(): Promise<void> {
         body: body === undefined ? undefined : JSON.stringify(body),
       });
     };
+
+    const replayPath="/api/import-executions/00000000-0000-4000-8000-000000000000/replay-retained";
+    const merchantAuth=await csrfAuth(merchantCookie);
+    const replayBoundaryCases=[
+      {auth:managerAuth,body:{sourceRowNumbers:[1]},expected:403,label:"manager denied with valid CSRF"},
+      {auth:agentAuth,body:{sourceRowNumbers:[1]},expected:403,label:"agent denied with valid CSRF"},
+      {auth:merchantAuth,body:{sourceRowNumbers:[1]},expected:403,label:"merchant denied with valid CSRF"},
+      {auth:adminAuth,body:{sourceRowNumbers:[]},expected:400,label:"empty replay scope rejected"},
+      {auth:adminAuth,body:{sourceRowNumbers:[1,1]},expected:400,label:"duplicate replay rows rejected"},
+      {auth:adminAuth,body:{sourceRowNumbers:[2_147_483_648]},expected:400,label:"out-of-range replay row rejected"},
+      {auth:adminAuth,body:{sourceRowNumbers:[1]},expected:404,label:"missing execution rejected without replay"},
+    ];
+    for(const test of replayBoundaryCases) {
+      const response=await mutate(test.auth,"POST",replayPath,test.body);
+      if(response.status!==test.expected) {
+        console.log(`✗ retained replay ${test.label}: ${response.status}, expected ${test.expected}`);
+        failures++;
+      }else console.log(`✓ retained replay ${test.label}`);
+    }
 
     const [archiveContactFixture] = await db.insert(contacts).values({
       firstName: "SmokeArchive",
@@ -1333,7 +1353,7 @@ async function run(): Promise<void> {
     failures++;
   }
 
-  const totalCases = CASES.length + 6 + 1 + 1 + 1 + 1; // + BOLA/ownership/reanalyze/CSV/canonical-conflicts/MI-06/MI-07/MI-08/MI-09
+  const totalCases = CASES.length + 6 + 1 + 1 + 1 + 1 + 7; // Includes authenticated retained-replay boundary checks.
   const totalPassed = totalCases - failures;
   console.log(`\n${totalPassed}/${totalCases} guarded routes/tests passed.`);
   process.exit(failures === 0 ? 0 : 1);

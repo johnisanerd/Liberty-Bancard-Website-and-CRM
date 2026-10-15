@@ -12,15 +12,34 @@ import {canonicalRecoverableImportAccountingSql,CANONICAL_IMPORT_FULFILLMENT_QUA
 import {retainedResolvedIdentitySql,verifyProviderImportIdentity,
   loadProviderImportIdentity,hasBridgeEvidenceNativeGuard} from "./provider-import-identity";
 export type RecoveryWorkClass="ordinary"|"legacy"|"hold";
+export type CanonicalImportReplayScope={executionId:string;sourceRowNumbers:number[]};
 const rows=(value:any):any[]=>value?.rows ?? value ?? [];
 const MAX_ITEMS_PER_TICK=250;
 const MAX_TICK_DURATION_MS=30_000;
+
+export function validateCanonicalImportReplayScope(scope:CanonicalImportReplayScope):void {
+  if (!scope || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(scope.executionId)
+    || !Array.isArray(scope.sourceRowNumbers) || scope.sourceRowNumbers.length<1
+    || scope.sourceRowNumbers.length>MAX_ITEMS_PER_TICK
+    || scope.sourceRowNumbers.some(row=>!Number.isSafeInteger(row) || row<1 || row>2_147_483_647)
+    || new Set(scope.sourceRowNumbers).size!==scope.sourceRowNumbers.length) {
+    throw new Error("CANONICAL_IMPORT_REPLAY_INVALID_SCOPE");
+  }
+}
 
 /** Fence observation retrieval to the actual membership's indexed ID. Do not
  * let a fingerprint join turn into a scan/de-TOAST of every source observation.
  * Open the execution's original raw JSON only AFTER the ordered one-row claim;
  * it may contain the entire workbook, not just the chosen row. */
-export function canonicalImportRecoveryClaimSql(preferred:RecoveryWorkClass="ordinary") {
+export function canonicalImportRecoveryClaimSql(preferred:RecoveryWorkClass="ordinary",
+  replay?:CanonicalImportReplayScope) {
+  if(replay)validateCanonicalImportReplayScope(replay);
+  // Explicit replay changes selection only. The original native claim,
+  // accounting, identity, owner and relationship fences still authorize writes.
+  // Never rearm items or reopen/replace a completed import execution.
+  const scope=replay ? sql`execution.id=${replay.executionId}::uuid
+    AND accounting.source_row_number IN (${sql.join(replay.sourceRowNumbers.map(row=>sql`${row}`),sql`,`)})`
+    : sql`TRUE`;
   const workClass=sql`CASE WHEN item.state='completed' THEN 'legacy'
     WHEN item.state='blocked' AND item.terminal_code IN (
       'CANONICAL_IMPORT_AMBIGUOUS_ORGANIZATION_MATCH','CANONICAL_IMPORT_INSUFFICIENT_ORGANIZATION_EVIDENCE',
@@ -55,16 +74,17 @@ export function canonicalImportRecoveryClaimSql(preferred:RecoveryWorkClass="ord
       ORDER BY raw_batch.idempotency_key DESC LIMIT 1
     ) raw_member ON TRUE
     WHERE observation.payload->>'sourceFormat' IN ('google_maps_outscraper','apollo_lead_list')
+      AND ${scope}
       AND ((item.state='blocked' AND (
         item.terminal_code='STAGING_RECIPE_DISABLED' OR item.terminal_code LIKE 'CANONICAL_IMPORT_%'))
         OR (item.state='running' AND item.current_provider='canonical_local_import'
            AND item.lease_expires_at<=clock_timestamp())
          OR (item.state='completed' AND item.terminal_code='CANONICAL_LOCAL_IMPORT_FULFILLED'
-           AND NOT EXISTS (SELECT 1 FROM audit_logs fulfillment
+            AND (${!!replay}::boolean OR NOT EXISTS (SELECT 1 FROM audit_logs fulfillment
              WHERE fulfillment.entity_type='cro03_enrichment_item' AND fulfillment.entity_key=item.id::text
                AND fulfillment.action='canonical_import_row_fulfilled'
-               AND fulfillment.details->>'qualificationVersion'=${CANONICAL_IMPORT_FULFILLMENT_QUALIFICATION_VERSION})))
-      AND item.next_attempt_at<=clock_timestamp()
+                AND fulfillment.details->>'qualificationVersion'=${CANONICAL_IMPORT_FULFILLMENT_QUALIFICATION_VERSION}))))
+      AND (${!!replay}::boolean OR item.next_attempt_at<=clock_timestamp())
     ORDER BY CASE WHEN ${workClass}=${preferred} THEN 0 ELSE 1 END,
       item.next_attempt_at,item.id LIMIT 1 FOR UPDATE OF item SKIP LOCKED
   )
@@ -83,7 +103,7 @@ export function canonicalImportRecoveryClaimSql(preferred:RecoveryWorkClass="ord
 /** Local fulfillment of retained, completed imports through their ORIGINAL
  * source work items. No fabricated import, cohort, approval or provider run. */
 export async function processCanonicalImportRecoveryTick(
-  budget:{maxItems?:number;maxDurationMs?:number}={},
+   budget:{maxItems?:number;maxDurationMs?:number;replay?:CanonicalImportReplayScope}={},
 ) {
   // These are local execution/fairness bounds, never provider admission limits.
   // Tests and callers may lower them but cannot exceed the production ceiling.
@@ -93,6 +113,7 @@ export async function processCanonicalImportRecoveryTick(
     || !Number.isInteger(maxDurationMs) || maxDurationMs<1 || maxDurationMs>MAX_TICK_DURATION_MS) {
     throw new Error("CANONICAL_IMPORT_RECOVERY_INVALID_TICK_BUDGET");
   }
+  if(budget.replay)validateCanonicalImportReplayScope(budget.replay);
    const tickStarted=Date.now();
    let processingStarted:number|null=null;
    let authorityAcquisitionMs=0;
@@ -111,6 +132,9 @@ export async function processCanonicalImportRecoveryTick(
      owner=await runCanonicalTransaction("import_owner_claim",()=>renewSfpRuntimeDeploymentOwner({
        expectedOwner:owner,boundTransaction:boundCanonicalWriteTransaction}));
    }
+   const remainingReplayRows=new Set(budget.replay?.sourceRowNumbers ?? []);
+   const rowOutcomes:Array<{sourceRowNumber:number;itemId:string;
+     outcome:"fulfilled"|"held"|"failed"|"original_unavailable"|"capability_blocked"}>=[];
    authorityAcquisitionMs=Date.now()-tickStarted;
    processingStarted=Date.now();
    const deadline=processingStarted+maxDurationMs;
@@ -126,6 +150,7 @@ export async function processCanonicalImportRecoveryTick(
   // a backlog-wide UPDATE while holding the singleton runtime-owner fence.
   // Mapped observations still cannot substitute for an original raw row.
   for (let index=0;index<maxItems && Date.now()<deadline;index++) {
+     if(budget.replay && remainingReplayRows.size===0)break;
     const token=randomUUID();
     const candidate=await runCanonicalTransaction("import_cursor_claim",()=>db.transaction(async tx=>{
       await ownerAuthorityCheck(tx);
@@ -136,7 +161,8 @@ export async function processCanonicalImportRecoveryTick(
            AND actor_id='system:canonical-import-recovery'
          ORDER BY id DESC LIMIT 1`))[0]?.work_class;
        const preferred:RecoveryWorkClass=last==="ordinary" ? "legacy" : last==="legacy" ? "hold" : "ordinary";
-        const selected=rows(await tx.execute(canonicalImportRecoveryClaimSql(preferred)))[0];
+         const selected=rows(await tx.execute(canonicalImportRecoveryClaimSql(preferred,
+           budget.replay ? {...budget.replay,sourceRowNumbers:[...remainingReplayRows]} : undefined)))[0];
       if (!selected) return null;
       if (selected.raw_row == null) {
         await tx.execute(sql`UPDATE cro03_enrichment_items
@@ -164,6 +190,7 @@ export async function processCanonicalImportRecoveryTick(
           VALUES('canonical_import_capability_opportunity','cro03_enrichment_item',${String(selected.id)},
             ${JSON.stringify({executionId:selected.execution_id,sourceRowNumber:selected.source_row_number,
               workClass:selected.work_class,rowFingerprint:retainedIdentity.fingerprint,
+              ...(budget.replay ? {explicitReplay:true} : {}),
               outcome:"blocked_source_capability",reasonCode:"PROVIDER_IMPORT_IDENTITY_BRIDGE_NATIVE_GUARD_MISSING"})}::jsonb,
             'system','system:canonical-import-recovery')`);
         return {...selected,capabilityBlocked:true};
@@ -181,13 +208,20 @@ export async function processCanonicalImportRecoveryTick(
        await tx.execute(sql`INSERT INTO audit_logs(action,entity_type,entity_key,details,actor_type,actor_id)
          VALUES('canonical_import_row_claimed','cro03_enrichment_item',${String(selected.id)},
            ${JSON.stringify({executionId:selected.execution_id,sourceRowNumber:selected.source_row_number,
-             workClass:selected.work_class,rowFingerprint:identity.fingerprint,
+              workClass:selected.work_class,rowFingerprint:identity.fingerprint,
+              ...(budget.replay ? {explicitReplay:true} : {}),
              bridgeHash:identity.bridgeHash ?? null})}::jsonb,'system','system:canonical-import-recovery')`);
       return selected;
     }));
     if (!candidate) break;
      attempted++;
-    if (candidate.originalUnavailable || candidate.capabilityBlocked) {held++;continue;}
+     remainingReplayRows.delete(Number(candidate.source_row_number));
+     const rowReference={sourceRowNumber:Number(candidate.source_row_number),itemId:String(candidate.id)};
+     if (candidate.originalUnavailable || candidate.capabilityBlocked) {
+       held++;
+       rowOutcomes.push({...rowReference,outcome:candidate.originalUnavailable?"original_unavailable":"capability_blocked"});
+       continue;
+     }
     try {
       const result=await materializeCanonicalProviderImportRow({
         executionId:String(candidate.execution_id),sourceRowNumber:Number(candidate.source_row_number),
@@ -197,7 +231,9 @@ export async function processCanonicalImportRecoveryTick(
         sourceCoordinate:candidate.metadata?.sourceCoordinates?.[Number(candidate.source_row_number)-1],
         fileName:candidate.metadata?.fileName,
       });
-      if ("fulfillmentState" in result && result.fulfillmentState==="held") {held++;continue;}
+       if ("fulfillmentState" in result && result.fulfillmentState==="held") {
+         held++;rowOutcomes.push({...rowReference,outcome:"held"});continue;
+       }
       await runCanonicalTransaction("import_finalize",()=>db.transaction(async tx=>{
         await ownerAuthorityCheck(tx);
          // Preserve the materializer's owner -> original item -> graph order.
@@ -237,11 +273,13 @@ export async function processCanonicalImportRecoveryTick(
           VALUES('canonical_import_row_fulfilled','cro03_enrichment_item',${String(candidate.id)},
             ${JSON.stringify({executionId:candidate.execution_id,sourceRowNumber:candidate.source_row_number,
               originalDisposition:result.disposition,businessId:result.businessId,contactIds:result.contactIds,
-               qualificationVersion:CANONICAL_IMPORT_FULFILLMENT_QUALIFICATION_VERSION,
+                qualificationVersion:CANONICAL_IMPORT_FULFILLMENT_QUALIFICATION_VERSION,
+                ...(budget.replay ? {explicitReplay:true} : {}),
                rowFingerprint:identity?.fingerprint,bridgeHash:identity?.bridgeHash ?? null,
               paidProviderCalls:0,outboundChanges:0})}::jsonb,'system','system:canonical-import-recovery')`);
       }));
       fulfilled++;
+       rowOutcomes.push({...rowReference,outcome:"fulfilled"});
     } catch (error) {
        const failure=await captureRecoveryFailure(error,()=>runCanonicalTransaction("import_failure",()=>db.transaction(async tx=>{
         await ownerAuthorityCheck(tx);
@@ -254,6 +292,8 @@ export async function processCanonicalImportRecoveryTick(
       })),{executionId:String(candidate.execution_id),itemId:String(candidate.id),
         sourceRowNumber:Number(candidate.source_row_number)});
        failed++;
+        rowOutcomes.push({...rowReference,outcome:"failed"});
+        if(budget.replay)remainingReplayRows.add(Number(candidate.source_row_number));
        if (failure.cleanupError) cleanupFailed++;
        if (!isRecoverableImportRowFailure(error) ||
            (failure.cleanupError && !isRecoverableImportRowFailure(failure.cleanupError))) {
@@ -278,7 +318,10 @@ export async function processCanonicalImportRecoveryTick(
      : "no_eligible_rows";
    return {ran:attempted>0,fulfilled,held,attempted,failed,cleanupFailed,abandoned,
      budgetExhausted,outcome,zeroFulfillment:fulfilled===0,authorityAcquisitionMs,
-     rowProcessingMs:Date.now()-processingStarted};
+      rowProcessingMs:Date.now()-processingStarted,
+      ...(budget.replay ? {replay:{executionId:budget.replay.executionId,rowOutcomes,
+        remainingSourceRowNumbers:[...remainingReplayRows],
+        scopeAttempted:remainingReplayRows.size===0 && failed===0}} : {})};
    } catch(error) {
      fatalError=error;
      throw error;

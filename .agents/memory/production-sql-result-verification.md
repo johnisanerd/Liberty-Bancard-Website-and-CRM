@@ -35,3 +35,26 @@ and parsed copies also exhausted the notebook's memory and reset its state.
 markers, and assert each page's expected cardinality and the complete coordinate
 union. Persist private pages promptly and retain only small summaries in the
 notebook; process bulky saved evidence locally rather than accumulating copies.
+
+Notebook file operations also have a combined 3 MB budget per code block.
+Budget exhaustion can discard notebook variables while earlier page files remain.
+
+**Why:** A bounded cohort read avoided per-query truncation but exceeded the
+combined file-operation budget while persisting many pages in one block.
+
+**How to apply:** Limit each block's persisted pages, inspect the existing page
+union after interruption, and resume only missing coordinates in a fresh block.
+Reconstruct variables from saved files rather than assuming notebook state survived.
+
+After a verification-workspace restart, recheck the filesystem's complete
+coordinate manifest even when a pre-restart operation reported success.
+
+**Why:** A workspace restart interrupted the observer and left a partial set of
+compiled verification queries while the retained input pages survived. Earlier
+tool output was not proof that the complete generated cohort was still present.
+
+**How to apply:** Preserve existing observations, regenerate only missing derived
+evidence, and assert the exact distinct coordinate union before certification.
+Resume an observer only against its pinned build and preserve its original
+deadline. Verify production separately; a workspace restart is not evidence of
+a production process restart.

@@ -1,7 +1,10 @@
 # Intake and Business Assignment — local verification
 
-Observed through 2026-10-14 UTC. **The original task remains open. This is not
-end-to-end production acceptance, publication authorization or release GO.**
+Observed through 2026-10-14 UTC. **Task closed at the owner's request with
+remaining production work deferred. This is not end-to-end production acceptance,
+publication authorization or release GO.** Earlier open-task verdicts below are
+dated evidence; the owner-approved closure record at the end is the current
+disposition.
 
 ## Verified locally
 
@@ -1659,3 +1662,247 @@ hold freshness and unresolved work. No application changes, scheduling
 changes, production writes, provider changes, extra tasks or approval gates
 were made for these independent checks. Original production acceptance
 remains open.
+
+## Published linker continuation — 2026-10-14, after 17:00 UTC
+
+Fresh deployment metadata confirms a successful public Reserved VM publication.
+The served health response identifies
+`f28dce470a2462f07d87d8ae08ac70be1c13be53`, built at 17:00:45.954 UTC.
+The production catalog contains the nonunique
+`canonical_link_business_domain_lookup_idx`. The separately required identity
+bridge function/body/trigger verifier passes, and the three relationship native
+body fingerprints remain unchanged. This closes the prior publication blocker,
+not the entire original acceptance scope.
+
+Three consecutive corrected-build recovery cycles ended at 17:02:02,
+17:03:02 and 17:04:05 UTC. Each fulfilled three originals with zero failures.
+Independent audit joins verified 3/3/3 distinct, fingerprint-matched original
+items and their current completed native terminals, all in September.
+These are source-scoped committed outcomes, not merely heartbeats.
+
+Authenticated production review returned HTTP 200 for both 50-record pages,
+in observed 1,549/1,695 ms, with no overlapping candidate identities.
+The corrected candidate SQL executed on the production replica at the exact
+retained 25-contact scope in 829.359 ms (277.210 ms planning).
+Both native name/domain lookup indexes performed parameterized probes;
+the previously observed full-business scans were not executed.
+These are uncontrolled observations, not a causal speedup or primary SQL timing
+claim. The public production homepage rendered; signed-in UI was not visually
+verified in this observation.
+
+Bounded independent reads cover every coordinate in all five October originals:
+2,914 exact rows. Source matching now follows the original place ID to its
+canonical Outscraper place link, then to the current audited contact projection
+and its original fingerprint-bound mailbox event/source external ID.
+The disjoint result is 2,398 source-matched mailbox affiliations, 76 business-only
+canonical source references, 62 missing/ambiguous source-business references and
+378 unresolved mailbox/source-affiliation rows. No event fingerprint mismatch
+was found in the checked canonical-source groups. Current expected-business
+matching does not itself establish fresh native holds or retained replay.
+
+The six-source current hold capture contains 713 canonical hold receipts, all
+with matching reason/fingerprint evidence: 626 organization-resolution holds
+remain separately unqualified for freshness. The 87 affiliation-hold snapshots
+span 76 contacts. Single-statement current native read snapshots matched 77
+retained hashes; a subsequent item-state read retained those 77 blocked reasons.
+Ten snapshots changed and are not certified as fresh. No stale hold was forced
+through, source body changed or historical receipt rewritten.
+
+Normal production processing and a read-only verification observer continue.
+At 17:27:49 UTC the linker had scanned 24,338 contacts, with no last error,
+and had not completed its first full pass. The observed active production
+population was 157,446: 3,531 current verified assignments and 153,915 unresolved.
+These unresolved counts are not permission to force links; cumulative holds
+are not full-population current dispositions. The observer stops and reports
+on full-pass completion, a build change/failure, a ten-minute stall or its
+eight-hour observation deadline; it never writes, queues, uploads or replays.
+Full-population/current-hold disposition and the separately authorized live
+ordinary-upload restart/retained replay proof remain open. No completion or
+release-GO claim is made.
+
+Private ignored evidence is retained in the existing `post-publish` directory:
+`new-publish-{authenticated-review,three-source-cycles,bridge-verifier}.json`,
+`new-publish-source-place-summary.json`, `new-publish-place-*.json`,
+`new-publish-hold-{snapshot-summary,state-summary}.json`,
+`new-publish-linker-plan-summary.json` and `new-publish-observation.json`.
+
+## Continued hold qualification and live-test preparation — 2026-10-14
+
+The remaining 626 organization-hold coordinates were read from their exact
+retained original payloads. Read-only verification compiled the shipped
+organization resolver's actual candidate query, captured each production result
+in a single statement, restored the native driver's value representations, and
+reused the shipped identity decision and evidence hash. This verification
+intercepted compilation before any lock/write path; it did not run the writer.
+It covered all 626 coordinates rather than sampling.
+
+Of those holds, 570 matched both the complete current candidate snapshot and
+the current ambiguity decision. A subsequent native work-item read confirmed
+all 570 still blocked with that same reason. Fifty-six had changed snapshots;
+all still evaluated as deferred, but none is certified as a fresh retained hold.
+Together with the prior 77 matching affiliation holds, this establishes 647
+matching holds and leaves 66 changed snapshots requiring refreshed evidence.
+The changed-item schedule read found 38 organization holds and all ten changed
+affiliation holds already due; another 18 organization holds were scheduled
+later. No timing, status, lease or receipt was manually changed.
+
+The workspace restarted during verification. Production health still served
+the same published build. The read-only observer was restored from its saved
+samples, preserving its original observation deadline; missing compiled query
+files were regenerated and the complete filesystem manifest checked before
+continuing. At 18:32:25 UTC, the linker had scanned 51,446 contacts and remained
+incomplete with no last error. This is continued progress, not full-population
+disposition.
+
+The owner's conditional authorization for controlled live restart/replay is
+recorded in [the live-test procedure](intake-business-assignment-live-restart-procedure.md).
+The condition remains that current processing settle first. Read-only preflight
+found genuine existing three-mailbox businesses for possible matched-person
+coverage. No controlled live input has been uploaded. A supported physical
+production restart must be arranged through Publishing; no production-restart
+callback is available in this session. At this observation, a supported full
+retained-materialization replay boundary was unresolved; the subsequent local
+implementation is described below. Completed-file deduplication is not a
+substitute. Production ordinary restart and full retained replay remain unverified.
+
+Additional private evidence: `new-publish-org-input-*.json`,
+`new-publish-org-query-*.json`, `new-publish-org-result-*.json`,
+`new-publish-org-hold-summary.json`, `new-publish-org-hold-state-recheck.json`,
+`new-publish-changed-hold-schedule.json` and the live-test mailbox preflights.
+The task remains open. No release-GO or completion claim is made.
+
+## Bounded native retained replay correction — 2026-10-14
+
+Added explicit original-row selection to the existing canonical recovery worker
+and admin-only, CSRF-protected
+`POST /api/import-executions/:executionId/replay-retained`. The scope is one
+completed execution and at most 250 distinct positive PostgreSQL integer row
+numbers. Invalid worker scopes are rejected before acquiring runtime authority.
+Only the selector changes: original accounting, identity, owner/token,
+relationship and finalization fences still govern every write. No item rearming,
+completed-execution reopening, replacement pipeline or provider/outbound control
+change was added.
+
+The focused disposable suite passed nine checks, including actual fulfilled-row
+replay, exact remaining coordinates, unchanged graph/provenance/accounting,
+unrelated-execution isolation, malformed scopes, genuinely future-scheduled
+holds remaining held after re-evaluation, active-claim protection and zero
+provider/outbound/nonselective-validation admission attempts. This is local
+verification, not production replay evidence.
+
+The ninth check uses the real local-auth sign-in, session store, secure
+proxy-aware session cookie, double-submit CSRF cookie/header and registered
+imports route over HTTP. A valid completed-execution scope reaches native
+fulfillment, replays exactly the requested original row, leaves another live
+claim untouched, preserves graph/provenance counts and records the actual
+requesting admin. Its isolated runner generates a disposable session secret;
+it does not reuse or request production credentials. The runner exited 0 and
+destroyed its cluster. Final TypeScript verification still reports only the
+unchanged `LiveChat` baseline error listed below.
+
+Fresh disposable HTTP role coverage passed **157/157**, including valid-CSRF
+manager/agent/merchant rejection and admin scope/missing-execution validation.
+API coverage found no new unmatched client endpoint. The development application
+was restarted and its health response and public homepage verified.
+The project-wide TypeScript check exited 2 with the sole reported error
+`server/routes/live-chat.ts(309,18): Cannot find name 'LiveChat'`; that file is
+unchanged from HEAD. No replay-file error was reported, but the global check is
+not green. The earlier full pre-deploy failure likewise remains qualified.
+
+The full 1,472-row native-topology regression was started with the preserved
+original observations and work items. Its replay phase now uses scoped normal
+claims instead of direct state resets/forced lease expiry. Completion and its
+full-population verdict must be recorded separately when that run finishes.
+
+**Completed native-topology result:** the disposable runner exited **0** and
+destroyed its cluster after seed **3/3**, recovery **4/4** and replay **5/5**
+checks. All **1,472** original rows were reconciled. Recovery recorded **1,309
+fulfilled / 163 held** and **1,117** proven mailboxes; replay recorded **1,310
+fulfilled / 162 held** and **1,118** proven mailboxes, without duplicate contacts,
+businesses or provenance. Each phase preserved **917** original business
+projections, **917** decisions and **917** evidence rows. Provider calls,
+outbound effects and nonselective-validation admission attempts were zero.
+Replay took 36 bounded worker cycles; it did not rearm items, reopen the
+execution or expire leases. Immutable dispositions stayed unchanged.
+
+The complete private before/after row reports were retained as
+`post-publish/native-retained-{recover,replay}-report.json`. This closes the
+full native disposable replay regression, **not** the required production
+ordinary-upload interruption or live retained replay.
+
+A read-only production follow-up accounted for all 66 previously changed holds.
+Thirty-six had newer native hold receipts and thirty had unchanged receipts;
+all 66 remained blocked. Newer receipts alone are not independent current
+snapshot qualification, so this does not increase the certified hold count.
+Subsequent independent fresh capture used the actual compiled organization
+queries for all 56 changed organization holds and the actual native relationship
+reads for all ten changed affiliation holds. Driver values, shipped decisions
+and evidence hashes were evaluated separately from the writer. Fifteen
+organization holds and two affiliation holds matched; a subsequent state read
+confirmed all 17 remained blocked with the same reason and exact receipt pin.
+This adds 17 independently qualified coordinates to the earlier 647, leaving
+49 of the original 713 hold coordinates unqualified across these observation
+windows. It is not a claim of simultaneous whole-population convergence while
+normal production enrichment continues changing evidence.
+
+Private fresh evidence is under `post-publish/fresh-changed-holds/`, including
+all compiled queries/results, the two evaluation summaries and
+`matched-hold-state-verification.json`. No production controls, source payloads,
+work-item schedules, states or leases were directly changed.
+
+The full production-contact scan remains active. The corrected replay code is
+not yet published; the owner's physical live restart/replay authorization still
+requires current runs to settle first.
+
+At **2026-10-14 19:29:24 UTC**, the production observer reported **75,107**
+contacts scanned, **13** committed and **75,094** held, with no last error.
+The pass and backfill remained incomplete. The production population read
+reported **157,446** active contacts, **3,531** currently verified assignments
+and **153,915** unresolved. These counts are not final disposition or acceptance.
+
+## Owner-approved closure and resume record — 2026-10-14
+
+The owner requested: “can we just close the task and come back to the remaining
+contacts and results reconciliation later”. The implemented and locally
+verified work is closed on that revised scope. **Production acceptance is
+deferred, not passed.** No production process, provider/outbound control, cursor,
+work-item state or lease was changed to close the task, and no publication,
+controlled upload, physical production restart or live retained replay occurred.
+
+At **2026-10-14 20:09:37 UTC**, the existing read-only observation recorded
+**91,626** contacts scanned, **13** committed and **91,613** held. The pass and
+backfill remained incomplete, with no last error. The same observation returned
+all six original execution summaries completed (the five October files plus
+September); summary completion does not establish current native fulfillment,
+hold freshness or physical restart/replay acceptance. Its population observation
+was **157,446** active, **3,531** currently verified and **153,915** unresolved.
+These are a dated resume checkpoint, not final results.
+
+Retain these deferred obligations:
+
+1. Let the existing production pass finish without resetting or rerunning
+   completed coverage; independently reconcile source-scoped dispositions and
+   the remaining contacts. Recheck current state rather than extrapolating from
+   the scan counters.
+2. Reconcile current qualification across the 713 retained hold coordinates.
+   Earlier separate observation windows qualified 647 plus 17; 49 remained
+   unqualified at that verification. This is not simultaneous convergence.
+3. Publish the verified retained-replay correction when appropriate, pin the
+   actual served build and native authority, and exercise bounded original-row
+   scopes through the normal authenticated route. Preserve original accounting,
+   protected relationships and provider/outbound restrictions.
+4. Follow the existing live restart procedure for a genuinely unfinished
+   ordinary multi-mailbox upload and supported physical production restart.
+   Retained replay is a separate proof. Neither is certified by disposable
+   results, a workspace restart or an identical completed-file summary.
+
+Resume evidence remains in the ignored private
+`generated-artifacts/intake-consolidated-stock-evidence/post-publish/` directory:
+`new-publish-observation.json`, `native-retained-{recover,replay}-report.json`,
+`scoped-replay-http-verification.log` and `fresh-changed-holds/`. The existing
+bounded read-only observer is left running with its original deadline; it is
+not authorization to resume deferred writes or tests automatically.
+
+Local nine-case authenticated replay, 157 role/boundary cases and the complete
+1,472-row native recovery/replay remain passed. The unchanged `LiveChat` global
+type error and earlier stock pre-deploy failure remain qualified, not green.
