@@ -38,7 +38,7 @@ WITH scope AS MATERIALIZED (
      LEFT JOIN sunbiz_entities se ON se.id=(e->>'sourceEntityId')::int
      WHERE b.id IS NULL OR sl.id IS NULL OR b.updated_at::text IS DISTINCT FROM e->>'businessRevision'
        OR sl.updated_at::text IS DISTINCT FROM e->>'sourceRevision'
-       OR se.updated_at::text IS DISTINCT FROM e->>'entityRevision') retained_pins_current
+        OR (to_jsonb(se)->>'updated_at') IS DISTINCT FROM e->>'entityRevision') retained_pins_current
  FROM scope s CROSS JOIN LATERAL jsonb_array_elements(s.hold->'diagnostic'->'nativeSnapshots') n
  LEFT JOIN contacts c ON c.id=(n->>'contactId')::int
  LEFT JOIN contact_business_link_decisions d ON d.contact_id=c.id AND d.superseded_at IS NULL

@@ -31,3 +31,15 @@ not change the date.
 **How to apply:** Keep instant and date-only-carrier contracts distinct. Test
 unchanged edits against exact PostgreSQL timestamp readback as well as a
 non-UTC mounted editor; a JavaScript Date equality check is insufficient.
+
+Read-only snapshot audits must use the same timestamp representation as the
+snapshot producer, not merely another lossless rendering of the instant.
+
+**Why:** Comparing PostgreSQL `timestamp::text` against a snapshot produced by
+`to_jsonb(row)->>'updated_at'` falsely reported registry revision drift because
+their date/time separators and timezone renderings differ.
+
+**How to apply:** Reuse the producer's extractor for each pinned field.
+Distinguish formatting differences, actual revision changes and complete
+candidate-set requalification; matching recorded pins proves only the first
+two have been checked.

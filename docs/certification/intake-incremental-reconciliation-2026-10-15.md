@@ -3,7 +3,9 @@
 ## Status
 
 The bounded incremental correction is implemented and locally certified.
-Production publication and sustained committed recovery are **not yet accepted**.
+The owner subsequently published it; served revision, indexes, preserved
+authority/window and ordinary cursor recovery are verified below. Full
+production assignment/original-row acceptance is **not yet complete**.
 This continues the original intake/business-assignment work; it is not a new
 pipeline, task, full backfill or import.
 
@@ -133,9 +135,10 @@ fingerprint matched the retained historical set.
   missing-contact denominator.
 - 498 exception coordinates have no attributable contact in those receipt
   paths. This is not proof of 498 missing contacts or mailbox-bearing rows.
-- Across the 87 affiliation snapshots: 74 retain their recorded contact,
-  decision, projection and candidate revision pins; 13 have changed/missing pins.
-  This does not test newly competing candidates, every identity dimension or
+- The initial audit reported 74 matching affiliation snapshots and 13 changed
+  pins. That was overstated: the post-publication audit below corrects 11
+  timestamp-rendering false positives, leaving 85 matching and two changed.
+  Matching recorded pins does not test newly competing candidates, every identity dimension or
   the complete original-mailbox fulfillment contract. It is not full hold
   recertification.
 - Of the 87 affiliation rows, 56 reference verified contacts belonging to a
@@ -176,3 +179,53 @@ After the owner publishes the consolidated correction:
 Production outbound pause was read as **paused, epoch 1**. No outbound, provider,
 schedule, timeout or pool-size control was changed. No workbook was reuploaded,
 ambiguous relationship forced or production fault/replay test executed.
+
+## Post-publication observations
+
+At 2026-10-15 11:08–11:16 UTC, the public production health endpoint served
+`95ba3eaf34d69beaa79e4151fa4b0470329d8099`, build
+`d0e863b8-52e1-49b8-870a-6c12215d2c84`, built at 11:03:58 UTC.
+This is the tested correction plus the attached audit report. The deployed
+application files and migration are unchanged from the tested correction.
+
+- All five indexes are valid and ready on production.
+- Selected native runtime owner epoch 204 matches the served SHA and build,
+  is not revoked, and has a live lease.
+- The original run ID, completed backfill and exact saved change-window/pass-start
+  strings are preserved; no administrative run/reset/tick/replay was invoked.
+- Production cursor moved from 0 to 18,821 by 11:16:11 UTC. Repeated authenticated
+  primary API observations show durable movement with `lastError=null`.
+- Four independently queried new verified decision receipts, at 11:04:25,
+  11:04:37, 11:05:22 and 11:05:30 UTC, match their contacts' current projected
+  businesses and production record class. Cumulative committed count rose
+  from 18 to 22; unique current verified assignments rose from 3,536 to 3,540.
+- At 11:16:11 UTC the active population remains 157,446, with 153,906 unresolved
+  and zero legacy-only projected assignments. Later inspected/scanned/held
+  increments are **not** additional successful assignments.
+- The existing serial queue completed multiple ordinary jobs. Original-row
+  recovery logs report bounded held attempts, zero fulfilled, zero failed and
+  zero cleanup failures. Queue completion is not fulfillment.
+
+The 11:12:56 UTC production-scoped reconciliation preserved all 713 exact
+coordinates/fingerprints and the same contact overlap: 203 distinct contacts,
+163 verified, 40 unresolved, 169 rows overlapping verified contacts. All 713
+were blocked at that instant: 626 organization and 87 affiliation holds.
+There are still zero current-version original-row fulfillment receipts.
+
+The audit-only SQL comparator previously compared a registry `timestamp::text`
+against a snapshot produced by `to_jsonb(row)->>'updated_at'`. These render the
+same instant differently. Comparing with the snapshot producer's actual
+extractor removes 11 false positives: **85 recorded affiliation pin sets match;
+two genuinely changed**. Both changed snapshots predate verified assignments
+to the expected business, but their original items remain blocked with no
+current fulfillment receipt. No hold, item, assignment or pause was changed
+to manufacture this result. This SQL/report correction does not change the
+deployed application or require another publication.
+
+Sustained successful inspection is established. Three distinct ordinary
+assignment-writing cycles are not yet established: the four confirmed new
+assignments occurred in two early cycles, followed by unchanged/held work.
+The existing read-only observer continues, bounded to the next new commit,
+current-pass completion or its observation deadline. Full current hold
+qualification and ordinary-upload restart acceptance remain separate and
+unproven; no live fault or controlled replay was run.
