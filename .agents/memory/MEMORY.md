@@ -150,3 +150,4 @@
 - [Coverage nested existence probes](coverage-parameterized-existence.md) — An indexed outer key probe can still rebuild full-universe hashes inside nested source/business joins.
 - [Denied production compilation](denied-production-compilation.md) — Production compilation inherits test deny preloads; isolate compiler purpose without relaxing fixture/runtime safety.
 - [Linked worktree identity](linked-worktree-identity.md) — Missing Git links can silently target primary main; verify repository identity and repair registered worktrees.
+- [Created-original recovery admission](created-original-recovery-admission.md) — predicate aliases, classifier matched echoed SQL text, ledger query plan pitfalls, known audited-only baseline failure.
