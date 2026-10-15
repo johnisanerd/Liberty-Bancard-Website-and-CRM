@@ -1139,7 +1139,7 @@ function ContactNbaCard({ contactId }: { contactId: number }) {
                 </Badge>
               )}
               {isBlocked && (
-                <Badge variant="outline" className="text-xs text-gray-500 border-gray-300">
+                <Badge variant="outline" className="text-xs text-gray-500 dark:text-gray-300 border-gray-300">
                   Blocked
                 </Badge>
               )}

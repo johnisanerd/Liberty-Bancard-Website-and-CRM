@@ -6,6 +6,24 @@ import path from "node:path";
 import { createReadStream } from "node:fs";
 
 const receiptPath = "dist/candidate-integrity.json";
+export function productionBuildRecipe() {
+  assert.equal(process.env.NODE_ENV, "production", "Artifact compilation must run in production mode");
+  return { version: 1, mode: "production", nodeEnv: "production", node: process.version,
+    npm: execFileSync("npm", ["--version"], { encoding: "utf8" }).trim(),
+    entryPoint: "script/build.ts", client: "vite:production", server: "esbuild:production" };
+}
+async function readBuildRecipe(root:string) {
+  const recipe = JSON.parse(await readFile(path.join(root, "dist/build-recipe.json"), "utf8"));
+  assert.equal(recipe.version, 1, "Unknown production recipe");
+  assert.equal(recipe.mode, "production", "Acceptance requires the production client");
+  assert.equal(recipe.nodeEnv, "production", "Build NODE_ENV must be production");
+  assert.equal(recipe.node, process.version, "Acceptance/build Node toolchains differ");
+  assert.equal(recipe.npm, execFileSync("npm", ["--version"], { encoding: "utf8" }).trim(), "Acceptance/build npm toolchains differ");
+  assert.equal(recipe.entryPoint, "script/build.ts");
+  assert.equal(recipe.client, "vite:production");
+  assert.equal(recipe.server, "esbuild:production");
+  return recipe;
+}
 const inputRoots = ["client","server","shared","scripts","script","migrations","public","attached_assets","package.json","package-lock.json",
   "vite.config.ts","tailwind.config.ts","tailwind-legacy-theme.json","tsconfig.json",
   "postcss.config.js","drizzle.config.ts",".replit"];
@@ -55,16 +73,19 @@ export async function captureCandidateSource(root=process.cwd()) {
 }
 export async function captureCandidateIdentity(root=process.cwd()) {
   const source=await captureCandidateSource(root);
+  const buildRecipe=await readBuildRecipe(root);
   const emitted=await digestFiles(await outputs(root),root);
   assert.ok(emitted.some(f=>f.file==="dist/public/index.html") && emitted.some(f=>f.file==="dist/index.cjs"),"Complete client/server outputs required");
-  return {version:1,...source,outputs:emitted,outputHash:aggregate(emitted),
+  return {version:2,...source,sourceInputHash:source.inputHash,
+    inputHash:createHash("sha256").update(JSON.stringify({sourceInputHash:source.inputHash,buildRecipe})).digest("hex"),
+    outputs:emitted,outputHash:aggregate(emitted),buildRecipe,
     recipe:"Node22.22/npm10.9.4 locked install; script/build.ts; Vite client and bundled server",
     qualification:"Compiled client plus registered source handlers in isolated preview; NOT deployed bundled-server parity"};
 }
 export async function writeCandidateIdentity(root=process.cwd(), expectedSource?:Awaited<ReturnType<typeof captureCandidateSource>>) {
   const identity=await captureCandidateIdentity(root);
   if(expectedSource){
-    assert.equal(identity.inputHash,expectedSource.inputHash,"Effective inputs changed during compilation; discard and rebuild");
+    assert.equal(identity.sourceInputHash,expectedSource.inputHash,"Effective inputs changed during compilation; discard and rebuild");
     assert.equal(identity.sourceHead,expectedSource.sourceHead,"Source commit changed during compilation; discard and rebuild");
   }
   await writeFile(path.join(root,receiptPath),JSON.stringify(identity,null,2)+"\n");
@@ -73,7 +94,8 @@ export async function writeCandidateIdentity(root=process.cwd(), expectedSource?
 export async function verifyCandidateIdentity(root=process.cwd()) {
   const recorded=JSON.parse(await readFile(path.join(root,receiptPath),"utf8"));
   const current=await captureCandidateIdentity(root);
-  assert.equal(recorded.version,1,"Unrecognized build recipe");
+  assert.equal(recorded.version,2,"Unrecognized build recipe; rebuild the production artifact");
+  assert.deepEqual(current.buildRecipe,recorded.buildRecipe,"Effective production build recipe changed");
   assert.equal(current.inputHash,recorded.inputHash,"Source/config/lock/fixture inputs changed; rebuild required");
   assert.equal(current.outputHash,recorded.outputHash,"Emitted chunk/CSS/font/static output changed/missing/added; rebuild required");
   assert.equal(current.sourceHead,recorded.sourceHead,"Candidate source changed; rebuild required");

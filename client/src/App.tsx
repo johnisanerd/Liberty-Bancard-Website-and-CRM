@@ -1,7 +1,7 @@
 import React, { Suspense, lazy, useEffect, useState } from "react";
 import { Switch, Route, Redirect, useLocation, useSearch } from "wouter";
 import { queryClient } from "./lib/queryClient";
-import { financialUrl, operatorAliasUrl, merchantHealthAliasUrl,c4WorkspaceUrl,supportViews,testimonialAliasUrl,rfiUrl } from "@/lib/crm-destination-state";
+import { financialUrl, operatorAliasUrl, merchantHealthAliasUrl,c4WorkspaceUrl,supportViews,testimonialAliasUrl,rfiUrl,outreachAliasUrl } from "@/lib/crm-destination-state";
 import { actorIdentity, protectedScope } from "@/lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { HelmetProvider } from 'react-helmet-async';
@@ -379,6 +379,11 @@ function LegacyFinancialChildRedirect({ child }: { child: "revenue" | "forecasti
   return <Redirect to={financialUrl(params.toString(), window.location.hash)} />;
 }
 
+function LegacyOutreachRedirect() {
+  const search=useSearch();
+  return <Redirect to={outreachAliasUrl(search,window.location.hash)} />;
+}
+
 function LegacyProspectsRedirect() {
   const search = useSearch();
   const params = new URLSearchParams(search);
@@ -684,7 +689,7 @@ function Router() {
           <Redirect to="/dashboard/outbound-center?tab=campaigns" />
         </Route>
         <Route path="/dashboard/outreach-analytics">
-          <Redirect to="/dashboard/reporting?tab=outreach-analytics" />
+          <LegacyOutreachRedirect />
         </Route>
         <Route path="/dashboard/reporting">
           <ProtectedRoute component={ReportingHub} allowedRoles={["admin", "manager"]} />

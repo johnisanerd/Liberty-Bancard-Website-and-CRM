@@ -88,6 +88,7 @@ async function main() {
   const imports = fs.readFileSync("server/routes/imports.ts", "utf8");
   const importEvidence = fs.readFileSync("server/services/provider-import-evidence.ts", "utf8");
   const importRecovery = fs.readFileSync("server/services/csv-import-processor.ts", "utf8");
+  const canonicalImport = fs.readFileSync("server/services/canonical-provider-import.ts", "utf8");
   const cro03aAdapters = fs.readFileSync("server/services/cro03a/adapters.ts", "utf8");
   await check("membership and immutable evidence have guards", () => {
     assert.match(migration, /cro03_membership_immutable/);
@@ -157,8 +158,9 @@ async function main() {
   });
   await check("provider-export evidence is an immutable source-row snapshot", () => {
     assert.match(imports, /__cro03EvidenceValues/);
-    assert.match(imports, /await retainProviderImportRow/);
-    assert.match(importRecovery, /await retainProviderImportRow/);
+    assert.match(imports, /registerPersistedCsvProcessor\(processCsvImport\)/);
+    assert.match(importRecovery, /await materializeCanonicalProviderImportRow/);
+    assert.match(canonicalImport, /await retainProviderImportRow/);
     assert.match(importEvidence, /await createCro03SourceBatch/);
     assert.match(cro03aAdapters, /base\("provider_csv_row"/);
     assert.match(imports, /rowFingerprint/);
@@ -168,8 +170,8 @@ async function main() {
     assert.doesNotMatch(importEvidence, /writeContact|verifyEmail|reserve.*Provider/);
     // Ignore the import declaration: the runtime staging call must precede
     // the later canonical contact write in the row-processing flow.
-    const stagingCall = imports.indexOf("await retainProviderImportRow");
-    const contactWrite = imports.lastIndexOf("const contact = await writeContact");
+    const stagingCall = canonicalImport.indexOf("await retainProviderImportRow");
+    const contactWrite = canonicalImport.lastIndexOf("await writeContact");
     assert.ok(stagingCall > 0 && contactWrite > stagingCall);
   });
   await check("discovery never bypasses the commercial fence", () => {
@@ -218,8 +220,9 @@ async function main() {
   });
   await check("CSV exports converge without provider transport", () => {
     const imports = fs.readFileSync("server/routes/imports.ts", "utf8");
-    assert.match(imports, /await retainProviderImportRow/);
-    assert.match(importRecovery, /await retainProviderImportRow/);
+    assert.match(imports, /registerPersistedCsvProcessor\(processCsvImport\)/);
+    assert.match(importRecovery, /await materializeCanonicalProviderImportRow/);
+    assert.match(canonicalImport, /await retainProviderImportRow/);
     assert.match(importEvidence, /await createCro03SourceBatch/);
     assert.match(cro03aAdapters, /base\("provider_csv_row"/);
     assert.match(importEvidence, /purpose: "staging_review"/);

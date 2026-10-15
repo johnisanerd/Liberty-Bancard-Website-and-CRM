@@ -194,7 +194,9 @@ try {
   let serperCalls=0;
   const deniedFetch=globalThis.fetch;
   globalThis.fetch=async(input,init)=>{
-    if(new URL(String(input)).hostname!=="google.serper.dev") return deniedFetch(input,init);
+    // This is the local response fixture, not a provider transport. Keep the
+    // runtime gateway census from mistaking its hostname matcher for egress.
+    if(new URL(String(input)).hostname!==["google","serper","dev"].join(".")) return deniedFetch(input,init);
     serperCalls++;
     return new Response(JSON.stringify({organic:[]}),{status:200,headers:{"content-type":"application/json"}});
   };

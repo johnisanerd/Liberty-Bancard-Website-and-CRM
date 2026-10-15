@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,13 +8,15 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Switch } from "@/components/ui/switch";
+import { CrmPageHeader } from "@/components/crm/CrmPresentation";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
 import {
   Monitor, TrendingUp, AlertTriangle, CheckCircle2, Clock, DollarSign,
   RefreshCw, Download, Settings, Plus, Pencil, Trash2, Loader2,
-  ShieldCheck, ShieldAlert, ShieldX,
+  ShieldCheck, ShieldAlert, ShieldX, MoreHorizontal,
 } from "lucide-react";
 import { exportToCSV } from "@/lib/export-csv";
 import type { EquipmentModel } from "@shared/schema";
@@ -83,6 +85,7 @@ export default function TerminalROI() {
   const isManagerOrAdmin = user?.role === "admin" || user?.role === "manager";
 
   const [configOpen, setConfigOpen] = useState(false);
+  const moreActionButtonRef = useRef<HTMLButtonElement>(null);
   const [modelsOpen, setModelsOpen] = useState(false);
   const [editModel, setEditModel] = useState<EquipmentModel | null>(null);
   const [newModelForm, setNewModelForm] = useState({ name: "", category: "Terminal", description: "", msrp: "", libertyCost: "", isActive: true });
@@ -91,7 +94,7 @@ export default function TerminalROI() {
   const [filterTier, setFilterTier] = useState<string>("all");
   const [reportPage, setReportPage] = useState(0);
 
-  const { data: report, isLoading, refetch, isFetching } = useQuery<RoiReport>({
+  const { data: report, isLoading, isError, refetch, isFetching } = useQuery<RoiReport>({
     queryKey: ["/api/admin/terminal-roi-report", reportPage],
     queryFn: async () => {
       const response = await fetch(`/api/admin/terminal-roi-report?page=${reportPage}`, { credentials: "include" });
@@ -169,8 +172,9 @@ export default function TerminalROI() {
   const summary = report?.summary;
 
   const handleExport = () => {
+    if (!report || isFetching || isError) return;
     exportToCSV(
-      rows.map((r) => ({
+      filteredRows.map((r) => ({
         dealId: r.dealId,
         merchant: r.merchantName,
         model: r.terminalModel,
@@ -208,38 +212,48 @@ export default function TerminalROI() {
 
   return (
     <div className="space-y-6" data-testid="terminal-roi-page">
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-        <div>
-          <h2 className="text-2xl font-bold flex items-center gap-2" data-testid="text-terminal-roi-title">
-            <Monitor className="w-6 h-6 text-primary" />
-          Terminal Recommendation Forecasts
-          </h2>
-          <p className="text-sm text-muted-foreground mt-1">
-            Model-based forecasts; verified deployment and actual cash recovery are unavailable.
-          </p>
-        </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching} className="gap-2" data-testid="button-refresh-report">
-            {isFetching ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-            Refresh
-          </Button>
-          <Button variant="outline" size="sm" onClick={handleExport} className="gap-2" data-testid="button-export-report">
+      <CrmPageHeader
+        headingLevel={2}
+        title="Terminal Recommendation Forecasts"
+        description="Model-based forecasts; verified deployment and actual cash recovery are unavailable."
+        primaryAction={
+          <Button onClick={handleExport} disabled={!report || isFetching || isError} className="gap-2" data-testid="button-export-report">
             <Download className="w-4 h-4" /> Export CSV
           </Button>
-          <Button variant="outline" size="sm" onClick={() => setModelsOpen(true)} className="gap-2" data-testid="button-manage-models">
-            <Monitor className="w-4 h-4" /> Equipment Catalog
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => { setConfigOpen(true); refetchConfig(); }} className="gap-2" data-testid="button-configure-thresholds">
-            <Settings className="w-4 h-4" /> Thresholds
-          </Button>
-        </div>
-      </div>
+        }
+        secondaryActions={
+          <>
+            <Button variant="outline" onClick={() => refetch()} disabled={isFetching} className="gap-2" data-testid="button-refresh-report">
+              {isFetching ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+              Refresh
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button ref={moreActionButtonRef} variant="outline" aria-label="More terminal report actions" className="gap-2" data-testid="button-terminal-report-more">
+                  <MoreHorizontal className="w-4 h-4" />
+                  <span className="hidden sm:inline">More</span>
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" onCloseAutoFocus={(event) => {
+                if (configOpen || modelsOpen) event.preventDefault();
+              }}>
+                <DropdownMenuItem onClick={() => setModelsOpen(true)} data-testid="button-manage-models">
+                  <Monitor className="mr-2 h-4 w-4" /> Equipment Catalog
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => { setConfigOpen(true); refetchConfig(); }} data-testid="button-configure-thresholds">
+                  <Settings className="mr-2 h-4 w-4" /> Thresholds
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </>
+        }
+      />
 
       {isLoading ? (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
           {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-28 rounded-xl" />)}
         </div>
-      ) : summary && (
+      ) : !isError && summary && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
           <Card data-testid="stat-total-terminals">
             <CardContent className="pt-5 pb-4">
@@ -294,7 +308,8 @@ export default function TerminalROI() {
                 <button
                   key={t}
                   onClick={() => setFilterTier(t)}
-                  className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
+                  aria-pressed={filterTier === t}
+                  className={`min-h-11 min-w-11 text-xs px-2.5 py-1 rounded-full border transition-colors ${
                     filterTier === t
                       ? "bg-primary text-primary-foreground border-primary"
                       : "border-border text-muted-foreground hover:border-primary/50"
@@ -308,7 +323,11 @@ export default function TerminalROI() {
           </div>
         </CardHeader>
         <CardContent className="p-0">
-          {isLoading ? (
+          {isError ? (
+            <div role="alert" className="p-4 text-sm text-destructive" data-testid="terminal-report-error">
+              Terminal recommendation report unavailable. Refresh to retry; export is disabled until the source recovers.
+            </div>
+          ) : isLoading ? (
             <div className="p-4 space-y-2">
               {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}
             </div>
@@ -372,7 +391,10 @@ export default function TerminalROI() {
       )}
 
       <Dialog open={configOpen} onOpenChange={setConfigOpen}>
-        <DialogContent data-testid="dialog-threshold-config">
+        <DialogContent data-testid="dialog-threshold-config" onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          moreActionButtonRef.current?.focus();
+        }}>
           <DialogHeader>
             <DialogTitle>Payback Threshold Configuration</DialogTitle>
           </DialogHeader>
@@ -428,7 +450,10 @@ export default function TerminalROI() {
       </Dialog>
 
       <Dialog open={modelsOpen} onOpenChange={(o) => { setModelsOpen(o); if (!o) setEditModel(null); }}>
-        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto" data-testid="dialog-equipment-models">
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto" data-testid="dialog-equipment-models" onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          moreActionButtonRef.current?.focus();
+        }}>
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Monitor className="w-5 h-5" />

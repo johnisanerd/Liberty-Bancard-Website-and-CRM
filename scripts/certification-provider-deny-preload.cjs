@@ -1,8 +1,21 @@
 const http = require("node:http");
 const https = require("node:https");
 
-if (process.env.NODE_ENV !== "test" || process.env.VG_PROVIDER_DENY_MODE !== "1") {
+const compilerOnly = process.env.NODE_ENV === "production" &&
+  process.env.CERTIFICATION_COMPILER_ONLY === "1" &&
+  process.env.VG_PROVIDER_DENY_MODE === "1" &&
+  !process.env.CERTIFICATION_ALLOWED_NETWORK_ORIGINS &&
+  process.env.CERTIFICATION_ALLOW_LOOPBACK !== "1";
+if ((!compilerOnly && process.env.NODE_ENV !== "test") || process.env.VG_PROVIDER_DENY_MODE !== "1") {
   throw new Error("Certification descendant deny preload requires test deny mode.");
+}
+// Only the artifact gate grants this build-only mode. Compiler descendants
+// retain fatal provider denial and cannot connect to any DB/Redis/TCP endpoint.
+if (compilerOnly) {
+  const net = require("node:net");
+  const blockedSocket = () => { throw new Error("Certification production compiler socket denied."); };
+  net.connect = net.createConnection = blockedSocket;
+  net.Socket.prototype.connect = blockedSocket;
 }
 
 const allowedOrigins = new Set(

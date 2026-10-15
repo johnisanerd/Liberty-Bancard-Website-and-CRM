@@ -1354,7 +1354,7 @@
     "owner": "C4",
     "workspace": "C4 / Merchant Operations",
     "sourceDeclarations": [
-      "<Route path=\"/dashboard/testimonial-submissions\">\n          <Redirect to=\"/dashboard/merchant-success?tab=testimonials\" />\n        </Route>"
+      "<Route path=\"/dashboard/testimonial-submissions\">\n          <LegacyTestimonialRedirect />\n        </Route>"
     ],
     "renderOwner": "C4 / Merchant Operations",
     "actualWrapperKinds": [],
@@ -1532,7 +1532,7 @@
     "owner": "C4",
     "workspace": "C4 / Merchant Operations",
     "sourceDeclarations": [
-      "<Route path=\"/dashboard/rfis\">\n          <Redirect to=\"/dashboard/support-hub?tab=rfis\" />\n        </Route>"
+      "<Route path=\"/dashboard/rfis\">\n          <LegacyRfiRedirect />\n        </Route>"
     ],
     "renderOwner": "C4 / Merchant Operations",
     "actualWrapperKinds": [],
@@ -1577,7 +1577,7 @@
     "owner": "C4",
     "workspace": "C4 / Merchant Operations",
     "sourceDeclarations": [
-      "<Route path=\"/dashboard/review-queue\">\n          <Redirect to=\"/dashboard/support-hub?tab=review-queue\" />\n        </Route>"
+      "<Route path=\"/dashboard/review-queue\">\n          <LegacyReviewQueueRedirect />\n        </Route>"
     ],
     "renderOwner": "C4 / Merchant Operations",
     "actualWrapperKinds": [],
@@ -2375,7 +2375,7 @@
     "owner": "C4",
     "workspace": "C4 / Reports",
     "sourceDeclarations": [
-      "<Route path=\"/dashboard/outreach-analytics\">\n          <Redirect to=\"/dashboard/reporting?tab=outreach-analytics\" />\n        </Route>"
+      "<Route path=\"/dashboard/outreach-analytics\">\n          <LegacyOutreachRedirect />\n        </Route>"
     ],
     "renderOwner": "C4 / Reports",
     "actualWrapperKinds": [],
@@ -2496,6 +2496,7 @@
         "revenueQuery",
         "revenueParentContactId",
         "revenuePeriod",
+        "outreachView",
         "contactId",
         "companyId",
         "businessId",
@@ -3112,6 +3113,7 @@
     "entityParameters": [],
     "queryPolicy": {
       "allowed": [
+        "status",
         "contactId",
         "companyId",
         "businessId",
@@ -5673,6 +5675,8 @@
     "entityParameters": [],
     "queryPolicy": {
       "allowed": [
+        "metric",
+        "period",
         "contactId",
         "companyId",
         "businessId",

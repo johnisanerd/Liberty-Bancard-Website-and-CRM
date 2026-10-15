@@ -50,6 +50,7 @@ const enrollmentMutationCounts: Record<string, number> = {
   "server/routes/wizard.ts": 1,
   "server/services/abandoned-statement-worker.ts": 1,
   "server/services/bulk-enrollment-job.ts": 1,
+  "server/services/canonical-recipient-preparation.ts": 1,
   "server/services/churn-score.ts": 1,
   "server/services/cro03/sfp-enrollment-bridge.ts": 1,
   "server/services/merchant-attrition-monitor.ts": 1,
@@ -65,6 +66,15 @@ const enrollmentMutationCounts: Record<string, number> = {
   "server/services/vas-upsell.ts": 1,
   "server/services/workflow-executor.ts": 1,
 };
+// The canonical preparation writer deliberately creates paused membership
+// only. Include it in the exhaustive census without treating held staging as
+// active promotional execution or reintroducing an activation gate.
+const preparation = read("server/services/canonical-recipient-preparation.ts");
+assert.match(preparation,
+  /INSERT INTO sequence_enrollments[\s\S]*?VALUES \([\s\S]*?'paused',0,NULL,NOW\(\)/);
+assert.match(preparation, /outboundAuthorized:\s*false/);
+assert.match(preparation, /member\.status !== "paused"/);
+assert.doesNotMatch(preparation, /SET\s+status\s*=\s*'active'/i);
 const enrollmentMutationInventory = Object.keys(enrollmentMutationCounts).sort();
 
 const mutationPattern =
@@ -91,6 +101,12 @@ for (const file of enrollmentMutationInventory) {
     enrollmentMutationCounts[file],
     `${file} enrollment mutation callsite count changed; every callsite requires a separate boundary review`,
   );
+  if (file === "server/services/canonical-recipient-preparation.ts") {
+    // This writer has the separately asserted paused-only contract above.
+    // It cannot authorize execution; central lifecycle decisions remain
+    // mandatory on every active writer and on all release/unpause paths.
+    continue;
+  }
   assert.match(source, /cr06-promotional-lifecycle-decision/, `${file} does not import the central CR-06 decision`);
   assert.match(
     source,

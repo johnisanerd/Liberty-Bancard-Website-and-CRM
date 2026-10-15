@@ -24,13 +24,15 @@ export function assertNoRawAutomaticTaskCreates(root = join(process.cwd(), "serv
     if (ignoredImplementations.has(file) || file === manualTaskRoute) return false;
     return /\bstorage\.createTask\s*\(/.test(readFileSync(file, "utf8"));
   });
-  // The sole allowlist entry is the interactive manual POST /api/tasks call.
-  // Validate both cardinality and route placement so a second call in this
-  // large route module cannot hide behind a file-level exception.
+  // Interactive creation now uses the actor/version-bound human command.
+  // No raw create is allowed in this route; do not reintroduce the retired
+  // manual exception just to satisfy a structural test.
   const manualSource = readFileSync(manualTaskRoute, "utf8");
   const manualCreates = (manualSource.match(/\bstorage\.createTask\s*\(/g) ?? []).length;
   const manualHandler = manualSource.match(/app\.post\("\/api\/tasks"[\s\S]*?\n  \}\);/m)?.[0] ?? "";
-  if (manualCreates !== 1 || !/\bstorage\.createTask\s*\(/.test(manualHandler)) {
+  if (manualCreates !== 0 || !/\bcreateHumanTask\s*\(/.test(manualHandler) ||
+      !/\btaskCreateCommand\.parse\s*\(/.test(manualHandler) ||
+      !/\bbindWorkActor\s*\(/.test(manualHandler)) {
     violations.push(`${manualTaskRoute} (manual POST allowlist mismatch)`);
   }
   if (violations.length) {

@@ -13,13 +13,14 @@ const h=await stage3BHttpFixture(async app=>{
   app.use("/api",(_req,res)=>res.status(501).json({message:"Source not registered in isolated Health read fixture"}));
   const {static:serveStatic}=await import("express");
   app.use(serveStatic("dist/public"));
-  app.use((_req,res)=>res.sendFile(`${process.cwd()}/dist/public/index.html`));
+  app.use((_req,res)=>res.sendFile("index.html",{root:`${process.cwd()}/dist/public`}));
 },undefined,{backgroundProfile:"off"});
 let b:Awaited<ReturnType<typeof privateStage3Browser>>|undefined;
 try{
   await mkdir(dir,{recursive:true});
   console.log(`Owned C4 Health fixture: ${h.base}; actual private session, no auth bypass`);
-  b=await privateStage3Browser(h.base,h.sessions.get("admin")!.cookie,h.originalFetch,dir,{realInput:true});
+  b=await privateStage3Browser(h.base,h.sessions.get("admin")!.cookie,h.originalFetch,dir,
+    {realInput:true,startupTimeoutMs:30000});
   await b.call("Emulation.setEmulatedMedia",{features:[{name:"prefers-reduced-motion",value:"reduce"}]});
   await b.navigate("/mobile");await b.waitFor(/Switch to desktop view/);
   // Existing read failure changes the footer's geometry during hydration.

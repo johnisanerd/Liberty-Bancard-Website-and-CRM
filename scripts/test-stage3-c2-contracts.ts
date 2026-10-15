@@ -105,11 +105,23 @@ try{
   for(const dir of ["client","dist/public/assets"])await mkdir(path.join(root,dir),{recursive:true});
   const originals:Record<string,string>={"client/main.ts":"candidate", "postcss.config.js":"compiler recipe",
     "dist/public/index.html":"compiled", "dist/index.cjs":"server",
-    "dist/public/assets/main.js":"chunk","dist/public/assets/theme.css":"css","dist/public/assets/font.woff2":"font"};
+    "dist/public/assets/main.js":"chunk","dist/public/assets/theme.css":"css","dist/public/assets/font.woff2":"font",
+    // Synthetic receipt for tamper tests, not evidence of a production compilation.
+    "dist/build-recipe.json":JSON.stringify({version:1,mode:"production",nodeEnv:"production",node:process.version,
+      npm:execFileSync("npm",["--version"],{encoding:"utf8"}).trim(),entryPoint:"script/build.ts",
+      client:"vite:production",server:"esbuild:production"})};
   for(const [file,text] of Object.entries(originals))await writeFile(path.join(root,file),text);
   execFileSync("git",["-C",root,"add","client","postcss.config.js"]);
   execFileSync("git",["-C",root,"-c","user.name=Fixture","-c","user.email=fixture@example.test","commit","-qm","fixture"]);
   await writeCandidateIdentity(root);await verifyCandidateIdentity(root);
+  const originalMode=process.env.NODE_ENV;
+  const invalidRecipe=JSON.parse(originals["dist/build-recipe.json"]);
+  for(const change of [{mode:"test"},{nodeEnv:"test"},{client:"vite:test"},{node:"v0.0.0"},{npm:"0.0.0"}]){
+    await writeFile(path.join(root,"dist/build-recipe.json"),JSON.stringify({...invalidRecipe,...change}));
+    await assert.rejects(verifyCandidateIdentity(root));assertions++;
+  }
+  await writeFile(path.join(root,"dist/build-recipe.json"),originals["dist/build-recipe.json"]);
+  assert.equal(process.env.NODE_ENV,originalMode,"Recipe verification must not change the test runtime");
   for(const file of ["postcss.config.js","dist/public/assets/main.js","dist/public/assets/theme.css","dist/public/assets/font.woff2"]){
     await writeFile(path.join(root,file),"tampered");await utimes(path.join(root,file),1,1);
     await assert.rejects(verifyCandidateIdentity(root));assertions++;

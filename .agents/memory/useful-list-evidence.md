@@ -29,3 +29,9 @@ Compare rendered record identifiers with the page's actual returned identifiers;
 **Why:** A composite review panel contained both source-recovery articles and actual review records. Counting all articles rejected a correctly hydrated page, while an earlier shell-only capture missed that records were still loading.
 
 **How to apply:** Wait for the destination's hydrated records, verify their identifiers and next-page non-overlap, then capture the visible result. Do not certify the record collection from its parent panel or loading shell.
+
+Full-document navigation and reload proof must distinguish the destination document from the previous one before checking a shared heading, tab or reader.
+
+**Why:** Consecutive Outreach destinations share headings and tab selectors. A text/selector wait could return against the old document, then reject the correct URL-backed selection before the navigation committed.
+
+**How to apply:** For full navigations require a changed document time origin and complete document, then wait for destination-specific hydration and selection. Treat same-document SPA/history changes separately; a common heading alone is never navigation completion evidence.

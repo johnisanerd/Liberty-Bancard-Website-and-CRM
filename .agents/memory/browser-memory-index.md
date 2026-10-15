@@ -10,3 +10,4 @@ description: Index of private browser, overlay, loader, and fixture workflow les
 - [Private session-injecting proxies](private-autoauth-ui-verification.md).
 - [Fixture workflow Run groups](workflow-run-group.md).
 - [Read-fault isolation](browser-read-fault-isolation.md).
+- [Certification environment portability](certification-environment-portability.md) — native TZ startup and safe public-root serving in dot-directory worktrees.

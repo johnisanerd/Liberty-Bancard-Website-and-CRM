@@ -460,11 +460,12 @@ export default function MerchantPortfolio() {
           <CardTitle className="text-base">Merchant Table</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="flex flex-col sm:flex-row gap-3">
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+          <div className="flex flex-col sm:flex-row sm:flex-wrap gap-3">
+            <div className="relative min-w-0 sm:min-w-56 flex-1">
+              <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <Input
                 className="pl-9"
+                aria-label="Search merchants on this loaded page"
                 placeholder="Search by name, company, or rep email…"
                 value={search}
                     onChange={(e) => {setSearch(e.target.value);setOffset(0);}}

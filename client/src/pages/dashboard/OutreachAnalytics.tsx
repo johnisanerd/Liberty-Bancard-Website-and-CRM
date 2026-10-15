@@ -18,6 +18,8 @@ import {
 } from "@/components/ui/table";
 import { BarChart2, Send, Mail, Eye, MessageCircle, AlertTriangle, FlaskConical, Trophy, Clock } from "lucide-react";
 import type { Campaign, OutboundMessage } from "@shared/schema";
+import { outreachViews } from "@/lib/crm-destination-state";
+import { useC4RetainedSelection } from "@/hooks/use-c4-retained-selection";
 
 function getMessageStatusBadge(status: string | null | undefined) {
   switch (status) {
@@ -219,6 +221,7 @@ function ABTestCard({ test }: { test: ABTestResult }) {
 
 export default function OutreachAnalytics() {
   const { toast } = useToast();
+  const child=useC4RetainedSelection("/dashboard/reporting","outreachView",outreachViews,"campaigns");
 
   const { data: campaigns, isLoading: campaignsLoading, isError: campaignsError, refetch: retryCampaigns } = useQuery<Campaign[]>({
     queryKey: ["/api/campaigns"],
@@ -355,7 +358,8 @@ export default function OutreachAnalytics() {
       </div>
 
       }
-      <Tabs defaultValue="campaigns" data-testid="outreach-tabs">
+      {child.issues.map(issue=><p key={issue.key} role="status" className="text-sm text-destructive">{issue.reason}</p>)}
+      <Tabs value={child.value} onValueChange={value=>{if(outreachViews.includes(value as typeof child.value))child.setValue(value as typeof child.value);}} data-testid="outreach-tabs">
         <TabsList>
           <TabsTrigger value="campaigns" data-testid="tab-campaigns">Campaigns</TabsTrigger>
           <TabsTrigger value="ab-testing" data-testid="tab-ab-testing">

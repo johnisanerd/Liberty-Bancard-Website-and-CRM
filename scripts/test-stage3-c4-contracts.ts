@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import {applicationStatuses,boardingStatuses,outreachViews,leaderboardMetrics,leaderboardPeriods,retainedSelection,
+  retainedSelectionUrl,outreachAliasUrl} from "../client/src/lib/crm-destination-state";
 import {readFileSync} from "node:fs";
 import {financialState,financialUrl,selectValue,revenueViews,underwritingViews,supportViews,onboardingViews} from "../client/src/lib/crm-destination-state";
 import {rfiViews,rfiUrl,c4WorkspaceSelection} from "../client/src/lib/crm-destination-state";
@@ -23,21 +26,42 @@ import {churnSummarySchema,churnWeightsSchema,churnScoresSchema} from "../client
 import {testimonialViews,testimonialUrl,testimonialAliasUrl} from "../client/src/lib/crm-destination-state";
 
 // Source/codec checks only. No browser, handler, DB, provider or action claim.
-const originalZone=process.env.TZ;
-try{
-  for(const timezone of ["UTC","America/Bogota","America/New_York","Pacific/Apia"]){
-    process.env.TZ=timezone;
+for(const [path,key,allowed,fallback] of [
+  ["/dashboard/merchant-applications","status",applicationStatuses,"all"],
+  ["/dashboard/boarding","status",boardingStatuses,"all"],
+  ["/dashboard/reporting","outreachView",outreachViews,"campaigns"],
+  ["/dashboard/leaderboard","metric",leaderboardMetrics,"deals"],
+  ["/dashboard/leaderboard","period",leaderboardPeriods,"month"],
+] as const){
+  for(const value of allowed){
+    assert.equal(retainedSelection(`${key}=${value}`,key,allowed as readonly string[],fallback).value,value);
+    const url=retainedSelectionUrl(path,"contactId=42&page=9&offset=100&cursor=old&unsafe=x","#records",key,allowed as readonly string[],value);
+    const params=new URL(url,"http://isolated.test").searchParams;
+    assert.equal(params.get(key),value);assert.equal(params.get("contactId"),"42");
+    for(const dropped of ["page","offset","cursor","unsafe"])assert.equal(params.has(dropped),false);
+    assert.equal(retainedSelection(`${key}=${value}&${key}=${value}`,key,allowed as readonly string[],fallback).issues.length,0);
+  }
+  assert.equal(retainedSelection(`${key}=unknown`,key,allowed as readonly string[],fallback).issues[0].kind,"invalid");
+  assert.equal(retainedSelection(`${key}=${allowed[0]}&${key}=${allowed[1]}`,key,allowed as readonly string[],fallback).issues[0].kind,"conflict");
+}
+assert.throws(()=>retainedSelectionUrl("/dashboard/unregistered","","","status",applicationStatuses,"all"));
+assert.equal(new URL(outreachAliasUrl("contactId=42&outreachView=ab-testing","#records"),"http://isolated.test").searchParams.get("outreachView"),"ab-testing");
+// The denied CI harness intentionally replaces process.env. Its plain object
+// cannot notify Node's native timezone cache; use actual startup TZ per process.
+for(const timezone of ["UTC","America/Bogota","America/New_York","Pacific/Apia"]){
+  execFileSync(process.execPath,["--import","tsx","--input-type=module","-e",`
+    import assert from "node:assert/strict";
+    import {workDueDay,workDueDateChange} from "./client/src/lib/work-due-date.ts";
     const original="2026-10-09T04:22:33.123456Z";
-    assert.deepEqual(workDueDateChange(workDueDay(original),original),{},"Unchanged due day omits timestamp, preserving stored precision/time");
-    assert.deepEqual(workDueDateChange("",original),{dueDate:null},"Explicit clear of a populated due day");
-    const changed=workDueDateChange("2026-10-11",original).dueDate!;
+    assert.deepEqual(workDueDateChange(workDueDay(original),original),{});
+    assert.deepEqual(workDueDateChange("",original),{dueDate:null});
+    const changed=workDueDateChange("2026-10-11",original).dueDate;
     assert.equal(workDueDay(changed),"2026-10-11");
     assert.equal(new Date(changed).getHours(),0);
     assert.throws(()=>workDueDateChange("2026-02-30",original));
-  }
-  process.env.TZ="Pacific/Apia";
-  assert.throws(()=>workDueDateChange("2011-12-30"),"C1 strict local-day validator rejects a skipped day");
-}finally{if(originalZone===undefined)delete process.env.TZ;else process.env.TZ=originalZone;}
+    if(process.env.TZ==="Pacific/Apia")assert.throws(()=>workDueDateChange("2011-12-30"));
+  `],{env:{...process.env,TZ:timezone},stdio:"pipe"});
+}
 assert.deepEqual(workDueDateChange("",null),{});
 assert.deepEqual(churnSummarySchema.parse([]),[]);
 for(const rows of [[{tier:"High",count:"2"}],[{tier:"High",count:-1}],[{tier:"Unknown",count:1}],

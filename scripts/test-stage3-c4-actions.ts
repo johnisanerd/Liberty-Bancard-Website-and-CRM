@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {randomUUID,createHash} from "node:crypto";
-import {mkdir,writeFile,readFile} from "node:fs/promises";
+import {mkdir,writeFile,readFile,rm} from "node:fs/promises";
 import {stage3BHttpFixture} from "./fixtures/stage3-b-http";
 import {verifyCandidateIdentity} from "./fixtures/candidate-build-identity";
 import {operationsReportSchema} from "../shared/operations-report";
@@ -29,6 +29,7 @@ const h=await stage3BHttpFixture(async app=>{
     ["testimonials","registerTestimonialRoutes"],
     ["workflows","registerWorkflowsRoutes"],
     ["churn","registerChurnRoutes"],
+    ["campaigns","registerCampaignsRoutes"],
     ["acquisition","registerAcquisitionRoutes"],
     ["lifecycle","registerLifecycleRoutes"],
   ]) {const module=await import(`../server/routes/${file}.ts`);module[fn](app,file==="analytics"?{
@@ -51,6 +52,31 @@ async function check(role:string,method:string,path:string,body:unknown,status:n
   return result.body;
 }
 try {
+  const emptyAb = await check("admin","GET","/api/sequences/ab-test-results",undefined,200,"literal A/B reader and genuine empty results");
+  assert.deepEqual(emptyAb,[]);
+  await check("manager","GET","/api/sequences/ab-test-results",undefined,200,"manager A/B reader");
+  for(const role of ["agent","merchant","partner"])
+    await check(role,"GET","/api/sequences/ab-test-results",undefined,403,`${role} A/B denial`);
+  await check("anonymous","GET","/api/sequences/ab-test-results",undefined,401,"anonymous A/B denial");
+  const {followUpSequences,sequenceSteps}=await import("../shared/schema");
+  const sequenceFixtures=await h.db.insert(followUpSequences).values([
+    {name:`${h.prefix} manager A/B`,createdBy:h.userId("manager"),status:"paused"},
+    {name:`${h.prefix} foreign A/B`,createdBy:h.userId("other"),status:"paused"},
+  ]).returning();
+  await h.db.insert(sequenceSteps).values(sequenceFixtures.map(sequence=>({
+    sequenceId:sequence.id,stepOrder:1,actionType:"email",subject:"A",body:"A body",
+    variantBSubject:"B",variantBBody:"B body",abTestConfig:{splitRatio:50,minSampleSize:100,winnerCriteria:"open_rate"},
+    abTestResults:{variantASent:3,variantBSent:4,aOpens:1,bOpens:2,aClicks:0,bClicks:1,aReplies:0,bReplies:0},
+  })));
+  const populatedAb=await check("admin","GET","/api/sequences/ab-test-results",undefined,200,"real populated A/B aggregation");
+  assert.deepEqual(populatedAb.map((row:any)=>row.sequenceId).sort((a:number,b:number)=>a-b),sequenceFixtures.map(sequence=>sequence.id).sort((a,b)=>a-b));
+  assert.equal(populatedAb[0].abTestResults.variantASent,3);assert.equal(populatedAb[0].abTestResults.variantBSent,4);
+  const ownedAb=await check("manager","GET","/api/sequences/ab-test-results",undefined,200,"manager excludes foreign sequence results");
+  assert.deepEqual(ownedAb.map((row:any)=>row.sequenceId),[sequenceFixtures[0].id]);
+  await check("admin","GET",`/api/sequences/${sequenceFixtures[1].id}`,undefined,200,"numeric sequence route survives literal repair");
+  await check("manager","GET",`/api/sequences/${sequenceFixtures[0].id}`,undefined,200,"manager numeric owned sequence read");
+  await check("manager","GET",`/api/sequences/${sequenceFixtures[1].id}`,undefined,403,"manager numeric foreign sequence denial");
+  assert.equal(h.externalCalls(),0,"A/B reads never activate sequences or dispatch providers");
   const {calendarEvents}=await import("../shared/schema");
   for(const [zone,start,end] of [
     ["UTC","2026-10-01T00:00:00Z","2026-11-01T00:00:00Z"],
@@ -564,6 +590,54 @@ try {
     const docs=await check(role,"GET","/api/merchant-documents",undefined,200,"Real document metadata reader, no parse/preview/delete");
     assert.ok(docs.some((row:any)=>row.id===document.id&&row.contactId===contact.id));
   }
+  const ownedDocumentDirectory=`uploads/${h.prefix}-document-proof`;
+  const documentBytes=Buffer.from("Owned C4 document byte/version observation.\n");
+  await mkdir(ownedDocumentDirectory,{recursive:true});
+  try{
+    await writeFile(`${ownedDocumentDirectory}/observation.txt`,documentBytes);
+    const previewContact=(await h.db.insert(contacts).values({
+      firstName:h.prefix,lastName:"Document permission proof",email:h.email("merchant"),
+      phone:"",assignedTo:h.email("agent"),recordClass:"production",
+    }).returning())[0];
+    const previewDocument=(await h.db.insert(documents).values({
+      contactId:previewContact.id,type:"statement",fileName:"observation.txt",
+      mimeType:"text/plain",fileSize:documentBytes.length,
+      storageKey:`${h.prefix}-document-proof/observation.txt`,
+      category:"Processing Statement",accessScope:"merchant",status:"approved",
+    }).returning())[0];
+    for(const role of ["admin","manager","agent","merchant"]){
+      const access=await h.request(role as any,"GET",`/api/merchant-documents/${previewDocument.id}/access-token`);
+      assert.equal(access.status,200,`${role} document capability respects current object and document scope`);
+      assert.equal(access.body.expiresInSeconds,900);
+      assert.match(access.body.url,/^\/api\/merchant-documents\/serve\//);
+      const served=await h.originalFetch(`${h.base}${access.body.url}`);
+      assert.equal(served.status,200);
+      assert.deepEqual(Buffer.from(await served.arrayBuffer()),documentBytes);
+      assert.equal(served.headers.get("cache-control"),"no-store");
+      assert.equal(served.headers.get("x-content-type-options"),"nosniff");
+      assert.match(served.headers.get("content-disposition")!,/attachment/);
+      rows.push({role,method:"GET",path:"/api/merchant-documents/serve/[redacted-capability]",
+        status:200,note:"Actual signed document bytes, persisted metadata and current authorization; attachment serving, not inline-preview UI",
+        documentId:previewDocument.id,bytes:documentBytes.length,contentHash:createHash("sha256").update(documentBytes).digest("hex")});
+    }
+    for(const role of ["other","partner","anonymous"])
+      await check(role,"GET",`/api/merchant-documents/${previewDocument.id}/access-token`,undefined,
+        role==="anonymous"?401:403,"Foreign/internal-scope document capability denied");
+    await check("admin","GET",`/api/merchant-documents/${previewDocument.id}/download`,undefined,401,
+      "Direct download does not bypass signed current-authorization reader");
+    const issued=await h.request("merchant","GET",`/api/merchant-documents/${previewDocument.id}/access-token`);
+    assert.equal(issued.status,200);
+    // A capability cannot retain access after its document's current scope changes.
+    const {eq:documentEq}=await import("drizzle-orm");
+    await h.db.update(documents).set({accessScope:"internal"}).where(documentEq(documents.id,previewDocument.id));
+    const revoked=await h.originalFetch(`${h.base}${issued.body.url}`);
+    assert.equal(revoked.status,403);
+    rows.push({role:"merchant",method:"GET",path:"/api/merchant-documents/serve/[redacted-capability]",
+      status:403,note:"Issued capability rechecks current persisted document scope; scope revocation is not cached permission"});
+    const invalid=await h.originalFetch(`${h.base}/api/merchant-documents/serve/invalid-capability`);
+    assert.equal(invalid.status,401);
+    assert.equal(h.externalCalls(),0,"Actual owned legacy document byte serving uses no object-storage/provider transport");
+  }finally{await rm(ownedDocumentDirectory,{recursive:true,force:true});}
   await check("agent","GET","/api/merchant-documents",undefined,403,"Denied vault read is not an empty result");
   for(const role of ["admin","manager","agent","other"]){
     const reviews=await check(role,"GET","/api/statement-reviews",undefined,200,"Statement version and typed relationships remain scoped");

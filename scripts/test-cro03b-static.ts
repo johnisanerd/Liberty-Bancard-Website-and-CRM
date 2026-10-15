@@ -103,9 +103,10 @@ async function main() {
     assert.match(projection, /cro03b_finalization_receipts/);
     assert.ok(projection.indexOf("enqueueValidationIntent") < projection.indexOf("requestContactLeadScoring"));
     assert.match(projection, /subject_generation.*email_mutation_generation/s);
-    assert.match(readiness, /cro03b_provider_denied/);
-    assert.match(readiness, /execution_authority='cro03c_activation'/);
-    assert.match(readiness, /purpose <> 'cro03_winning_email'/);
+    assert.match(readiness, /currentCanonicalValidationSelection/);
+    assert.match(readiness, /claimCanonicalAddressValidation/);
+    assert.match(readiness, /if \(!state\?\.enabled \|\| state\.circuit_state !== "closed"\)/);
+    assert.match(readiness, /await markCanonicalAddressDispatch\(addressOwner,String\(operationId\),tx\)/);
     assert.doesNotMatch(projection, /suppressValidationEnqueue/);
   });
   await check("arbitration persists reproducibility and review outcomes", () => {

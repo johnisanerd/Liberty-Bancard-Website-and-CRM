@@ -230,6 +230,17 @@ export const LOGICAL_JOB_MANIFEST: readonly ManifestEntry[] = [
     backlogSource: "statement_upload_commands",
     releaseController: "statement-command-worker",
   },
+  {
+    logicalKey: "canonical-import-recovery",
+    physicalQueue: QUEUE_NAMES.CANONICAL_IMPORT_RECOVERY,
+    jobNamePattern: "*",
+    handler: "Existing serial provider-free contact linking, retained-row recovery and persisted CSV recovery",
+    owner: "canonical-import-recovery-worker / contact-link-automation / csv-import-recovery",
+    effect: "infrastructure",
+    canRunWhileGlobalOutboundPaused: true,
+    backlogSource: "bullmq",
+    releaseController: "sfp-runtime-owner-and-import-execution-fences",
+  },
   // ── GHL_SYNC ─────────────────────────────────────────────────────────────
   {
     logicalKey: "ghl-sync",

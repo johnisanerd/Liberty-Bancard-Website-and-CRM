@@ -88,6 +88,56 @@ function denyManagerOwnership(res: Response) {
   return res.status(403).json({ message: "You do not own this resource" });
 }
 
+function registerAbTestResultsReader(app: Express) {
+  app.get("/api/sequences/ab-test-results", isAuthenticated, requireRole("admin", "manager"), async (req, res) => {
+    try {
+      const sequences = (await storage.getFollowUpSequences())
+        .filter(sequence => canMutateOwnedCampaignObject(req, sequence.createdBy));
+      const results: AbTestResultRow[] = [];
+      for (const seq of sequences) {
+        const steps = await storage.getSequenceSteps(seq.id);
+        for (const step of steps) {
+          const cfg = step.abTestConfig as AbTestConfig | null;
+          if (cfg && (step.variantBSubject || step.variantBBody)) {
+            const r = (step.abTestResults as Partial<AbTestResults>) || {};
+            results.push({
+              sequenceId: seq.id,
+              sequenceName: seq.name ?? "",
+              stepId: step.id,
+              stepOrder: step.stepOrder ?? 1,
+              actionType: step.actionType ?? "email",
+              variantA: { subject: step.subject ?? undefined, body: step.body ?? undefined },
+              variantB: { subject: step.variantBSubject ?? undefined, body: step.variantBBody ?? undefined },
+              abTestConfig: {
+                splitRatio: cfg.splitRatio ?? 50,
+                minSampleSize: cfg.minSampleSize ?? 100,
+                winnerCriteria: cfg.winnerCriteria ?? "open_rate",
+              },
+              abTestResults: {
+                variantASent: r.variantASent ?? 0,
+                variantBSent: r.variantBSent ?? 0,
+                aOpens: r.aOpens ?? 0,
+                bOpens: r.bOpens ?? 0,
+                aClicks: r.aClicks ?? 0,
+                bClicks: r.bClicks ?? 0,
+                aReplies: r.aReplies ?? 0,
+                bReplies: r.bReplies ?? 0,
+                winnerSelected: r.winnerSelected ?? null,
+                winnerAt: r.winnerAt ?? null,
+                startedAt: r.startedAt ?? null,
+                statisticallySignificant: r.statisticallySignificant,
+              },
+            });
+          }
+        }
+      }
+      res.json(results);
+    } catch (err: any) {
+      serverError(res, err);
+    }
+  });
+}
+
 export function registerCampaignsRoutes(app: Express) {
   const campaignCreateSchema = z.object({
     name: z.string().trim().min(1).max(500),
@@ -830,6 +880,8 @@ export function registerCampaignsRoutes(app: Express) {
     }
   });
 
+  // Register literal sequence readers before the parameterized detail reader.
+  registerAbTestResultsReader(app);
   app.get("/api/sequences/:id", isAuthenticated, requireRole("admin", "manager"), async (req, res) => {
     try {
       const seq = await storage.getFollowUpSequence(Number(req.params.id));
@@ -1529,53 +1581,7 @@ export function registerCampaignsRoutes(app: Express) {
   });
 
   // === A/B TEST RESULTS ===
-  app.get("/api/sequences/ab-test-results", isAuthenticated, requireRole("admin", "manager"), async (req, res) => {
-    try {
-      const sequences = (await storage.getFollowUpSequences())
-        .filter(sequence => canMutateOwnedCampaignObject(req, sequence.createdBy));
-      const results: AbTestResultRow[] = [];
-      for (const seq of sequences) {
-        const steps = await storage.getSequenceSteps(seq.id);
-        for (const step of steps) {
-          const cfg = step.abTestConfig as AbTestConfig | null;
-          if (cfg && (step.variantBSubject || step.variantBBody)) {
-            const r = (step.abTestResults as Partial<AbTestResults>) || {};
-            results.push({
-              sequenceId: seq.id,
-              sequenceName: seq.name ?? "",
-              stepId: step.id,
-              stepOrder: step.stepOrder ?? 1,
-              actionType: step.actionType ?? "email",
-              variantA: { subject: step.subject ?? undefined, body: step.body ?? undefined },
-              variantB: { subject: step.variantBSubject ?? undefined, body: step.variantBBody ?? undefined },
-              abTestConfig: {
-                splitRatio: cfg.splitRatio ?? 50,
-                minSampleSize: cfg.minSampleSize ?? 100,
-                winnerCriteria: cfg.winnerCriteria ?? "open_rate",
-              },
-              abTestResults: {
-                variantASent: r.variantASent ?? 0,
-                variantBSent: r.variantBSent ?? 0,
-                aOpens: r.aOpens ?? 0,
-                bOpens: r.bOpens ?? 0,
-                aClicks: r.aClicks ?? 0,
-                bClicks: r.bClicks ?? 0,
-                aReplies: r.aReplies ?? 0,
-                bReplies: r.bReplies ?? 0,
-                winnerSelected: r.winnerSelected ?? null,
-                winnerAt: r.winnerAt ?? null,
-                startedAt: r.startedAt ?? null,
-                statisticallySignificant: r.statisticallySignificant,
-              },
-            });
-          }
-        }
-      }
-      res.json(results);
-    } catch (err: any) {
-      serverError(res, err);
-    }
-  });
+  // The reader is registered above sequence detail; mutation authority stays here.
 
   // Results are a server-owned projection.  This retired mutation endpoint
   // remains only to return an explicit, non-successful response to stale UIs.

@@ -5,10 +5,17 @@ import {privateStage3Browser} from "./fixtures/private-stage3-browser";
 import {verifyCandidateIdentity} from "./fixtures/candidate-build-identity";
 import {c4InventoryCases,c4ControlSnapshotExpression,writeC4ControlInventory} from "./fixtures/stage3-c4-control-inventory";
 import {runC4HealthReadCase} from "./fixtures/stage3-c4-health-read-case";
+import path from "node:path";
+import {runC4MatchedPerformance} from "./fixtures/stage3-c4-matched-performance";
+import {applicationStatuses,boardingStatuses,outreachViews,leaderboardMetrics,leaderboardPeriods} from "../client/src/lib/crm-destination-state";
+import {runC4BundledRollback} from "./fixtures/stage3-c4-bundled-rollback";
+import {runC4Accessibility} from "./fixtures/stage3-c4-accessibility";
+import {runC4TerminalActions} from "./fixtures/stage3-c4-terminal-actions";
 
 const identity=await verifyCandidateIdentity();
 let browserPreparationFault=false;
 let browserPreparationFaultExecuted=false;
+let clientRoot=path.resolve("dist/public");
 const h=await stage3BHttpFixture(async app=>{
   for(const [file,fn] of [
     ["contacts","registerContactsRoutes"],["deals","registerDealsRoutes"],
@@ -27,6 +34,8 @@ const h=await stage3BHttpFixture(async app=>{
     ["testimonials","registerTestimonialRoutes"],
     ["workflows","registerWorkflowsRoutes"],
     ["churn","registerChurnRoutes"],
+    ["campaigns","registerCampaignsRoutes"],
+    ["terminal-economics","registerTerminalEconomicsRoutes"],
   ]) {const module=await import(`../server/routes/${file}.ts`);module[fn](app,file==="crm-operations" ? {
     onboardingPreparationAfterStep:async(step:string)=>{
       if(browserPreparationFault && step==="Submit application to processor"){
@@ -37,8 +46,8 @@ const h=await stage3BHttpFixture(async app=>{
   }:undefined);}
   app.use("/api",(_req,res)=>res.status(501).json({message:"Source not registered in this isolated C4 fixture"}));
   const {static:serveStatic}=await import("express");
-  app.use(serveStatic("dist/public"));
-  app.use((_req,res)=>res.sendFile(`${process.cwd()}/dist/public/index.html`));
+   app.use((req,res,next)=>serveStatic(clientRoot)(req,res,next));
+   app.use((_req,res)=>res.sendFile("index.html",{root:clientRoot}));
 },undefined,{backgroundProfile:"off"});
 let b:Awaited<ReturnType<typeof privateStage3Browser>>|undefined;
 const rows:Array<Record<string,unknown>>=[];
@@ -106,7 +115,18 @@ try {
   // footer control. Wait for that independent source to settle before pointer
   // measurement rather than clicking a coordinate during hydration.
   await b.waitFor(/Native appointments are unavailable/);
-  await b.waitFor(/110/);
+  const ownedUsefulCount=await h.pool.query(
+    "SELECT count(*)::int AS count FROM contacts WHERE email LIKE $1",
+    [`${h.prefix}-browser-%`],
+  );
+  assert.equal(ownedUsefulCount.rows[0].count,110,"The owned useful fixture volume remains exactly 110");
+  const mobileFacets=await h.request("admin","GET","/api/contacts/facets?");
+  assert.equal(mobileFacets.status,200);
+  assert.ok(mobileFacets.body.total>=110,"The actual admin reader must include every useful fixture contact");
+  assert.equal(await b.evaluate(`(async()=>{for(let n=0;n<120;n++){
+    if(document.querySelector('[data-testid="text-total-contacts"]')?.textContent.trim()===${JSON.stringify(String(mobileFacets.body.total))})return true;
+    await new Promise(resolve=>setTimeout(resolve,100));
+  }return false;})()`),true,"Mobile's visible count must match its real native reader, including prior owned CI fixtures");
   await b.evaluate("document.fonts.ready.then(()=>true)");
   await b.click('[data-testid="button-switch-to-desktop"]');
   for(let n=0;n<50 && !await b.evaluate('localStorage.getItem("prefer_desktop")==="true"');n++)
@@ -116,6 +136,107 @@ try {
     await new Promise(resolve=>setTimeout(resolve,100));
   assert.equal(await b.evaluate('location.pathname.startsWith("/dashboard")'),true,"desktop-control navigation settled before viewport change");
   await settleStaffTour("admin");
+  for(const [route,ready] of [
+    ["/dashboard/onboarding",/Onboarding Pipeline/],
+    ["/dashboard/onboarding?tab=board",/Onboarding Operations Board/],
+    ["/dashboard/onboarding-kickoff",/Closed Won Sales → linked Onboarding preparation/],
+  ] as const){
+    await b.navigate(route);await b.waitFor(ready);
+    const headings=await b.evaluate('Array.from(document.querySelectorAll("main h1")).map(e=>e.textContent.trim())');
+    assert.equal(headings.length,1,`Persistent unique Onboarding page identity: ${route}`);
+    rows.push({phase:"Onboarding unique H1",role:"admin",route,headings});
+  }
+  await b.navigate("/dashboard/leaderboard");await b.waitFor(/Team Leaderboard/);
+  await b.click('[data-testid="button-leaderboard-settings"]');
+  await b.click('[data-testid="switch-showResponseRate"]');
+  await b.click('[data-testid="button-save-settings"]');
+  for(let attempt=0;attempt<100&&await b.evaluate('!!document.querySelector("[data-testid=button-save-settings]")');attempt++)
+    await new Promise(r=>setTimeout(r,50));
+  const persistedSettings=await h.request("admin","GET","/api/leaderboard/settings");
+  assert.equal(persistedSettings.status,200);assert.equal(persistedSettings.body.showResponseRate,true);
+  rows.push({phase:"Leaderboard optional proxy metric actual settings control and durable readback",role:"admin",
+    qualification:"Owned presentation setting, not provider or campaign activation"});
+  const waitForRetainedActive=async(control:string,previousDocumentOrigin?:number)=>{
+    for(let attempt=0;attempt<120;attempt++){
+      try{
+        const state=await b.evaluate(`({
+          origin:performance.timeOrigin,ready:document.readyState,
+          active:document.querySelector('[data-testid="${control}"]')?.getAttribute("data-state")??null
+        })`);
+        if(state.ready==="complete"&&state.active==="active"&&
+          (previousDocumentOrigin===undefined||state.origin!==previousDocumentOrigin))return state.active;
+      }catch(error){
+        // Runtime evaluations can be cancelled while reload replaces a document.
+        // Retry only in this bounded reload observer; never accept a missing tab.
+        if(previousDocumentOrigin===undefined||!(error instanceof Error)||
+          error.message!=="Private browser evaluation failed; expression and response omitted")throw error;
+      }
+      await new Promise(resolve=>setTimeout(resolve,100));
+    }
+    assert.fail(`Retained tab did not become active in the settled document: ${control}`);
+  };
+  const retainedTabCases:Array<[string,string,string,string,RegExp]>=[
+    ...applicationStatuses.map(value=>[
+      `/dashboard/merchant-applications?status=${value==="all"?"approved":"all"}&page=2&cursor=retained-fixture`,
+      `tab-status-${value}`,"status",value,/Merchant Applications/] as [string,string,string,string,RegExp]),
+    ...boardingStatuses.map(value=>[
+      `/dashboard/boarding?status=${value==="all"?"approved":"all"}&page=2&cursor=retained-fixture`,
+      `tab-boarding-${value}`,"status",value,/Boarding/] as [string,string,string,string,RegExp]),
+    ...outreachViews.map(value=>[
+      `/dashboard/reporting?tab=outreach-analytics&outreachView=${value==="campaigns"?"messages":"campaigns"}&page=2&cursor=retained-fixture`,
+      `tab-${value}`,"outreachView",value,/Outreach Analytics/] as [string,string,string,string,RegExp]),
+    ...leaderboardMetrics.map(value=>[
+      `/dashboard/leaderboard?metric=${value==="deals"?"calls":"deals"}&page=2&cursor=retained-fixture`,
+      `tab-metric-${value}`,"metric",value,/Leaderboard/] as [string,string,string,string,RegExp]),
+  ];
+  for(const [route,control,parameter,value,ready] of retainedTabCases){
+    await b.navigate(route);await b.waitFor(ready);
+    assert.equal(await b.evaluate(`(async()=>{
+      for(let attempt=0;attempt<120;attempt++){
+        if(document.querySelector('[data-testid="${control}"]'))return true;
+        await new Promise(r=>setTimeout(r,50));
+      }return false;
+    })()`),true,`Conditional retained selector must hydrate from actual settings: ${control}`);
+    const originalUrl=await b.evaluate("location.href");
+    await b.click(`[data-testid="${control}"]`);
+    for(let attempt=0;attempt<60&&await b.evaluate(`new URLSearchParams(location.search).get(${JSON.stringify(parameter)})`)!==value;attempt++)
+      await new Promise(resolve=>setTimeout(resolve,50));
+    assert.equal(await b.evaluate(`new URLSearchParams(location.search).get(${JSON.stringify(parameter)})`),value);
+    assert.equal(await b.evaluate('["page","cursor","offset"].some(key=>new URLSearchParams(location.search).has(key))'),false,
+      "Retained tab changes reset pagination rather than carrying a stale window");
+    const previousDocumentOrigin=await b.evaluate("performance.timeOrigin");
+    await b.call("Page.reload");
+    assert.equal(await waitForRetainedActive(control,previousDocumentOrigin),"active");
+    await b.waitFor(ready);
+    await b.evaluate("history.back()");
+    for(let attempt=0;attempt<60 && await b.evaluate("location.href")!==originalUrl;attempt++)await new Promise(resolve=>setTimeout(resolve,50));
+    assert.equal(await b.evaluate("location.href"),originalUrl,"Back restores original retained selector");
+    await b.evaluate("history.forward()");
+    for(let attempt=0;attempt<60 && await b.evaluate(`new URLSearchParams(location.search).get(${JSON.stringify(parameter)})`)!==value;attempt++)await new Promise(resolve=>setTimeout(resolve,50));
+    assert.equal(await b.evaluate(`new URLSearchParams(location.search).get(${JSON.stringify(parameter)})`),value,"Forward restores selection");
+    rows.push({phase:"Retained URL state reload/Back/Forward",role:"admin",route,parameter,value});
+  }
+  for(const period of leaderboardPeriods){
+    await b.navigate(`/dashboard/leaderboard?period=${period==="week"?"month":"week"}&page=2`);
+    await b.waitFor(/Team Leaderboard/);
+    const originalUrl=await b.evaluate("location.href");
+    await b.click('[data-testid="select-time-period"]');
+    const labels:Record<string,string>={week:"Last 7 Days",month:"This Month",quarter:"This Quarter",all:"All Time"};
+    const option=await b.evaluate(`Array.from(document.querySelectorAll('[role="option"]')).findIndex(e=>e.textContent.trim()===${JSON.stringify(labels[period])})`);
+    assert.ok(option>=0,`Actual period option exists: ${period}`);
+    await b.click(`[role="option"]:nth-child(${option+1})`);
+    assert.equal(await b.evaluate('new URLSearchParams(location.search).get("period")'),period);
+    assert.equal(await b.evaluate('new URLSearchParams(location.search).has("page")'),false);
+    await b.call("Page.reload");await b.waitFor(/Team Leaderboard/);
+    assert.equal(await b.evaluate('document.querySelector("[data-testid=select-time-period]").textContent.trim()'),labels[period]);
+    await b.evaluate("history.back()");
+    for(let attempt=0;attempt<60&&await b.evaluate("location.href")!==originalUrl;attempt++)await new Promise(r=>setTimeout(r,50));
+    assert.equal(await b.evaluate("location.href"),originalUrl);
+    await b.evaluate("history.forward()");
+    for(let attempt=0;attempt<60&&await b.evaluate('new URLSearchParams(location.search).get("period")')!==period;attempt++)await new Promise(r=>setTimeout(r,50));
+    assert.equal(await b.evaluate('new URLSearchParams(location.search).get("period")'),period);
+    rows.push({phase:"Every Leaderboard period physical selection/reload/Back/Forward",period});
+  }
   for(const theme of ["light","dark"]) for(const width of [320,390,768,1280,1440]) {
     await b.call("Emulation.setDeviceMetricsOverride",{width,height:1000,deviceScaleFactor:1,mobile:false});
     const started=performance.now();
@@ -152,6 +273,7 @@ try {
     await b.screenshot(`portfolio-${theme}-${width}`);
   }
   await b.call("Emulation.setDeviceMetricsOverride",{width:1280,height:1000,deviceScaleFactor:1,mobile:false});
+  await runC4TerminalActions(h,b,rows);
   b.failRead("/api/deal-competitors");
   await b.call("Page.navigate",{url:`${h.base}/dashboard/reporting?tab=win-loss`});
   await b.waitFor(/Sales & Growth/);
@@ -424,13 +546,19 @@ try {
   b.failRead(null);await b.click('[data-testid="tab-content-payouts"] [data-testid="button-retry"]');
   await b.waitFor(/Stored allocations and recorded statuses, not native transfer/);
   await b.screenshot("payout-recorded-not-native-receipt");
+  b.failRead("/api/campaigns",{exact:true});
   await b.navigate("/dashboard/reporting?tab=outreach-analytics");
   await b.waitFor(/Campaign reporting is unavailable/);
   for(const child of ["campaigns","ab-testing","messages"])
     assert.equal(await b.evaluate(`!!document.querySelector('[data-testid="tab-${child}"]')`),true);
-  await b.click('[data-testid="tab-ab-testing"]');await b.waitFor(/A\/B results unavailable/);
-  await b.click('[data-testid="tab-messages"]');await b.waitFor(/Message source unavailable/);
+  await b.click('[data-testid="tab-ab-testing"]');await b.waitFor(/No A\/B tests configured/);
+  b.failRead("/api/sequences/ab-test-results",{exact:true});
+  await b.call("Page.reload");await b.waitFor(/A\/B results unavailable/);
+  await b.click('[data-testid="tab-messages"]');
+  b.failRead("/api/outbound-messages",{exact:true});
+  await b.call("Page.reload");await b.waitFor(/Message source unavailable/);
   await b.screenshot("outreach-independent-unavailable-children");
+  b.failRead(null);
   rows.push({phase:"Payout observed/unknown scope and Outreach independent child failure states",mutationRequests:0,
     qualification:"Real payout reader/read-only retry and local report selections. No generate/approve/paid/A-B evaluation command invoked."});
   const acquisitionRequestsBefore=b.requests.length;
@@ -762,6 +890,18 @@ try {
   assert.equal(await b.evaluate(`document.activeElement?.getAttribute("data-testid")`),`button-open-review-${reviewFixtures[0].id}`);
   await reviewKey("Enter");await b.waitFor(new RegExp(`Quiz Lead — ${h.prefix} pending review read`));
   await b.click('[data-testid="button-approve"]');await b.waitFor(/Confirm Approval/);
+  assert.equal(await b.evaluate(`(async()=>{
+    for(let i=0;i<100;i++){
+      const modal=Array.from(document.querySelectorAll('[role="dialog"]')).find(e=>
+        e.getAttribute("data-state")==="open"&&e.textContent.includes("Confirm Approval"));
+      if(modal?.contains(document.activeElement)){
+        await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+        return true;
+      }
+      await new Promise(r=>setTimeout(r,25));
+    }
+    return false;
+  })()`),true,"Nested modal opening focus must settle before its single Escape");
   await reviewKey("Escape");
   for(let attempt=0;attempt<30&&await b.evaluate('Array.from(document.querySelectorAll("[role=dialog]")).some(el=>el.textContent.includes("Confirm Approval"))');attempt++)
     await new Promise(resolve=>setTimeout(resolve,50));
@@ -851,6 +991,12 @@ try {
     }
   }
   await writeC4ControlInventory(surfaces,identity,h.prefix);
+  await b.close();
+  finishedContexts.push({role:browserRole,requests:b.requests,exceptions:b.exceptions});
+  b=undefined;
+  await runC4Accessibility(h,rows);
+  await runC4MatchedPerformance(h,identity,root=>{clientRoot=root;});
+  await runC4BundledRollback(h,identity);
   rows.push({phase:"Actual retained route/panel mounted inventory",surfaces:surfaces.length,
     qualification:"39 route references across six fixture roles plus 70 historical panels in admin context; nested selector absent/denied/loading explicitly retained; no action acceptance or full state-space proof"});
   assert.equal(h.externalCalls(),0);
@@ -858,7 +1004,7 @@ try {
   await writeFile("docs/certification/stage3-c4/browser-receipt.json",JSON.stringify({status:"passed",identity,rows,
     contexts:browserContexts(),exceptions:browserContexts().flatMap(c=>c.exceptions),
     requests:browserContexts().flatMap(c=>c.requests.map(request=>({role:c.role,...(request as Record<string,unknown>)}))),externalEgress:0,
-    qualification:"Actual compiled client, authenticated private disposable fixture, registered source readers; unregistered independent sources return501. Not full39/70, all-actions, native200%/keyboard/performance or published-server acceptance."},null,2)+"\n");
+    qualification:"Actual compiled client, authenticated private disposable fixture, registered source readers; unregistered independent sources return501. Named native200%/matched Portfolio performance and reader/client rollback evidence is separate. Not all-actions/full keyboard or published-server acceptance."},null,2)+"\n");
   console.log("C4 bounded mounted browser PASS");
   if(process.argv.includes("--snapshot-hold")){
     console.log(`C4_PUBLIC_SIGNED_OUT_SNAPSHOT_PORT=${new URL(h.base).port}`);

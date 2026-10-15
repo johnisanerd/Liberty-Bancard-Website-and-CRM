@@ -14,3 +14,13 @@ Manual onboarding kickoff uses linked handoff: eligible Closed Won Sales deals c
 **Why:** The user selected “Linked handoff (recommended)” with no additional restrictions.
 
 **How to apply:** Do not move the Sales deal into Onboarding, reset completed steps, or infer sending, enrollment, activation or production-operation approval from this choice.
+
+The user does not require all existing old tests and CI failures to be green
+before applying the C4 patch to origin/main.
+
+**Why:** The user corrected an integration delay caused by treating unrelated
+legacy test and CI failures as prerequisites for their C4 patch.
+
+**How to apply:** Validate the affected C4 work and preserve newer main changes.
+Keep unrelated failures separately reported rather than expanding C4 into an
+all-existing-tests repair effort. This does not authorize publication.

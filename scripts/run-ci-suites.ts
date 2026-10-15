@@ -53,7 +53,8 @@ function parseCapabilities(): SuiteCapability[] {
 }
 
 async function runSuite(suite: SuiteManifestEntry, capability: SuiteCapability): Promise<void> {
-  const timeoutMs = Number(process.env.CI_SUITE_TIMEOUT_MS ?? 300_000);
+  const timeoutMs = Number(process.env.CI_SUITE_TIMEOUT_MS ??
+    suite.executionTimeoutMs ?? (suite.isolateInfrastructure ? 900_000 : 300_000));
   if (!Number.isFinite(timeoutMs) || timeoutMs < 1_000) {
     throw new Error("CI_SUITE_TIMEOUT_MS must be a finite value of at least 1000ms.");
   }

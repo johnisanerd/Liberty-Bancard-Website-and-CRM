@@ -284,6 +284,10 @@ function DealQuickEditSheet({
   const { user } = useAuth();
   const contextKey=JSON.stringify([protectedScope(user),open,deal?.id,deal?.contactId]);
   const currentContext=useRef(contextKey);currentContext.current=contextKey;
+  const focusReturnDealId=useRef<number|null>(null);
+  useEffect(()=>{
+    if(open && deal)focusReturnDealId.current=deal.id;
+  },[open,deal?.id]);
   const hydratedContext=useRef<string|null>(null);
   const [confirmedDealKey,setConfirmedDealKey]=useState<string|null>(null);
   const contactRead=useQuery<Record<string,any>>({
@@ -431,7 +435,14 @@ function DealQuickEditSheet({
 
   return (
     <Sheet open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
-      <SheetContent className="w-full sm:max-w-lg overflow-y-auto" data-testid="sheet-deal-quick-edit">
+      <SheetContent className="w-full sm:max-w-lg overflow-y-auto" data-testid="sheet-deal-quick-edit"
+        onCloseAutoFocus={(event)=>{
+          // The menu item unmounts when it opens this controlled Sheet. Return
+          // to the same record's live action button, never a stale menu node.
+          const caller=document.querySelector<HTMLButtonElement>(
+            `[data-testid="button-deal-actions-${focusReturnDealId.current}"]`);
+          if(caller?.isConnected){event.preventDefault();caller.focus();}
+        }}>
         <SheetHeader>
           <SheetTitle>Edit Lead</SheetTitle>
         </SheetHeader>

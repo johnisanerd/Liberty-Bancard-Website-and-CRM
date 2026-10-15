@@ -4,6 +4,39 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { buildCertificationEnvironment } from "./certification-process-env";
 
+const compilerEnv = {
+  NODE_ENV: "production",
+  VG_PROVIDER_DENY_MODE: "1",
+  CERTIFICATION_COMPILER_ONLY: "1",
+  CERTIFICATION_ALLOWED_NETWORK_ORIGINS: "",
+  CERTIFICATION_ALLOW_LOOPBACK: "0",
+};
+const preloadArgs = ["--require", "./scripts/certification-provider-deny-preload.cjs", "-e"];
+const compilerProbe = spawnSync(process.execPath, [...preloadArgs, `
+  const assert=require("node:assert/strict");
+  assert.equal(process.env.NODE_ENV,"production");
+  assert.throws(()=>require("node:net").connect({host:"127.0.0.1",port:1}),
+    /production compiler socket denied/);
+  assert.throws(()=>require("node:https").get("https://example.invalid"),
+    /descendant network denied/);
+  fetch("https://example.invalid").then(()=>process.exit(9)).catch(error=>{
+    assert.match(error.message,/descendant network denied/);
+    console.log("compiler denied");
+  });
+`], { env: compilerEnv, encoding: "utf8" });
+assert.equal(compilerProbe.status, 0, compilerProbe.stderr);
+assert.match(compilerProbe.stdout, /compiler denied/);
+for (const env of [
+  { ...compilerEnv, CERTIFICATION_COMPILER_ONLY: "0" },
+  { ...compilerEnv, CERTIFICATION_ALLOW_LOOPBACK: "1" },
+  { ...compilerEnv, CERTIFICATION_ALLOWED_NETWORK_ORIGINS: "https://example.invalid" },
+]) {
+  const rejected = spawnSync(process.execPath, [...preloadArgs, "process.exit(0)"],
+    { env, encoding: "utf8" });
+  assert.notEqual(rejected.status, 0);
+  assert.match(rejected.stderr, /requires test deny mode/);
+}
+
 const inherited: NodeJS.ProcessEnv = {
   ...process.env,
   NODE_ENV: "test",

@@ -25,7 +25,7 @@ export default function ReportingHub() {
   const [, navigate] = useLocation();
   const goTab = (v: string) => {
     if (!(VALID_TABS as readonly string[]).includes(v)) return;
-    const params = safeParams(search, [...safeContextKeys, "financialTab", "revenueView",...revenueFilterKeys]);
+    const params = safeParams(search, [...safeContextKeys, "financialTab", "revenueView","outreachView",...revenueFilterKeys]);
     preserveRevenueFilters(search,params);
     params.set("tab", v);
     if (v !== "financial") {params.delete("financialTab");params.delete("revenueView");}

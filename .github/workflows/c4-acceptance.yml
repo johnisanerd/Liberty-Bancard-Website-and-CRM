@@ -1,0 +1,82 @@
+name: C4 isolated acceptance
+on:
+  push:
+    branches: ['codex/2074-acceptance-*']
+permissions:
+  contents: read
+concurrency:
+  group: c4-acceptance-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  c4:
+    name: C4 / ${{ matrix.suite }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        suite:
+          - scripts/test-stage3-c4-actions.ts
+          - scripts/test-stage3-c4-browser.ts
+          - scripts/test-stage3-c4-health-browser.ts
+          - scripts/test-c2-contact-header.ts
+          - scripts/test-c2-postmerge-browser.ts
+          - scripts/test-toast-viewport-layout.mjs
+    env:
+      NODE_OPTIONS: --max-old-space-size=6144
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.0'
+          cache: npm
+      - name: Install locked dependencies
+        run: |
+          test "$(node --version)" = v22.22.0
+          test "$(npm --version)" = 10.9.4
+          npm ci --include=dev --no-audit --no-fund
+      - name: Install private infrastructure
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-16 redis-server ripgrep
+          echo /usr/lib/postgresql/16/bin >> "$GITHUB_PATH"
+          chrome_bin="$(command -v google-chrome || command -v chromium || true)"
+          test -n "$chrome_bin"
+          sudo mkdir -p /repl/tools/bin
+          sudo ln -s "$chrome_bin" /repl/tools/bin/chromium
+      - name: Check contracts, manifest and whole-project types
+        run: |
+          node --import tsx scripts/test-stage3-c4-contracts.ts
+          node --import tsx scripts/ci-suite-manifest.ts --check
+          npx tsc --noEmit --incremental false
+      - name: Build production artifacts in a separate process
+        env:
+          NODE_ENV: production
+        run: npm run build
+      # Baseline compilation is separate from every test DB/session runtime.
+      - name: Build matched original production client
+        if: matrix.suite == 'scripts/test-stage3-c4-browser.ts'
+        run: |
+          git worktree add --detach ../c4-performance-baseline 85296699ec8d11f22750657dfe5ac34a8fd2577d
+          ln -s "$PWD/node_modules" ../c4-performance-baseline/node_modules
+          (cd ../c4-performance-baseline && NODE_ENV=production npm run build)
+      - name: Execute exact suite with test-only private resources
+        env:
+          NODE_ENV: test
+          C4_SELECTED_SUITE: ${{ matrix.suite }}
+        run: node --import tsx scripts/run-sfp2060-predeploy-disposable.ts --only "$C4_SELECTED_SUITE"
+      - name: Preserve evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: c4-${{ strategy.job-index }}-${{ github.sha }}
+          if-no-files-found: warn
+          path: |
+            docs/certification/stage3-c4/
+            docs/certification/stage3-c2/
+            dist/candidate-integrity.json
+            dist/build-recipe.json
+            dist/sfp-publish-build.json
+            generated-artifacts/stage3-c4/

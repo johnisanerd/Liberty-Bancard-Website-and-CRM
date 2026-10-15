@@ -41,6 +41,19 @@ const CSV_EXACT_ALLOWLIST = new Set([
 // SQL is only allowed inside the migrations tree
 const SQL_ALLOWLIST_PREFIXES = ["migrations/"];
 
+// Reviewed source resources used by the canonical-native certification
+// harness, not query results, dumps or operational exports. Pin their Git
+// blobs: changing a resource or using the same name for a dump fails closed.
+const REVIEWED_SQL_RESOURCES: Record<string, string> = {
+  "docs/certification/canonical-enrichment-native-before.sql": "b6042155865a5db03a50fa984e35876a7c9553d5",
+  "docs/certification/canonical-enrichment-native-console.sql": "883c4b565adced5fc8abc344b6c9876b164f6a48",
+  "docs/certification/canonical-enrichment-native-verify.sql": "343395c0873e2e23ba5ea36d9a8c4e4f00c0d6e8",
+};
+export function isReviewedSqlResource(path: string, blobSha: string): boolean {
+  const expected = REVIEWED_SQL_RESOURCES[normalizeRepoPath(path)];
+  return expected !== undefined && expected === blobSha;
+}
+
 // Explicit approved file paths (reviewed individually — contain no PII/dump data)
 const EXACT_ALLOWLIST = new Set([
   "exports/ghl-workflow-checklist.csv", // GHL setup checklist doc, not a data export
@@ -225,7 +238,7 @@ export function scanTree(repoDir: string): Finding[] {
   }
 
   for (const file of files) {
-    const reason = classify(file.path);
+    const reason = isReviewedSqlResource(file.path, file.blobSha) ? null : classify(file.path);
     if (reason) findings.push({ path: file.path, reason });
 
     const exactDebt = manifestByPath.get(file.path);

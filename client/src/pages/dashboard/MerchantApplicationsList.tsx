@@ -21,6 +21,8 @@ import {
 } from "lucide-react";
 import { PageHeader } from "@/components/ui/page-header";
 import type { MerchantApplication, MerchantProfile, Document as DocType, UnderwritingNoteEntry } from "@shared/schema";
+import { applicationStatuses } from "@/lib/crm-destination-state";
+import { useC4RetainedSelection } from "@/hooks/use-c4-retained-selection";
 
 const STATUS_TABS = [
   { value: "all", label: "All" },
@@ -979,7 +981,9 @@ function ApplicationDetailView({
 }
 
 export default function MerchantApplicationsList() {
-  const [statusFilter, setStatusFilter] = useState("all");
+  const statusState=useC4RetainedSelection("/dashboard/merchant-applications","status",applicationStatuses,"all");
+  const statusFilter=statusState.value;
+  const setStatusFilter=(value:string)=>{if(applicationStatuses.includes(value as typeof statusFilter))statusState.setValue(value as typeof statusFilter);};
   const [search, setSearch] = useState("");
   const [selectedApp, setSelectedApp] = useState<MerchantApplication | null>(null);
 
@@ -1050,6 +1054,7 @@ export default function MerchantApplicationsList() {
           ))}
         </TabsList>
       </Tabs>
+      {statusState.issues.map(issue=><p key={issue.key} role="status" className="text-sm text-destructive">{issue.reason}</p>)}
 
       <Card data-testid="card-applications-table">
         <CardContent className="p-0 overflow-x-auto">

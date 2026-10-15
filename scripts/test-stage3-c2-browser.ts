@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { stage3BHttpFixture } from "./fixtures/stage3-b-http";
@@ -12,6 +13,7 @@ import { cpus, availableParallelism } from "node:os";
 
 await assertDisposableTestInfrastructure({operation:"C2 protected compiled browser",requireRedis:true});
 const identity=await verifyCandidateIdentity();
+const clientRoot=path.resolve("dist/public");
 const directory="docs/certification/stage3-c2/browser";
 const receipts:Array<Record<string,unknown>>=[];
 const visualFailures:Array<Record<string,unknown>>=[];
@@ -30,8 +32,8 @@ const h=await stage3BHttpFixture(async app=>{
   ]) {const module=await import(`../server/routes/${file}.ts`);module[fn](app);}
   app.use("/api",(_req,res)=>res.status(501).json({message:"Unregistered isolated C2 service; blocked, not empty"}));
   const {static:serveStatic}=await import("express");
-  app.use(serveStatic("dist/public"));
-  app.use((_req,res)=>res.sendFile(`${process.cwd()}/dist/public/index.html`));
+  app.use(serveStatic(clientRoot));
+  app.use((_req,res)=>res.sendFile("index.html",{root:clientRoot}));
 });
 let browser:Awaited<ReturnType<typeof privateStage3Browser>>|undefined;
 async function checkpoint(phase:string){
@@ -226,6 +228,7 @@ try{
     receipts.push({role,control:"Exact linked Log Only actual lost-response/readback",outcome:"passed",recordId:contactId,
       persistedDelta:1,taskDelta:0,enrollmentDelta:0,stage:"unchanged"});
     await browser.navigate("/dashboard/tasks-appointments");await browser.waitFor(/Tasks/);await wait();
+    await waitForDom("document.querySelector('[data-testid=\"button-ai-generate-tasks\"]') instanceof HTMLButtonElement && document.querySelector('[data-testid=\"button-new-task\"]') instanceof HTMLButtonElement");
     assert.equal(await browser.evaluate("document.querySelector('[data-testid=\"button-ai-generate-tasks\"]').disabled"),true);
     const taskTitle=`C2 compiled Work ${role} ${randomUUID()}`;
     const fillTask=async()=>{
@@ -342,6 +345,9 @@ try{
     await browser.call("Network.setBypassServiceWorker",{bypass:false});
     await waitForDom(`!document.querySelector('[data-testid="sheet-deal-quick-edit"]') &&
       getComputedStyle(document.body).pointerEvents!=="none"`);
+    await waitForDom("document.activeElement!==document.body && document.activeElement?.isConnected");
+    assert.equal(await browser.evaluate(`document.activeElement?.getAttribute('data-testid')`),
+      `button-deal-actions-${keyboardDealId}`,"Quick Edit returns focus to its own live record action");
     assert.equal(await browser.evaluate("document.activeElement!==document.body && document.activeElement?.isConnected"),true,
       "Closing the keyboard Sheet with a detached menu trigger restores a connected focus target");
     receipts.push({role,control:"Pipeline quick edit exact protected contact / Cancel zero writes / actual unavailable read hides editable placeholders",recordId:contactId,outcome:"passed"});
@@ -360,12 +366,19 @@ try{
         }
         await keyboardKey("Enter","Enter",13);await wait();
         assert.equal(await browser.evaluate("document.querySelector('[data-testid=\"select-edit-stage\"]').textContent"),stage);
+        const beforeStageSave=browser.requests.filter(request=>
+          request.method==="PUT" && new URL(request.url,h.base).pathname===`/api/deals/${keyboardDealId}`).length;
         await browser.evaluate("document.querySelector('[data-testid=\"button-save-deal\"]').focus()");
         await keyboardKey("Enter","Enter",13);
         if(stage===expectedStage)await waitForDom("!document.querySelector('[data-testid=\"button-save-deal\"]')");
-        else await browser.waitFor(/DEAL_STAGE_ILLEGAL/);
+        else await browser.waitFor(/The existing structural policy does not permit this move; no command was sent/);
         assert.equal((await h.pool.query("SELECT stage FROM deals WHERE id=$1",[keyboardDealId])).rows[0].stage,expectedStage);
-        if(stage!==expectedStage)assert.match(await browser.text(),/DEAL_STAGE_ILLEGAL/);
+        if(stage!==expectedStage){
+          assert.match(await browser.text(),/The existing structural policy does not permit this move; no command was sent/);
+          assert.equal(browser.requests.filter(request=>request.method==="PUT" &&
+            new URL(request.url,h.base).pathname===`/api/deals/${keyboardDealId}`).length,beforeStageSave,
+            "Agent structural rejection occurs before any deal PUT and preserves durable stage");
+        }
         await browser.navigate("/dashboard/pipeline");
         await waitForDom(`!!document.querySelector('[data-testid="card-deal-${keyboardDealId}"]')`);
         return;
@@ -511,11 +524,11 @@ try{
     receipts.push({role,control:"Contact inline note actual UI save/reload",outcome:"passed",recordId:contactId});
     await browser.navigate(`/dashboard/contacts/${contactId}?area=sales-work&section=tasks`);await browser.waitFor(/C2 Person/);await wait();
     const recordTaskTitle=`C2 record task ${role} ${randomUUID()}`;
-    await browser.click('[data-testid="button-create-task"]');await wait();
+    await browser.click('[data-testid="contact-secondary-new-task"]');await wait();
     await browser.set('[data-testid="input-task-title"]',recordTaskTitle);
     await browser.click('[data-testid="button-cancel-task"]');await wait();
     assert.equal((await h.pool.query("SELECT count(*)::int n FROM tasks WHERE title=$1",[recordTaskTitle])).rows[0].n,0);
-    await browser.click('[data-testid="button-create-task"]');await wait();
+    await browser.click('[data-testid="contact-secondary-new-task"]');await wait();
     await browser.set('[data-testid="input-task-title"]',recordTaskTitle);
     const recordLossBefore=h.responseLossCount();h.loseNextSuccessfulResponse("POST","/api/tasks","truncate");
     await browser.click('[data-testid="button-submit-task"]');
@@ -537,6 +550,12 @@ try{
     await browser.set(`[data-testid="input-record-task-title-${recordTask.id}"]`,editedTitle);
     await browser.click(`[data-testid="button-save-record-task-${recordTask.id}"]`);await browser.waitFor(new RegExp(editedTitle));await wait();
     assert.equal((await h.pool.query("SELECT title FROM tasks WHERE id=$1",[recordTask.id])).rows[0].title,editedTitle);
+    for(let notification=0;notification<10&&await browser.evaluate('!!document.querySelector(\'[role="status"][data-state="open"] [toast-close]\')');notification++){
+      await browser.click('[role="status"][data-state="open"] [toast-close]');
+      await waitForDom('!document.querySelector(\'[role="status"][data-state="closed"]\')');
+    }
+    assert.equal(await browser.evaluate('!!document.querySelector(\'[role="status"] [toast-close]\')'),false,
+      "Real feedback dismissal settles before the next record task pointer action");
     await browser.click(`[data-testid="button-complete-record-task-${recordTask.id}"]`);
     await waitForDom(`!document.querySelector('[data-testid="button-complete-record-task-${recordTask.id}"]')`);
     assert.equal((await h.pool.query("SELECT status FROM tasks WHERE id=$1",[recordTask.id])).rows[0].status,"completed");
