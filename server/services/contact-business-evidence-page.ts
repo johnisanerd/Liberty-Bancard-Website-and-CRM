@@ -37,16 +37,23 @@ export async function loadEvidenceRelationshipPage(
       c.updated_at::text AS contact_revision,c.business_id projected_business_id,
       c.existing_merchant_customer,c.do_not_contact,c.do_not_auto_contact,c.opted_out_email,
       c.opt_out_status,c.unsubscribe_status,c.bounce_status,c.complaint_status,c.suppression_reason,
+      (${changedSince && onlyContactId === undefined ? contactBusinessChangeFilter(changedSince) : sql`TRUE`})
+        changed_in_window,
       (SELECT coalesce(jsonb_agg(to_jsonb(ev)-'last_seen_at' ORDER BY ev.id),'[]'::jsonb)
         FROM contact_source_events ev WHERE ev.contact_id=c.id) source_event_revisions,
       d.id current_decision_id,d.decision current_decision
     FROM contacts c LEFT JOIN contact_business_link_decisions d
       ON d.contact_id=c.id AND d.superseded_at IS NULL
     WHERE c.id=ANY(ARRAY[${sql.join(inspectedIds.map(id => sql`${id}`),sql`, `)}]::integer[])
-      AND ${changedSince && onlyContactId === undefined ? contactBusinessChangeFilter(changedSince) : sql`TRUE`}
     ORDER BY c.id
   `));
-  const page = contacts.slice(0, limit);
+  const changedIds=new Set(contacts.filter((c:any)=>c.changed_in_window!==false)
+    .map((c:any)=>Number(c.contact_id)));
+  // The change window is an optimization, not permanent exclusion of a
+  // relationship that now passes the complete independent-evidence preview.
+  // Evaluate only the bounded raw page; never rewind or widen the saved window.
+  // The transient window flag is NOT part of native snapshot authority.
+  const page = contacts.slice(0, limit).map(({changed_in_window,...contact}:any)=>contact);
   const ids = page.map((c: any) => Number(c.contact_id));
   const matches = ids.length ? rows(await executor.execute(sql`
     ${evidenceRelationshipCandidateCte(ids)}
@@ -116,7 +123,8 @@ export async function loadEvidenceRelationshipPage(
         entityRevision:m.entity_revision,reasons:m.relationship_reasons})),
     };
   });
-  return { previews,selectedFacts: onlyContactId === undefined ? undefined : selected[0],
+  return { previews:previews.filter(row=>changedIds.has(row.contactId)||row.eligible),
+    selectedFacts: onlyContactId === undefined ? undefined : selected[0],
     selectedFactsForPage: selected,lastContactId: inspectedThroughContactId,
     inspectedThroughContactId,passExhausted,hasMore: !passExhausted };
 }

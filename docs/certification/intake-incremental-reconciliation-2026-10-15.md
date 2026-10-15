@@ -229,3 +229,109 @@ The existing read-only observer continues, bounded to the next new commit,
 current-pass completion or its observation deadline. Full current hold
 qualification and ordinary-upload restart acceptance remain separate and
 unproven; no live fault or controlled replay was run.
+
+## Current-facts qualification and consolidated recovery correction
+
+The subsequent read-only qualification did **not** wait for another writing
+cycle. Production-scoped, bounded native-reader evaluations covered all
+153,906 unresolved active production contacts between 11:58 and 12:18 UTC.
+This was a sequence of observed snapshots, not a single atomic snapshot.
+Replica recovery conflicts were retried at the same cursor; no timeout was
+increased and no records were skipped. The empty final page established scope
+exhaustion. The unchanged active/verified/unresolved totals corroborate, but
+do not replace, the per-batch evidence.
+
+| Current relationship result | Contacts |
+| --- | ---: |
+| Unique relationship passes the native reader | 5 |
+| Candidate exists but current reasons deny qualification | 9,834 |
+| Independent business candidate not found | 144,067 |
+| Total | 153,906 |
+
+The five eligible contacts are 494, 1057, 1074, 4741 and 8964. Their old
+contact/evidence dates explain why a change-only window can continue skipping
+them. These are preview qualifications, **not** new committed assignments.
+Eleven contacts have supported structured business evidence but still lack
+independent corroboration; the reader does not treat that metadata alone as
+assignment authority. No-candidate records require additional independently
+supported business identity; this report does not manufacture businesses from
+company strings or claim those records were fulfilled.
+
+All 626 organization exceptions were evaluated against current candidates
+using business fields projected from the original retained rows, the actual
+provider column mapper and the actual organization decision policy. Original
+raw rows were available for every coordinate, with no conflicting aliases for
+the stable place/organization key. The deployed policy still defers all 626.
+This does not mean every deferral is a genuine exception: two rows differ
+only by the US country-code representation of the same phone number.
+Under the corrected policy and fresh candidate retrieval, **624 remain
+ambiguous and 2 match business 86280**. Candidate-level conflict facts are
+retained in private evidence, rather than inferring justification from
+matching historical pins. Name, real phone, address, place and location
+conflicts remain substantive; arbitrary international prefixes are not stripped.
+
+The 87 affiliation exceptions were separately compared with current contact
+projections, current verified decisions and current native relationship reasons:
+
+| Current original-row affiliation result | Rows |
+| --- | ---: |
+| Protected verified assignment to a different business | 56 |
+| Relationship evidence still unresolved | 29 |
+| Expected assignment already verified; fulfillment receipt stale | 2 |
+
+Of the 29 unresolved rows, 17 have a company/trade-name conflict, 1 has
+company-name conflict plus missing corroboration across alternative candidates,
+and 11 lack independent corroboration. The 56 foreign assignments must not be
+transferred merely to satisfy an imported row.
+
+The two stale originals are contacts 161491/161493, expected/current business
+3538, on original items dc232b69-ab61-4ae8-9d18-8160a20da2e2 and
+2448e7cd-3e25-4ade-b83a-3160c2911fbe. Their immutable `created` accounting
+excluded them from both ordinary selection and claim renewal, despite their
+versioned original-row hold evidence. Accounting was not rewritten.
+
+### Corrections in the same existing workflow
+
+- Admit `created`/`matched_noop` partial rows only with a supported blocked/running
+  original item and same-item versioned hold evidence bound to its original
+  execution, coordinate and fingerprint. Selection and every authority renewal
+  use the same predicate; raw identity, owner, token/lease and writer fences stay
+  in place. Arbitrary created rows remain excluded.
+- Evaluate the already-bounded raw contact page before applying the change-window
+  optimization. A currently eligible relationship is reconsidered even when old;
+  unchanged ineligible rows remain omitted. No cursor/window/backfill reset is
+  required. The transient optimization flag is excluded from snapshot authority.
+- Compare a US ten-digit phone and its `+1` form consistently in organization
+  retrieval and decision policy. Retrieval uses exact digit variants, not a
+  function wrapped around every stored phone; real/international differences and
+  competing candidates remain protected.
+
+### Verification and remaining production acceptance
+
+Disposable PostgreSQL checks: incremental pages 19; existing contact-link worker
+59; organization resolver 23; partial-accounting recovery 13. The partial-row
+test uses the ordinary tick, proves actual mailbox reuse with a unique-row count,
+completes all retained mailboxes, matches an existing ten-digit-phone business,
+preserves immutable accounting, excludes unsupported holds, and retains a
+genuine protected foreign affiliation without a fulfillment receipt or transfer.
+No provider or outbound I/O was admitted.
+
+The complete repaired original-row selector, including original raw extraction,
+executed in approximately 1.85 seconds in a production-scoped replica
+`EXPLAIN ANALYZE`. Locking was removed **only for that read-only replica
+measurement**; actual locking/renewal was exercised in disposable PostgreSQL.
+This is not primary production write acceptance.
+
+Private coordinate-level evidence remains ignored under
+`generated-artifacts/intake-incremental/`, including `qualification-complete.json`,
+`current-organization-qualification.json`, `current-affiliation-qualification.json`
+and `repaired-original-claim-plan.json`.
+
+These application corrections require one consolidated publication before the
+ordinary production workers can demonstrate their effects. They have not been
+published or force-applied by this audit. The original bounded observer remains
+active and its result is separate: advancing scanned/held counters do not prove
+a third assignment-writing cycle. Keep the continuation open for the observer's
+terminal result and subsequent production receipt/assignment reconciliation.
+Outbound remains paused. No new task/pipeline, reset, re-upload, forced link,
+live fault or controlled production replay was introduced.

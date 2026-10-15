@@ -27,6 +27,8 @@ function identity(input: Input) {
     streetAddress: input.streetAddress ?? input.create?.streetAddress ?? null};
 }
 async function readCandidates(executor: any, input: ReturnType<typeof identity>, lock: boolean) {
+  const phoneKeys=[input.mainPhone,...(input.mainPhone?.length===10 ? [`1${input.mainPhone}`]
+    : input.mainPhone?.length===11 && input.mainPhone.startsWith("1") ? [input.mainPhone.slice(1)] : [])];
   const sourceMatch = sql`EXISTS(SELECT 1 FROM canonical_source_links source_link
     WHERE source_link.business_id=businesses.id
       AND source_link.source_system=${input.sourceIdentity?.sourceSystem ?? null}::text
@@ -36,7 +38,9 @@ async function readCandidates(executor: any, input: ReturnType<typeof identity>,
     ${sourceMatch}
     OR (${input.googlePlaceId}::text IS NOT NULL AND google_place_id=${input.googlePlaceId}::text)
     OR (${input.websiteDomain}::text IS NOT NULL AND lower(btrim(website_domain))=${input.websiteDomain}::text)
-    OR (${input.mainPhone}::text IS NOT NULL AND regexp_replace(coalesce(main_phone,''),'[^0-9]','','g')=${input.mainPhone}::text)
+    OR (${input.mainPhone}::text IS NOT NULL
+      AND regexp_replace(coalesce(main_phone,''),'[^0-9]','','g')
+        IN (${sql.join(phoneKeys.map(value=>sql`${value}`),sql`,`)}))
     OR (${input.city}::text IS NOT NULL AND ${input.state}::text IS NOT NULL
       AND normalized_name=${normalOrganizationName(input.canonicalName)}
       AND lower(btrim(coalesce(city,'')))=${input.city}::text

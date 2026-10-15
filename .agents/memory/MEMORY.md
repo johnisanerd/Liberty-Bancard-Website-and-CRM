@@ -2,6 +2,7 @@
 - [C2 Contact header scope](c2-contact-header-scope.md) — Header/action hierarchy remains C2; final eleven-entry sidebar stays C5; qualify rendered/action evidence separately.
 - [Multi-mailbox restart proof](multi-mailbox-restart-proof.md) — Certify ordinary upload restart separately from deferred-item recovery; immutable row accounting is not fulfillment.
 - [Original-row claim planning](original-row-claim-planning.md) — Verify the full payload-extraction plan; limit scalar work before opening workbook JSON.
+- [Bounded recovery qualification](bounded-recovery-qualification.md) — Old dates cannot permanently exclude current eligibility; distinguish narrow US-phone equivalence from real identity conflicts.
 - [Legacy role-conditional redirects](legacy-role-conditional-redirects.md) — Non-admin/manager roles may still see retired pages; inspect every redirect branch before deletion.
 - [Canonical Lifecycle State Machine](lifecycle-state-machine.md) — lifecycle_state on contacts (27 states); LifecycleService side-effect wiring; backfill not yet run on prod.
 - [NBA Engine & ChannelOrchestrator](wave1-nba-channel-orchestrator.md) — ChannelOrchestrator compliance fence, transport adapters, NBA tables/routes/UI at /dashboard/nba.

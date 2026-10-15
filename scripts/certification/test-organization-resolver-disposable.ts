@@ -60,5 +60,25 @@ try {
   const conflict={...aliasInput,city:"Other City"};
   assert.equal((await peekOrganizationResolution(conflict)).kind,"deferred");
   assert.equal((await resolveOrganization(conflict)).kind,"deferred");checks+=2;
+  const phoneLabel=`US phone ${randomUUID()}`;
+  const phoneBusiness=await resolveOrganization({canonicalName:phoneLabel,mainPhone:"3055550123"});
+  assert.notEqual(phoneBusiness.kind,"deferred");
+  const countryCode={canonicalName:phoneLabel,mainPhone:"+1 (305) 555-0123"};
+  const phonePeek=await peekOrganizationResolution(countryCode);
+  const phoneResolved=await resolveOrganization(countryCode);
+  assert.equal(phonePeek.kind,"matched");assert.equal(phoneResolved.kind,"matched");checks+=2;
+  if(phoneBusiness.kind==="deferred"||phonePeek.kind!=="matched"||phoneResolved.kind==="deferred")
+    throw Error("EXPECTED_PHONE_MATCH");
+  assert.equal(phonePeek.business.id,phoneBusiness.business.id);
+  assert.equal(phoneResolved.business.id,phoneBusiness.business.id);checks+=2;
+  assert.equal((await peekOrganizationResolution({canonicalName:phoneLabel,mainPhone:"+44 3055550123"})).kind,
+    "would_create");checks++;
+  assert.equal((await peekOrganizationResolution({...aliasInput,mainPhone:"+1 (305) 555-0124"})).kind,
+    "matched");checks++; // A missing candidate phone is not fabricated contrary evidence.
+  await pool.query("UPDATE businesses SET main_phone='3055550123' WHERE id=$1",[a.business.id]);
+  assert.equal((await peekOrganizationResolution({...aliasInput,mainPhone:"+1 (305) 555-0124"})).kind,
+    "deferred");checks++;
+  assert.equal((await peekOrganizationResolution({...aliasInput,mainPhone:"+1 (305) 555-0123",city:"Other City"})).kind,
+    "deferred");checks++;
   console.log(`Organization resolver native: ${checks} checks passed; provider calls=0; outbound changes=0`);
 } finally {await pool.end();}

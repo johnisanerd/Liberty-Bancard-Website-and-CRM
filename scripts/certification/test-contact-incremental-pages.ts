@@ -57,6 +57,17 @@ try {
     "Behind-cursor change remains in next traversal's overlapping window");
   check((await loadEvidenceRelationshipPage(db,0,1,ids[0],since)).previews.length===1,
     "Point refresh bypasses changedSince");
+  await pool.query("UPDATE businesses SET google_place_id=$2,updated_at='2026-10-01' WHERE id=$1",
+    [b.id,prefix+"key"]);
+  await pool.query("UPDATE canonical_source_links SET updated_at='2026-10-01' WHERE id=$1",[sl.id]);
+  await pool.query(`INSERT INTO contact_source_events(contact_id,event_key,source_category,source_type,actor_type,metadata,created_at)
+    VALUES($1,$2,'import','inbound','system',$3::jsonb,'2026-10-01')`,
+    [ids[25],prefix+"old-eligible",JSON.stringify({placeId:prefix+"key"})]);
+  const oldEligible=(await loadEvidenceRelationshipPage(db,ids[24],25,undefined,since)).previews
+    .find(row=>row.contactId===ids[25]);
+  check(oldEligible?.eligible,"Currently corroborated old evidence is reconsidered without window reset");
+  check(oldEligible?.snapshotHash===(await loadEvidenceRelationshipPage(db,0,1,ids[25])).previews[0]?.snapshotHash,
+    "Window optimization never contaminates the canonical snapshot");
   await pool.query(`INSERT INTO businesses(canonical_name,normalized_name,record_class)
     SELECT $1||n,$1||n,'canonical' FROM generate_series(1,20000) n`,[prefix+"decoy"]);
   await pool.query(`INSERT INTO sunbiz_entities(filing_number,entity_name,dba,source)

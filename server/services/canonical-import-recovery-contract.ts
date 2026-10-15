@@ -10,7 +10,21 @@ export const CANONICAL_IMPORT_FULFILLMENT_QUALIFICATION_VERSION="mailbox_busines
  * Other originally failed imports do not become recoverable by default. */
 export function canonicalRecoverableImportAccountingSql() {
   return sql`(accounting.disposition='deferred' OR (
-    accounting.disposition='failed' AND accounting.reason_code='RECOVERY_PROVIDER_STAGING_FAILED'))`;
+    accounting.disposition='failed' AND accounting.reason_code='RECOVERY_PROVIDER_STAGING_FAILED')
+    OR (accounting.disposition IN ('created','matched_noop')
+      AND item.state IN ('blocked','running')
+      AND item.terminal_code IN ('CANONICAL_IMPORT_AMBIGUOUS_ORGANIZATION_MATCH',
+        'CANONICAL_IMPORT_INSUFFICIENT_ORGANIZATION_EVIDENCE',
+        'CANONICAL_IMPORT_CONTACT_AFFILIATION_HELD','CANONICAL_IMPORT_STABLE_SOURCE_CONFLICT',
+        'CANONICAL_IMPORT_BUSINESS_IDENTITY_MISSING')
+      AND EXISTS(SELECT 1 FROM audit_logs partial_hold
+        WHERE partial_hold.entity_type='cro03_enrichment_item'
+          AND partial_hold.entity_key=item.id::text
+          AND partial_hold.action='canonical_import_hold_evidence'
+          AND partial_hold.details->>'holdEvidenceVersion'='native_revision_bound_v1'
+          AND partial_hold.details->>'executionId'=accounting.execution_id::text
+          AND partial_hold.details->>'sourceRowNumber'=accounting.source_row_number::text
+          AND partial_hold.details->>'rowFingerprint'=accounting.row_fingerprint)))`;
 }
 export async function hasCanonicalImportRecoveryClaim(tx:any,input:{
   executionId:string;sourceRowNumber:number;rowFingerprint:string;

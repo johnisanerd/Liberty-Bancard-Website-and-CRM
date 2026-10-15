@@ -15,7 +15,7 @@ import {acquireLadderBudgetLock} from "../../server/services/cro03/shared-paid-b
 
 export interface RetainedRow {
   sourceRowNumber:number; rawRow:Record<string,string>; sourceFormat:string;
-  rowFingerprint:string; disposition:"deferred"|"failed"; reasonCode:string;
+  rowFingerprint:string; disposition:"deferred"|"failed"|"created"|"matched_noop"; reasonCode:string;
   sourceCoordinate?:any;
   diagnostic?:Record<string,unknown>;
   originalObservation?:{id:string;subjectId:string;payload:Record<string,unknown>;

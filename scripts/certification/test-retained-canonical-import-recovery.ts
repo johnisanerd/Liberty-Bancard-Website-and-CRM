@@ -60,7 +60,95 @@ const originalWarn=console.warn;
 console.warn=(...args:any[])=>{diagnostics.push(args.join(" "));originalWarn(...args);};
 let status=0;
 try {
-  if(phase==="scoped_replay"){
+  if(phase==="partial_accounting"){
+    const fixtures=syntheticRows(5);
+    fixtures.forEach((row,index)=>{
+      row.disposition=index===1?"matched_noop":"created";
+      row.reasonCode="CANONICAL_PROVIDER_CONTACT_CREATED";
+    });
+    fixtures[0].rawRow.address="10 Recovery Fixture Road";
+    fixtures[0].rawRow.phone="+1 (305) 555-0199";
+    fixtures[0].rowFingerprint=createHash("sha256").update(JSON.stringify(fixtures[0].rawRow)).digest("hex");
+    const {resolveOrganization}=await import("../../server/services/organization-resolver");
+    const phoneBusiness=await resolveOrganization({canonicalName:fixtures[0].rawRow.name,
+      googlePlaceId:fixtures[0].rawRow.place_id,mainPhone:"3055550199",city:"Miami",state:"FL",
+      streetAddress:fixtures[0].rawRow.address,create:{recordClass:"canonical"}});
+    if(phoneBusiness.kind==="deferred")throw Error("EXPECTED_NATIVE_PHONE_BUSINESS");
+    const target=await seedExecution(fixtures,"partial_accounting");
+    const seeded=await items(target);
+    for(let index=0;index<seeded.length;index++){
+      await probe.query(`UPDATE cro03_enrichment_items SET terminal_code='CANONICAL_IMPORT_CONTACT_AFFILIATION_HELD',
+        state='blocked',next_attempt_at=clock_timestamp()-interval '1 minute' WHERE id=$1`,[seeded[index].id]);
+      if(index===2)continue; // Created accounting without a versioned hold is not recovery authority.
+      const details={holdEvidenceVersion:"native_revision_bound_v1",executionId:target,
+        sourceRowNumber:index+1,rowFingerprint:index===3?"wrong":fixtures[index].rowFingerprint};
+      await probe.query(`INSERT INTO audit_logs(action,entity_type,entity_key,details,actor_type,actor_id)
+        VALUES('canonical_import_hold_evidence','cro03_enrichment_item',$1,$2::jsonb,'system','fixture')`,
+        [seeded[index].id,JSON.stringify(details)]);
+    }
+    // The first mailbox already exists; recovery must reuse it rather than
+    // treating its created accounting as full original-row fulfillment.
+    const firstContact=(await probe.query(`INSERT INTO contacts(first_name,last_name,email,phone,company_name,address,
+      city,state,record_class) VALUES('Partial','Mailbox',$1,'',$2,$3,'Miami','FL','production') RETURNING id`,
+      [fixtures[0].rawRow.email_1,fixtures[0].rawRow.name,fixtures[0].rawRow.address])).rows[0].id;
+    // An unsupported terminal code cannot gain authority from a hold receipt.
+    await probe.query(`UPDATE cro03_enrichment_items SET terminal_code='NOT_A_SUPPORTED_HOLD' WHERE id=$1`,
+      [seeded[4].id]);
+    const beforeAccounting=(await probe.query("SELECT * FROM import_row_dispositions WHERE execution_id=$1 ORDER BY source_row_number",[target])).rows;
+    const first=await processCanonicalImportRecoveryTick({maxItems:2});
+    if(first.fulfilled!==2)console.log("PARTIAL_ACCOUNTING_DIAGNOSTIC",JSON.stringify((await probe.query(
+      `SELECT a.details->>'reasonCode' reason,a.details->'diagnostic'->'affiliationOutcomes' outcomes,
+      a.details->'diagnostic'->'nativeSnapshots' snapshots FROM audit_logs a
+      WHERE a.action='canonical_import_hold_evidence' AND a.details->>'executionId'=$1 ORDER BY a.id DESC LIMIT 3`,
+      [target])).rows));
+    check(first.fulfilled===2 && first.failed===0,"Ordinary recovery completes created and matched partial receipts without explicit replay");
+    const after=await items(target);
+    check(after[0].qualified && after[1].qualified,"Both partial rows receive current original-row qualification");
+    check(after.slice(2).every(row=>row.state==="blocked" && row.attempt_count===0),
+      "Unproven, wrong-fingerprint and unsupported holds are never claimed");
+    const firstMailbox=(await probe.query("SELECT id,business_id FROM contacts WHERE email=$1",
+      [fixtures[0].rawRow.email_1])).rows;
+    check(firstMailbox.length===1 && firstMailbox[0].id===firstContact,
+      "Existing first mailbox is reused");
+    check(firstMailbox[0].business_id===phoneBusiness.business.id,
+      "Original-row recovery resolves US country-code formatting against the existing business");
+    check((await probe.query(`SELECT count(*)::int n FROM contact_source_events
+      WHERE import_execution_id=$1 AND source_row_number=1`,[target])).rows[0].n===3,
+      "All retained mailboxes have original provenance");
+    assert.deepEqual((await probe.query("SELECT * FROM import_row_dispositions WHERE execution_id=$1 ORDER BY source_row_number",[target])).rows,beforeAccounting);
+    check(true,"Historical created/matched accounting is immutable");
+    const protectedRow=syntheticRows(1)[0];
+    protectedRow.rawRow.email_1=fixtures[0].rawRow.email_1;
+    protectedRow.rowFingerprint=createHash("sha256").update(JSON.stringify(protectedRow.rawRow)).digest("hex");
+    protectedRow.disposition="created";
+    const protectedExecution=await seedExecution([protectedRow],"partial_accounting_protected");
+    const protectedItem=(await items(protectedExecution))[0];
+    const originalBusiness=(await probe.query("SELECT business_id FROM contacts WHERE id=$1",[firstContact])).rows[0].business_id;
+    await probe.query(`INSERT INTO contact_source_events(contact_id,event_key,source_category,source_type,
+      import_execution_id,source_row_number,row_fingerprint,actor_type,metadata)
+      VALUES($1,$2,'csv_import','outscraper',$3,1,$4,'import','{}'::jsonb)`,
+      [firstContact,`canonical-provider:${protectedExecution}:1:${createHash("sha256").update(protectedRow.rawRow.email_1).digest("hex")}`,
+        protectedExecution,protectedRow.rowFingerprint]);
+    await probe.query(`UPDATE cro03_enrichment_items SET terminal_code='CANONICAL_IMPORT_CONTACT_AFFILIATION_HELD',
+      state='blocked',next_attempt_at=clock_timestamp()-interval '1 minute' WHERE id=$1`,[protectedItem.id]);
+    await probe.query(`INSERT INTO audit_logs(action,entity_type,entity_key,details,actor_type,actor_id)
+      VALUES('canonical_import_hold_evidence','cro03_enrichment_item',$1,$2::jsonb,'system','fixture')`,
+      [protectedItem.id,JSON.stringify({holdEvidenceVersion:"native_revision_bound_v1",
+        executionId:protectedExecution,sourceRowNumber:1,rowFingerprint:protectedRow.rowFingerprint})]);
+    const protectedAccounting=(await probe.query("SELECT * FROM import_row_dispositions WHERE execution_id=$1",[protectedExecution])).rows;
+    const held=await processCanonicalImportRecoveryTick({maxItems:1});
+    check(held.held===1 && held.fulfilled===0 && held.failed===0,
+      "A recoverable created receipt with a genuine foreign affiliation remains held");
+    check((await probe.query("SELECT business_id FROM contacts WHERE id=$1",[firstContact])).rows[0].business_id===originalBusiness,
+      "Partial recovery cannot transfer an existing verified mailbox");
+    check(!(await items(protectedExecution))[0].qualified,"A genuine hold gets no fulfillment receipt");
+    assert.deepEqual((await probe.query("SELECT * FROM import_row_dispositions WHERE execution_id=$1",[protectedExecution])).rows,protectedAccounting);
+    const before=await baseline();
+    const again=await processCanonicalImportRecoveryTick({maxItems:2});
+    check(again.attempted===0,"Qualified partial rows are not reselected");
+    assert.deepEqual(await baseline(),before);
+    check(getBlockedCertificationNetworkAttemptCount()===0,"Partial recovery performs no provider I/O");
+  } else if(phase==="scoped_replay"){
     const target=await seedExecution(syntheticRows(2),"scoped_replay_target");
     const unrelated=await seedExecution(syntheticRows(1),"scoped_replay_unrelated");
     const immutable=(await probe.query("SELECT source_row_number,disposition,reason_code,row_fingerprint FROM import_row_dispositions WHERE execution_id=$1 ORDER BY source_row_number",[target])).rows;

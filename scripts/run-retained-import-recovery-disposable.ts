@@ -115,6 +115,8 @@ try {
       if(phase==="recover"||phase==="upload_interrupt")await run(["scripts/migrate.ts"]);
       await run(["scripts/certification/test-retained-canonical-import-recovery.ts",phase]);
     }
+  } else if(process.argv.includes("--partial-accounting-only")) {
+    await run(["scripts/certification/test-retained-canonical-import-recovery.ts","partial_accounting"]);
   } else if(process.argv.includes("--scoped-replay-only")) {
     env.SESSION_SECRET=randomBytes(32).toString("hex");
     await run(["scripts/certification/test-retained-canonical-import-recovery.ts","scoped_replay"]);

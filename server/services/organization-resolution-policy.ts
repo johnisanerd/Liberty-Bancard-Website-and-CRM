@@ -14,7 +14,10 @@ export type OrganizationCandidate = OrganizationIdentity & {id: number; exactSou
 export const normalOrganizationValue = (value?: string | null) => value?.trim().toLowerCase() || null;
 export const normalOrganizationName = (value: string) =>
   value.toLowerCase().replace(/[^a-z0-9\s]/g, "").replace(/\s+/g, " ").trim();
-const phone = (value?: string | null) => value?.replace(/\D/g, "") || null;
+// US country-code formatting is not contrary identity evidence. Do not use
+// a blanket last-ten-digits comparison: other international prefixes matter.
+const phone = (value?: string | null) => value?.replace(/\D/g, "")
+  .replace(/^1(?=\d{10}$)/,"") || null;
 const address = (value?: string | null) => value?.toLowerCase().replace(/[^a-z0-9]/g, "") || null;
 
 /** A shared domain is brand evidence, not an exact operating-location key. */
