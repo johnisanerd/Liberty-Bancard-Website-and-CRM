@@ -10,6 +10,7 @@ import {runC4MatchedPerformance} from "./fixtures/stage3-c4-matched-performance"
 import {applicationStatuses,boardingStatuses,outreachViews,leaderboardMetrics,leaderboardPeriods} from "../client/src/lib/crm-destination-state";
 import {runC4BundledRollback} from "./fixtures/stage3-c4-bundled-rollback";
 import {runC4Accessibility} from "./fixtures/stage3-c4-accessibility";
+import {runC4TerminalActions} from "./fixtures/stage3-c4-terminal-actions";
 
 const identity=await verifyCandidateIdentity();
 let browserPreparationFault=false;
@@ -272,6 +273,7 @@ try {
     await b.screenshot(`portfolio-${theme}-${width}`);
   }
   await b.call("Emulation.setDeviceMetricsOverride",{width:1280,height:1000,deviceScaleFactor:1,mobile:false});
+  await runC4TerminalActions(h,b,rows);
   b.failRead("/api/deal-competitors");
   await b.call("Page.navigate",{url:`${h.base}/dashboard/reporting?tab=win-loss`});
   await b.waitFor(/Sales & Growth/);

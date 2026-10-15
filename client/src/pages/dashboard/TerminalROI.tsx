@@ -93,7 +93,7 @@ export default function TerminalROI() {
   const [filterTier, setFilterTier] = useState<string>("all");
   const [reportPage, setReportPage] = useState(0);
 
-  const { data: report, isLoading, refetch, isFetching } = useQuery<RoiReport>({
+  const { data: report, isLoading, isError, refetch, isFetching } = useQuery<RoiReport>({
     queryKey: ["/api/admin/terminal-roi-report", reportPage],
     queryFn: async () => {
       const response = await fetch(`/api/admin/terminal-roi-report?page=${reportPage}`, { credentials: "include" });
@@ -171,8 +171,9 @@ export default function TerminalROI() {
   const summary = report?.summary;
 
   const handleExport = () => {
+    if (!report || isFetching || isError) return;
     exportToCSV(
-      rows.map((r) => ({
+      filteredRows.map((r) => ({
         dealId: r.dealId,
         merchant: r.merchantName,
         model: r.terminalModel,
@@ -215,7 +216,7 @@ export default function TerminalROI() {
         title="Terminal Recommendation Forecasts"
         description="Model-based forecasts; verified deployment and actual cash recovery are unavailable."
         primaryAction={
-          <Button onClick={handleExport} className="gap-2" data-testid="button-export-report">
+          <Button onClick={handleExport} disabled={!report || isFetching || isError} className="gap-2" data-testid="button-export-report">
             <Download className="w-4 h-4" /> Export CSV
           </Button>
         }
@@ -249,7 +250,7 @@ export default function TerminalROI() {
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
           {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-28 rounded-xl" />)}
         </div>
-      ) : summary && (
+      ) : !isError && summary && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
           <Card data-testid="stat-total-terminals">
             <CardContent className="pt-5 pb-4">
@@ -304,6 +305,7 @@ export default function TerminalROI() {
                 <button
                   key={t}
                   onClick={() => setFilterTier(t)}
+                  aria-pressed={filterTier === t}
                   className={`min-h-11 min-w-11 text-xs px-2.5 py-1 rounded-full border transition-colors ${
                     filterTier === t
                       ? "bg-primary text-primary-foreground border-primary"
@@ -318,7 +320,11 @@ export default function TerminalROI() {
           </div>
         </CardHeader>
         <CardContent className="p-0">
-          {isLoading ? (
+          {isError ? (
+            <div role="alert" className="p-4 text-sm text-destructive" data-testid="terminal-report-error">
+              Terminal recommendation report unavailable. Refresh to retry; export is disabled until the source recovers.
+            </div>
+          ) : isLoading ? (
             <div className="p-4 space-y-2">
               {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}
             </div>
