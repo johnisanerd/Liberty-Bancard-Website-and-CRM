@@ -46,11 +46,24 @@ export async function runC4TerminalActions(
     await b.click(`[data-testid="${control}"]`);
     await b.waitFor(title);
     assert.equal(await b.evaluate('document.querySelectorAll("[role=dialog]").length'),1);
+    assert.equal(await b.evaluate(`(async()=>{
+      for(let attempt=0;attempt<100;attempt++){
+        const modal=document.querySelector('[role="dialog"][data-state="open"]');
+        if(modal?.contains(document.activeElement)&&modal.getAnimations().every(animation=>animation.playState!=="running")){
+          await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+          return modal.contains(document.activeElement);
+        }
+        await new Promise(resolve=>setTimeout(resolve,25));
+      }
+      return false;
+    })()`),true,"Terminal modal owns settled opening focus before its single Escape");
     await b.call("Input.dispatchKeyEvent",{type:"keyDown",key:"Escape",code:"Escape",windowsVirtualKeyCode:27});
     await b.call("Input.dispatchKeyEvent",{type:"keyUp",key:"Escape",code:"Escape",windowsVirtualKeyCode:27});
     for(let attempt=0;attempt<60&&await b.evaluate('!!document.querySelector("[role=dialog]")');attempt++)
       await new Promise(resolve=>setTimeout(resolve,50));
     assert.equal(await b.evaluate('!!document.querySelector("[role=dialog]")'),false);
+    assert.equal(await b.evaluate('document.activeElement===document.querySelector("[data-testid=button-terminal-report-more]")'),true,
+      "Terminal dialog Escape restores its actual overflow caller");
   }
   await b.click('[data-testid="filter-tier-red"]');
   assert.equal(await b.evaluate('document.querySelector("[data-testid=filter-tier-red]").getAttribute("aria-pressed")'),"true");
@@ -85,5 +98,5 @@ export async function runC4TerminalActions(
   assert.equal(await b.evaluate('document.querySelector("[data-testid=button-export-report]").disabled'),false);
   rows.push({phase:"Terminal header actions, filtered USD forecast CSV, loading/source error/retry and role boundaries",
     fixtureDealIds:inserted.map(deal=>deal.id),exportedIds,
-    qualification:"Four actual header callbacks, native Escape from both dialogs, real scoped reader/SQL/Blob parity; forecasts only, no model mutations, native deployment or payments"});
+    qualification:"Four actual header callbacks, settled modal focus and one native Escape/caller-focus restoration for both dialogs, real scoped reader/SQL/Blob parity; forecasts only, no model mutations, native deployment or payments"});
 }

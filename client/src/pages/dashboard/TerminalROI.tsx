@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -85,6 +85,7 @@ export default function TerminalROI() {
   const isManagerOrAdmin = user?.role === "admin" || user?.role === "manager";
 
   const [configOpen, setConfigOpen] = useState(false);
+  const moreActionButtonRef = useRef<HTMLButtonElement>(null);
   const [modelsOpen, setModelsOpen] = useState(false);
   const [editModel, setEditModel] = useState<EquipmentModel | null>(null);
   const [newModelForm, setNewModelForm] = useState({ name: "", category: "Terminal", description: "", msrp: "", libertyCost: "", isActive: true });
@@ -228,12 +229,14 @@ export default function TerminalROI() {
             </Button>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="outline" aria-label="More terminal report actions" className="gap-2" data-testid="button-terminal-report-more">
+                <Button ref={moreActionButtonRef} variant="outline" aria-label="More terminal report actions" className="gap-2" data-testid="button-terminal-report-more">
                   <MoreHorizontal className="w-4 h-4" />
                   <span className="hidden sm:inline">More</span>
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
+              <DropdownMenuContent align="end" onCloseAutoFocus={(event) => {
+                if (configOpen || modelsOpen) event.preventDefault();
+              }}>
                 <DropdownMenuItem onClick={() => setModelsOpen(true)} data-testid="button-manage-models">
                   <Monitor className="mr-2 h-4 w-4" /> Equipment Catalog
                 </DropdownMenuItem>
@@ -388,7 +391,10 @@ export default function TerminalROI() {
       )}
 
       <Dialog open={configOpen} onOpenChange={setConfigOpen}>
-        <DialogContent data-testid="dialog-threshold-config">
+        <DialogContent data-testid="dialog-threshold-config" onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          moreActionButtonRef.current?.focus();
+        }}>
           <DialogHeader>
             <DialogTitle>Payback Threshold Configuration</DialogTitle>
           </DialogHeader>
@@ -444,7 +450,10 @@ export default function TerminalROI() {
       </Dialog>
 
       <Dialog open={modelsOpen} onOpenChange={(o) => { setModelsOpen(o); if (!o) setEditModel(null); }}>
-        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto" data-testid="dialog-equipment-models">
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto" data-testid="dialog-equipment-models" onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          moreActionButtonRef.current?.focus();
+        }}>
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Monitor className="w-5 h-5" />
