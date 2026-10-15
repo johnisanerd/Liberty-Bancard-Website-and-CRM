@@ -117,6 +117,7 @@ try {
     }
   } else if(process.argv.includes("--partial-accounting-only")) {
     await run(["scripts/certification/test-retained-canonical-import-recovery.ts","partial_accounting"]);
+    await run(["scripts/certification/test-retained-canonical-import-recovery.ts","staging_disabled_created"]);
   } else if(process.argv.includes("--scoped-replay-only")) {
     env.SESSION_SECRET=randomBytes(32).toString("hex");
     await run(["scripts/certification/test-retained-canonical-import-recovery.ts","scoped_replay"]);

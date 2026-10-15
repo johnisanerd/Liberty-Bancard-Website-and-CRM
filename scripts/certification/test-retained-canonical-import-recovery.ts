@@ -276,6 +276,228 @@ try {
     }finally {
       await new Promise<void>((resolve,reject)=>server.close(error=>error?reject(error):resolve()));
     }
+  } else if(phase==="staging_disabled_created"){
+    // Created/matched originals whose item never left STAGING_RECIPE_DISABLED
+    // and which carry NO hold evidence (the production shape of the upload gap).
+    const rehash=(row:any)=>{row.rowFingerprint=createHash("sha256").update(JSON.stringify(row.rawRow)).digest("hex");};
+    const fixtures=syntheticRows(4);
+    fixtures.forEach((row,index)=>{
+      row.disposition=index===1?"matched_noop":"created";
+      row.reasonCode="CANONICAL_PROVIDER_CONTACT_CREATED";
+    });
+    for(const key of ["email_1","email_2","additional_emails"])delete fixtures[2].rawRow[key];
+    fixtures[2].reasonCode="CANONICAL_PROVIDER_BUSINESS_ONLY";
+    fixtures.forEach(rehash);
+    // An existing record with independent address/phone corroboration is reused.
+    fixtures[3].rawRow.address="20 Reuse Fixture Road";fixtures[3].rawRow.phone="+1 (305) 555-0188";
+    rehash(fixtures[3]);
+    const {resolveOrganization}=await import("../../server/services/organization-resolver");
+    const phoneBusiness=await resolveOrganization({canonicalName:fixtures[3].rawRow.name,
+      googlePlaceId:fixtures[3].rawRow.place_id,mainPhone:"3055550188",city:"Miami",state:"FL",
+      streetAddress:fixtures[3].rawRow.address,create:{recordClass:"canonical"}});
+    if(phoneBusiness.kind==="deferred")throw Error("EXPECTED_NATIVE_REUSE_BUSINESS");
+    const reused=(await probe.query(`INSERT INTO contacts(first_name,last_name,email,phone,company_name,address,
+      city,state,record_class) VALUES('Reuse','Mailbox',$1,'',$2,$3,'Miami','FL','production') RETURNING id`,
+      [fixtures[3].rawRow.email_1,fixtures[3].rawRow.name,fixtures[3].rawRow.address])).rows[0].id;
+    const target=await seedExecution(fixtures,"staging_disabled_created");
+    const seeded=await items(target);
+    check(seeded.every(row=>row.state==="blocked" && row.terminal_code==="STAGING_RECIPE_DISABLED"),
+      "Fixture reproduces the production shape: created/matched originals blocked as STAGING_RECIPE_DISABLED");
+    const holdEvidence=async(execution:string)=>(await probe.query(`SELECT count(*)::int n FROM audit_logs
+      WHERE action='canonical_import_hold_evidence' AND details->>'executionId'=$1`,[execution])).rows[0].n;
+    check(await holdEvidence(target)===0,"No hold evidence exists for the created/matched originals");
+    const accountingOf=async(execution:string)=>(await probe.query(
+      "SELECT * FROM import_row_dispositions WHERE execution_id=$1 ORDER BY source_row_number",[execution])).rows;
+    const accountingBefore=await accountingOf(target);
+
+    // Selection, claim verification and renewal are proven separately.
+    const selectable=(await db.execute(canonicalImportRecoveryClaimSql()) as any).rows;
+    check(selectable.length===1 && selectable[0].execution_id===target,
+      "Selection admits a created original blocked as STAGING_RECIPE_DISABLED without hold evidence");
+    const probeItem=seeded[0],probeToken=randomUUID();
+    await probe.query(`UPDATE cro03_enrichment_items SET state='running',current_provider='canonical_local_import',
+      claim_token=$2::uuid,lease_expires_at=clock_timestamp()+interval '10 minutes' WHERE id=$1`,[probeItem.id,probeToken]);
+    const {hasCanonicalImportRecoveryClaim}=await import("../../server/services/canonical-import-recovery-contract");
+    const claimInput={executionId:target,sourceRowNumber:1,rowFingerprint:fixtures[0].rowFingerprint,
+      recoveryClaim:{itemId:probeItem.id,claimToken:probeToken}};
+    check(await db.transaction(tx=>hasCanonicalImportRecoveryClaim(tx,claimInput)),
+      "Claim verification accepts the live claim over a created original without hold evidence");
+    check(await db.transaction(tx=>hasCanonicalImportRecoveryClaim(tx,{...claimInput,renew:true})),
+      "Renewal extends only that live claim");
+    check(!await db.transaction(tx=>hasCanonicalImportRecoveryClaim(tx,{...claimInput,
+      recoveryClaim:{itemId:probeItem.id,claimToken:randomUUID()}})),"A replaced token is never accepted");
+    check(!await db.transaction(tx=>hasCanonicalImportRecoveryClaim(tx,{...claimInput,rowFingerprint:"0".repeat(64)})),
+      "A different row fingerprint is never accepted");
+    await probe.query(`UPDATE cro03_enrichment_items SET state='blocked',current_provider=NULL,claim_token=NULL,
+      lease_expires_at=NULL WHERE id=$1`,[probeItem.id]);
+
+    const result=await processCanonicalImportRecoveryTick({maxItems:4});
+    check(result.fulfilled===4 && result.failed===0 && result.held===0,
+      "The ordinary worker fulfills created, matched, business-only and existing-record originals");
+    const after=await items(target);
+    check(after.every(row=>row.state==="completed" && row.qualified),"Every original item receives a current-qualification receipt");
+    const emails=(row:any)=>providerImportEmails(row.rawRow);
+    const contactsByRow=async(execution:string,row:number)=>(await probe.query(`SELECT DISTINCT contact.id,contact.email,contact.business_id
+      FROM contact_source_events event JOIN contacts contact ON contact.id=event.contact_id
+      WHERE event.import_execution_id=$1 AND event.source_row_number=$2 ORDER BY contact.email`,[execution,row])).rows;
+    for(const index of [0,1,3]) {
+      const linked=await contactsByRow(target,index+1);
+      assert.deepEqual(linked.map(c=>c.email),emails(fixtures[index]).sort());
+      assert(linked.every(c=>c.business_id!=null && c.business_id===linked[0].business_id));
+    }
+    check(true,"Every retained mailbox has provenance and one verified business link");
+    check((await contactsByRow(target,4)).some(c=>c.id===reused) &&
+      (await probe.query("SELECT count(*)::int n FROM contacts WHERE email=$1",[fixtures[3].rawRow.email_1])).rows[0].n===1,
+      "An existing record is reused, never duplicated");
+    check((await contactsByRow(target,1)).length===3,"Multiple mailboxes on one original row all materialize");
+    check((await probe.query(`SELECT count(*)::int n FROM contact_source_events
+      WHERE import_execution_id=$1 AND source_row_number=3`,[target])).rows[0].n===0,
+      "A business-only original creates no placeholder contact or provenance");
+    check((await probe.query(`SELECT count(*)::int n FROM businesses WHERE canonical_name=$1`,
+      [fixtures[2].rawRow.name])).rows[0].n===1,"A business-only original still materializes its business");
+    assert.deepEqual(await accountingOf(target),accountingBefore);
+    check(await holdEvidence(target)===0,"Immutable accounting and hold evidence are unchanged by fulfillment");
+    check(getBlockedCertificationNetworkAttemptCount()===0,"Recovery performs no provider I/O");
+
+    // Replay: no duplicate logical effects; fresh claim/fulfillment audit rows are intentional.
+    const beforeReplay=await baseline();
+    const receiptsBefore=(await probe.query(`SELECT count(*)::int n FROM audit_logs WHERE action='canonical_import_row_fulfilled'
+      AND entity_key=ANY($1::text[])`,[after.map(row=>row.id)])).rows[0].n;
+    const replayed=await processCanonicalImportRecoveryTick({maxItems:4,replay:{executionId:target,sourceRowNumbers:[1,2,3,4]}});
+    check(replayed.fulfilled===4 && replayed.replay?.scopeAttempted===true,
+      "Explicit replay reaches completed created originals through ordinary claims");
+    assert.deepEqual(await baseline(),beforeReplay);
+    assert.deepEqual(await accountingOf(target),accountingBefore);
+    check((await probe.query(`SELECT count(*)::int n FROM audit_logs WHERE action='canonical_import_row_fulfilled'
+      AND entity_key=ANY($1::text[])`,[after.map(row=>row.id)])).rows[0].n===receiptsBefore+4,
+      "Replay creates no duplicate contacts, businesses or provenance and records only fresh claim/fulfillment audit rows");
+    check((await processCanonicalImportRecoveryTick()).attempted===0,"Ordinary scheduling does not reselect qualified originals");
+
+    // Protected conflicting assignment: genuine foreign affiliation stays held.
+    const firstMailbox=(await contactsByRow(target,1))[0];
+    const protectedRow=syntheticRows(1)[0];
+    protectedRow.rawRow.email_1=fixtures[0].rawRow.email_1;
+    protectedRow.disposition="created";protectedRow.reasonCode="CANONICAL_PROVIDER_CONTACT_CREATED";
+    rehash(protectedRow);
+    const protectedExecution=await seedExecution([protectedRow],"staging_disabled_protected");
+    await probe.query(`INSERT INTO contact_source_events(contact_id,event_key,source_category,source_type,
+      import_execution_id,source_row_number,row_fingerprint,actor_type,metadata)
+      VALUES($1,$2,'csv_import','outscraper',$3,1,$4,'import','{}'::jsonb)`,
+      [firstMailbox.id,`canonical-provider:${protectedExecution}:1:${createHash("sha256").update(protectedRow.rawRow.email_1).digest("hex")}`,
+        protectedExecution,protectedRow.rowFingerprint]);
+    const protectedAccounting=await accountingOf(protectedExecution);
+    const held=await processCanonicalImportRecoveryTick({maxItems:1});
+    check(held.held===1 && held.fulfilled===0 && held.failed===0,
+      "A created original with a genuinely conflicting assignment is held, not fulfilled");
+    check((await probe.query("SELECT business_id FROM contacts WHERE id=$1",[firstMailbox.id])).rows[0].business_id===firstMailbox.business_id,
+      "The protected assignment is never transferred");
+    const heldItem=(await items(protectedExecution))[0];
+    check(heldItem.terminal_code==="CANONICAL_IMPORT_CONTACT_AFFILIATION_HELD" && !heldItem.qualified &&
+      await holdEvidence(protectedExecution)===1,"The hold appends new hold evidence and gets no fulfillment receipt");
+    assert.deepEqual(await accountingOf(protectedExecution),protectedAccounting);
+
+    // Retryable failure followed by ordinary-worker recovery.
+    const retryRows=syntheticRows(1);retryRows[0].disposition="created";
+    retryRows[0].reasonCode="CANONICAL_PROVIDER_CONTACT_CREATED";
+    const retryExecution=await seedExecution(retryRows,"staging_disabled_retry");
+    await probe.query(`CREATE FUNCTION fixture_retry_fault() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN IF NEW.import_execution_id='${retryExecution}'::uuid THEN
+        RAISE EXCEPTION 'fixture retryable fault' USING ERRCODE='23505'; END IF; RETURN NEW; END $$;
+      CREATE TRIGGER fixture_retry_fault BEFORE INSERT ON contact_source_events
+      FOR EACH ROW EXECUTE FUNCTION fixture_retry_fault()`);
+    const failedTick=await processCanonicalImportRecoveryTick({maxItems:1});
+    const failedItem=(await items(retryExecution))[0];
+    check(failedTick.failed===1 && failedItem.state==="blocked" &&
+      failedItem.terminal_code==="CANONICAL_IMPORT_RECOVERY_RETRY_REQUIRED" && !failedItem.qualified,
+      "A retryable failure releases only its own claim as RETRY_REQUIRED");
+    await probe.query("DROP TRIGGER fixture_retry_fault ON contact_source_events; DROP FUNCTION fixture_retry_fault()");
+    await probe.query("UPDATE cro03_enrichment_items SET next_attempt_at=clock_timestamp()-interval '1 second' WHERE id=$1",[failedItem.id]);
+    const retrySelectable=(await db.execute(canonicalImportRecoveryClaimSql()) as any).rows;
+    check(retrySelectable.length===1 && retrySelectable[0].execution_id===retryExecution,
+      "RETRY_REQUIRED stays selectable because its eligibility is proven from the original claim receipt, not the mutable code");
+    const retried=await processCanonicalImportRecoveryTick({maxItems:1});
+    check(retried.fulfilled===1 && (await items(retryExecution))[0].qualified &&
+      (await contactsByRow(retryExecution,1)).length===3,"The ordinary worker recovers the retried original with every mailbox");
+
+    // The capability hold code is also retry-stable, but only with this worker's own receipt.
+    const capabilityRows=syntheticRows(2);
+    capabilityRows.forEach(row=>{row.disposition="created";row.reasonCode="CANONICAL_PROVIDER_CONTACT_CREATED";});
+    const capabilityExecution=await seedExecution(capabilityRows,"staging_disabled_capability");
+    const capabilityItems=await items(capabilityExecution);
+    for(const [index,item] of capabilityItems.entries()) {
+      await probe.query(`UPDATE cro03_enrichment_items SET state='blocked',
+        terminal_code='CANONICAL_IMPORT_IDENTITY_BRIDGE_NATIVE_GUARD_MISSING',
+        next_attempt_at=clock_timestamp()-interval '1 second' WHERE id=$1`,[item.id]);
+      if(index===0)await probe.query(`INSERT INTO audit_logs(action,entity_type,entity_key,details,actor_type,actor_id)
+        VALUES('canonical_import_capability_opportunity','cro03_enrichment_item',$1,$2::jsonb,'system','system:canonical-import-recovery')`,
+        [item.id,JSON.stringify({executionId:capabilityExecution,sourceRowNumber:1,
+          rowFingerprint:capabilityRows[0].rowFingerprint,outcome:"blocked_source_capability"})]);
+    }
+    const capabilitySelectable=(await db.execute(canonicalImportRecoveryClaimSql()) as any).rows;
+    check(capabilitySelectable.length===1 && Number(capabilitySelectable[0].source_row_number)===1,
+      "Only the row with the worker's own capability receipt is admitted after a capability hold");
+    const capabilityTick=await processCanonicalImportRecoveryTick({maxItems:2});
+    check(capabilityTick.fulfilled===1 && (await items(capabilityExecution))[1].state==="blocked",
+      "Capability restoration recovers the receipted row and never claims an unreceipted code");
+
+    // Lease/owner loss: only the transaction without authority commits nothing.
+    const lossRows=syntheticRows(1);lossRows[0].disposition="created";
+    lossRows[0].reasonCode="CANONICAL_PROVIDER_CONTACT_CREATED";
+    const lossExecution=await seedExecution(lossRows,"staging_disabled_owner_loss");
+    let rotated=false;
+    afterCommit=async()=>{
+      if(rotated)return;
+      const count=(await (originalQuery as any).call(probe,
+        "SELECT count(*)::int n FROM contact_source_events WHERE import_execution_id=$1",[lossExecution])).rows[0].n;
+      if(count<1)return;
+      rotated=true;afterCommit=null;
+      await (originalQuery as any).call(probe,`UPDATE sfp_runtime_owner_authority
+        SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE authority_key='routine_sfp'`);
+      await claimSfpRuntimeDeploymentOwner();
+    };
+    await assert.rejects(()=>processCanonicalImportRecoveryTick({maxItems:1}));
+    afterCommit=null;
+    const lossCount=async()=>(await probe.query(`SELECT count(DISTINCT contact_id)::int n FROM contact_source_events
+      WHERE import_execution_id=$1`,[lossExecution])).rows[0].n;
+    check(rotated && await lossCount()===1 && (await items(lossExecution))[0].state!=="completed",
+      "Owner loss after one mailbox leaves that mailbox durable and the row unfulfilled");
+    await probe.query(`UPDATE cro03_enrichment_items SET lease_expires_at=clock_timestamp()-interval '1 second',
+      next_attempt_at=clock_timestamp()-interval '1 second' WHERE id=$1`,[(await items(lossExecution))[0].id]);
+    const resumed=await processCanonicalImportRecoveryTick({maxItems:1});
+    check(resumed.fulfilled===1 && await lossCount()===3 && (await items(lossExecution))[0].qualified,
+      "A fresh owner resumes the remaining mailboxes without duplicating the committed one");
+
+    // The shared predicate literal CANONICAL_IMPORT_IDENTITY_BRIDGE_NATIVE_GUARD_MISSING appears in every
+    // claim-check statement; a lock timeout echoing that SQL must remain a yieldable row failure.
+    const {isRecoverableImportRowFailure}=await import("../../server/services/canonical-import-recovery-outcomes");
+    const lockTimeout=Object.assign(new Error("canceling statement due to lock timeout"),{code:"55P03"});
+    check(isRecoverableImportRowFailure(new Error("Failed query: ... NATIVE_GUARD_MISSING ...",{cause:lockTimeout})) &&
+      !isRecoverableImportRowFailure(new Error("CANONICAL_IMPORT_IDENTITY_BRIDGE_NATIVE_GUARD_MISSING")),
+      "A lock timeout echoing predicate SQL stays yieldable while a thrown guard-missing error stays fatal");
+    // Changed payload: a different row presented for an already-retained original coordinate is rejected,
+    // and a mutated execution payload never replaces the retained raw-v2/v3 evidence.
+    const beforeChanged=await baseline();
+    await assert.rejects(()=>materializeCanonicalProviderImportRow({executionId:target,sourceRowNumber:1,
+      sourceFormat:"google_maps_outscraper",actorId:"fixture:changed-payload",
+      rawRow:{...fixtures[0].rawRow,email_1:`changed.${randomUUID()}@example.test`}}),
+      /PROVIDER_IMPORT_ORIGINAL_EVIDENCE_MISMATCH/);
+    assert.deepEqual(await baseline(),beforeChanged);
+    check(true,"A changed payload for a retained original coordinate is rejected without any graph or provenance write");
+    const mutatedEmail=`mutated.${randomUUID()}@example.test`;
+    const changedRows=syntheticRows(1);changedRows[0].disposition="created";
+    changedRows[0].reasonCode="CANONICAL_PROVIDER_CONTACT_CREATED";
+    const changedExecution=await seedExecution(changedRows,"staging_disabled_changed_payload");
+    const changedItem=(await items(changedExecution))[0];
+    // First fulfillment retains raw-v2/v3; afterwards the mutable execution payload is irrelevant.
+    await processCanonicalImportRecoveryTick({maxItems:1});
+    await probe.query(`UPDATE import_executions SET source_payload=jsonb_set(source_payload,'{0,email_1}',to_jsonb($2::text))
+      WHERE id=$1`,[changedExecution,mutatedEmail]);
+    await probe.query("UPDATE cro03_enrichment_items SET next_attempt_at=clock_timestamp()-interval '1 second' WHERE id=$1",[changedItem.id]);
+    const mutatedReplay=await processCanonicalImportRecoveryTick({maxItems:1,
+      replay:{executionId:changedExecution,sourceRowNumbers:[1]}});
+    check(mutatedReplay.fulfilled===1 &&
+      (await probe.query("SELECT count(*)::int n FROM contacts WHERE email=$1",[mutatedEmail])).rows[0].n===0,
+      "Retained raw evidence, not a mutated execution payload, governs replay");
   }else if(phase==="faults"){
     const rows=syntheticRows(),execution=await seedExecution(rows,"faults");
     const target=(await items(execution))[0];

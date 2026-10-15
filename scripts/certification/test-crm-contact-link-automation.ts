@@ -185,6 +185,40 @@ try {
   check(await decisionCount(late.contactId)===1,"Later changed contact commits after unchanged pages");
   check((await getContactLinkAutomationStatus())!.complete,"Only exhausted population completes");
 
+  // Older, unchanged contacts with supported retained evidence reach the
+  // materializer in the ordinary worker, and its actual outcome/reason is
+  // recorded per contact rather than the preview's generic evidence reasons.
+  const olderEvidence=async(label:string,weak:boolean)=>{
+    const domain=`${randomUUID()}.test`,name=`${prefix} older ${label}`;
+    const proof=weak ? {canonicalName:name} : {canonicalName:name,websiteDomain:domain,mainPhone:"2025550177",
+      streetAddress:"12 Older Evidence Rd",city:"Miami",state:"Florida"};
+    const id=(await pool.query(`INSERT INTO contacts(first_name,last_name,email,phone,company_name,address,city,state,website,
+      record_class,updated_at) VALUES('Older','Evidence',$1,$2,$3,$4,$5,'FL',$6,'production',now()-INTERVAL '30 days')
+      RETURNING id`,[`${prefix}.older.${label}@gmail.com`,weak ? "" : "2025550177",name,
+      weak ? null : "12 Older Evidence Rd",weak ? null : "Miami",weak ? null : domain])).rows[0].id;
+    await pool.query(`INSERT INTO contact_source_events(contact_id,event_key,source_category,source_type,source_external_id,
+      actor_type,metadata,created_at) VALUES($1,$2,'ghl_sync','inbound',$3,'system',$4::jsonb,now()-INTERVAL '30 days')`,
+      [id,randomUUID(),randomUUID(),JSON.stringify({businessEvidence:proof})]);
+    return Number(id);
+  };
+  const olderHeld=await olderEvidence("held",true),olderReady=await olderEvidence("ready",false);
+  await processContactLinkAutomationTick();
+  const outcomeRows=async(id:number)=>(await pool.query(`SELECT details FROM audit_logs
+    WHERE action='contact_link_materialization_outcome' AND entity_key=$1 ORDER BY id`,[String(id)])).rows;
+  const heldOutcomes=await outcomeRows(olderHeld),readyOutcomes=await outcomeRows(olderReady);
+  check(heldOutcomes.length===1 && heldOutcomes[0].details.status==="held" &&
+    heldOutcomes[0].details.reasonCode==="INDEPENDENT_ORGANIZATION_CORROBORATION_REQUIRED",
+    "An older unchanged contact reaches the materializer and records its actual hold reason");
+  check(readyOutcomes.length===1 && ["materialized","matched"].includes(readyOutcomes[0].details.status),
+    "An older unchanged contact with corroborated evidence is materialized by the ordinary worker");
+  const materialState=(await getContactLinkAutomationStatus(false))!;
+  check((materialState.reasons["materialization:INDEPENDENT_ORGANIZATION_CORROBORATION_REQUIRED"] ?? 0)>=1 &&
+    Object.keys(materialState.materialization ?? {}).some(key=>key.startsWith("held:")),
+    "Held counts use the materializer's reason, not the preview's generic evidence reasons");
+  await processContactLinkAutomationTick();
+  check((await outcomeRows(olderHeld)).length===1,
+    "An unchanged recent outcome is not re-evaluated every cycle");
+
   // Real graph contention and queued owner renewal. The automatic writer must
   // pin owner authority BEFORE waiting for the commercial graph, then retain
   // its fresh snapshot recheck after acquiring that graph.
@@ -264,7 +298,7 @@ try {
     "The serial continuation releases only its own linking lease");
   const {readContactLinkAssignmentPopulation}=await import("../../server/services/contact-link-population");
   const population=await readContactLinkAssignmentPopulation();
-  check(population.state==="current" && population.currentVerified===7,
+  check(population.state==="current" && population.currentVerified===7+await decisionCount(olderReady),
     "Current audited population is separate from cumulative attempts");
   await pool.query("ALTER FUNCTION crm_source_family_relationship_reasons(integer,integer,uuid) RENAME TO cert_missing_source_family");
   try {

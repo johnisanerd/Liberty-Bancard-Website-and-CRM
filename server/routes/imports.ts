@@ -1412,17 +1412,19 @@ Guidelines:
       if(!execution)return res.status(404).json({code:"IMPORT_EXECUTION_NOT_FOUND"});
       if(execution.status!=="completed" || sourceRowNumbers.some(row=>row>Number(execution.total_rows)))
         return res.status(409).json({code:"CANONICAL_IMPORT_REPLAY_SCOPE_NOT_RECOVERABLE"});
-      const scoped=(await db.execute(sql`SELECT accounting.source_row_number
+      // The shared recoverability predicate reads the retained item and its
+      // original observation, so scope the same tables the worker selects from.
+      const scoped=(await db.execute(sql`SELECT DISTINCT accounting.source_row_number
         FROM import_row_dispositions accounting
+        JOIN cro03_enrichment_batches batch ON batch.purpose='staging_review'
+          AND batch.idempotency_key='csv-source:'||accounting.execution_id::text||':'||accounting.source_row_number::text
+        JOIN cro03_enrichment_items item ON item.batch_id=batch.id
+        JOIN cro03_batch_memberships member ON member.id=item.membership_id
+        JOIN cro03_source_observations observation ON observation.id=member.source_observation_id
         WHERE accounting.execution_id=${executionId}::uuid
           AND accounting.source_row_number IN (${sql.join(sourceRowNumbers.map(row=>sql`${row}`),sql`,`)})
           AND ${canonicalRecoverableImportAccountingSql()}
-          AND EXISTS (SELECT 1 FROM cro03_enrichment_batches batch
-            JOIN cro03_batch_memberships member ON member.batch_id=batch.id
-            JOIN cro03_source_observations observation ON observation.id=member.source_observation_id
-            WHERE batch.idempotency_key='csv-source:'||accounting.execution_id::text||':'||accounting.source_row_number::text
-              AND batch.purpose='staging_review'
-              AND observation.payload->>'sourceFormat' IN ('google_maps_outscraper','apollo_lead_list'))`) as any).rows;
+          AND observation.payload->>'sourceFormat' IN ('google_maps_outscraper','apollo_lead_list')`) as any).rows;
       if(scoped.length!==sourceRowNumbers.length)
         return res.status(409).json({code:"CANONICAL_IMPORT_REPLAY_SCOPE_NOT_RECOVERABLE"});
       await db.execute(sql`INSERT INTO audit_logs(action,entity_type,entity_key,details,actor_type,actor_id)

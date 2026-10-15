@@ -20,6 +20,8 @@ type Program = {
   reasons: Record<string, number>; leaseToken: string | null; leaseUntil: string | null;
   updatedAt: string; lastError: string | null; complete: boolean;
   scanStartedAt?: string; changedSince?: string; backfillComplete?: boolean;
+  /** Materializer outcome counts (status[:reasonCode]) for contacts that reached it. */
+  materialization?: Record<string, number>;
 };
 export async function getContactLinkAutomationStatus(includePopulation=true): Promise<
   (Program & {population?:Awaited<ReturnType<typeof readContactLinkAssignmentPopulation>>}) | null> {
@@ -148,6 +150,7 @@ export async function processContactLinkAutomationTick(
        const current = await getContactLinkAutomationStatus(false);
       if (!current?.enabled || current.leaseToken !== token) break;
       let outcome: any = null;
+      let materializerOutcome: any = null;
       const authorityCheck = async (tx:any) => {
         const currentOwner = await lockCurrentSfpRuntimeOwner(tx);
         if (currentOwner.ownerEpoch !== owner.ownerEpoch || currentOwner.ownerToken !== owner.ownerToken) {
@@ -166,6 +169,25 @@ export async function processContactLinkAutomationTick(
       if(!candidate.eligible && candidate.projectedBusinessId==null && candidate.currentDecisionId==null &&
         candidate.hasSupportedMaterializationEvidence) {
         const materialized=await materializeSupportedContactBusiness(candidate.contactId,authorityCheck);
+        materializerOutcome=materialized;
+        // Record the materializer's ACTUAL outcome and reason for this contact
+        // revision/evidence snapshot. The loader uses it only to bound repeat
+        // work; it is observation, never relationship authority.
+        await db.transaction(async tx=>{
+          await authorityCheck(tx);
+          await tx.execute(sql`INSERT INTO audit_logs(action,entity_type,entity_key,details,actor_type,actor_id)
+            VALUES('contact_link_materialization_outcome','contact',${String(candidate.contactId)},
+              ${JSON.stringify({status:materialized.status,
+                reasonCode:"reasonCode" in materialized ? materialized.reasonCode : null,
+                businessId:"businessId" in materialized ? materialized.businessId ?? null : null,
+                contactRevision:candidate.contactRevision,
+                evidenceRevision:(candidate as any).materializationEvidenceRevision ?? null,
+                runId:state.runId,paidProviderCalls:0,outboundChanges:0})}::jsonb,
+              'system','system:contact-link-automation')`);
+        });
+        state.materialization=state.materialization ?? {};
+        const bucket=`${materialized.status}${"reasonCode" in materialized ? ":"+materialized.reasonCode : ""}`;
+        state.materialization[bucket]=(state.materialization[bucket] ?? 0)+1;
         if(materialized.status==="materialized" || materialized.status==="matched") {
           const refreshed=(await loadEvidenceRelationshipPage(db,0,1,candidate.contactId)).previews[0];
           if(refreshed)candidate=refreshed;
@@ -190,7 +212,13 @@ export async function processContactLinkAutomationTick(
       else if (outcome?.status === "replayed") state.replayed++;
       else {
         state.held++;
-        for (const reason of outcome?.code ? [outcome.code] : candidate.reasons ?? ["independent_identity_unresolved"]) {
+        // Count the stage that actually decided: the writer's code, else the
+        // materializer's own hold reason, else the preview's evidence reasons.
+        const decided=outcome?.code ? [outcome.code]
+          : materializerOutcome && "reasonCode" in materializerOutcome && !candidate.eligible
+            ? [`materialization:${materializerOutcome.reasonCode}`]
+            : candidate.reasons ?? ["independent_identity_unresolved"];
+        for (const reason of decided) {
           state.reasons[reason] = (state.reasons[reason] ?? 0) + 1;
         }
       }

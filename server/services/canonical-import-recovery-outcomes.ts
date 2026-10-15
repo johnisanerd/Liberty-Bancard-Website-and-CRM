@@ -9,7 +9,10 @@ export function isRecoverableImportRowFailure(error: unknown): boolean {
           "ETIMEDOUT","ECONNREFUSED","ECONNABORTED","ENETUNREACH","EHOSTUNREACH"].includes(current.code))) {
       return false;
     }
-    if (typeof current.message === "string" &&
+    // Drizzle's "Failed query" wrapper echoes the statement text. Its SQL may
+    // legitimately contain a fatal reason literal (for example a predicate over
+    // a hold code); the real database error is classified on its own cause.
+    if (typeof current.message === "string" && !current.message.startsWith("Failed query:") &&
         /(?:FENCE_LOST|LEASE_LOST|OWNER_CHANGED|OWNER_BLOCKED|HANDOFF_|GUARD_MISSING|FINGERPRINT_MISMATCH)/.test(current.message)) {
       return false;
     }

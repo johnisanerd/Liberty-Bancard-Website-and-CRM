@@ -117,13 +117,41 @@ export async function loadEvidenceRelationshipPage(
       contactRevision:c.contact_revision,currentDecisionId:c.current_decision_id ?? null,
       projectedBusinessId:c.projected_business_id ?? null,
       hasSupportedMaterializationEvidence:hasMaterializableSourceEvidence(c.source_event_revisions),
+      materializationEvidenceRevision:hash(c.source_event_revisions),
       candidateEvidence:alternatives.map((m:any)=>({businessId:Number(m.business_id),
         sourceLinkId:String(m.source_link_id),sourceEntityId:m.source_entity_id ?? null,
         businessRevision:m.business_revision,sourceRevision:m.source_revision,
         entityRevision:m.entity_revision,reasons:m.relationship_reasons})),
     };
   });
-  return { previews:previews.filter(row=>changedIds.has(row.contactId)||row.eligible),
+  // The change window must never permanently hide an older, unchanged contact
+  // that now carries supported retained evidence and has no assignment. Such
+  // a contact must still reach the materializer. To stay bounded, skip it only
+  // while the materializer's own recorded outcome is for the SAME contact
+  // revision and source-event snapshot and is recent (re-evaluated daily,
+  // since resolver/business evidence can change without touching the contact).
+  const unchangedCandidates=previews.filter(row=>!changedIds.has(row.contactId)&&!row.eligible&&
+    row.hasSupportedMaterializationEvidence&&row.projectedBusinessId==null&&row.currentDecisionId==null);
+  const recentlyAttempted=new Set<number>();
+  if(unchangedCandidates.length) {
+    const outcomes=rows(await executor.execute(sql`
+      SELECT DISTINCT ON (entity_key) entity_key,details,created_at > clock_timestamp()-interval '24 hours' recent
+      FROM audit_logs WHERE entity_type='contact' AND action='contact_link_materialization_outcome'
+        AND entity_key=ANY(ARRAY[${sql.join(unchangedCandidates.map(row=>sql`${String(row.contactId)}`),sql`, `)}]::text[])
+      ORDER BY entity_key,id DESC`));
+    const revisions=new Map(unchangedCandidates.map(row=>[row.contactId,
+      {contactRevision:row.contactRevision,evidenceRevision:row.materializationEvidenceRevision}]));
+    for(const outcome of outcomes) {
+      const current=revisions.get(Number(outcome.entity_key));
+      if(outcome.recent && current && outcome.details?.contactRevision===current.contactRevision &&
+        outcome.details?.evidenceRevision===current.evidenceRevision)
+        recentlyAttempted.add(Number(outcome.entity_key));
+    }
+  }
+  // A point read (selected contact) always reflects that contact.
+  const reachMaterializer=new Set(unchangedCandidates
+    .filter(row=>onlyContactId!==undefined||!recentlyAttempted.has(row.contactId)).map(row=>row.contactId));
+  return { previews:previews.filter(row=>changedIds.has(row.contactId)||row.eligible||reachMaterializer.has(row.contactId)),
     selectedFacts: onlyContactId === undefined ? undefined : selected[0],
     selectedFactsForPage: selected,lastContactId: inspectedThroughContactId,
     inspectedThroughContactId,passExhausted,hasMore: !passExhausted };
