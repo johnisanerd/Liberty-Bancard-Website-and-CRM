@@ -724,3 +724,44 @@ workers committing assignments and receipts for created originals and older cont
 distinct contacts, verified links and receipts per upload (five workbooks, 2,914 rows; September import
 `79356e0b`, 1,472 rows) and for the contact population. Counters, passing tests and completed jobs are not recovery
 evidence; per-contact materializer outcomes and committed rows are.
+
+## Publication of the upload-recovery build, 18:14–18:26 UTC
+
+Production health served `a0ea8598f5eb41e105dfc89c905eace7c5338f79`, build `e128252a-c85a-4f71-872e-33632190685c`
+(built 17:55:23 UTC), at 18:18 UTC. Production queries below are read-only (replica) and used the ledger's own
+definitions: a current receipt is a completed `CANONICAL_LOCAL_IMPORT_FULFILLED` item with a matching
+`canonical_import_row_fulfilled` audit row at `mailbox_business_identity_v2`. No row, setting or cursor was changed,
+no administrative run/replay was invoked, no paid call or re-upload was made, and outbound stays paused.
+
+| Upload (execution) | Rows | Current receipts: 14:17 → 18:25 | `STAGING_RECIPE_DISABLED` open: 14:17 → 18:25 |
+| --- | ---: | ---: | ---: |
+| 6623a227 | 653 | 0 → 55 | 516 → 501 (at 18:19: 516 → 516 before first receipts) |
+| 6b28085c | 633 | 0 → 2 | 527 → 527 |
+| 79356e0b (September CSV) | 1,472 | 1,310 → 1,310 | 0 → 0 |
+| 83e594ce | 537 | 7 → 49 | 369 → 356 |
+| 9cd520f7 | 513 | 0 → 3 | 419 → 419 |
+| b070a72b | 578 | 3 → 46 | 407 → 407 |
+
+The 14:17 `STAGING_RECIPE_DISABLED` baseline per upload was not recorded; only the 2,353 total was. The per-upload
+baselines in the column above are the open-item counts at the first post-publication read (18:19), when receipts
+were 40, 2, 1,310, 36, 3 and 46 (total 1,437 against 1,320 at 14:17). By 18:25 the six uploads had 1,465 receipts,
+so the ordinary recovery worker is committing created originals that were previously unreachable; the rate was
+about 25 receipts in six minutes. Verified-contact counts per upload moved only at 6623a227 (556 → 558); the others
+are unchanged (6b28085c 524, 79356e0b 1,101, 83e594ce 443, 9cd520f7 391, b070a72b 487). Distinct attributable
+contacts and rows are unchanged. Organization holds (626 → 626) and affiliation holds (87 → 85 at 18:19) are
+separate from the staging-disabled population and were not forced.
+
+Population: active production-class contacts 157,449 with 3,547 current verified links (3,547 at 18:19 and 18:25;
+14:17 was 157,446 / 3,540). The contact-link automation program is enabled, cursor 14,543, `lastError` null,
+`updatedAt` 18:25:09 UTC, 29 committed (unchanged), 0 replayed.
+
+Per contact, the older-contact materializer wrote `contact_link_materialization_outcome` observations for 11
+contacts between 18:14:26 and 18:15:44 UTC, all `matched` with a canonical business ID and zero provider calls or
+outbound changes: 160787, 160788 (business 47089), 160876, 160877, 160879 (40238), 161230, 161232 (10205),
+161535 (17851), and 162964, 162965, 162966 (71053). At 18:24:44 UTC none of the 11 has a contact business
+assignment or current decision. They were scanned and held by the ordinary system policy; the aggregate hold reasons
+are not attributed per contact, so this does not show why. They were not forced. Contacts 494, 1057, 1074, 4741 and
+8964 remain verified (regression checks).
+
+Not yet shown: that all unfulfilled originals are fulfilled, and any link for the 11 older contacts above. This
+continues as ordinary worker progress; the item stays open.
