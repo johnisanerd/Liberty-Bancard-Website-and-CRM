@@ -144,9 +144,42 @@ async function main() {
     const after=await safetyCounts();
     for(const table of safetyTables.filter(table=>!["contacts","businesses"].includes(table)))
       assert.equal(after[table],before[table],`No provider, staging purchase, enrollment or message in ${table}`);
-    assert.equal((await pool.query(`SELECT count(*)::int n FROM
-      (SELECT lower(trim(email)) FROM contacts WHERE email IS NOT NULL
-       GROUP BY lower(trim(email)) HAVING count(*)>1) duplicates`)).rows[0].n,0);
+    // A shared mailbox is a delivery address, not proof of one identity. Certify
+    // the actual contact identity contract: every same-mailbox pair must be
+    // distinguishable under the writer's own predicate, and one source row must
+    // never have created two contacts for the same mailbox.
+    const { sameMailboxContactIdentity } = await import("../../server/services/contact-mailbox-identity");
+    const mailboxContacts = (await pool.query(`SELECT c.id,lower(trim(c.email)) mailbox,c.first_name "firstName",
+        c.last_name "lastName",c.company_name "companyName",c.phone,c.address,c.city,c.state,
+        c.ghl_contact_id "ghlContactId"
+      FROM contacts c WHERE c.email IS NOT NULL AND c.archived_at IS NULL AND lower(trim(c.email)) IN
+        (SELECT lower(trim(email)) FROM contacts WHERE email IS NOT NULL AND archived_at IS NULL
+         GROUP BY 1 HAVING count(*)>1) ORDER BY c.id`)).rows;
+    const mailboxGroups = new Map<string, any[]>();
+    for (const row of mailboxContacts) mailboxGroups.set(row.mailbox, [...(mailboxGroups.get(row.mailbox) ?? []), row]);
+    const collapsiblePairs: Array<[number, number]> = [];
+    const distinguishedBy = new Map<string, number>();
+    for (const group of mailboxGroups.values()) for (let i = 0; i < group.length; i++) for (let j = i + 1; j < group.length; j++) {
+      if (sameMailboxContactIdentity(group[i], group[j])) collapsiblePairs.push([group[i].id, group[j].id]);
+      else {
+        const text = (v: unknown) => String(v ?? "").trim().toLowerCase();
+        const fields = ["companyName", "address", "city", "state", "phone", "firstName", "lastName"]
+          .filter(key => text(group[i][key]) && text(group[j][key]) && text(group[i][key]) !== text(group[j][key]));
+        const key = fields.join("+") || "no_conflicting_field";
+        distinguishedBy.set(key, (distinguishedBy.get(key) ?? 0) + 1);
+      }
+    }
+    // Aggregate classes only: diagnostics must not copy customer text.
+    console.log(JSON.stringify({ event: "provider_recovery_shared_mailbox_classes", groups: mailboxGroups.size,
+      contacts: mailboxContacts.length, collapsiblePairs: collapsiblePairs.length,
+      distinguishedBy: Object.fromEntries(distinguishedBy) }));
+    assert.deepEqual(collapsiblePairs, [], "No same-mailbox pair may represent one supported identity");
+    assert.equal((await pool.query(`SELECT count(*)::int n FROM (
+        SELECT ev.import_execution_id,ev.source_row_number,lower(trim(c.email)) mailbox
+        FROM contact_source_events ev JOIN contacts c ON c.id=ev.contact_id
+        WHERE ev.import_execution_id IS NOT NULL AND ev.source_row_number IS NOT NULL AND c.email IS NOT NULL
+        GROUP BY 1,2,3 HAVING count(DISTINCT c.id)>1) repeated`)).rows[0].n, 0,
+      "One source row must not create multiple contacts for one mailbox");
     const legacy = (await pool.query(`SELECT count(*)::int n FROM cro03_source_observations
       WHERE payload->>'legacyMarker'='true'`)).rows[0];
     assert.equal(legacy.n, 1);

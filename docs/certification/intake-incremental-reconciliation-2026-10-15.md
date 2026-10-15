@@ -941,3 +941,21 @@ five retained workbooks. Unchanged main also consumed all 2,914 rows with zero r
 normalized duplicate-email assertion at `test-provider-import-recovery.ts:147`. This establishes a pre-existing
 whole-import certification failure, not a green gate and not a newly introduced relationship-repair regression.
 No contacts were deleted/merged and no assertion was removed or weakened to conceal it.
+
+### Shared-mailbox assertion resolved against the identity contract (2026-10-15)
+
+Duplicate normalized emails alone do not establish duplicate contacts: the mailbox identity contract
+(`contact-mailbox-identity.ts`, certified by `test-contact-mailbox-identity.ts`) deliberately keeps separate
+people, business locations and GHL identities that share one mailbox. The import certification therefore no
+longer asserts "zero shared emails". It now asserts:
+
+1. No same-mailbox pair of active contacts satisfies the writer's own `sameMailboxContactIdentity` predicate
+   (i.e. no supported identity was created twice).
+2. No single source row (execution + row number) created more than one contact for one mailbox.
+
+Full five-workbook run (2,914 rows, zero row failures, zero external network attempts): 34 shared-mailbox groups,
+88 contacts, **0 collapsible pairs**. Every pair is distinguished by conflicting location/phone/company
+evidence (company+address+city+phone 47, address+city+phone 16, address+city 12, address+phone 6,
+company+address+phone 2). The assertion run passed. No contacts were merged or deleted and no identity
+protection was relaxed; the earlier failure was an over-broad assertion, not duplicated creation.
+(The earlier "19 groups" observation came from a mid-run snapshot.)
