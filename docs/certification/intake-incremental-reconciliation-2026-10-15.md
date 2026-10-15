@@ -329,9 +329,10 @@ Private coordinate-level evidence remains ignored under
 `current-organization-qualification.json`, `current-affiliation-qualification.json`
 and `repaired-original-claim-plan.json`.
 
-These application corrections require one consolidated publication before the
-ordinary production workers can demonstrate their effects. They have not been
-published or force-applied by this audit. The original bounded observer's
+At completion of local certification these application corrections required one
+consolidated publication before ordinary production workers could demonstrate
+their effects. That publication and initial recovery proof are recorded below;
+the corrections were not force-applied by this audit. The original bounded observer's
 terminal result is recorded below: advancing scanned/held counters do not prove
 a third assignment-writing cycle. Keep the continuation open for subsequent
 production receipt/assignment reconciliation after the consolidated publication.
@@ -370,3 +371,240 @@ assignment/receipt outcomes without changing the retained run, cursor, window or
 original import accounting. No additional old-build observation was started,
 and no production reset, replay, forced link or outbound-control change was
 made to obtain this result.
+
+## Consolidated publication and automatic original-row recovery
+
+The owner's subsequent publication serves revision
+`ca10a6d350e439f5b045cd7bd44af276e279e949`, publish build
+`0c7f494d-83d3-4913-a866-320e5911832b`, built at
+**2026-10-15 13:32:32 UTC**. Production health is `ok`. The selected native
+runtime authority advanced to epoch **205**, matches this served revision, has
+a live lease and is not revoked. Outbound control remains **paused, epoch 1**.
+
+Authenticated primary reads show the same original run ID and completed-backfill
+flag. The incremental window rolled normally at **13:18:13 UTC**, before this
+publication: its new `changedSince` is the preceding pass's exact start,
+`2026-10-14 23:22:29.253717+00`. This is the existing natural rollover, not an
+administrative cursor/window reset. After publication the worker continues
+advancing with `lastError=null`.
+
+### The two stale originals are now fulfilled
+
+Ordinary production recovery completed the two original items without a manual
+tick, replay, re-upload or manufactured receipt:
+
+| Original source row | Existing contact | Expected business | Completed UTC |
+| --- | --- | --- | --- |
+| 479 | 161491 | 3538 | 13:40:00.691684 |
+| 480 | 161493 | 3538 | 13:40:37.263877 |
+
+Both items are `completed / CANONICAL_LOCAL_IMPORT_FULFILLED` and have fresh
+`mailbox_business_identity_v2` receipts written by
+`system:canonical-import-recovery`. Independent read-only checks establish:
+
+- Original execution, row number and fingerprint match the retained historical
+  coordinates and the new receipts exactly.
+- Immutable accounting remains `created`; it was not rewritten to `deferred`.
+- Every email in each retained original row matches the fulfilled contact set.
+- The existing contacts remain production-class, currently verified and projected
+  to canonical business 3538, with their prior verified decision IDs retained.
+- Neither receipt is an explicit replay. Both record zero paid-provider calls
+  and zero outbound changes.
+
+The subsequent complete original-coordinate aggregate reconciles **713/713**
+fingerprints, **2 completed items with current fulfillment receipts**,
+**711 blocked**, and zero running at that observation. Recovering a receipt for an
+already-verified assignment does not create a new assignment or increment the
+contact-link worker's committed count.
+
+### Acceptance still open
+
+The two phone-format-only organization originals had not retried at the latest
+coordinate-level observation; their old blocked states are not new-policy
+denials. The five previously eligible old contacts also remained unassigned in
+the initial post-publication checks. Their IDs were already behind the active
+cursor when the new build started, so they require ordinary traversal after
+natural rollover; no manual rewind or forced linking was performed.
+
+The separate read-only observer is pinned to the new served revision and retains
+its samples across observation-process resume. It checks authenticated primary
+worker status, population, import summaries and the seven relevant contact
+projections. Its bounded window and notifications do not substitute for durable
+receipt verification. Full five-contact recovery, the phone-format originals
+and a third distinct ordinary assignment-writing cycle remain pending.
+
+Private primary observations, coordinate/fingerprint aggregates and the
+independent original-mailbox/assignment proof are saved under ignored
+`generated-artifacts/intake-incremental/consolidated-publication-*`.
+Keep this existing continuation open; no additional owner action or publication
+is required merely to let the currently running workers continue.
+
+## Upload-wide status reconciliation, approximately 14:17 UTC
+
+The owner's subsequent status question covers all uploaded rows, not only the
+713 historically retained exceptions. Read-only production queries and fresh
+authenticated primary observations therefore distinguish these scopes:
+
+| Upload scope | Original rows accounted | Rows with at least one currently verified production contact/business link | Current-version original-row completion receipts |
+| --- | ---: | ---: | ---: |
+| Five XLSX workbooks | 2,914 | 2,401 | 10 |
+| Additional CSV | 1,472 | 1,174 | 1,310 |
+| All six uploads | 4,386 | 3,575 | 1,320 |
+
+All six import executions are `completed`, but that is execution/accounting
+status, not full row fulfillment. Original dispositions remain immutable.
+For the workbooks those original outcomes are 2,468 created, 12 matched without
+change, 420 deferred and 14 failed. They are not 2,468 unique currently linked
+contacts, nor do historical deferred/failed dispositions necessarily describe
+the current recovery outcome.
+
+At this observation, 3,066 original items remain blocked across all uploads:
+2,353 carry `STAGING_RECIPE_DISABLED`, 626 organization-match holds and 87
+affiliation holds. The five workbooks account for 2,904 blocked items, and the
+CSV for 162. These are original-item states, not counts of missing contacts.
+Existing linked contacts and final complete-original-row receipts are different
+checks; business-only rows can also complete without a contact mailbox.
+The 713-exception subset must not be presented as the entire upload backlog.
+
+The separately queried active production-class contact population is
+**157,446**, with **3,540** current verified canonical-business links and
+**153,906** unresolved. The assignment dashboard's broader population is
+**157,449 / 3,540 / 153,909** because it also includes **three active `unknown`
+intake contacts**; this is a predicate difference, not an unexplained replica
+count discrepancy.
+
+The two original stale-affiliation rows remain completed. The two phone-format
+originals did subsequently retry at approximately **13:51 UTC**: organization
+matching now reaches business 86280, but both originals remain held because
+their newly materialized contacts lack independent relationship corroboration.
+Their actual native reasons are `independent_corroboration_required`, not a
+remaining phone-format organization ambiguity. They are not certified complete.
+
+The complete original 713-coordinate set still matches every retained
+fingerprint: two completed, 624 organization holds, and 87 affiliation cases
+(86 blocked and one ordinary retry running at this particular read).
+The initial five older eligible contacts are still pending ordinary traversal;
+the primary cursor reached **114,408** at 14:16:45 UTC with `lastError=null`
+and cumulative committed count still 22. No additional assignment-writing cycle
+is claimed. The continuation remains open, and outbound controls were unchanged.
+
+Private upload-wide, per-execution, source-contact and current-reason evidence
+is retained in ignored `generated-artifacts/intake-incremental/contact-workbook-status*`.
+
+## New ordinary commits and natural rollover, 14:49–14:53 UTC
+
+The new-commit observer notification was independently reconciled against
+production-scoped decisions, their native system-evidence rows and deployment
+worker logs. It is not merely an increase in inspected or held attempts.
+
+- At **14:50:06.929 UTC**, the ordinary worker logged cumulative committed
+  count **24**, up from 22, and `complete=true`. The two new decisions are
+  contacts **163039/163040 → business 86280**, created at **14:49:57.359940**
+  and **14:50:03.520169 UTC**. Each has matching current `verified` decision,
+  contact projection and native `crm_evidence_identity_v3` system-evidence row.
+- At **14:50:37.904593 UTC**, the existing worker naturally started its next
+  pass. `changedSince` advanced to the preceding exact native pass start,
+  `2026-10-15 13:18:13.083464+00`. The original run and completed-backfill flag
+  remain unchanged. No administrative reset or tick was invoked.
+- A second ordinary worker result at **14:52:09.313 UTC** logged cumulative
+  committed count **27**, up from 24. Three of the five previously qualified
+  older contacts now have actual current verified assignments:
+
+| Contact | Canonical business | Decision created UTC |
+| --- | --- | --- |
+| 494 | 76073 | 14:50:48.591492 |
+| 1057 | 68387 | 14:51:03.077910 |
+| 1074 | 62669 | 14:51:04.668181 |
+
+All three remain production-class. Their stored evidence contact/business IDs,
+current decisions and projected business IDs match. Contacts **4741 and 8964**
+were still unlinked at **14:53:32 UTC**; five-contact recovery is not yet
+complete. These two new assignment-writing worker cycles also establish the
+previously missing third distinct cycle when combined with the two earlier
+confirmed cycles; they are two new cycles, not five cycles counted from five
+decisions.
+
+The two phone-format contacts' assignments do **not** yet establish original-row
+fulfillment: both contacts still have record class `unknown`, and both original
+items remain blocked with their prior affiliation hold and no current-version
+completion receipt at the subsequent original-item read. Do not describe that
+old hold as a fresh native rejection of their now-verified assignments.
+
+The **14:53 UTC** population query separates record classes:
+
+| Record class | Active contacts | Current verified links | Unresolved |
+| --- | ---: | ---: | ---: |
+| Production | 157,446 | 3,543 | 153,903 |
+| Unknown intake | 3 | 2 | 1 |
+| Broader assignment population | 157,449 | 3,545 | 153,904 |
+
+The latest captured program remains enabled with `lastError=null`; production
+outbound control is still **paused, epoch 1**. No application, provider,
+outbound, run, cursor or original-accounting change was made by this observation.
+
+### Legacy staging backlog is not ordinary retry progress
+
+Read-only inventory of the **2,353 `STAGING_RECIPE_DISABLED` items** confirms
+that every item is blocked, due, originally `created`/`matched_noop`, lacks
+versioned native hold evidence, and lacks a current fulfillment receipt.
+They comprise **2,268 created-contact rows, 12 matched-contact rows and 73
+business-only rows** across the five workbooks.
+
+The current recovery accounting contract excludes these created/matched rows:
+its narrow admission requires supported native identity/affiliation hold
+evidence and corresponding terminal codes, not `STAGING_RECIPE_DISABLED`.
+The outer selector's staging terminal-code allowance does not override that
+accounting condition. Thus ordinary waiting alone cannot certify or complete
+these 2,353 originals. Their existing contact links must not be substituted for
+full original-mailbox/business qualification, and their accounting must not be
+rewritten to manufacture eligibility. This is a remaining upload-wide
+reconciliation gap, not a currently justified business-identity hold or a new
+task/pipeline.
+
+The existing continuation remains open. Private durable-assignment, population,
+worker-cycle and original-item evidence is retained under
+`generated-artifacts/intake-incremental/natural-rollover-*`, with the staging
+inventory in `legacy-staging-inventory.json`. The bounded observer remains
+running; its future notifications still require independent reconciliation.
+
+## All five older eligible contacts recovered, 15:00–15:01 UTC
+
+The observer's five-projection notification was independently checked against
+current production decisions and their native system evidence at **15:00:58 UTC**.
+All five previously eligible contacts now remain production-class, with current
+`verified` decisions, matching projected/canonical business IDs and matching
+`crm_evidence_identity_v3` evidence contact/business IDs.
+
+| Contact | Canonical business | Decision created UTC |
+| --- | --- | --- |
+| 494 | 76073 | 14:50:48.591492 |
+| 1057 | 68387 | 14:51:03.077910 |
+| 1074 | 62669 | 14:51:04.668181 |
+| 4741 | 48120 | 14:53:51.383168 |
+| 8964 | 38379 | 14:56:56.366285 |
+
+Ordinary worker logs independently show cumulative commits rising **27 → 28**
+at **14:54:11.109 UTC**, then **28 → 29** at **14:57:17.056 UTC**. Together
+with the preceding two new writing cycles, these establish **four distinct
+assignment-writing cycles on the consolidated build**, not a cycle per contact.
+The five-contact recovery condition is now satisfied without a manual rewind,
+reset, forced link or re-upload.
+
+The new population read returns **157,446 production-class contacts, 3,545
+verified links and 153,901 unresolved**. The broader assignment population is
+**157,449 / 3,547 / 153,902**, including the three unknown intake contacts, two
+of which now have verified links. The observer still serves the pinned
+consolidated SHA/build, with the original run/backfill identity and
+`lastError=null`. Outbound remains **paused, epoch 1**.
+
+The two phone-format originals still have no current-version fulfillment
+receipt at this read, despite their now-verified contact/business assignments.
+The two earlier stale-affiliation originals retain their completed states and
+current-version receipts. The **2,353 excluded staging-disabled originals**
+also remain a separate upload-wide reconciliation gap. Neither contact
+recovery nor the cycle condition certifies all uploaded originals as complete.
+The existing continuation therefore remains open.
+
+Private independent decision, population/pause, worker-cycle and original-item
+evidence is retained under
+`generated-artifacts/intake-incremental/five-recovered-*`.

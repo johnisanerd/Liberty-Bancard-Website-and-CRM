@@ -1,0 +1,145 @@
+# Upload recovery and contact-to-business assignment audit
+
+Audit date: October 15, 2026. Production observations approximately 10:28–10:36 a.m. Eastern / 14:28–14:36 UTC. Read-only investigation of the current repository and authenticated CRM.
+
+## Conclusion
+
+The selector-timeout repair is live and the contact worker is advancing. It has not repaired the entire upload recovery boundary. There is a confirmed recovery-selection gap for originals whose immutable accounting says `created` or `matched_noop` while their original work item remains `STAGING_RECIPE_DISABLED`. The CRM exceptions reader independently hides unfinished rows with those dispositions.
+
+The five older eligible contacts are a different case: all five currently pass the native relationship preview, but remain unassigned and behind the current traversal cursor. The published loader now allows eligible old relationships to be reconsidered when their page is reached. Their eventual commits are still unproven; resetting the completed backfill or forcing these links is unnecessary.
+
+The broader unresolved population also needs an evidence-supply and reconciliation outcome. Repeatedly traversing contacts cannot create missing independent business identity. The current system contains an automatic materializer, but it requires supported structured source evidence and corroboration; manual source-recovery controls and an old census do not establish automatic coverage of the unresolved inventory.
+
+## What was independently checked
+
+- GitHub main: `83adc551f3ba6b8bc703d5a7467fcbf5c030378c`.
+- Production `/api/health`: served `ca10a6d350e439f5b045cd7bd44af276e279e949`, built at `2026-10-15T13:32:32.580Z`, environment production.
+- GitHub comparison: main is one publication commit ahead of the served revision, with **no file differences**. The findings below apply to the served application files; this is not a new deployment-gap finding.
+- Authenticated canonical status: 157,446 active production contacts; six historically completed import executions; native contracts verified.
+- Authenticated assignment status: 3,540 current verified assignments, no legacy-only projected assignments, original run preserved, completed initial backfill preserved, no current recorded worker error.
+- Five specific native previews, each reporting zero writes and zero paid calls.
+- Actual recovery accounting predicate exercised in six isolated cases. The probe used in-memory SQLite with only PostgreSQL text casts adapted. It verifies this Boolean selection exclusion; it is **not** a PostgreSQL concurrency test, full build, full release-suite run, or production-write certification.
+
+No application code, database records, controls, workers, replay, provider requests, outbound settings, or publication were changed by this audit. Authentication and read-only browser requests were used. Outbound was visibly paused.
+
+## 1. High priority: original staging failures are excluded after contact creation
+
+**Confirmed code defect, with matching live examples.**
+
+`server/services/canonical-import-recovery-contract.ts`, function `canonicalRecoverableImportAccountingSql()`, admits:
+
+1. Deferred original accounting.
+2. The narrowly supported original provider-staging failure.
+3. Created/matched-noop accounting only when the original item is blocked/running in five specified canonical identity/affiliation hold codes, with a same-item versioned hold receipt bound to execution, row number, and fingerprint.
+
+The third branch does **not** include `STAGING_RECIPE_DISABLED`. The first two branches do not admit an originally created row merely because its staging work remains disabled.
+
+`server/services/canonical-import-recovery-worker.ts`, function `canonicalImportRecoveryClaimSql()`, includes staging-disabled items in its outer state filter, but its accounting join invokes the restrictive predicate first. The later outer condition cannot rescue rows already excluded by that join. Claim verification and renewal use the same predicate, so changing only the outer selector would not repair the entire authority path. Explicit replay also retains the accounting restriction; it is not a substitute for the repair.
+
+**Live corroboration, 14:35:57 UTC:** the current status endpoint returned 25 recent original rows, execution `9cd520f7-0d80-4265-985f-0fe6af0b7307`, rows 489–513. All have retained originals available and immutable `created` accounting. Twenty-two still have `STAGING_RECIPE_DISABLED`; three have canonical affiliation holds. Row 513 is a concrete staging-disabled reproduction coordinate. Several staging-disabled examples are business-only originals, so this is not solely a missing-contact-link problem.
+
+| Actual predicate probe | Admitted? |
+| --- | --- |
+| Created + staging disabled, no native hold receipt | No |
+| Matched-noop + staging disabled, no native hold receipt | No |
+| Created + staging disabled, even with matching native hold receipt | No |
+| Deferred + staging disabled | Yes |
+| Created + canonical affiliation hold + matching native hold receipt | Yes |
+| Created + canonical affiliation hold, no native hold receipt | No |
+
+The reported **2,353 total staging-disabled originals was not independently recounted** through production SQL. This audit confirms the exclusion class and 22 live examples, rather than assuming all 2,353 have the same accounting disposition or all are currently fulfillable.
+
+**Required correction within the existing recovery:** inventory this whole retained class, and establish a narrow original-evidence-backed admission rule for staging infrastructure failures after creation/match. A legacy staging failure need not possess a later canonical hold receipt; its original coordinates, retained raw payload, fingerprint and import provenance must be verified through the supported authority contract. Apply the same admission rule to selection and every claim/renewal check. Preserve immutable accounting and retained originals. Existing contacts/businesses must be reused safely, and every original mailbox must obtain its correct supported outcome before a current final fulfillment receipt is written. Preserve genuine conflicts and foreign verified assignments.
+
+Do not simply add every created row to recovery, fabricate hold evidence, rewrite accounting to deferred, mark rows completed in bulk, relax native guards, or enable the obsolete staging recipe.
+
+## 2. High priority: the exceptions view omits this unfinished population
+
+**Confirmed in the current reader and live output.**
+
+`server/services/canonical-enrichment-status.ts`, `importOutcomes(true)`, restricts its exceptions query to original accounting dispositions `deferred`, `failed`, or `rejected`. That excludes created/matched-noop originals even when current original-row fulfillment is still blocked.
+
+The live recent-outcomes reader shows created rows with staging-disabled and affiliation-held states, while the exceptions reader omits that disposition. Both readers stop at 25 rows and provide no complete, paginated, original-coordinate reconciliation ledger. Six import executions continue to say completed because that is historical import accounting, not proof of current final row fulfillment.
+
+The UI already contains caveats distinguishing accounting from fulfillment. Those caveats are useful, but they do not make the missing rows navigable or provide a complete backlog denominator.
+
+**Required correction:** use original-row fulfillment state and its current qualification receipt, together with immutable accounting, to expose every unfinished original. Supply per-upload totals, pagination/drill-down, original coordinates, current link outcome, current fulfillment outcome and reason. Distinguish business-only rows. Retain historical dispositions and display them as history. The same full ledger must reconcile the six uploads, rather than treating the old 713-exception list as the whole backlog.
+
+## 3. The five eligible contacts: live qualification confirmed, commits still pending
+
+The authenticated native system-link preview independently returned the following, all with `eligible=true`, empty reasons, no current decision and no projected business assignment:
+
+| Contact ID | Qualified business ID |
+| --- | ---: |
+| 494 | 76073 |
+| 1057 | 68387 |
+| 1074 | 62669 |
+| 4741 | 48120 |
+| 8964 | 38379 |
+
+The ordinary worker status at 14:34 UTC retained run `39b07209-0b9e-4308-8de5-78520bfc5d79`, cursor 138,558, backfill complete, current pass incomplete, last error null. Its cumulative counters were 179,337 scanned, 22 committed and 179,315 held. The change window remained `2026-10-14 23:22:29.253717+00`; the pass began `2026-10-15 13:18:13.083464+00`.
+
+All five IDs are behind that cursor. `server/services/contact-business-evidence-page.ts` now evaluates the bounded page and returns eligible relationships even when their evidence dates fall outside the change window. `server/services/contact-link-automation.ts` naturally starts another pass at zero after actual exhaustion, retaining the run and completed backfill. This supports waiting for ordinary rollover; it does not prove that a link has committed.
+
+**Acceptance:** observe the existing traversal revisit these IDs and reconcile the native writer's actual outcomes. A changed current preview may legitimately alter the result. If the worker passes their IDs without a commit or supported current rejection, investigate that specific handoff. Do not reset the full scan, widen the saved window, edit timestamps or manually link them merely to generate a successful cycle.
+
+Counting a third assignment-writing cycle is not an explanation or repair for the remaining population. Actual coordinate and relationship outcomes matter.
+
+## 4. Broader contact recovery: scanning and identity supply are separate
+
+The current repository report records an earlier bounded qualification of all 153,906 then-unresolved active production contacts: five eligible, 9,834 with candidates denied by current evidence, and 144,067 without an independent business candidate. **Those distribution totals are attributed to the repository report, not a fresh full-population rerun by this audit.** All five eligible cases were independently rechecked above.
+
+The current automatic path is broader than a Sunbiz-only matcher. `contact-business-evidence-page.ts` reads canonical businesses and source relationships; `contact-business-materialization.ts` can resolve or create a business from supported retained source observations before invoking the audited relationship writer. It is therefore incorrect to describe the current linker as universally Sunbiz-only or say that it has no automatic materializer.
+
+However, materialization requires structured `contact_source_events.metadata.businessEvidence` from supported categories/types, plus corroboration across name, location, domain or phone. A contact's populated company and website fields alone do not make that retained source proof exist. The worker cannot manufacture it by scanning again. The existing exact Sunbiz source-recovery service is explicitly operator-invoked and bounded; the Business screen still instructs an operator to materialize, rerun a separate preview/apply process, and start a fresh census.
+
+**Required continuation:** classify the unresolved inventory by the actual missing stage: retained source relationship recoverable automatically, supported source organization absent from canonical records, conflicting identity, insufficient affiliation, or genuinely unavailable evidence. Recover existing independently supported evidence before commissioning new discovery. Connect supported recovery to the ordinary canonical writer and resumable outcome tracking; keep genuinely contradictory cases held. Do not make the user operate source-recovery, census and linking loops for routine records. Do not relabel all no-candidate contacts invalid or infer that they need paid provider calls.
+
+The two phone-format cases belong here as affiliation holds after organization normalization: matching a business's US phone representation is not proof that every mailbox belongs to that business. The current organization policy and report support that distinction; this audit did not independently recertify both original-row hold receipts.
+
+## 5. CRM counts and navigation still describe different populations
+
+The live assignment reader reported **157,449** contacts, 3,540 verified, 153,909 unresolved. The canonical contact reader reported **157,446** active production contacts. `contact-link-population.ts` explains why: its population includes every non-null record class except test/demo/synthetic, yet calls the total `totalActiveProduction`. The canonical reader requires `record_class='production'`. The three-record difference is real; the quoted explanation that these are three unclassified intake records was not independently broken down by record class in this audit.
+
+The pasted status's strict-production figures—157,446 / 3,540 / 153,906—are consistent with that explanation, but the current assignment API is not itself a strict-production-only verified denominator. Its scope and labels should be made explicit.
+
+The Business screen also displays a completed historical census of **154,418** contacts with **32** already verified, beside the current automatic program. This is a separate frozen census, not the current verified population. Multiple source-recovery cards were duplicated for identical candidate/contact/source coordinates. Manual company confirmation, human review, Sunbiz bootstrap, registry backfill and automatic linking share the page without a single complete original-upload outcome view. This directly contributes to the navigation confusion described by the user.
+
+**Required correction through the existing UI work:** use explicit current-vs-historical scope, strict-production versus other intake classes, distinct contacts versus cumulative attempts, and upload rows versus assignments versus final original-row receipts. Give one normal route from an upload to its businesses, contacts, unresolved reason and current processing outcome. Keep administrative/historical tools available where needed without presenting them as mandatory routine steps.
+
+## Reconciliation limits on the pasted table
+
+The full per-file table (2,914 October workbook rows plus 1,472 September rows; 1,320 reported final receipts; 3,575 rows with at least one verified link) was not independently recounted. The authenticated status reader exposes only recent/exception samples and historical execution totals. A contact link, a business-only completion, historical created accounting and a current fingerprint-bound final receipt are different measures.
+
+Do not add the old 713 exceptions to the 2,353 staging-disabled figure as though they are guaranteed disjoint current buckets. Two originals have reportedly recovered, and observation times differ. Reconcile all **4,386 original coordinates** against a common current definition and observation window, preserving the difference between rows and distinct contacts. The two recovered originals close their specific cases; they do not certify either workbook set or the broader contact population.
+
+## Minimal repair and verification scope
+
+Keep the backend work within the existing #2083/#2085 continuation: repair and test original staging-failure admission and claim renewal together; reconcile all six retained uploads; finish supported automatic source/relationship recovery; verify the five known eligible outcomes during ordinary traversal. Use the existing UI workstream for the readers, denominator labels and navigation. Coordinate provider/preparation handoffs with their existing owner only where the recovered records require it. This does not call for another pipeline, workbook upload, full-backfill reset, blanket validation, or a new stack of independent tasks.
+
+Before publication, reproduce the actual created + staging-disabled condition in disposable PostgreSQL with original raw evidence and immutable accounting. Exercise business-only originals, existing verified links, multiple mailboxes, replay, payload mismatch, lease/owner loss and protected conflicting assignments. Reuse current test infrastructure. The six predicate probes in this audit are diagnostic evidence, not a replacement for that integration verification.
+
+After the correction is published, verify the served files, then observe ordinary workers create current receipts or supported holds for the previously excluded original coordinates. Report per-file counts and actual link/receipt deltas. Preserve run identity, retained coordinates/fingerprints, completed backfill and outbound pause. Provider dispatch, preparation and enrollment need their own actual downstream outcomes; this audit does not certify those services fixed.
+
+## Evidence references
+
+Repository at the pinned current revision:
+
+- `server/services/canonical-import-recovery-contract.ts`
+- `server/services/canonical-import-recovery-worker.ts`
+- `server/services/canonical-provider-import.ts`
+- `server/services/canonical-enrichment-status.ts`
+- `server/services/contact-business-evidence-page.ts`
+- `server/services/contact-link-automation.ts`
+- `server/services/contact-business-materialization.ts`
+- `server/services/contact-business-materialization-policy.ts`
+- `server/services/contact-link-source-recovery.ts`
+- `server/services/contact-link-population.ts`
+- `server/routes/admin.ts` and `server/routes/contact-link-coverage.ts`
+- `client/src/pages/dashboard/LeadOps/ContactLinkCoveragePanel.tsx`
+- `client/src/pages/dashboard/LeadOps/SystemContactBusinessLinksPanel.tsx`
+- `docs/certification/intake-incremental-reconciliation-2026-10-15.md`, including its current-facts qualification section. That report's final old-build observation predates this audit's live served-code check.
+
+Authenticated production read surfaces checked: `/api/health`, `/api/canonical-enrichment/status`, `/api/admin/contact-link-coverage/automation`, `/api/admin/contact-business-system-links/preview`, and the rendered canonical-enrichment and Lead Ops screens.
+
+Local working evidence includes the six-case predicate probe and a minimized browser-observation record. No private mailbox lists or credentials are included in this report.
