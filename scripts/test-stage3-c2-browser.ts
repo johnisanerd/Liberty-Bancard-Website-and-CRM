@@ -228,6 +228,7 @@ try{
     receipts.push({role,control:"Exact linked Log Only actual lost-response/readback",outcome:"passed",recordId:contactId,
       persistedDelta:1,taskDelta:0,enrollmentDelta:0,stage:"unchanged"});
     await browser.navigate("/dashboard/tasks-appointments");await browser.waitFor(/Tasks/);await wait();
+    await waitForDom("document.querySelector('[data-testid=\"button-ai-generate-tasks\"]') instanceof HTMLButtonElement && document.querySelector('[data-testid=\"button-new-task\"]') instanceof HTMLButtonElement");
     assert.equal(await browser.evaluate("document.querySelector('[data-testid=\"button-ai-generate-tasks\"]').disabled"),true);
     const taskTitle=`C2 compiled Work ${role} ${randomUUID()}`;
     const fillTask=async()=>{
