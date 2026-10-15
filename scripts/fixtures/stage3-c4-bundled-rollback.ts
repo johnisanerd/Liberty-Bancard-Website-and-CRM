@@ -45,24 +45,31 @@ export async function runC4BundledRollback(h:Awaited<ReturnType<typeof stage3BHt
     const nonce=randomBytes(32).toString("hex");
     const child=spawnCertificationTsx(wrapper,[bundle],{cwd:root,stdio:"pipe",sourceEnv:{
       ...process.env,
-      PORT:String(port),BASE_URL:base,NODE_ENV:"test",BACKGROUND_JOB_PROFILE:"off",
+      PORT:String(port),BASE_URL:base,NODE_ENV:"test",
       CERTIFICATION_HTTP_HOST:"127.0.0.1",CERTIFICATION_HTTP_NONCE:nonce,
     }});
     // Retain no raw server logs: constructors/auth errors can contain secrets.
     let exited=false,exitCode:number|null=null;
     const signals=new Set<string>();
     child.on("exit",code=>{exited=true;exitCode=code;});
-    child.stdout?.on("data",()=>{});
-    child.stderr?.on("data",chunk=>{
+    const observeSafeDiagnostics=(chunk:Buffer)=>{
       // Extract only error classes/codes and fixed categories. Never retain
       // constructor messages, environment values or raw stdout/stderr.
       const text=String(chunk);
-      for(const signal of text.match(/\b(?:[A-Z][A-Za-z]+Error|ERR_[A-Z_]+)\b/g)??[])signals.add(signal);
+      for(const signal of text.match(/\b(?:Error|[A-Z][A-Za-z]+Error|ERR_[A-Z_]+)\b/g)??[])signals.add(signal);
+      for(const match of text.matchAll(/\/dist\/index\.cjs:(\d+):(\d+)/g))
+        signals.add(`bundle-line:${match[1]}:${match[2]}`);
+      for(const match of text.matchAll(/\/scripts\/(?:fixtures\/)?([\w-]+\.ts):(\d+):(\d+)/g))
+        signals.add(`script-line:${match[1]}:${match[2]}:${match[3]}`);
+      if(text.includes("[FATAL] Missing required environment variables"))signals.add("required-environment-missing");
+      if(text.includes("[Process] Uncaught exception"))signals.add("uncaught-startup");
       if(/requires.*NODE_ENV.*test|requires test deny mode/i.test(text))signals.add("test-runtime-required");
       if(/disposable|test.infrastructure/i.test(text))signals.add("infrastructure-guard");
       if(/network denied|socket denied/i.test(text))signals.add("network-denial");
       if(/import\.meta/.test(text))signals.add("module-format");
-    });
+    };
+    child.stdout?.on("data",observeSafeDiagnostics);
+    child.stderr?.on("data",observeSafeDiagnostics);
     try{
       let health:any;
       for(let attempt=0;attempt<120&&!exited;attempt++){
