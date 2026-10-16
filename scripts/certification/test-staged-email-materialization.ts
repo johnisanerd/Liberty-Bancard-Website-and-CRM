@@ -131,6 +131,8 @@ try {
   const gmailRun = await run();
   console.log("gmail run", JSON.stringify(gmailRun), JSON.stringify(await outcome(gmailCandidate)));
   const gmailContact = await contactByEmail(gmail);
+  console.log("gmail contact", JSON.stringify({ id: gmailContact?.id, b: gmailContact?.business_id, want: unmapped.id,
+    ev: await q(`SELECT domain_basis FROM contact_business_first_party_link_evidence WHERE contact_id=$1`, [gmailContact?.id]) }));
   check(gmailContact && Number(gmailContact.business_id) === unmapped.id
     && (await one(`SELECT domain_basis FROM contact_business_first_party_link_evidence WHERE contact_id=$1`,
       [gmailContact.id])).domain_basis === "provider_mailbox",
