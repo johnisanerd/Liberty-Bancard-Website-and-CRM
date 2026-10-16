@@ -1023,5 +1023,5 @@ improve the count. Rows, verified contacts and receipts are separate measures an
 ### Population
 
 Contacts with an assigned business: 4,853 of 157,929; current verified decisions: 4,851 (previously 3,547).
-Verified decisions and assigned contacts differ by two for reasons not individually traced in this read.
+The difference of two is contacts 158925 and 159063, both `test`-class contacts created in July with a legacy business ID and no link decision; they are not production relationships and no verified decision points at a different business than its contact.
 Ordinary pass 2 (changed-window) was at contact ID 141,991 with `lastError` null when last read.
