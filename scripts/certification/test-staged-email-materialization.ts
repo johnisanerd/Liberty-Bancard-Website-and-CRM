@@ -45,10 +45,10 @@ async function stage(businessId: number, email: string, opts: {
     (generation_id,field,subject_type,business_id,domain,source,attribution_scope,person_name_evidence,
      person_title_evidence,disposition,confidence,envelope_ciphertext,envelope_nonce,envelope_tag,
      envelope_key_version,normalized_value_hash,masked_value)
-    VALUES($1,'email',$13,$2,$3,$4,$5,$6,$7,'staged',80,$8,$9,$10,1,$11,$12) RETURNING id`,
-    [generationId, (opts.scope ?? "role") === "named" ? null : businessId, domain, opts.source ?? "first_party_contact_page", opts.scope ?? "role",
+    VALUES($1,'email','business',$2,$3,$4,$5,$6,$7,'staged',80,$8,$9,$10,1,$11,$12) RETURNING id`,
+    [generationId, businessId, domain, opts.source ?? "first_party_contact_page", opts.scope ?? "role",
       opts.person ?? null, opts.title ?? null, sealed.ciphertext, sealed.nonce, sealed.tag,
-      sealed.normalizedValueHash, sealed.maskedValue, (opts.scope ?? "role") === "named" ? "person" : "business"]);
+      sealed.normalizedValueHash, sealed.maskedValue]);
   return String(r.id);
 }
 const run = (limit = 500, extra: object = {}) => runStagedEmailMaterialization({ limit, actorId, ...extra });
@@ -118,12 +118,11 @@ try {
     && (await decisions(Number(roleContact.id))).length === 1,
     "Lost outcome row: rerun converges to already_linked without a second contact/decision");
 
-  // ── Person-subject (named) evidence has no business identity; never materialized here ──
+  // ── Named evidence is person-subject by DB contract: no business identity to attach ──
   const named = await business();
-  const namedEmail = `maria.lopez@${named.domain}`;
-  await stage(named.id, namedEmail, { scope: "named", person: "Maria Lopez", title: "Owner" });
-  await run();
-  check(!(await contactByEmail(namedEmail)), "Named person-subject evidence (no business_id by DB contract) is not materialized or guessed onto a business");
+  await assert.rejects(stage(named.id, `maria.lopez@${named.domain}`, { scope: "named", person: "Maria Lopez" }),
+    /free_discovery_candidates_subject_type_consistency_chk/);
+  checks++;
 
   // ── Provider mailbox published on the business's own page; unmapped vertical ─
   const unmapped = await business({ vertical: null });
