@@ -37,7 +37,7 @@ async function business(opts: { domain?: string | null; vertical?: string | null
   return { id: Number(b.id), name: String(b.canonical_name), domain: domain as string | null };
 }
 async function stage(businessId: number, email: string, opts: {
-  scope?: "role" | "named"; source?: string; domain?: string; person?: string; title?: string;
+  scope?: "role" | "named"; source?: string; domain?: string; person?: string; title?: string; generation?: string;
 } = {}) {
   const sealed = seal("email", email);
   const domain = opts.domain ?? email.split("@")[1] ?? "unknown.net";
@@ -46,7 +46,7 @@ async function stage(businessId: number, email: string, opts: {
      person_title_evidence,disposition,confidence,envelope_ciphertext,envelope_nonce,envelope_tag,
      envelope_key_version,normalized_value_hash,masked_value)
     VALUES($1,'email','business',$2,$3,$4,$5,$6,$7,'staged',80,$8,$9,$10,1,$11,$12) RETURNING id`,
-    [generationId, businessId, domain, opts.source ?? "first_party_contact_page", opts.scope ?? "role",
+    [opts.generation ?? generationId, businessId, domain, opts.source ?? "first_party_contact_page", opts.scope ?? "role",
       opts.person ?? null, opts.title ?? null, sealed.ciphertext, sealed.nonce, sealed.tag,
       sealed.normalizedValueHash, sealed.maskedValue]);
   return String(r.id);
@@ -175,7 +175,9 @@ try {
   const rivalA = await business({ domain: null });
   const rivalB = await business({ domain: null });
   await stage(rivalA.id, rivalEmail, { domain: rivalEmail.split("@")[1] });
-  await stage(rivalB.id, rivalEmail, { domain: rivalEmail.split("@")[1] });
+  const secondGeneration = (await one(`INSERT INTO free_discovery_generations(run_key,actor_id,reason)
+    VALUES($1,$2,'rival evidence generation') RETURNING id`, [`${prefix}_rival`, actorId])).id;
+  await stage(rivalB.id, rivalEmail, { domain: rivalEmail.split("@")[1], generation: secondGeneration });
 
   const contradictions = await run();
   const held = async (id: string, code: string) => {
