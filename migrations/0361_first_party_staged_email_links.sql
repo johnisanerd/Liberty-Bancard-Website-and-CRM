@@ -230,6 +230,10 @@ BEGIN
              AND (
                (fp_evidence.domain_basis='business_domain'
                 AND fp_evidence.address_domain<>''
+                AND fp_evidence.address_domain NOT IN
+                  ('gmail.com','googlemail.com','yahoo.com','yahoo.co.uk','outlook.com','hotmail.com',
+                   'live.com','aol.com','icloud.com','me.com','msn.com','proton.me','protonmail.com',
+                   'mail.com','comcast.net','att.net','bellsouth.net','sbcglobal.net','verizon.net','cox.net')
                 AND (fp_evidence.address_domain IN (dom.candidate_domain,dom.business_domain)
                      OR (dom.candidate_domain IS NOT NULL
                          AND fp_evidence.address_domain LIKE '%.'||dom.candidate_domain)

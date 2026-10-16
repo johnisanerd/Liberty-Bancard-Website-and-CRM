@@ -85,7 +85,10 @@ export function attributeStagedAddress(
   if (PLACEHOLDER_DOMAINS.has(domain) || PLACEHOLDER_LOCALS.has(local)) {
     return { ok: false, reason: "PLACEHOLDER_ADDRESS" };
   }
-  const own = [stripWww(candidateDomain), stripWww(businessDomain)].filter(Boolean);
+  // A mailbox-provider domain is never "the business's own site", even if a
+  // crawler recorded it as the candidate domain.
+  const own = [stripWww(candidateDomain), stripWww(businessDomain)]
+    .filter(d => d && !MAILBOX_PROVIDER_DOMAINS.has(d));
   if (own.some(d => domain === d || domain.endsWith(`.${d}`))) {
     return { ok: true, domain, basis: "business_domain" };
   }
