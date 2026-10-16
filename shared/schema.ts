@@ -1203,6 +1203,28 @@ export const validationIntents = pgTable("validation_intents", {
   index("validation_intents_claim_schema_idx").on(table.state, table.nextAttemptAt, table.leaseExpiresAt),
 ]);
 
+/** Free (no provider spend) DNS/syntax/disposable result per sending domain. */
+export const emailDomainChecks = pgTable("email_domain_checks", {
+  domain: text("domain").primaryKey(),
+  status: text("status").notNull(),
+  mxHosts: integer("mx_host_count").notNull().default(0),
+  detail: text("detail"),
+  checkedAt: timestamp("checked_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Free prefilter outcome saved per contact address; keyed to the address hash
+ * so an email change invalidates it. Never authorizes sending; it only decides
+ * whether ZeroBounce credits should be spent and in what order. */
+export const contactEmailPrefilter = pgTable("contact_email_prefilter", {
+  contactId: integer("contact_id").primaryKey().references(() => contacts.id, { onDelete: "cascade" }),
+  emailTokenHash: text("email_token_hash").notNull(),
+  domain: text("domain"),
+  status: text("status").notNull(),
+  checkedAt: timestamp("checked_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("contact_email_prefilter_status_idx").on(table.status),
+]);
+
 // CRO-03C governed live execution authority is deliberately separate from the
 // immutable CRO-03B denied-generation records.
 export type Cro03cBillingSemantics = "not_billable" | "per_unit_no_result_free" | "per_unit_no_result_billable";

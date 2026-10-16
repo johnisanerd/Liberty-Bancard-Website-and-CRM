@@ -465,7 +465,7 @@ export async function runPreCohortClassificationBridge(
   skippedCount: number;
   costMicros: number;
 }> {
-  const maxBusinesses = Math.max(1, Math.min(100, Math.floor(Number(input.maxBusinesses ?? 25))));
+  const maxBusinesses = Math.max(1, Math.min(500, Math.floor(Number(input.maxBusinesses ?? 25))));
   if (!Number.isFinite(maxBusinesses) || !Number.isInteger(input.policyVersion) || input.policyVersion < 1) {
     throw new Error("SFP_CLASSIFICATION_INVALID_CONFIG");
   }

@@ -11,7 +11,12 @@ import { getSfpProviderReadiness } from "./sfp-provider-operations";
 import { resolveGeographyForBusiness } from "./sfp-geography-resolver";
 
 const rows = (r: any): any[] => r?.rows ?? r ?? [];
+/** Per-tick follow-up work (geography re-checks) stays small. */
 const RUN_LIMIT = 25;
+/** Free, provider-less watermark window per bridge run. */
+const WINDOW_LIMIT = 500;
+/** OpenAI escalations per tick (paid). */
+const ESCALATION_LIMIT = 200;
 
 export async function getSfpFreeClassificationContinuation(programId: string) {
   return rows(await db.execute(sql`
@@ -102,11 +107,30 @@ async function ensureAutomaticSfpPass(program: any): Promise<void> {
     Number(existing.policy_version) !== Number(program.policy_version) ||
     Number(existing.taxonomy_version) !== 2 ||
     Number(existing.classifier_version) !== CLASSIFIER_VERSION;
-  if (!versionChanged && latest <= Number(existing.stop_business_id)) return;
+  // The watermark only moves forward, so a canonical business below it that
+  // never produced evidence or a routed item (for example one that became
+  // canonical after the cursor passed it) would otherwise never be visited.
+  // Detect that gap and rewind: already-classified businesses are skipped by
+  // the window query, so a rewind only does the missing work.
+  const gap = !versionChanged && latest <= Number(existing.stop_business_id)
+    ? rows(await db.execute(sql`
+        SELECT 1 AS gap FROM businesses b
+         WHERE b.record_class='canonical' AND b.id<=${Number(existing.stop_business_id)}
+           AND NOT EXISTS (SELECT 1 FROM sfp_classification_evidence e
+             WHERE e.business_id=b.id AND e.policy_version=${Number(program.policy_version)}
+               AND e.taxonomy_version=2 AND e.classifier_version=${CLASSIFIER_VERSION})
+           AND NOT EXISTS (SELECT 1 FROM sfp_classification_items i
+             JOIN sfp_classification_runs r ON r.id=i.run_id
+             WHERE i.business_id=b.id AND r.program_id=${programId}::uuid
+               AND r.policy_version=${Number(program.policy_version)})
+         LIMIT 1
+      `))[0]
+    : null;
+  if (!versionChanged && !gap && latest <= Number(existing.stop_business_id)) return;
   await db.execute(sql`
     UPDATE sfp_free_classification_continuations
        SET state='running',
-           high_water_business_id=${versionChanged ? 0 : Number(existing.stop_business_id)},
+           high_water_business_id=${versionChanged || gap ? 0 : Number(existing.stop_business_id)},
            stop_business_id=${latest},
            policy_version=${Number(program.policy_version)},
            taxonomy_version=2,
@@ -144,7 +168,7 @@ async function processPendingVerticalEscalations(program: any): Promise<{ escala
                      OR done.reason_codes @> '["OPENAI_ESCALATION_NOT_CONFIGURED"]'::jsonb)
        )
      ORDER BY e.business_id,e.created_at DESC,e.evidence_hash ASC
-     LIMIT ${RUN_LIMIT}
+     LIMIT ${ESCALATION_LIMIT}
   `));
   const businessIds = pending.map((row: any) => Number(row.business_id));
   if (businessIds.length === 0) return { escalated: 0, costMicros: 0 };
@@ -157,7 +181,7 @@ async function processPendingVerticalEscalations(program: any): Promise<{ escala
     programId: String(program.id),
     idempotencyKey: `sfp-free-continuation:${String(program.id)}:paid-escalation:${Number(priorRuns?.run_count ?? 0) + 1}:${businessIds.join(",")}`,
     actorId: "system:sfp-free-continuation",
-    maxBusinesses: RUN_LIMIT,
+    maxBusinesses: ESCALATION_LIMIT,
     targetIds: (Array.isArray(program.vertical_ids) ? program.vertical_ids : []).map(String),
     policyVersion: Number(program.policy_version),
     taxonomyVersion: 2,
@@ -266,7 +290,8 @@ async function processResolvedGeographyFollowups(program: any): Promise<number> 
  * only after its idempotent evidence run finishes. A crash replays the same
  * window after lease expiry; current evidence avoids reclassifying completed
  * target/non-target records. */
-export async function processSfpFreeClassificationTick(programIdFilter?: string): Promise<{
+export async function processSfpFreeClassificationTick(programIdFilter?: string,
+  options: { skipSideWork?: boolean } = {}): Promise<{
   claimed: boolean; programId?: string; scanned?: number; processed?: number; target?: number; state?: string;
   escalated?: number; escalationCostMicros?: number;
 }> {
@@ -277,10 +302,13 @@ export async function processSfpFreeClassificationTick(programIdFilter?: string)
     : null;
   const followupsEnabled = Boolean(automaticProgram && automaticContinuation &&
     !["paused", "idle"].includes(String(automaticContinuation.state)));
-  const geographyFollowups = followupsEnabled
+  // Repeat drain iterations in one queue job skip follow-ups/escalation so the
+  // paid OpenAI step runs at most once per scheduled tick.
+  const runSideWork = followupsEnabled && !options.skipSideWork;
+  const geographyFollowups = runSideWork
     ? await processResolvedGeographyFollowups(automaticProgram)
     : 0;
-  const escalation = followupsEnabled
+  const escalation = runSideWork
     ? await processPendingVerticalEscalations(automaticProgram)
     : { escalated: 0, costMicros: 0 };
   const claimed = rows(await db.execute(sql`
@@ -312,7 +340,12 @@ export async function processSfpFreeClassificationTick(programIdFilter?: string)
     const window = rows(await db.execute(sql`
       SELECT id FROM businesses WHERE record_class='canonical'
         AND id>${Number(claimed.high_water_business_id)} AND id<=${Number(claimed.stop_business_id)}
-       ORDER BY id LIMIT ${RUN_LIMIT}
+        AND NOT EXISTS (
+          SELECT 1 FROM sfp_classification_evidence e
+           WHERE e.business_id=businesses.id AND e.policy_version=${Number(claimed.policy_version)}
+             AND e.taxonomy_version=2 AND e.classifier_version=${CLASSIFIER_VERSION}
+        )
+       ORDER BY id LIMIT ${WINDOW_LIMIT}
     `));
     if (window.length === 0) {
       await db.execute(sql`
@@ -337,9 +370,9 @@ export async function processSfpFreeClassificationTick(programIdFilter?: string)
         Number(stillCurrent.taxonomy_version) !== 2) throw new Error("SFP_FREE_CONTINUATION_POLICY_CHANGED");
     const bridgeRun = await runPreCohortClassificationBridge({
       programId,
-      idempotencyKey: `sfp-free-continuation:${programId}:policy:${Number(claimed.policy_version)}:window:${Number(claimed.high_water_business_id)}-${windowIds[windowIds.length - 1]}`,
+      idempotencyKey: `sfp-free-continuation:${programId}:policy:${Number(claimed.policy_version)}:pass:${Math.floor(new Date(claimed.started_at).getTime() / 1000)}:window:${Number(claimed.high_water_business_id)}-${windowIds[windowIds.length - 1]}`,
       actorId: "system:sfp-free-continuation",
-      maxBusinesses: RUN_LIMIT,
+      maxBusinesses: WINDOW_LIMIT,
       targetIds: (Array.isArray(stillCurrent.vertical_ids) ? stillCurrent.vertical_ids : []).map(String),
       policyVersion: Number(claimed.policy_version),
       taxonomyVersion: 2,

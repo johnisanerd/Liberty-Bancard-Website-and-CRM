@@ -40,7 +40,11 @@ const rows = (r: any): any[] => r?.rows ?? r ?? [];
 // at lead-ops.ts:3344 / the executeSfpSerperDiscovery internal cap of 25).
 // This is NOT the tick's overall throughput — see the drain loops below,
 // which call this repeatedly until a real stop condition fires.
-const SERPER_BATCH_PER_CALL = 10;
+const SERPER_BATCH_PER_CALL = 25;
+// Outscraper/Apollo person+identity lookups stay at the prior per-call size.
+const PERSON_IDENTITY_BATCH_PER_CALL = 10;
+const VALIDATION_INTENTS_PER_TICK = 500;
+const VALIDATION_PREFILTER_PER_TICK = 1000;
 const VALIDATION_BATCH_PER_CALL = 25; // SFP_VALIDATION_MAX enforced again inside executeSfpValidation
 
 // Wall-clock ceiling per tick invocation. Both continuous ticks repeat every
@@ -148,7 +152,7 @@ export async function processSfpContinuousDiscoveryTick(): Promise<SfpContinuous
       waterfallCalls++;
       const result=await executeSfpPaidPersonAndIdentityDiscovery({programId:program.id,
         idempotencyKey:await key("person-identity"),actorId:"system:sfp-continuous-discovery",
-        maxBusinesses:SERPER_BATCH_PER_CALL,includeSerperDiscovery:false,enabledProviders});
+        maxBusinesses:PERSON_IDENTITY_BATCH_PER_CALL,includeSerperDiscovery:false,enabledProviders});
       waterfallProcessed+=result.processed;waterfallSucceeded+=result.succeeded;
       waterfallFailed+=result.failed;providerRequests+=result.providerRequests ?? 0;
       if(!result.processed || !result.providerRequests) break;
@@ -183,13 +187,23 @@ export interface SfpContinuousValidationTickResult {
 /** Recover the existing shared queue for current canonically prepared targets.
  * Queued work is not a completed validation or a provider request. */
 export async function processSfpContinuousValidationTick(): Promise<SfpContinuousValidationTickResult> {
+  // Free (no spend) DNS/syntax/disposable prefilter first, so the paid queue
+  // below never selects dead domains and ranks MX-less domains last.
+  try {
+    const {runEmailPrefilterBatch}=await import("../email-prefilter");
+    const prefilter=await runEmailPrefilterBatch(VALIDATION_PREFILTER_PER_TICK);
+    await auditTick("sfp_continuous_validation_tick","email_prefilter_batch",prefilter);
+  } catch(error) {
+    await auditTick("sfp_continuous_validation_tick","email_prefilter_failed",
+      {error:String((error as Error).message).slice(0,300)});
+  }
   if (!(await isSfpValidationPromotionEnabled())) {
     return {ran:false,reason:"validation_promotion_disabled"};
   }
   // Only durable, currently prepared recipients enter the shared queue. Frozen
   // cohorts are historical provenance, never automatic validation admission.
   const {recoverValidationIntents}=await import("../provider-readiness-control");
-  const queued=await recoverValidationIntents(100);
+  const queued=await recoverValidationIntents(VALIDATION_INTENTS_PER_TICK);
   await auditTick("sfp_continuous_validation_tick","canonical_selected_queue_recovered",{queued});
   return {ran:queued>0,calls:0,addressesValidated:0,providerRequests:0,validCount:0,
     cohortRunIds:[],stopReason:queued ? "canonical_selected_validation_queued" : "no_current_selected_validation"};

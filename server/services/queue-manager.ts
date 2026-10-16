@@ -2670,8 +2670,16 @@ export class QueueManager {
         }
         case QUEUE_NAMES.SFP_FREE_CLASSIFICATION: {
           const { processSfpFreeClassificationTick } = await import("./cro03/sfp-free-classification-continuation");
-          const result = await processSfpFreeClassificationTick();
+          // Provider-free windows drain back-to-back inside a bounded budget so
+          // a large unclassified backlog clears in hours; the paid escalation
+          // runs once, in the first iteration only.
+          const drainDeadline = Date.now() + 6 * 60 * 1000;
+          let result = await processSfpFreeClassificationTick();
           if (result.claimed) console.log(`[SfpFreeClassification] ${JSON.stringify(result)}`);
+          for (let i = 0; i < 60 && result.claimed && result.state === "running" && Date.now() < drainDeadline; i++) {
+            result = await processSfpFreeClassificationTick(undefined, { skipSideWork: true });
+            if (result.claimed) console.log(`[SfpFreeClassification] ${JSON.stringify(result)}`);
+          }
           break;
         }
         case QUEUE_NAMES.CANONICAL_IMPORT_RECOVERY: {

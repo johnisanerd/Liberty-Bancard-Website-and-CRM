@@ -219,18 +219,29 @@ export async function enqueueCurrentValidationIntent(contactId: number): Promise
 /** Queue-owned recovery: replay committed pending intents after a producer,
  * Redis, or process outage. The intent itself is the durable source of truth. */
 export async function recoverValidationIntents(limit = 100): Promise<number> {
+  // Credits go to the likeliest-deliverable, likeliest-to-convert addresses
+  // first: never dead/bad/disposable domains or known bounces, MX-less (A-only)
+  // domains last, provider-sourced (Outscraper/Serper-found) contacts first.
   const rows = await db.execute(sql`
-    SELECT id FROM validation_intents
-     WHERE state = 'pending'
-       AND next_attempt_at <= NOW()
+    SELECT vi.id FROM validation_intents vi
+      JOIN contacts vc ON vc.id=vi.contact_id
+      LEFT JOIN contact_email_prefilter pf
+        ON pf.contact_id=vi.contact_id AND pf.email_token_hash=vi.normalized_email_token_hash
+     WHERE vi.state = 'pending'
+       AND vi.next_attempt_at <= NOW()
+       AND COALESCE(pf.status,'unchecked') NOT IN ('dead_domain','bad_syntax','disposable')
+       AND COALESCE(vc.bounce_status,'none')='none' AND vc.bounced_at IS NULL
+       AND vc.contact_bounced_at IS NULL AND vc.bounce_date IS NULL
        AND EXISTS (SELECT 1 FROM cr04_enrollment_intents prepared
          JOIN sfp_programs p ON p.id=prepared.program_id
          JOIN contacts c ON c.id=prepared.contact_id AND c.business_id=prepared.business_id
-         WHERE prepared.contact_id=validation_intents.contact_id
-           AND prepared.normalized_email_hash=validation_intents.normalized_email_token_hash
+         WHERE prepared.contact_id=vi.contact_id
+           AND prepared.normalized_email_hash=vi.normalized_email_token_hash
            AND prepared.preparation_state IN ('pending_validation','ready_held')
            AND p.is_active AND c.archived_at IS NULL)
-     ORDER BY created_at
+     ORDER BY COALESCE(pf.status='a_only',FALSE) ASC,
+              (CASE WHEN vc.primary_source_type IN ('outscraper','serper','first_party_contact_page','contact_page') THEN 0 ELSE 1 END) ASC,
+              vi.created_at
      LIMIT ${limit}
   `);
   let enqueued = 0;
@@ -376,6 +387,21 @@ export async function processValidationIntent(
       await db.execute(sql`
         UPDATE validation_intents
            SET state = 'blocked', terminal_code = 'dbpr_lineage_excluded',
+               lease_expires_at = NULL, claim_token = NULL, completed_at = NOW(), updated_at = NOW()
+         WHERE id = ${intentId}::uuid AND claim_token = ${claimToken}::uuid
+      `);
+      return "failed";
+    }
+  }
+  // Free prefilter: dead/malformed/disposable domains and known bounces never
+  // spend a ZeroBounce credit.
+  {
+    const { emailPrefilterSpendBlock } = await import("./email-prefilter");
+    const blocked = await emailPrefilterSpendBlock(Number(contact.id), String(contact.email));
+    if (blocked) {
+      await db.execute(sql`
+        UPDATE validation_intents
+           SET state = 'blocked', terminal_code = ${blocked},
                lease_expires_at = NULL, claim_token = NULL, completed_at = NOW(), updated_at = NOW()
          WHERE id = ${intentId}::uuid AND claim_token = ${claimToken}::uuid
       `);
