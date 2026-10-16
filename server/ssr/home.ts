@@ -1,3 +1,4 @@
+import { FSR_HOME_LINK_TEXT } from "@shared/free-statement-review-content";
 import { ssrHtmlShell } from "../ssrShared";
 
 export function getHomeHtml(): string {
@@ -160,6 +161,7 @@ export function getHomeHtml(): string {
         <div style="text-align:center;margin-top:2rem;">
           <a href="/upload-statement" class="ssr-btn-dark">📤 Start Free Statement Review</a>
         </div>
+        <p style="text-align:center;margin-top:1rem;"><a href="/upload-statement">${FSR_HOME_LINK_TEXT}</a></p>
       </div>
     </section>
 

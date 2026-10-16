@@ -10,6 +10,11 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/Footer";
+import {
+  FreeStatementReviewIntro,
+  FreeStatementReviewSubmitGuidance,
+  FreeStatementReviewDetails,
+} from "@/components/FreeStatementReviewExplainer";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -601,6 +606,9 @@ export default function UploadStatement() {
           </div>
         </section>
 
+        <FreeStatementReviewIntro />
+        <FreeStatementReviewSubmitGuidance />
+
         {/* ═══════════════════════════════════════════════════
             MAIN FORM
         ═══════════════════════════════════════════════════ */}
@@ -1057,6 +1065,8 @@ export default function UploadStatement() {
             )}
           </div>
         </section>
+
+        <FreeStatementReviewDetails />
 
         {/* ═══════════════════════════════════════════════════
             WHAT HAPPENS NEXT — 3 steps

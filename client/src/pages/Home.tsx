@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Link } from "wouter";
+import { FSR_HOME_LINK_TEXT } from "@shared/free-statement-review-content";
 import { CALENDAR_URL, PHONE_TEL, PHONE_NUMBER } from "@/lib/constants";
 import { trackBookingCtaClick, trackStatementUploadCtaClick } from "@/lib/tracking";
 import { trackPhoneCallClick } from "@/lib/analytics";
@@ -623,6 +624,16 @@ export default function Home() {
                 </div>
               ))}
             </div>
+
+            <p className="mt-8 text-center text-sm" data-testid="link-how-it-works-what-we-check-wrapper">
+              <Link
+                href="/upload-statement"
+                className="text-primary underline underline-offset-4 hover:no-underline"
+                data-testid="link-how-it-works-what-we-check"
+              >
+                {FSR_HOME_LINK_TEXT}
+              </Link>
+            </p>
 
             {/* Contained onboarding timeline — secondary report card — desktop only */}
             <div className="hidden md:block mt-14 max-w-5xl mx-auto">

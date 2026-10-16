@@ -8,6 +8,18 @@ import {
   FST_SERVICE_DESCRIPTION,
   fstFaqItems,
 } from "@shared/free-smart-terminal-content";
+import {
+  FSR_ANCHOR_ID,
+  FSR_COST,
+  FSR_DISCLOSURE,
+  FSR_FUNDING_NOTE,
+  FSR_HANDLING,
+  FSR_HEADING,
+  FSR_WHAT_IT_IS,
+  FSR_WHAT_TO_SUBMIT,
+  FSR_WHAT_YOU_RECEIVE,
+  FSR_WHO_QUALIFIES,
+} from "@shared/free-statement-review-content";
 
 const BASE_URL = "https://libertybancard.com";
 
@@ -21,6 +33,48 @@ function ctaSection(headline: string, sub: string): string {
         <a href="/upload-statement" class="ssr-btn-primary">📤 Upload Statement — It's Free</a>
         <a href="/free-analysis" class="ssr-btn-outline">📞 Talk to an Expert</a>
       </div>
+    </div>
+  </section>`;
+}
+
+function getFreeStatementReviewExplainerHtml(): string {
+  return `
+  <section class="ssr-section" id="${FSR_ANCHOR_ID}">
+    <div class="ssr-section-inner">
+      <h2 class="ssr-section-heading">${FSR_HEADING}</h2>
+      <div class="ssr-card">
+        <div class="ssr-card-title">${FSR_WHAT_IT_IS.heading}</div>
+        <div class="ssr-card-text">${FSR_WHAT_IT_IS.intro}</div>
+        <ul>
+          ${FSR_WHAT_IT_IS.parts.map((part) => `<li><strong>${part.term}</strong> — ${part.text}</li>`).join("\n          ")}
+        </ul>
+        <div class="ssr-card-text">${FSR_WHAT_IT_IS.outro}</div>
+      </div>
+      <div class="ssr-card">
+        <div class="ssr-card-title">${FSR_WHAT_YOU_RECEIVE.heading}</div>
+        <div class="ssr-card-text">${FSR_WHAT_YOU_RECEIVE.text}</div>
+      </div>
+      <div class="ssr-card">
+        <div class="ssr-card-title">${FSR_COST.heading}</div>
+        <div class="ssr-card-text">${FSR_COST.text}</div>
+      </div>
+      <div class="ssr-card">
+        <div class="ssr-card-title">${FSR_WHAT_TO_SUBMIT.heading}</div>
+        ${FSR_WHAT_TO_SUBMIT.paragraphs.map((paragraph) => `<div class="ssr-card-text">${paragraph}</div>`).join("\n        ")}
+      </div>
+      <div class="ssr-card">
+        <div class="ssr-card-title">${FSR_HANDLING.heading}</div>
+        <div class="ssr-card-text">${FSR_HANDLING.text}</div>
+      </div>
+      <div class="ssr-card">
+        <div class="ssr-card-title">${FSR_WHO_QUALIFIES.heading}</div>
+        <div class="ssr-card-text">${FSR_WHO_QUALIFIES.text}</div>
+      </div>
+      <div class="ssr-card">
+        <div class="ssr-card-title">${FSR_FUNDING_NOTE.heading}</div>
+        <div class="ssr-card-text">${FSR_FUNDING_NOTE.text}</div>
+      </div>
+      <p class="ssr-card-text">${FSR_DISCLOSURE}</p>
     </div>
   </section>`;
 }
@@ -46,6 +100,8 @@ export function getUploadStatementHtml(): string {
       </div>
     </div>
   </div>
+
+  ${getFreeStatementReviewExplainerHtml()}
 
   <section class="ssr-section ssr-section-muted">
     <div class="ssr-section-inner">
