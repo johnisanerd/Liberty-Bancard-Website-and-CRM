@@ -324,6 +324,12 @@ async function materializeCandidate(candidate: any, actorId: string): Promise<Ro
       if (attribution.basis !== "business_domain" && nameToken(row.company_name) !== nameToken(companyName)) {
         throw new MaterializationHold("EXISTING_CONTACT_UNCORROBORATED");
       }
+      // Imported legacy mailboxes have generation 0 and no token hash. Bootstrap the
+      // identity exactly as canonical preparation does (under this row lock); the
+      // address itself is unchanged and no provider observation is rewritten.
+      await tx.execute(sql`UPDATE contacts SET email_mutation_generation=1,email_token_hash=${tokenHash}
+        WHERE id=${contactId} AND email_mutation_generation=0
+          AND (email_token_hash IS NULL OR email_token_hash=${tokenHash})`);
     } else {
       const written = await writeContact({
         mode: "local_only",
