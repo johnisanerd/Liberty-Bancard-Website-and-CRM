@@ -6,7 +6,11 @@ import assert from "node:assert/strict";
 export function canonicalAddressPreparationOwnerSql() {
   const address=fs.readFileSync("migrations/0330_canonical_address_validation.sql","utf8")
     .replace("CREATE TABLE canonical_address_validation_claims","CREATE TABLE IF NOT EXISTS canonical_address_validation_claims")
-    .replace("CREATE INDEX canonical_address_receipt_lookup_idx","CREATE INDEX IF NOT EXISTS canonical_address_receipt_lookup_idx");
+    .replace("CREATE INDEX canonical_address_receipt_lookup_idx","CREATE INDEX IF NOT EXISTS canonical_address_receipt_lookup_idx")
+    // A database already past migration 0361 holds the same address-receipt body plus the
+    // first-party link branch; recognise it as installed instead of reporting drift.
+    .replace("md5(replace(body,new_clause,old_clause))='46f89326f7c158ac739814ce343c2559'",
+      "md5(replace(body,new_clause,old_clause)) IN ('46f89326f7c158ac739814ce343c2559','fb3f7591d89f5a6445d9878cab4720e8')");
   const preparation=fs.readFileSync("migrations/0331_canonical_recipient_preparation.sql","utf8");
   const parts=preparation.split("--> statement-breakpoint").map(part=>part.trim());
   assert.equal(parts.length,5,"Preparation migration structure changed: review the owner delivery generator");
