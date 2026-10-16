@@ -66,8 +66,8 @@ try {
   await assertCanonicalAddressReceiptContract(db);checks++;
   check((await pool.query(`SELECT md5(replace(prosrc,$1,$2)) hash FROM pg_proc
     WHERE oid='public.enforce_reviewed_contact_business_link()'::regprocedure`,
-    [CANONICAL_ADDRESS_RECEIPT_CLAUSE,ORIGINAL_ADDRESS_RECEIPT_CLAUSE])).rows[0].hash==="46f89326f7c158ac739814ce343c2559",
-    "Address change inverts byte-for-byte to the entire approved original routine");
+    [CANONICAL_ADDRESS_RECEIPT_CLAUSE,ORIGINAL_ADDRESS_RECEIPT_CLAUSE])).rows[0].hash==="fb3f7591d89f5a6445d9878cab4720e8",
+    "Address change inverts byte-for-byte to the pinned routine (approved original plus the migration-0361 first-party link branch)");
   check((await pool.query(`SELECT md5(prosrc) hash FROM pg_proc
     WHERE oid='public.crm_enforce_canonical_preparation_capacity()'::regprocedure`)).rows[0].hash
     ==="6e8864b97bd634386a156bca78c2dc5b","Preparation routine is the exact canonical definition, not a live-hash override");

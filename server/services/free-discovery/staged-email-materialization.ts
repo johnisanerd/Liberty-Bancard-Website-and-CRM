@@ -101,6 +101,8 @@ export interface MaterializationScope {
    * businesses are linked too (mapped ones are simply processed first).
    * 'mapped' restricts a batch to businesses outreach can use today. */
   verticalScope?: "mapped" | "all";
+  /** Restrict a run to specific staged candidates (targeted reconciliation). */
+  candidateIds?: string[];
 }
 
 /** Candidate rows that pass every database-side gate, ranked per business. */
@@ -114,6 +116,9 @@ function eligibleCandidatesSql(limit: number | null, scope: MaterializationScope
         FROM free_discovery_candidates f
         LEFT JOIN free_discovery_materialization_outcomes o ON o.candidate_id = f.id
        WHERE f.field = 'email' AND f.disposition = 'staged' AND f.subject_type = 'business'
+          ${scope.candidateIds?.length
+            ? sql`AND f.id = ANY(ARRAY[${sql.join(scope.candidateIds.map(id => sql`${id}::uuid`), sql`, `)}])`
+            : sql``}
          AND f.business_id IS NOT NULL AND f.promoted_at IS NULL
          AND (o.candidate_id IS NULL
               OR (o.outcome = 'held' AND (o.rule_version <> ${MATERIALIZATION_RULE_VERSION}

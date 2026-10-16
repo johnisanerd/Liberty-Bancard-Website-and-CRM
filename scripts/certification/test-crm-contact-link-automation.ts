@@ -32,7 +32,10 @@ const {assertSystemLinkDatabaseGuard}=await import("../../server/services/commer
 const quote=(value:string)=>`'${value.replaceAll("'","''")}'`;
 const verify = fs.readFileSync("docs/certification/canonical-enrichment-native-verify.sql", "utf8")
   .replaceAll("md5(p.prosrc)",`md5(replace(replace(p.prosrc,'crm_evidence_identity_v3','crm_evidence_identity_v2'),${quote(CANONICAL_ADDRESS_RECEIPT_CLAUSE)},${quote(ORIGINAL_ADDRESS_RECEIPT_CLAUSE)}))`)
-  .replaceAll("6868a6d639a3fd0af7a10346821dad19","3ee7b8798d9dce2f2c6e92ef91c51c7e");
+  .replaceAll("6868a6d639a3fd0af7a10346821dad19","3ee7b8798d9dce2f2c6e92ef91c51c7e")
+  // Migration 0361 adds the first-party link branch to the reviewed-link routine;
+  // pin its exact inverse-address body (same value the runtime guard enforces).
+  .replaceAll("46f89326f7c158ac739814ce343c2559","fb3f7591d89f5a6445d9878cab4720e8");
 const originalEnv = {
   NODE_ENV: process.env.NODE_ENV, REPLIT_DEPLOYMENT: process.env.REPLIT_DEPLOYMENT,
   RELEASE_SHA: process.env.RELEASE_SHA, SFP_PUBLISH_ARTIFACT_SHA: process.env.SFP_PUBLISH_ARTIFACT_SHA,
