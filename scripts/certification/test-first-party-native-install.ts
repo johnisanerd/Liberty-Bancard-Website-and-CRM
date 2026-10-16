@@ -13,6 +13,7 @@ import { randomUUID } from "node:crypto";
 import { assertDisposableTestInfrastructure } from "../test-infrastructure-guard";
 import { applyCertificationProviderDenyBoundary, getBlockedCertificationNetworkAttemptCount } from "../certification-provider-deny";
 import { firstPartyNativeOwnerSql, firstPartyNativeConsoleSql, firstPartyNativeVerificationSql,
+  firstPartyNativeManifestModuleSource, FIRST_PARTY_NATIVE_MANIFEST_MODULE,
   FIRST_PARTY_PRE_ROUTINE_INVERSE_MD5, FIRST_PARTY_CURRENT_ROUTINE_INVERSE_MD5 } from "../generate-first-party-staged-email-native-repair";
 await assertDisposableTestInfrastructure({ operation: "first-party staged-email native install certification" });
 process.env.VG_PROVIDER_DENY_MODE = "1";
@@ -23,6 +24,8 @@ const { assertFirstPartyLinkDatabaseGuard, assertSystemLinkDatabaseGuard } =
   await import("../../server/services/commercial-link-authority");
 const { assertCanonicalAddressReceiptContract, CANONICAL_ADDRESS_RECEIPT_CLAUSE, ORIGINAL_ADDRESS_RECEIPT_CLAUSE } =
   await import("../../server/services/canonical-address-receipt-contract");
+const { reconcileNativeObjects, shouldReconcileNativeObjects, NATIVE_OBJECT_MANIFEST } =
+  await import("../../server/native-objects/reconciler");
 const { runStagedEmailMaterialization } = await import("../../server/services/free-discovery/staged-email-materialization");
 
 const prefix = `cert_fpdelivery_${randomUUID().replaceAll("-", "").slice(0, 10)}`;
@@ -53,6 +56,18 @@ try {
   ] as const) {
     check(fs.existsSync(file) && fs.readFileSync(file, "utf8") === content, `${file} is current with the generator`);
   }
+
+  // ── Automatic delivery wiring ────────────────────────────────────────────────
+  check(fs.readFileSync(FIRST_PARTY_NATIVE_MANIFEST_MODULE, "utf8") === firstPartyNativeManifestModuleSource(),
+    "Deployed manifest entry is byte-equal to the SQL generated from the reviewed migrations");
+  check(NATIVE_OBJECT_MANIFEST.length >= 1 && NATIVE_OBJECT_MANIFEST.every((e) => e.installSql && e.verifySql),
+    "Manifest entries carry install and verification SQL");
+  check(shouldReconcileNativeObjects("production", {}) && !shouldReconcileNativeObjects("production", { NATIVE_OBJECT_RECONCILE: "off" })
+    && !shouldReconcileNativeObjects("development", {}) && !shouldReconcileNativeObjects("test", {}),
+    "Reconciliation runs only in production and honors the emergency kill switch");
+  const indexSource = fs.readFileSync("server/index.ts", "utf8");
+  check(/Production startup migrations skipped[\s\S]{0,800}reconcileNativeObjects\(\)/.test(indexSource),
+    "Production startup invokes the reconciler right after the Publish-managed schema notice, before workers");
 
   // ── The managed-production routine, byte-exact ──────────────────────────────
   // Fixture = prosrc read from the production catalog (read-only query; function source, no data). Its md5 is
@@ -135,17 +150,69 @@ try {
     "Drift aborted the whole delivery (no partial trigger/function install)");
   await pool.query(`CREATE OR REPLACE FUNCTION public.enforce_reviewed_contact_business_link() RETURNS trigger LANGUAGE plpgsql AS $legacy$${legacyBody}$legacy$`);
 
-  // ── Install, verify, replay ─────────────────────────────────────────────────
-  await pool.query(ownerSql);
+  // ── Automatic install at deploy time (the reconciler production startup runs) ──
+  const entryId = NATIVE_OBJECT_MANIFEST[0].id;
+  const routineXmin = async () => (await one(`SELECT xmin::text x FROM pg_proc
+    WHERE oid='public.enforce_reviewed_contact_business_link()'::regprocedure`)).x as string;
+  const quick = { attempts: 2, retryDelayMs: 50 };
+  // 1. A held advisory lock (another replica mid-install) is skipped, not raced.
+  const holder = await pool.connect();
+  await holder.query(`SELECT pg_advisory_lock(hashtextextended($1,0))`, [`native_object_reconcile:${entryId}`]);
+  const lockedResult = (await reconcileNativeObjects(quick))[0];
+  await holder.query(`SELECT pg_advisory_unlock(hashtextextended($1,0))`, [`native_object_reconcile:${entryId}`]);
+  holder.release();
+  check(lockedResult.status === "skipped_locked" && (await routineState()).body === "2d38f8614320afbf936c529662e2c684",
+    "Reconciler skips an entry another replica is installing and changes nothing");
+  // 2. Busy table: bounded retries, then a clean rollback with the legacy routine intact (still fail-closed).
+  const blocker = await pool.connect();
+  await blocker.query("BEGIN");
+  await blocker.query(`LOCK TABLE contact_business_first_party_link_evidence IN ACCESS EXCLUSIVE MODE`);
+  const busy = (await reconcileNativeObjects(quick))[0];
+  await blocker.query("ROLLBACK");
+  blocker.release();
+  check(busy.status === "failed" && busy.attempts === 2 && /lock timeout|55P03|canceling statement/i.test(busy.detail ?? "")
+    && (await routineState()).body === "2d38f8614320afbf936c529662e2c684"
+    && !(await one(`SELECT 1 FROM pg_proc WHERE proname='cro02_first_party_link_evidence_append_only'`)),
+    "Lock contention retries a bounded number of times and rolls the whole install back");
+  // 3. Publish prerequisites missing: refused, nothing installed.
+  await q(`ALTER TABLE contact_business_first_party_link_evidence DROP COLUMN site_relation`);
+  const noPrereq = (await reconcileNativeObjects(quick))[0];
+  await q(`ALTER TABLE contact_business_first_party_link_evidence ADD COLUMN site_relation text`);
+  check(noPrereq.status === "prerequisites_missing" && (await routineState()).body === "2d38f8614320afbf936c529662e2c684",
+    "Reconciler refuses to run before Publish created its columns");
+  // 4. An unrecognized routine body is never overwritten.
+  await pool.query(`CREATE OR REPLACE FUNCTION public.enforce_reviewed_contact_business_link() RETURNS trigger LANGUAGE plpgsql AS $drift$${legacyBody}\n-- drift$drift$`);
+  const driftBody = (await routineState()).body;
+  const drifted = (await reconcileNativeObjects(quick))[0];
+  check(drifted.status === "drift_refused" && (await routineState()).body === driftBody
+    && !(await one(`SELECT 1 FROM pg_proc WHERE proname='cro02_first_party_link_evidence_append_only'`)),
+    "Reconciler refuses to replace a drifted routine and installs nothing");
+  await pool.query(`CREATE OR REPLACE FUNCTION public.enforce_reviewed_contact_business_link() RETURNS trigger LANGUAGE plpgsql AS $legacy$${legacyBody}$legacy$`);
+  // 5. Two replicas starting at once: exactly one installs.
+  const both = await Promise.all([reconcileNativeObjects(quick), reconcileNativeObjects(quick)]);
+  const statuses = both.map((r) => r[0].status).sort();
+  check(statuses.filter((x) => x === "installed").length === 1
+    && statuses.every((x) => ["installed", "skipped_locked", "already_current"].includes(x)),
+    `Concurrent startups install exactly once (${statuses.join(",")})`);
   const installed = await routineState();
   check(installed.inverse === FIRST_PARTY_CURRENT_ROUTINE_INVERSE_MD5 && await verified() === true,
-    "Owner SQL installed exactly the reviewed routine and immutability trigger; verification SQL passes");
+    "Automatic install produced exactly the reviewed routine and immutability trigger; verification SQL passes");
   await assertFirstPartyLinkDatabaseGuard(db); checks++;
   await assertCanonicalAddressReceiptContract(db); checks++;
+  // 6. Every later startup is a read-only no-op.
+  const xminBefore = await routineXmin();
+  const again = (await reconcileNativeObjects(quick))[0];
+  check(again.status === "already_current" && await routineXmin() === xminBefore,
+    "Next startup detects the current objects and writes nothing");
+  const audited = await q(`SELECT details->>'status' status FROM audit_logs WHERE action='native_object_reconcile' ORDER BY created_at`);
+  check(["failed", "prerequisites_missing", "drift_refused", "installed"].every((x) => audited.some((r: any) => r.status === x))
+    && !audited.some((r: any) => r.status === "already_current" || r.status === "skipped_locked"),
+    "Installs and refusals are audited; routine no-ops are not");
+  // The owner-console files stay valid as a manual fallback and replay safely.
   await pool.query(ownerSql);
   const replayConsole = await pool.query(consoleSql) as unknown as Array<{ rows: any[] }>;
   check(replayConsole.at(-1)?.rows[0]?.repair_verified === true && (await routineState()).body === installed.body,
-    "Owner SQL and the console batch replay safely against an already installed state");
+    "Owner SQL and the console batch remain a safe manual fallback against an already installed state");
   const anyEvidence = await one(`SELECT id FROM contact_business_first_party_link_evidence LIMIT 1`);
   if (anyEvidence) {
     await assert.rejects(q(`UPDATE contact_business_first_party_link_evidence SET rule_version='y' WHERE id=$1`, [anyEvidence.id]),

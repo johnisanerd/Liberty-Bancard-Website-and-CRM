@@ -330,6 +330,11 @@ app.use((req, _res, next) => {
     await runDrizzleMigrations();
   } else {
     console.log("[DB Migrate] Production startup migrations skipped — schema is managed by Replit Publish.");
+    // Publish applies tables/columns/indexes/FKs but not function bodies or triggers. Install the
+    // reviewed native objects (idempotent, drift-refusing, never throws) before workers start.
+    const { shouldReconcileNativeObjects, reconcileNativeObjects } = await import("./native-objects/reconciler");
+    if (shouldReconcileNativeObjects(process.env.NODE_ENV)) await reconcileNativeObjects();
+    else console.log("[NativeObjects] Reconciliation disabled by NATIVE_OBJECT_RECONCILE=off.");
   }
   const { reconcileEnrichmentState, reconcileScoringState, seedAutomationRegistry } = await import("./services/startup-reconcile");
   await reconcileEnrichmentState();
