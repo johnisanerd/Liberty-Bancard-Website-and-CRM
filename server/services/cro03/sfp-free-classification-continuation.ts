@@ -150,9 +150,19 @@ async function processPendingVerticalEscalations(program: any): Promise<{ escala
   const pending = rows(await db.execute(sql`
     SELECT DISTINCT ON (e.business_id) e.business_id
       FROM sfp_classification_evidence e
+      JOIN businesses eb ON eb.id=e.business_id
      WHERE e.policy_version=${Number(program.policy_version)}
        AND e.taxonomy_version=2 AND e.classifier_version=${CLASSIFIER_VERSION}
        AND e.terminal_state='provisional' AND e.outcome='review_required'
+       -- Paid escalation needs evidence beyond the registry name. A name-only
+       -- business stays a truthful provisional non-attempt and becomes eligible
+       -- automatically once it gains a website, a structured industry field or
+       -- a meaningful raw label.
+       AND (NULLIF(btrim(eb.website_domain),'') IS NOT NULL
+            OR NULLIF(btrim(eb.industry_primary),'') IS NOT NULL
+            OR NULLIF(btrim(eb.industry_secondary),'') IS NOT NULL
+            OR (NULLIF(btrim(eb.vertical),'') IS NOT NULL
+                AND lower(btrim(eb.vertical)) NOT IN ('other','unknown','n/a','none','uncategorized')))
        AND (e.reason_codes @> '["FREE_ONLY_NO_ESCALATION"]'::jsonb
             OR e.reason_codes @> '["OPENAI_UNAVAILABLE"]'::jsonb
             OR e.reason_codes @> '["OPENAI_ESCALATION_NOT_CONFIGURED"]'::jsonb)
