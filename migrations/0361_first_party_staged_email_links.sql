@@ -74,7 +74,6 @@ CREATE INDEX free_discovery_materialization_outcomes_held_idx
 
 CREATE OR REPLACE FUNCTION enforce_reviewed_contact_business_link()
 RETURNS trigger LANGUAGE plpgsql AS $$
-
 DECLARE
   evidence_contact_id integer;
   evidence_actor_type text;
