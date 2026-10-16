@@ -3347,27 +3347,15 @@ Return maximum 5 segments, 4 recommendations, 4 outreach priorities, 3 quick win
   });
 
   // ── Staged-email materialization ────────────────────────────────────────────
-  // Turns staged first-party emails for mapped-vertical, non-DBPR businesses
-  // into contacts. No provider spend, no sends, no enrollment.
+  // Staged first-party emails for non-DBPR canonical businesses are materialized
+  // into verified-linked contacts. Read-only preview; the run itself is automatic
+  // (SFP continuous tick), local-only: no provider spend, no sends, no enrollment.
   app.get("/api/lead-ops/staged-email-materialization/preview", requireRole("admin", "manager"), async (_req, res) => {
     try {
       const { previewStagedEmailMaterialization } = await import("../services/free-discovery/staged-email-materialization");
       res.json(await previewStagedEmailMaterialization());
     } catch (error: any) {
       console.error("[StagedEmailMaterialization] preview failed:", error?.cause?.message ?? error?.message);
-      serverError(res, error);
-    }
-  });
-  app.post("/api/lead-ops/staged-email-materialization/run", requireRole("admin"), async (req, res) => {
-    const limit = req.body?.limit === undefined ? 100 : Number(req.body.limit);
-    if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
-      return res.status(400).json({ error: "limit must be an integer between 1 and 500" });
-    }
-    try {
-      const { runStagedEmailMaterialization } = await import("../services/free-discovery/staged-email-materialization");
-      res.json(await runStagedEmailMaterialization({ limit, actorId: String((req.user as any)?.id ?? "system") }));
-    } catch (error: any) {
-      console.error("[StagedEmailMaterialization] run failed:", error?.cause?.message ?? error?.message);
       serverError(res, error);
     }
   });

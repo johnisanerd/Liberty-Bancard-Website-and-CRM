@@ -61,6 +61,7 @@ async function main(): Promise<void> {
       { name: "canonical-transaction-leases", script: "scripts/certification/test-canonical-transaction-leases.ts", database: true, poolMax:1 },
       { name: "canonical-workbook-evidence", script: "scripts/certification/test-enrichment-workbooks.ts", database: true },
       { name: "canonical-workbook-intake", script: "scripts/certification/test-canonical-workbook-intake.ts", database: true },
+      { name: "staged-email-materialization", script: "scripts/certification/test-staged-email-materialization.ts", database: true },
       { name: "canonical-recipient-preparation", script: "scripts/certification/test-canonical-recipient-preparation.ts", database: true },
       { name: "canonical-address-validation", script: "scripts/certification/test-canonical-address-validation.ts", database: true },
       { name: "canonical-source-outbox", script: "scripts/certification/test-canonical-source-outbox.ts", database: true },

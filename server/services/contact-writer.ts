@@ -64,6 +64,7 @@ const VALID_SOURCE_COMBOS: ReadonlySet<string> = new Set([
   "discovery|apify",
   "discovery|serper",
   "discovery|cro03",
+  "discovery|free_discovery",
   "partner_referral|partner_form",
   "partner_referral|partner_portal",
   "partner_referral|co_branded_proposal",

@@ -2765,6 +2765,16 @@ export class QueueManager {
             console.error("[ContactLinkAutomation] held", safeCanonicalEnrichmentFailureDiagnostics(error));
           }
           try {
+            // Local-only: staged first-party emails -> contacts verified-linked to their
+            // exact business. No provider call, send or enrollment; preparation below owns
+            // recipient selection and validation intent/receipt reuse.
+            const {runStagedEmailMaterialization}=await import("./free-discovery/staged-email-materialization");
+            const staged=await runStagedEmailMaterialization({limit:25,actorId:"system:staged-email-materialization"});
+            if (staged.examined>0) console.log(`[StagedEmailMaterialization] ${JSON.stringify({examined:staged.examined,created:staged.created,linkedExisting:staged.linkedExisting,alreadyLinked:staged.alreadyLinked,held:staged.held,failed:staged.failed})}`);
+          } catch(error:any) {
+            console.error("[StagedEmailMaterialization] held",safeCanonicalEnrichmentFailureDiagnostics(error));
+          }
+          try {
             const {processCanonicalRegistryProjectionTick}=await import("./canonical-registry-projection-worker");
             const registry=await processCanonicalRegistryProjectionTick();
             if (registry.ran) console.log(`[CanonicalRegistryProjection] ${JSON.stringify(registry)}`);

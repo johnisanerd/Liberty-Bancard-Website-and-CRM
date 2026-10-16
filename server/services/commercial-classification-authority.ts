@@ -400,7 +400,7 @@ export async function authorizeUse(params: {
  */
 async function applyClassificationWithPolicy(
   command: ClassificationCommand,
-  authorizationPolicy: "independent_reviewer" | "verified_sunbiz_bootstrap" | "verified_import_link" = "independent_reviewer",
+  authorizationPolicy: "independent_reviewer" | "verified_sunbiz_bootstrap" | "verified_import_link" | "verified_first_party_link" = "independent_reviewer",
 ): Promise<{ eventId: number; applied: boolean; duplicate: boolean }> {
   assertSubjectType(command.subjectType);
   assertCommercialClass(command.targetClass);
@@ -600,6 +600,37 @@ export async function initializeImportedLinkedContactClass(contactId:number,auth
       },transaction:tx,
     },"verified_import_link");
   });
+}
+
+/** Internal automatic initial classification for a contact created from a
+ * business's own published address. Requires the current verified first-party
+ * link decision (immutable evidence row) to the contact's current business.
+ * It never promotes test/demo/synthetic rows and is not a general promotion API. */
+export async function initializeFirstPartyLinkedContactClass(contactId:number,tx:any) {
+  const proof=rows(await tx.execute(sql`SELECT c.record_class,c.business_id,d.id decision_id,
+      e.id evidence_id,e.candidate_id
+    FROM contacts c JOIN businesses b ON b.id=c.business_id AND b.record_class='canonical'
+    JOIN contact_business_link_decisions d ON d.contact_id=c.id AND d.business_id=c.business_id
+      AND d.decision='verified' AND d.superseded_at IS NULL
+    JOIN contact_business_first_party_link_evidence e ON e.id=d.first_party_evidence_id
+      AND e.contact_id=c.id AND e.business_id=c.business_id
+    WHERE c.id=${contactId} AND c.archived_at IS NULL LIMIT 1`))[0];
+  if (!proof) return {applied:false,reason:"FIRST_PARTY_LINK_REQUIRED"};
+  if (proof.record_class!=="unknown") return {applied:false,reason:"INITIAL_CLASS_ALREADY_SET"};
+  return applyClassificationWithPolicy({
+    subjectType:"contact",subjectId:contactId,targetClass:"production",
+    eventNamespace:"first_party_staged_email_link",
+    eventKey:`${contactId}:${proof.decision_id}`,
+    actorId:"system:first-party-staged-email-link",
+    evidenceFields:{
+      review_source:"verified_first_party_link",
+      evidence_reference:`link-decision:${proof.decision_id}`,
+      external_reference:`free-discovery-candidate:${proof.candidate_id}`,
+      source_system:"free_discovery",
+      approval_basis:"business_published_address_and_verified_exact_business_link",
+      classification_reason:"initial_production_class_of_verified_first_party_contact",
+    },transaction:tx,
+  },"verified_first_party_link");
 }
 
 export interface SunbizBootstrapClassificationParams {

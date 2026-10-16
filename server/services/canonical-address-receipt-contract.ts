@@ -13,7 +13,7 @@ export function canonicalAddressReceiptNativeFingerprint(prosrc: any) {
     strpos(${prosrc},${CANONICAL_ADDRESS_RECEIPT_CLAUSE})>0
     AND strpos(${prosrc},${ORIGINAL_ADDRESS_RECEIPT_CLAUSE})=0
     AND md5(replace(${prosrc},${CANONICAL_ADDRESS_RECEIPT_CLAUSE},
-      ${ORIGINAL_ADDRESS_RECEIPT_CLAUSE}))='db87fee060dbdf3fa4b8c1f07070e5c7'
+      ${ORIGINAL_ADDRESS_RECEIPT_CLAUSE}))='caed4c18770e69c5a5dcff21f44e75f4'
   )`;
 }
 

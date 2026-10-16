@@ -32,6 +32,7 @@ const SYSTEM_LINK_EVIDENCE_TRIGGER_BODY_MD5 = "0851a20c34b3ce424364b5c3fc6e556b"
 const SFP_ELIGIBILITY_CONTACT_CHECK_MD5 = "e83217cf6cea8fb0a75857ac2100d4e3";
 const SFP_STAGING_CONTACT_CHECK_MD5 = "ddb906e4ac5e57a0700b1ea776bf8ed6";
 const SFP_LINK_EVIDENCE_TRIGGER_BODY_MD5 = "21f201cf1e11660637a43dc6f2176b29";
+const FIRST_PARTY_LINK_EVIDENCE_TRIGGER_BODY_MD5 = "62110488204b950f599a4defd7483104";
 const SFP_RECIPIENT_TRANSITION_TRIGGER_BODY_MD5 = "e5315a402bb4f800ae1240a547c163e4";
 const SFP_RECIPIENT_ALIAS_TRIGGER_BODY_MD5 = "bcbaf3c57b9cc79abf0574e73c17cb9e";
 const SFP_BRIDGE_HOLD_TRIGGER_BODY_MD5 = "9e57bf5845f626fc2e58bfdc6849d3a4";
@@ -221,6 +222,43 @@ export async function assertSfpLinkDatabaseGuard(executor: any) {
     ] as const).filter((name) => result?.[name] !== true);
     throw new Error(`COMMERCIAL_SFP_LINK_DATABASE_GUARD_MISSING:${missing.join(",")}`);
   }
+}
+
+
+/** Fence for the first-party staged-email link evidence kind (migration 0361).
+ * Publish can add tables/columns without reliably installing PL/pgSQL bodies,
+ * so the writer proves the native branch, immutable evidence trigger and FKs. */
+export async function assertFirstPartyLinkDatabaseGuard(executor: any) {
+  await assertSystemLinkDatabaseGuard(executor);
+  const result = (await executor.execute(sql`
+    SELECT
+      to_regclass('public.contact_business_first_party_link_evidence') IS NOT NULL AS evidence_table,
+      EXISTS (
+        SELECT 1 FROM information_schema.columns
+         WHERE table_schema='public' AND table_name='contact_business_link_decisions'
+           AND column_name='first_party_evidence_id' AND data_type='uuid'
+      ) AS evidence_column,
+      EXISTS (
+        SELECT 1 FROM pg_trigger t
+        JOIN pg_class c ON c.oid=t.tgrelid
+        JOIN pg_namespace n ON n.oid=c.relnamespace
+        JOIN pg_proc p ON p.oid=t.tgfoid
+        WHERE n.nspname='public' AND c.relname='contact_business_first_party_link_evidence'
+          AND t.tgname='contact_business_first_party_link_evidence_append_only'
+          AND t.tgenabled IN ('O','A') AND NOT t.tgisinternal AND t.tgqual IS NULL
+          AND t.tgtype=27 AND p.proname='cro02_first_party_link_evidence_append_only'
+          AND p.pronamespace='public'::regnamespace
+          AND md5(p.prosrc)=${FIRST_PARTY_LINK_EVIDENCE_TRIGGER_BODY_MD5}
+      ) AS immutable_evidence_trigger,
+      EXISTS (
+        SELECT 1 FROM pg_proc p
+         WHERE p.oid=to_regprocedure('public.enforce_reviewed_contact_business_link()')
+           AND strpos(p.prosrc,'COMMERCIAL_FIRST_PARTY_LINK_AUTHORITY_FENCE_LOST')>0
+      ) AS native_branch
+  `) as any).rows?.[0];
+  const missing = (["evidence_table","evidence_column","immutable_evidence_trigger","native_branch"] as const)
+    .filter((name) => result?.[name] !== true);
+  if (missing.length) throw new Error(`COMMERCIAL_FIRST_PARTY_LINK_DATABASE_GUARD_MISSING:${missing.join(",")}`);
 }
 
 /** Full C1-C3 bridge schema fence; blocks readiness if Publish omitted SQL bodies. */
@@ -641,6 +679,113 @@ export async function decideSfpContactBusinessLink(input: {
     INSERT INTO contact_business_link_decisions
       (contact_id,business_id,decision,decision_key,actor_id,revision,sfp_evidence_id)
     VALUES (${input.contactId},${input.businessId},'verified',${input.decisionKey},'system',1,${String(evidence.id)}::uuid)
+    RETURNING *
+  `) as any).rows?.[0];
+  await tx.execute(sql`
+    UPDATE contacts SET business_id=${input.businessId},updated_at=now() WHERE id=${input.contactId}
+  `);
+  return decision;
+}
+
+
+/**
+ * Writes a verified relationship between a contact and the exact business whose
+ * own website published its address (staged free-discovery email). The business
+ * identity comes from the immutable candidate, never from a company-name match.
+ * The database branch re-verifies candidate, hash, domain attribution, shared
+ * address/location ambiguity and quarantine. No validation receipt is needed.
+ * Callers supply the transaction so contact write, evidence and decision commit
+ * or roll back together.
+ */
+export const FIRST_PARTY_LINK_RULE_VERSION = "first_party_staged_email_v1";
+export async function decideFirstPartyContactBusinessLink(input: {
+  executor: { execute: (query: any) => Promise<any> };
+  contactId: number;
+  businessId: number;
+  candidateId: string;
+  candidateHash: string;
+  contactEmailTokenHash: string;
+  addressDomain: string;
+  domainBasis: "business_domain" | "provider_mailbox";
+  attributionScope: "role" | "named";
+  candidateSource: string;
+  facts?: Record<string, unknown>;
+}) {
+  const tx = input.executor;
+  if (!Number.isSafeInteger(input.contactId) || !Number.isSafeInteger(input.businessId)
+      || !/^[0-9a-f]{64}$/i.test(input.candidateHash)
+      || !/^[0-9a-f]{64}$/i.test(input.contactEmailTokenHash)
+      || !input.candidateId || !input.addressDomain || !input.candidateSource
+      || !["business_domain", "provider_mailbox"].includes(input.domainBasis)
+      || !["role", "named"].includes(input.attributionScope)) {
+    throw new Error("COMMERCIAL_FIRST_PARTY_LINK_EVIDENCE_INVALID");
+  }
+  await assertFirstPartyLinkDatabaseGuard(tx);
+  const decisionKey = `first-party-link-v1:${input.contactId}:${input.businessId}:${input.candidateId}`;
+
+  const contactNode: CommercialGraphNode = { type: "contact", id: input.contactId };
+  const businessNode: CommercialGraphNode = { type: "business", id: input.businessId };
+  await lockCommercialGraphNodes(tx, [contactNode]);
+  const currentHint = (await tx.execute(sql`
+    SELECT business_id FROM contact_business_link_decisions
+     WHERE contact_id=${input.contactId} AND superseded_at IS NULL
+  `) as any).rows?.[0];
+  const graphNodes: CommercialGraphNode[] = [
+    contactNode, businessNode,
+    ...(currentHint?.business_id ? [{ type: "business" as const, id: Number(currentHint.business_id) }] : []),
+  ];
+  await lockCommercialGraphNodes(tx, graphNodes.filter(node => node.type === "business"));
+  await lockCommercialGraphMembershipSets(tx, graphNodes, ["contact_business"]);
+
+  const contact = (await tx.execute(sql`
+    SELECT id,business_id,email_token_hash FROM contacts WHERE id=${input.contactId} FOR UPDATE
+  `) as any).rows?.[0];
+  const business = (await tx.execute(sql`
+    SELECT id,record_class,do_not_visit FROM businesses WHERE id=${input.businessId} FOR UPDATE
+  `) as any).rows?.[0];
+  if (!contact || !business) throw new Error("CRM_OBJECT_NOT_FOUND");
+  if (String(contact.email_token_hash ?? "") !== input.contactEmailTokenHash
+      || business.record_class !== "canonical" || business.do_not_visit === true) {
+    throw new Error("COMMERCIAL_FIRST_PARTY_LINK_CONTACT_OR_BUSINESS_CHANGED");
+  }
+  const current = (await tx.execute(sql`
+    SELECT id,business_id,decision,revision FROM contact_business_link_decisions
+     WHERE contact_id=${input.contactId} AND superseded_at IS NULL FOR UPDATE
+  `) as any).rows?.[0];
+  if (current) {
+    if (Number(current.business_id) === input.businessId && current.decision === "verified"
+        && Number(contact.business_id) === input.businessId) return { ...current, replayed: true };
+    throw new Error("COMMERCIAL_FIRST_PARTY_LINK_CURRENT_RELATIONSHIP_CONFLICT");
+  }
+  if (contact.business_id != null) throw new Error("COMMERCIAL_FIRST_PARTY_LINK_UNAUTHORIZED_BUSINESS_PROJECTION");
+
+  const facts = {
+    contract: FIRST_PARTY_LINK_RULE_VERSION,
+    candidateId: input.candidateId,
+    candidateHash: input.candidateHash,
+    contactEmailTokenHash: input.contactEmailTokenHash,
+    addressDomain: input.addressDomain,
+    domainBasis: input.domainBasis,
+    attributionScope: input.attributionScope,
+    candidateSource: input.candidateSource,
+    ...(input.facts ?? {}),
+  };
+  const factsHash = crypto.createHash("sha256").update(JSON.stringify(facts)).digest("hex");
+  const evidence = (await tx.execute(sql`
+    INSERT INTO contact_business_first_party_link_evidence
+      (decision_key,contact_id,business_id,candidate_id,candidate_hash,contact_email_token_hash,
+       address_domain,domain_basis,attribution_scope,candidate_source,rule_version,facts_hash,facts)
+    VALUES (${decisionKey},${input.contactId},${input.businessId},${input.candidateId}::uuid,
+      ${input.candidateHash},${input.contactEmailTokenHash},${input.addressDomain},${input.domainBasis},
+      ${input.attributionScope},${input.candidateSource},${FIRST_PARTY_LINK_RULE_VERSION},
+      ${factsHash},${JSON.stringify(facts)}::jsonb)
+    RETURNING id
+  `) as any).rows?.[0];
+  if (!evidence) throw new Error("COMMERCIAL_FIRST_PARTY_LINK_EVIDENCE_WRITE_FAILED");
+  const decision = (await tx.execute(sql`
+    INSERT INTO contact_business_link_decisions
+      (contact_id,business_id,decision,decision_key,actor_id,revision,first_party_evidence_id)
+    VALUES (${input.contactId},${input.businessId},'verified',${decisionKey},'system',1,${String(evidence.id)}::uuid)
     RETURNING *
   `) as any).rows?.[0];
   await tx.execute(sql`

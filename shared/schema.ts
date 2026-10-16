@@ -8614,12 +8614,15 @@ export const contactBusinessLinkDecisions = pgTable("contact_business_link_decis
   evidenceSourceEventId: integer("evidence_source_event_id").references(() => contactSourceEvents.id, { onDelete: "restrict" }),
   systemEvidenceId: uuid("system_evidence_id").references(() => contactBusinessSystemLinkEvidence.id, { onDelete: "restrict" }),
   sfpEvidenceId: uuid("sfp_evidence_id").references((): AnyPgColumn => contactBusinessSfpLinkEvidence.id, { onDelete: "restrict" }),
+  firstPartyEvidenceId: uuid("first_party_evidence_id").references((): AnyPgColumn => contactBusinessFirstPartyLinkEvidence.id, { onDelete: "restrict" }),
   reviewedBy: text("reviewed_by").references(() => users.id, { onDelete: "restrict" }),
   reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(), supersededAt: timestamp("superseded_at", { withTimezone: true }),
 }, (table) => [
   index("contact_business_link_decisions_sfp_evidence_idx").on(table.sfpEvidenceId)
     .where(sql`${table.sfpEvidenceId} IS NOT NULL`),
+  index("contact_business_link_decisions_first_party_evidence_idx").on(table.firstPartyEvidenceId)
+    .where(sql`${table.firstPartyEvidenceId} IS NOT NULL`),
 ]);
 export const contactBusinessSystemLinkEvidence = pgTable("contact_business_system_link_evidence", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -10304,6 +10307,43 @@ export const contactBusinessSfpLinkEvidence = pgTable("contact_business_sfp_link
     OR (source_kind='paid' AND paid_candidate_evidence_id IS NOT NULL AND free_candidate_id IS NULL)
   `),
   check("contact_business_sfp_link_evidence_hash_version_chk", sql`normalized_value_hash_version IN (0,1)`),
+]);
+
+export const contactBusinessFirstPartyLinkEvidence = pgTable("contact_business_first_party_link_evidence", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  decisionKey: text("decision_key").notNull().unique(),
+  contactId: integer("contact_id").notNull().references(() => contacts.id, { onDelete: "restrict" }),
+  businessId: integer("business_id").notNull().references(() => businesses.id, { onDelete: "restrict" }),
+  candidateId: uuid("candidate_id").notNull().references(() => freeDiscoveryCandidates.id, { onDelete: "restrict" }),
+  candidateHash: text("candidate_hash").notNull(),
+  contactEmailTokenHash: text("contact_email_token_hash").notNull(),
+  addressDomain: text("address_domain").notNull(),
+  domainBasis: text("domain_basis").notNull(),
+  attributionScope: text("attribution_scope").notNull(),
+  candidateSource: text("candidate_source").notNull(),
+  ruleVersion: text("rule_version").notNull(),
+  factsHash: text("facts_hash").notNull(),
+  facts: jsonb("facts").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("contact_business_first_party_link_evidence_subject_idx").on(table.contactId, table.businessId, table.createdAt),
+  index("contact_business_first_party_link_evidence_candidate_idx").on(table.candidateId),
+  check("contact_business_first_party_link_evidence_basis_chk", sql`domain_basis IN ('business_domain','provider_mailbox')`),
+  check("contact_business_first_party_link_evidence_scope_chk", sql`attribution_scope IN ('role','named')`),
+  check("contact_business_first_party_link_evidence_hash_chk", sql`contact_email_token_hash ~ '^[0-9a-f]{64}$'`),
+]);
+
+export const freeDiscoveryMaterializationOutcomes = pgTable("free_discovery_materialization_outcomes", {
+  candidateId: uuid("candidate_id").primaryKey().references(() => freeDiscoveryCandidates.id, { onDelete: "restrict" }),
+  outcome: text("outcome").notNull(),
+  reasonCode: text("reason_code"),
+  contactId: integer("contact_id").references(() => contacts.id, { onDelete: "restrict" }),
+  businessId: integer("business_id").references(() => businesses.id, { onDelete: "restrict" }),
+  ruleVersion: text("rule_version").notNull(),
+  evaluatedAt: timestamp("evaluated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("free_discovery_materialization_outcomes_held_idx").on(table.evaluatedAt).where(sql`outcome='held'`),
+  check("free_discovery_materialization_outcomes_outcome_chk", sql`outcome IN ('linked','already_linked','held')`),
 ]);
 
 export const sfpCampaignPackageVersions = pgTable("sfp_campaign_package_versions", {
