@@ -10,10 +10,10 @@ export function canonicalAddressPreparationOwnerSql() {
     // A database already past migration 0361 holds the same address-receipt body plus the
     // first-party link branch; recognise it as installed instead of reporting drift.
     .replace("md5(replace(body,new_clause,old_clause))='46f89326f7c158ac739814ce343c2559'",
-      "md5(replace(body,new_clause,old_clause)) IN ('46f89326f7c158ac739814ce343c2559','fb3f7591d89f5a6445d9878cab4720e8')")
+      "md5(replace(body,new_clause,old_clause)) IN ('46f89326f7c158ac739814ce343c2559','36151ce032505a66054e6b8c70daa259')")
     // Same for a database that has the 0361 body but still carries the original address clause.
     .replace("md5(body)<>'46f89326f7c158ac739814ce343c2559'",
-      "md5(body) NOT IN ('46f89326f7c158ac739814ce343c2559','fb3f7591d89f5a6445d9878cab4720e8')");
+      "md5(body) NOT IN ('46f89326f7c158ac739814ce343c2559','36151ce032505a66054e6b8c70daa259')");
   const preparation=fs.readFileSync("migrations/0331_canonical_recipient_preparation.sql","utf8");
   const parts=preparation.split("--> statement-breakpoint").map(part=>part.trim());
   assert.equal(parts.length,5,"Preparation migration structure changed: review the owner delivery generator");
@@ -89,7 +89,7 @@ export function canonicalAddressPreparationVerificationSql() {
         'AND po.subject_type IN (''business'',''contact'') /* canonical_address_receipt_v1 */',
         'AND po.subject_type=''business'' AND po.subject_id=NEW.business_id'))
         IN ('46f89326f7c158ac739814ce343c2559',  -- approved original routine
-            'fb3f7591d89f5a6445d9878cab4720e8')  -- plus the migration-0361 first-party link branch
+            '36151ce032505a66054e6b8c70daa259')  -- plus the migration-0362 first-party link branch
       ) AS address_receipt_exact,
   EXISTS(SELECT 1 FROM pg_constraint
     WHERE conrelid=to_regclass('public.cr04_enrollment_intents')

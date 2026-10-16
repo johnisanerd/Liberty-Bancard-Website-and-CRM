@@ -157,4 +157,4 @@
 - [Retained Sunbiz production rollout](retained-sunbiz-production-rollout.md) — Post-publish outcomes; behind-cursor contacts wait for the next pass; remaining holds are protective, not failures.
 - [Email validated definition](email-validated-definition.md) — Send authority is a 30-day provider observation; undated 'valid' and 'active' count as unvalidated.
 - [Classification coverage gap](classification-coverage-gap.md) — catch-up classification of never-classified businesses; windowed drain, capped OpenAI escalation.
-- [Staged-email materialization](staged-email-materialization.md) — staged emails become unlinked contacts; link/validation stay with existing automation; evaluate gates per business.
+- [Staged-email materialization](staged-email-materialization.md) — staged first-party emails link to their original business at creation via the first-party evidence kind in the native guard; association is separate from vertical/validation/limits; Publish cannot install the routine.

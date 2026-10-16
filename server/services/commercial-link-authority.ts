@@ -2,7 +2,7 @@ import crypto from "crypto";
 import { sql } from "drizzle-orm";
 import { db } from "../db";
 import {runCanonicalTransaction} from "./canonical-transaction-retry";
-import { canonicalAddressReceiptNativeFingerprint } from "./canonical-address-receipt-contract";
+import { canonicalAddressReceiptNativeFingerprint, currentReviewedLinkRoutineFingerprint } from "./canonical-address-receipt-contract";
 import {
   lockCommercialGraphMembershipSets,
   lockCommercialGraphNodes,
@@ -253,10 +253,16 @@ export async function assertFirstPartyLinkDatabaseGuard(executor: any) {
       EXISTS (
         SELECT 1 FROM pg_proc p
          WHERE p.oid=to_regprocedure('public.enforce_reviewed_contact_business_link()')
-           AND strpos(p.prosrc,'COMMERCIAL_FIRST_PARTY_LINK_AUTHORITY_FENCE_LOST')>0
-      ) AS native_branch
+           AND ${currentReviewedLinkRoutineFingerprint(sql`p.prosrc`)}
+      ) AS native_branch,
+      EXISTS (
+        SELECT 1 FROM information_schema.columns
+         WHERE table_schema='public' AND table_name='contact_business_first_party_link_evidence'
+           AND column_name IN ('crawl_domain','business_site_domain','site_relation')
+         HAVING count(*)=3
+      ) AS site_relation_columns
   `) as any).rows?.[0];
-  const missing = (["evidence_table","evidence_column","immutable_evidence_trigger","native_branch"] as const)
+  const missing = (["evidence_table","evidence_column","immutable_evidence_trigger","native_branch","site_relation_columns"] as const)
     .filter((name) => result?.[name] !== true);
   if (missing.length) throw new Error(`COMMERCIAL_FIRST_PARTY_LINK_DATABASE_GUARD_MISSING:${missing.join(",")}`);
 }
@@ -697,7 +703,7 @@ export async function decideSfpContactBusinessLink(input: {
  * Callers supply the transaction so contact write, evidence and decision commit
  * or roll back together.
  */
-export const FIRST_PARTY_LINK_RULE_VERSION = "first_party_staged_email_v1";
+export const FIRST_PARTY_LINK_RULE_VERSION = "first_party_staged_email_v2";
 export async function decideFirstPartyContactBusinessLink(input: {
   executor: { execute: (query: any) => Promise<any> };
   contactId: number;
@@ -707,6 +713,10 @@ export async function decideFirstPartyContactBusinessLink(input: {
   contactEmailTokenHash: string;
   addressDomain: string;
   domainBasis: "business_domain" | "provider_mailbox";
+  /** Domain of the site the address was crawled from (candidate.domain, normalized). */
+  crawlDomain: string;
+  /** The business's own website domain at decision time (normalized). Must equal crawlDomain. */
+  businessSiteDomain: string;
   attributionScope: "role" | "named";
   candidateSource: string;
   facts?: Record<string, unknown>;
@@ -716,6 +726,7 @@ export async function decideFirstPartyContactBusinessLink(input: {
       || !/^[0-9a-f]{64}$/i.test(input.candidateHash)
       || !/^[0-9a-f]{64}$/i.test(input.contactEmailTokenHash)
       || !input.candidateId || !input.addressDomain || !input.candidateSource
+      || !input.crawlDomain || input.crawlDomain !== input.businessSiteDomain
       || !["business_domain", "provider_mailbox"].includes(input.domainBasis)
       || !["role", "named"].includes(input.attributionScope)) {
     throw new Error("COMMERCIAL_FIRST_PARTY_LINK_EVIDENCE_INVALID");
@@ -766,6 +777,9 @@ export async function decideFirstPartyContactBusinessLink(input: {
     contactEmailTokenHash: input.contactEmailTokenHash,
     addressDomain: input.addressDomain,
     domainBasis: input.domainBasis,
+    crawlDomain: input.crawlDomain,
+    businessSiteDomain: input.businessSiteDomain,
+    siteRelation: "business_website_domain",
     attributionScope: input.attributionScope,
     candidateSource: input.candidateSource,
     ...(input.facts ?? {}),
@@ -774,11 +788,13 @@ export async function decideFirstPartyContactBusinessLink(input: {
   const evidence = (await tx.execute(sql`
     INSERT INTO contact_business_first_party_link_evidence
       (decision_key,contact_id,business_id,candidate_id,candidate_hash,contact_email_token_hash,
-       address_domain,domain_basis,attribution_scope,candidate_source,rule_version,facts_hash,facts)
+       address_domain,domain_basis,attribution_scope,candidate_source,rule_version,facts_hash,facts,
+       crawl_domain,business_site_domain,site_relation)
     VALUES (${decisionKey},${input.contactId},${input.businessId},${input.candidateId}::uuid,
       ${input.candidateHash},${input.contactEmailTokenHash},${input.addressDomain},${input.domainBasis},
       ${input.attributionScope},${input.candidateSource},${FIRST_PARTY_LINK_RULE_VERSION},
-      ${factsHash},${JSON.stringify(facts)}::jsonb)
+      ${factsHash},${JSON.stringify(facts)}::jsonb,
+      ${input.crawlDomain},${input.businessSiteDomain},'business_website_domain')
     RETURNING id
   `) as any).rows?.[0];
   if (!evidence) throw new Error("COMMERCIAL_FIRST_PARTY_LINK_EVIDENCE_WRITE_FAILED");

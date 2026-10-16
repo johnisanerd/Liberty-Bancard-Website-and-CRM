@@ -10324,6 +10324,10 @@ export const contactBusinessFirstPartyLinkEvidence = pgTable("contact_business_f
   ruleVersion: text("rule_version").notNull(),
   factsHash: text("facts_hash").notNull(),
   facts: jsonb("facts").notNull(),
+  /** Retained business-to-site relationship (migration 0362): the crawled site and the business's own site, snapshotted. */
+  crawlDomain: text("crawl_domain"),
+  businessSiteDomain: text("business_site_domain"),
+  siteRelation: text("site_relation"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index("contact_business_first_party_link_evidence_subject_idx").on(table.contactId, table.businessId, table.createdAt),

@@ -9,9 +9,10 @@
  *
  * For each safe candidate this service, in ONE transaction:
  *   1. verifies the sealed address (decrypts, re-hashes against the candidate,
- *      rejects non-addresses/placeholders) and its attribution to the business
- *      (address domain == the business/crawled site domain, or a mailbox-
- *      provider address published on the business's own page);
+ *      rejects non-addresses/placeholders) and its attribution to the business:
+ *      the crawled site must BE the business's own website (retained as
+ *      evidence), and the address must sit on that site's domain or be a
+ *      mailbox-provider address published on that same business-owned page;
  *   2. creates the contact through writeContact(), or safely reuses the one
  *      existing unlinked contact that owns that address;
  *   3. writes the verified link to that exact business through the existing
@@ -40,7 +41,8 @@ import { hashEmailToken, normalizeEmailToken } from "../provider-readiness-contr
 import { isCanonicallySuppressed } from "../cro03/sfp-outreach-policy";
 import { businessLacksDbprLineageSql } from "../dbpr";
 import { effectiveBusinessVerticalStatusSql } from "@shared/effective-vertical";
-import { decideFirstPartyContactBusinessLink } from "../commercial-link-authority";
+import { decideFirstPartyContactBusinessLink, assertFirstPartyLinkDatabaseGuard } from "../commercial-link-authority";
+import { lockCommercialGraphNodes, lockCommercialGraphMembershipSets } from "../commercial-graph-locks";
 import { initializeFirstPartyLinkedContactClass } from "../commercial-classification-authority";
 
 const rows = (result: any): any[] => result?.rows ?? result ?? [];
@@ -71,12 +73,17 @@ const nameToken = (value: unknown) => String(value ?? "").toLowerCase()
   .replace(/[^a-z0-9]/g, "");
 
 export type AddressAttribution =
-  | { ok: true; domain: string; basis: "business_domain" | "provider_mailbox" }
+  | { ok: true; domain: string; basis: "business_domain" | "provider_mailbox"; crawlDomain: string }
   | { ok: false; reason: string };
 
-/** Pure: is this address plausibly the business's own published mailbox? */
+/**
+ * Pure: is this address the business's own published mailbox? The crawled site
+ * must be the business's own website (candidate domain == business website
+ * domain); an unrelated or missing crawl domain never attributes anything, not
+ * even a mailbox-provider address.
+ */
 export function attributeStagedAddress(
-  email: string, candidateDomain: unknown, businessDomain: unknown,
+  email: string, crawlDomainInput: unknown, businessDomain: unknown,
 ): AddressAttribution {
   if (!CLEAN_ADDRESS.test(email) || email.length > 254 || email.includes("..")) {
     return { ok: false, reason: "EMAIL_NOT_CLEAN" };
@@ -85,14 +92,15 @@ export function attributeStagedAddress(
   if (PLACEHOLDER_DOMAINS.has(domain) || PLACEHOLDER_LOCALS.has(local)) {
     return { ok: false, reason: "PLACEHOLDER_ADDRESS" };
   }
-  // A mailbox-provider domain is never "the business's own site", even if a
-  // crawler recorded it as the candidate domain.
-  const own = [stripWww(candidateDomain), stripWww(businessDomain)]
-    .filter(d => d && !MAILBOX_PROVIDER_DOMAINS.has(d));
-  if (own.some(d => domain === d || domain.endsWith(`.${d}`))) {
-    return { ok: true, domain, basis: "business_domain" };
+  const crawlDomain = stripWww(crawlDomainInput);
+  const siteDomain = stripWww(businessDomain);
+  if (!crawlDomain || !siteDomain || crawlDomain !== siteDomain || MAILBOX_PROVIDER_DOMAINS.has(crawlDomain)) {
+    return { ok: false, reason: "CRAWL_SITE_NOT_BUSINESS_SITE" };
   }
-  if (MAILBOX_PROVIDER_DOMAINS.has(domain)) return { ok: true, domain, basis: "provider_mailbox" };
+  if (domain === crawlDomain || domain.endsWith(`.${crawlDomain}`)) {
+    return { ok: true, domain, basis: "business_domain", crawlDomain };
+  }
+  if (MAILBOX_PROVIDER_DOMAINS.has(domain)) return { ok: true, domain, basis: "provider_mailbox", crawlDomain };
   return { ok: false, reason: "THIRD_PARTY_DOMAIN" };
 }
 
@@ -201,6 +209,8 @@ export interface StagedEmailMaterializationResult {
   skipped: Record<string, number>;
   failed: number;
   contactIds: number[];
+  /** Set (and nothing is evaluated) while the native first-party link branch is not installed. */
+  nativeBlocked?: string;
 }
 
 class MaterializationHold extends Error {
@@ -288,18 +298,43 @@ async function materializeCandidate(candidate: any, actorId: string): Promise<Ro
     }
 
     // Shared-location ambiguity: another canonical business publishes on the
-    // same site domain, so the page cannot say which business owns the mailbox.
-    if (attribution.basis === "business_domain") {
+    // same site domain, so the page cannot say which business owns the mailbox
+    // (applies to mailbox-provider addresses as well as business-domain ones).
+    {
       const shared = rows(await tx.execute(sql`
         SELECT 1 FROM businesses other
          WHERE other.id <> ${businessId} AND other.record_class = 'canonical'
-           AND lower(regexp_replace(trim(coalesce(other.website_domain,'')),'^www[.]','','i'))
-               IN (${stripWww(candidate.domain) || "-"}, ${stripWww(business?.website_domain) || "-"})
+           AND lower(regexp_replace(trim(coalesce(other.website_domain,'')),'^www[.]','','i')) = ${attribution.crawlDomain}
          LIMIT 1
       `))[0];
       if (shared) throw new MaterializationHold("SHARED_LOCATION_DOMAIN");
     }
 
+    // Canonical lock order (CRO-02): graph advisory fences BEFORE the contact row, exactly as the
+    // admin/system relationship writers take them. An unlocked read only identifies which contact
+    // node to fence; the row lock below re-verifies everything after the fences are held.
+    const peek = rows(await tx.execute(sql`
+      SELECT c.id,
+             (SELECT d.business_id FROM contact_business_link_decisions d
+               WHERE d.contact_id = c.id AND d.superseded_at IS NULL) AS current_business_id
+        FROM contacts c
+       WHERE c.archived_at IS NULL AND lower(btrim(c.email)) = ${email}
+       ORDER BY c.id
+    `));
+    if (peek.length === 1) {
+      const peekId = Number(peek[0].id);
+      await lockCommercialGraphNodes(tx, [{ type: "contact", id: peekId }]);
+      const hint = rows(await tx.execute(sql`
+        SELECT business_id FROM contact_business_link_decisions
+         WHERE contact_id = ${peekId} AND superseded_at IS NULL`))[0];
+      const fenceNodes = [
+        { type: "contact" as const, id: peekId },
+        { type: "business" as const, id: businessId },
+        ...(hint?.business_id ? [{ type: "business" as const, id: Number(hint.business_id) }] : []),
+      ];
+      await lockCommercialGraphNodes(tx, fenceNodes.filter(node => node.type === "business"));
+      await lockCommercialGraphMembershipSets(tx, fenceNodes, ["contact_business"]);
+    }
     const existing = rows(await tx.execute(sql`
       SELECT c.id, c.business_id, c.company_name,
              (SELECT d.business_id FROM contact_business_link_decisions d
@@ -310,6 +345,12 @@ async function materializeCandidate(candidate: any, actorId: string): Promise<Ro
        WHERE c.archived_at IS NULL AND lower(btrim(c.email)) = ${email}
        ORDER BY c.id FOR UPDATE OF c
     `));
+    // Anything that changed between the fence and the row lock was written by a writer that did not
+    // hold our fences; retry on the next pass instead of acting on a moved target.
+    if (existing.length !== peek.length
+        || existing.some((row, i) => Number(row.id) !== Number(peek[i].id))) {
+      throw new MaterializationHold("EVIDENCE_CHANGED");
+    }
     let contactId: number;
     let created = false;
     if (existing.length > 1) throw new MaterializationHold("EXISTING_CONTACT_AMBIGUOUS");
@@ -391,6 +432,8 @@ async function materializeCandidate(candidate: any, actorId: string): Promise<Ro
       contactEmailTokenHash: tokenHash,
       addressDomain: attribution.domain,
       domainBasis: attribution.basis,
+      crawlDomain: attribution.crawlDomain,
+      businessSiteDomain: stripWww(business?.website_domain),
       attributionScope: scope,
       candidateSource: String(candidate.source),
       facts: { ruleVersion: MATERIALIZATION_RULE_VERSION, contactCreated: created },
@@ -406,11 +449,18 @@ export async function runStagedEmailMaterialization(input: {
   actorId: string;
 } & MaterializationScope): Promise<StagedEmailMaterializationResult> {
   const limit = Math.max(1, Math.min(500, Math.floor(input.limit)));
-  const candidates = rows(await db.execute(eligibleCandidatesSql(limit, input)));
+  // Publish installs tables/columns but not PL/pgSQL bodies or triggers. Until the owner-console
+  // install has run, fail closed ONCE for the whole pass instead of rolling back every candidate.
+  let nativeBlocked: string | undefined;
+  try { await assertFirstPartyLinkDatabaseGuard(db); }
+  catch (error: any) { nativeBlocked = String(error?.message ?? error).split("\n")[0].slice(0, 300); }
+  const candidates = nativeBlocked ? [] : rows(await db.execute(eligibleCandidatesSql(limit, input)));
   const result: StagedEmailMaterializationResult = {
     examined: candidates.length, created: 0, linkedExisting: 0, alreadyLinked: 0,
     held: {}, skipped: {}, failed: 0, contactIds: [],
+    ...(nativeBlocked ? { nativeBlocked } : {}),
   };
+  if (nativeBlocked) console.warn(`[StagedEmailMaterialization] blocked: ${nativeBlocked}`);
   const bump = (bucket: Record<string, number>, key: string) => { bucket[key] = (bucket[key] ?? 0) + 1; };
 
   for (const candidate of candidates) {
@@ -446,7 +496,7 @@ export async function runStagedEmailMaterialization(input: {
               ruleVersion: MATERIALIZATION_RULE_VERSION,
               examined: result.examined, created: result.created, linkedExisting: result.linkedExisting,
               alreadyLinked: result.alreadyLinked, held: result.held, skipped: result.skipped,
-              failed: result.failed, paidProviderCalls: 0, outboundChanges: 0,
+              failed: result.failed, nativeBlocked: result.nativeBlocked ?? null, paidProviderCalls: 0, outboundChanges: 0,
             })}::jsonb, 'user', ${input.actorId})
   `).catch((error: any) => console.error("[StagedEmailMaterialization] audit write failed:", error?.message));
   return result;

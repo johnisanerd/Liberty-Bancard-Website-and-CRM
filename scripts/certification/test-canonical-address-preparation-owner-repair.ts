@@ -66,7 +66,7 @@ try {
   await assertCanonicalAddressReceiptContract(db);checks++;
   check((await pool.query(`SELECT md5(replace(prosrc,$1,$2)) hash FROM pg_proc
     WHERE oid='public.enforce_reviewed_contact_business_link()'::regprocedure`,
-    [CANONICAL_ADDRESS_RECEIPT_CLAUSE,ORIGINAL_ADDRESS_RECEIPT_CLAUSE])).rows[0].hash==="fb3f7591d89f5a6445d9878cab4720e8",
+    [CANONICAL_ADDRESS_RECEIPT_CLAUSE,ORIGINAL_ADDRESS_RECEIPT_CLAUSE])).rows[0].hash==="36151ce032505a66054e6b8c70daa259",
     "Address change inverts byte-for-byte to the pinned routine (approved original plus the migration-0361 first-party link branch)");
   check((await pool.query(`SELECT md5(prosrc) hash FROM pg_proc
     WHERE oid='public.crm_enforce_canonical_preparation_capacity()'::regprocedure`)).rows[0].hash
