@@ -26,6 +26,7 @@
  * fragment is hardcoded to reference `c.business_id`, not a bare column.
  */
 import { businessLacksDbprLineageWhereFragment } from "./dbpr";
+import { EMAIL_VALIDATION_MAX_AGE_MS } from "./provider-readiness-decision";
 
 /**
  * Excludes contacts linked to a canonical business with any DBPR-family
@@ -33,8 +34,27 @@ import { businessLacksDbprLineageWhereFragment } from "./dbpr";
  */
 export const DBPR_LINEAGE_EXCLUSION_CLAUSE = `(c.business_id IS NULL OR ${businessLacksDbprLineageWhereFragment("c.business_id")})`;
 
+// 'valid' without a validation date is legacy/anomalous: it has no provider
+// evidence behind it, so it is treated as unvalidated. Only completed provider
+// decisions and the receipt projection write 'valid', and both set the date.
 export const UNVALIDATED_EMAIL_PREDICATE =
-  `(email_status IS NULL OR email_status IN ('active', 'unvalidated'))`;
+  `(email_status IS NULL OR email_status IN ('active', 'unvalidated')
+    OR (email_status = 'valid' AND email_validation_updated_at IS NULL))`;
+
+/**
+ * "Currently validated": status 'valid' with a validation date inside the same
+ * freshness window the marketing authority enforces
+ * (EMAIL_VALIDATION_MAX_AGE_MS). This is a candidate-selection filter only;
+ * the provider observation checked by evaluateMarketingEmailEligibility
+ * remains the sole send authority. Pass the contacts alias when joined.
+ */
+export function currentValidEmailPredicate(alias = ""): string {
+  if (alias && !/^[a-z_][a-z0-9_]*$/.test(alias)) throw new Error("EMAIL_PREDICATE_ALIAS_INVALID");
+  const p = alias ? `${alias}.` : "";
+  const days = Math.floor(EMAIL_VALIDATION_MAX_AGE_MS / 86_400_000);
+  return `(${p}email_status = 'valid' AND ${p}email_validation_updated_at IS NOT NULL
+    AND ${p}email_validation_updated_at > NOW() - INTERVAL '${days} days')`;
+}
 
 // Eligibility filter for ZeroBounce candidates: non-blank real addresses only.
 // Excludes synthetic placeholders written by CSV import

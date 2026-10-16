@@ -32,13 +32,18 @@ const TAG = `zb1540-${Date.now()}`;
 const mkEmail = (slug: string) => `${TAG}-${slug}@example-test.com`;
 const now = new Date().toISOString();
 
-async function insertContact(email: string, emailStatus: string | null, archived = false): Promise<number> {
+async function insertContact(
+  email: string,
+  emailStatus: string | null,
+  archived = false,
+  validatedAt: Date | null = null,
+): Promise<number> {
   const r = await pool.query(
-    `INSERT INTO contacts (first_name, last_name, email, phone, email_status, lead_score, archived_at)
-     VALUES ($1, $2, $3, $4, $5, 50, $6) RETURNING id`,
+    `INSERT INTO contacts (first_name, last_name, email, phone, email_status, lead_score, archived_at, email_validation_updated_at)
+     VALUES ($1, $2, $3, $4, $5, 50, $6, $7) RETURNING id`,
     ["ZB1540", "Test", email,
      `+1555${String(Date.now() + Math.floor(Math.random() * 1000000)).slice(-7)}`,
-     emailStatus, archived ? new Date() : null],
+     emailStatus, archived ? new Date() : null, validatedAt],
   );
   return r.rows[0].id;
 }
@@ -80,7 +85,8 @@ async function main() {
     const idNull        = await insertContact(emNull, null);
     const idActive      = await insertContact(emActive, "active");
     const idUnvalidated = await insertContact(emUnval, "unvalidated");
-    const idValid       = await insertContact(emValid, "valid");
+    // A real "valid" always carries a validation date; undated "valid" is legacy and now counts as unvalidated.
+    const idValid       = await insertContact(emValid, "valid", false, new Date());
     const idArchived    = await insertContact(emArch, "unvalidated", true);
     const idPlaceholder = await insertContact(emPlaceholder, "unvalidated");
     ids.push(idNull, idActive, idUnvalidated, idValid, idArchived, idPlaceholder);

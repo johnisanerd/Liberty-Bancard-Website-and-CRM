@@ -22,6 +22,7 @@ import { contactNba, contacts, auditLogs } from "@shared/schema";
 import { eq, and, sql } from "drizzle-orm";
 import { NBAService } from "./nba-service";
 import { storage } from "../storage";
+import { currentValidEmailPredicate } from "./zerobounce-eligibility";
 
 const MAX_BATCH = parseInt(process.env.WINBACK_BATCH_SIZE ?? "50", 10);
 
@@ -120,7 +121,7 @@ export async function runWinbackOutreachEngine(): Promise<{
       AND (n.expires_at IS NULL OR n.expires_at > NOW())
       AND c.email IS NOT NULL
       AND c.email != ''
-      AND c.email_status = 'valid'
+      AND ${sql.raw(currentValidEmailPredicate("c"))}
     ORDER BY n.due_at ASC NULLS LAST
     LIMIT ${MAX_BATCH}
   `);

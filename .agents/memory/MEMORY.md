@@ -155,3 +155,5 @@
 - [Linked worktree identity](linked-worktree-identity.md) — Missing Git links can silently target primary main; verify repository identity and repair registered worktrees.
 - [Created-original recovery admission](created-original-recovery-admission.md) — predicate aliases, classifier matched echoed SQL text, ledger query plan pitfalls, known audited-only baseline failure.
 - [Retained Sunbiz production rollout](retained-sunbiz-production-rollout.md) — Post-publish outcomes; behind-cursor contacts wait for the next pass; remaining holds are protective, not failures.
+- [Email validated definition](email-validated-definition.md) — Send authority is a 30-day provider observation; undated 'valid' and 'active' count as unvalidated.
+- [Classification coverage gap](classification-coverage-gap.md) — catch-up classification of never-classified businesses; windowed drain, capped OpenAI escalation.
