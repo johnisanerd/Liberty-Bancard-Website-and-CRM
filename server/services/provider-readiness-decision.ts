@@ -1,7 +1,7 @@
 import { createHash } from "crypto";
 
 export const EMAIL_VALIDATION_POLICY_VERSION = 1;
-export const EMAIL_VALIDATION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+export const EMAIL_VALIDATION_MAX_AGE_MS = 180 * 24 * 60 * 60 * 1000;
 
 export type MarketingValidationReason =
   | "positive_current_evidence" | "missing_email" | "not_validated"

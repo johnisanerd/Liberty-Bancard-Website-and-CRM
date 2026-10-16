@@ -360,8 +360,9 @@ app.use((req, _res, next) => {
   // target here is insert-only and fails closed (throws, blocking startup)
   // on any conflict with canonical content.
   await runProductionSeedConvergence();
-  const { convergeSfpRecipientPolicyV2 } = await import("./services/cro03/sfp-recipient-policy-convergence");
+  const { convergeSfpRecipientPolicyV2, convergeSfpRecipientPolicyV3 } = await import("./services/cro03/sfp-recipient-policy-convergence");
   await convergeSfpRecipientPolicyV2();
+  await convergeSfpRecipientPolicyV3();
   // Applies sfp_outreach_policy_control's singleton CHECK constraint
   // out-of-band — see ensureSfpOutreachPolicyControlCheckConstraint's doc
   // comment for why it cannot be declared in shared/schema.ts.

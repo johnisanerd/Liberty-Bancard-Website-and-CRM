@@ -67,3 +67,57 @@ export async function convergeSfpRecipientPolicyV2(executor: any = db) {
     return { activated: true,version: 2 };
   });
 }
+const V3_VALIDATION_TTL_DAYS = 180;
+
+/**
+ * Data-only convergence: publishes immutable policy v3 (180-day validation
+ * aging) as a new document and moves the active pointer from the known system
+ * v2. An operator-selected policy is never replaced, and v2 is never edited.
+ */
+export async function convergeSfpRecipientPolicyV3(executor: any = db) {
+  const needsUpgrade = await executor.transaction(async (tx: any) => {
+    const current = rows(await tx.execute(sql`
+      SELECT p.version FROM sfp_outreach_policy_control c
+      JOIN sfp_outreach_policy_documents p ON p.id=c.active_policy_id
+      WHERE c.singleton=TRUE FOR SHARE OF c
+    `))[0];
+    return !!current && Number(current.version) === 2;
+  });
+  if (!needsUpgrade) return { activated: false };
+
+  return executor.transaction(async (tx: any) => {
+    const current = rows(await tx.execute(sql`
+      SELECT p.* FROM sfp_outreach_policy_control c
+      JOIN sfp_outreach_policy_documents p ON p.id=c.active_policy_id
+      WHERE c.singleton=TRUE FOR UPDATE OF c
+    `))[0];
+    if (!current || Number(current.version) !== 2) return { activated: false };
+    if (current.created_by !== "system:crm_recipient_policy_v2"
+      || Number(current.validation_ttl_days) !== 30) {
+      return { activated: false, reason: "custom_policy_preserved" };
+    }
+    const body = { version: 3, validationTtlDays: V3_VALIDATION_TTL_DAYS,
+      acceptedOutcomes: current.accepted_outcomes, retryableOutcomes: current.retryable_outcomes,
+      roleInboxPolicy: current.role_inbox_policy, consentTierPolicy: current.consent_tier_policy,
+      reasonCodes: current.reason_codes };
+    const documentHash = crypto.createHash("sha256").update(JSON.stringify(body)).digest("hex");
+    await tx.execute(sql`INSERT INTO sfp_outreach_policy_documents
+      (version,document_hash,validation_ttl_days,accepted_outcomes,retryable_outcomes,
+        role_inbox_policy,consent_tier_policy,reason_codes,created_by)
+      VALUES (3,${documentHash},${V3_VALIDATION_TTL_DAYS},${JSON.stringify(body.acceptedOutcomes)}::jsonb,
+        ${JSON.stringify(body.retryableOutcomes)}::jsonb,${JSON.stringify(body.roleInboxPolicy)}::jsonb,
+        ${JSON.stringify(body.consentTierPolicy)}::jsonb,${JSON.stringify(body.reasonCodes)}::jsonb,
+        'system:validation_aging_180d')
+      ON CONFLICT (version) DO NOTHING`);
+    const desired = rows(await tx.execute(sql`SELECT id,document_hash,validation_ttl_days
+      FROM sfp_outreach_policy_documents WHERE version=3`))[0];
+    if (!desired || desired.document_hash !== documentHash
+      || Number(desired.validation_ttl_days) !== V3_VALIDATION_TTL_DAYS) {
+      throw new Error("SFP_RECIPIENT_POLICY_V3_VERSION_CONFLICT");
+    }
+    await tx.execute(sql`UPDATE sfp_outreach_policy_control SET active_policy_id=${desired.id}::uuid,
+      activated_at=NOW(),activated_by='system:validation_aging_180d'
+      WHERE singleton=TRUE AND active_policy_id=${current.id}::uuid`);
+    return { activated: true, version: 3 };
+  });
+}

@@ -51,7 +51,7 @@ assert.equal(decideMarketingEmailValidation(email, {
 }, now).allowed, false, "mismatched generation must block");
 assert.equal(decideMarketingEmailValidation(email, {
   emailStatus: "valid", emailTokenHash: token, subjectGeneration: 3,
-  evidenceGeneration: 3, verifiedAt: new Date(now.getTime() - 31 * 24 * 60 * 60 * 1000),
+  evidenceGeneration: 3, verifiedAt: new Date(now.getTime() - 181 * 24 * 60 * 60 * 1000),
   providerOutcome: "valid",
 }, now).allowed, false, "stale evidence must block");
 

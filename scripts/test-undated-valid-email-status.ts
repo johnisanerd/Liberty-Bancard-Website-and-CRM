@@ -25,11 +25,12 @@ async function main() {
   const ids: number[] = [];
   try {
     const fresh = await insert("fresh", "valid", new Date());
-    const stale = await insert("stale", "valid", new Date(Date.now() - 45 * 86_400_000));
+    const stale = await insert("stale", "valid", new Date(Date.now() - 200 * 86_400_000));
     const undated = await insert("undated", "valid", null);
     const active = await insert("active", "active", null);
     const unval = await insert("unvalidated", "unvalidated", null);
-    ids.push(fresh, stale, undated, active, unval);
+    const aged60 = await insert("aged60", "valid", new Date(Date.now() - 60 * 86_400_000));
+    ids.push(fresh, stale, undated, active, unval, aged60);
     const ask = async (pred: string) => new Set((await pool.query(
       `SELECT c.id FROM contacts c WHERE ${pred} AND c.id = ANY($1::int[])`, [ids])).rows.map((r: any) => r.id));
 
@@ -42,7 +43,8 @@ async function main() {
 
     const current = await ask(currentValidEmailPredicate("c"));
     check("fresh dated 'valid' is currently validated", current.has(fresh));
-    check("'valid' older than 30 days is not current", !current.has(stale));
+    check("'valid' older than 180 days is not current", !current.has(stale));
+    check("'valid' aged 60 days is still current (180-day window)", current.has(aged60));
     check("undated 'valid' is not current", !current.has(undated));
     check("'active' is not current", !current.has(active) && !current.has(unval));
 

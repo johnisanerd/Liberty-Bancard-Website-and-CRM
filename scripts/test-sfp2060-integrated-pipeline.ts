@@ -734,7 +734,7 @@ try {
     SELECT e.status,COALESCE(e.validation_operation_id,e.reused_from_operation_id) AS operation_id,
            e.validation_at BETWEEN po.observed_at-INTERVAL '5 minutes'
                                AND po.observed_at+INTERVAL '5 minutes' AS time_aligned,
-           e.validation_expires_at<=COALESCE(po.expires_at,po.observed_at+INTERVAL '30 days') AS expiry_bounded,
+           e.validation_expires_at<=COALESCE(po.expires_at,po.observed_at+INTERVAL '180 days') AS expiry_bounded,
            md5(row_to_json(po)::text) AS fingerprint
       FROM sfp_outreach_eligibility e
       JOIN provider_observations po
