@@ -127,8 +127,9 @@ try {
   // ── Provider mailbox published on the business's own page; unmapped vertical ─
   const unmapped = await business({ vertical: null });
   const gmail = `${tag()}.owner@gmail.com`;
-  await stage(unmapped.id, gmail, { source: "contact_page" });
-  await run();
+  const gmailCandidate = await stage(unmapped.id, gmail, { source: "contact_page" });
+  const gmailRun = await run();
+  console.log("gmail run", JSON.stringify(gmailRun), JSON.stringify(await outcome(gmailCandidate)));
   const gmailContact = await contactByEmail(gmail);
   check(gmailContact && Number(gmailContact.business_id) === unmapped.id
     && (await one(`SELECT domain_basis FROM contact_business_first_party_link_evidence WHERE contact_id=$1`,
