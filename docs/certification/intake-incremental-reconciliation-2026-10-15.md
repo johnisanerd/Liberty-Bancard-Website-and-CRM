@@ -959,3 +959,69 @@ evidence (company+address+city+phone 47, address+city+phone 16, address+city 12,
 company+address+phone 2). The assertion run passed. No contacts were merged or deleted and no identity
 protection was relaxed; the earlier failure was an over-broad assertion, not duplicated creation.
 (The earlier "19 groups" observation came from a mid-run snapshot.)
+
+## Post-publication production verification of the retained-source and place-ownership build (2026-10-16 00:20–04:20 UTC)
+
+Read-only production queries only. Nothing was reset, forced, replayed, re-uploaded or sent; no paid provider was
+called; outbound remains paused. Health served `a6260926bac254d64dcb1b11efdb0f8052e9a592` (built 00:19:46 UTC,
+build `b6df038d-9f4c-4e67-b627-936e370288ff`), so this build includes the place-ownership locking, the retained
+Sunbiz completion path and migration 0358. Both indexes (`prospects_retained_contact_idx`,
+`sunbiz_entities_retained_prospect_idx`) are valid and ready. The Publish-managed schema path was used; the
+drizzle journal row was not independently mapped to 0358, only the resulting indexes were verified.
+
+### Retained Sunbiz cohort (1,424 contacts with a terminal `legacy_sunbiz_promotion_exists` claim)
+
+The linker status never lost its run ID or completed-backfill flag. Committed assignments rose from 29 to 1,322.
+Final outcome for the cohort, from the materializer's own latest `contact_link_materialization_outcome` row:
+
+| Outcome | Contacts |
+| --- | ---: |
+| Assigned (materialized 1,270; matched 2; assigned with no outcome row 2) | 1,274 |
+| Held: more than one organization could match | 55 |
+| Held: contact is not production class | 47 |
+| Held: retained registry source has more than one filing | 37 |
+| Held: registry identity unsupported | 6 |
+| Held: business not canonical | 4 |
+| Held: contact/registry location conflict | 1 |
+| Retained, unassigned, no outcome | 0 |
+
+The 150 holds are policy holds, not failures; none was forced. A contiguous cluster of about 200 retained contacts
+(IDs 62,851–63,050) sat behind the ordinary cursor when the build started and was reached on the next natural
+pass; it required no reset. The terminal claims were not modified. The eleven clear contacts (160787, 160788,
+160876, 160877, 160879, 161230, 161232, 161535, 162964–162966) are all assigned.
+
+### Place-identity mirroring
+
+At 00:21:12 UTC the worker wrote 23 `business_place_identity_mirrored` audit rows. All 23 businesses now carry
+the mirrored place ID, each matches its exact place source link by business and stable key, and no place ID is
+owned by more than one business. No business with a place source link still has a blank place ID.
+
+### Upload receipts (all six uploads, 4,386 original rows)
+
+Using the ledger's own definition (completed `CANONICAL_LOCAL_IMPORT_FULFILLED` item plus matching
+`canonical_import_row_fulfilled` audit row at `mailbox_business_identity_v2` for the same execution, row and
+fingerprint):
+
+| Upload | Rows | Verified linked contacts | Current receipts | Still blocked |
+| --- | ---: | ---: | ---: | ---: |
+| 79356e0b (CSV) | 1,472 | 1,112 | 1,310 | 162 |
+| 83e594ce | 537 | 446 | 408 | 129 |
+| b070a72b | 578 | 487 | 453 | 125 |
+| 9cd520f7 | 513 | 394 | 425 | 88 |
+| 6623a227 | 653 | 563 | 561 | 92 |
+| 6b28085c | 633 | 524 | 529 | 104 |
+| **All six** | **4,386** | | **3,686** | **700** |
+
+Current receipts were 1,320 at 14:17 and 1,465 at 18:25 UTC on October 15. `STAGING_RECIPE_DISABLED` is no longer
+present. Remaining blocked items: 626 `CANONICAL_IMPORT_AMBIGUOUS_ORGANIZATION_MATCH` (all uploads) and 74
+`CANONICAL_IMPORT_CONTACT_AFFILIATION_HELD` (CSV only; down from 87). Original dispositions and immutable
+accounting are unchanged; every row is still accounted and every row has an enrichment item. The worker keeps
+retrying the 700 held items (latest update 04:17–04:18 UTC). These holds are genuine identity protection, not
+unreached rows: competing organizations and foreign protected assignments must not be merged or transferred to
+improve the count. Rows, verified contacts and receipts are separate measures and are not added.
+
+### Population
+
+Contacts with an assigned business: 4,853 of 157,929; current verified decisions: 4,851 (previously 3,547).
+Verified decisions and assigned contacts differ by two for reasons not individually traced in this read.
+Ordinary pass 2 (changed-window) was at contact ID 141,991 with `lastError` null when last read.
