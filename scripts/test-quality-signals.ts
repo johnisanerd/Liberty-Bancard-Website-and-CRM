@@ -285,19 +285,19 @@ section("Email quality signals");
 
 // Validation freshness
 const NOW = new Date();
-const WITHIN_90 = new Date(NOW.getTime() - 30 * 24 * 60 * 60 * 1000); // 30 days ago
-const BEYOND_90 = new Date(NOW.getTime() - 120 * 24 * 60 * 60 * 1000); // 120 days ago
+const WITHIN_180 = new Date(NOW.getTime() - 30 * 24 * 60 * 60 * 1000); // 30 days ago
+const BEYOND_180 = new Date(NOW.getTime() - 220 * 24 * 60 * 60 * 1000); // 220 days ago
 
 {
-  const r = classify({ email: "a@legit.com", emailStatus: "valid", emailValidationUpdatedAt: WITHIN_90 });
+  const r = classify({ email: "a@legit.com", emailStatus: "valid", emailValidationUpdatedAt: WITHIN_180 });
   assert(hasSignal(r, "EMAIL_VALID_CURRENT"), "valid + 30 days → EMAIL_VALID_CURRENT");
   assert(!hasSignal(r, "EMAIL_VALID_STALE"), "valid + 30 days → NOT EMAIL_VALID_STALE");
   assert(typeof r.signalDetails.email_validation_age_days === "number", "age_days in details");
 }
 {
-  const r = classify({ email: "a@legit.com", emailStatus: "valid", emailValidationUpdatedAt: BEYOND_90 });
-  assert(hasSignal(r, "EMAIL_VALID_STALE"), "valid + 120 days → EMAIL_VALID_STALE");
-  assert(!hasSignal(r, "EMAIL_VALID_CURRENT"), "valid + 120 days → NOT EMAIL_VALID_CURRENT");
+  const r = classify({ email: "a@legit.com", emailStatus: "valid", emailValidationUpdatedAt: BEYOND_180 });
+  assert(hasSignal(r, "EMAIL_VALID_STALE"), "valid + 220 days → EMAIL_VALID_STALE");
+  assert(!hasSignal(r, "EMAIL_VALID_CURRENT"), "valid + 220 days → NOT EMAIL_VALID_CURRENT");
 }
 {
   // KILL LINE: valid without timestamp = anomalous, NOT current/stale

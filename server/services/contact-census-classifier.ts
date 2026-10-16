@@ -135,7 +135,7 @@ function isPlaceholderPhone(phone: string): boolean {
   return /1234$|0000$|5555$/.test(digits);
 }
 
-const NINETY_DAYS_MS = 90 * 24 * 60 * 60 * 1000;
+const VALIDATION_CURRENT_WINDOW_MS = 180 * 24 * 60 * 60 * 1000;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // D1 — Record Classification
@@ -228,7 +228,7 @@ function classifyD6(row: CensusContactRow, asOf: Date): string {
   if (status === "valid") {
     if (!row.emailValidationUpdatedAt) return "stale"; // anomalous
     const age = asOf.getTime() - new Date(row.emailValidationUpdatedAt).getTime();
-    return age < NINETY_DAYS_MS ? "current" : "stale";
+    return age < VALIDATION_CURRENT_WINDOW_MS ? "current" : "stale";
   }
 
   // email_status = 'active' or 'unvalidated' with no validation date

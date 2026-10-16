@@ -619,7 +619,7 @@ export function BusinessDetailPage() {
                 )}
                 {d.isStale && (
                   <div className="mt-2 flex items-center gap-2 text-xs text-amber-700 rounded bg-amber-50 border border-amber-200 px-3 py-2">
-                    <Clock className="h-3.5 w-3.5 shrink-0" /> Validation is stale (&gt;90 days)
+                    <Clock className="h-3.5 w-3.5 shrink-0" /> Validation is stale (&gt;180 days)
                   </div>
                 )}
                 {d.pendingIntent && (

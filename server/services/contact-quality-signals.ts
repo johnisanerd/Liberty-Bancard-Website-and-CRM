@@ -27,8 +27,8 @@
 // Constants
 // ──────────────────────────────────────────────────────────────────────────────
 
-/** Validation age window: valid + timestamp < 90 days = CURRENT */
-const NINETY_DAYS_MS = 90 * 24 * 60 * 60 * 1000;
+/** Validation age window: valid + timestamp < 180 days = CURRENT */
+const VALIDATION_CURRENT_WINDOW_MS = 180 * 24 * 60 * 60 * 1000;
 
 /**
  * All canonical quality signal codes.
@@ -113,8 +113,8 @@ export const SIGNAL_DESCRIPTIONS: Record<QualitySignalCode, string> = {
   EMAIL_MISSING:             "No email address present on this contact.",
   EMAIL_MALFORMED:           "Email address does not pass basic format validation.",
   EMAIL_PLACEHOLDER:         "Email address appears to be a test or placeholder value.",
-  EMAIL_VALID_CURRENT:       "Email validated as valid within the last 90 days.",
-  EMAIL_VALID_STALE:         "Email validated as valid, but validation is older than 90 days.",
+  EMAIL_VALID_CURRENT:       "Email validated as valid within the last 180 days.",
+  EMAIL_VALID_STALE:         "Email validated as valid, but validation is older than 180 days.",
   EMAIL_VALID_ANOMALOUS:     "Email marked valid but no validation timestamp was recorded.",
   EMAIL_UNVALIDATED:         "Email has not been validated by a provider.",
   EMAIL_INVALID:             "Email was rejected by the validation provider.",
@@ -403,7 +403,7 @@ export function classifyContactQuality(
       } else {
         const ageMs = ctx.asOf.getTime() - new Date(input.emailValidationUpdatedAt).getTime();
         const ageDays = Math.floor(ageMs / (24 * 60 * 60 * 1000));
-        if (ageMs < NINETY_DAYS_MS) {
+        if (ageMs < VALIDATION_CURRENT_WINDOW_MS) {
           codes.push("EMAIL_VALID_CURRENT");
           details.email_validation_age_days = ageDays;
         } else {

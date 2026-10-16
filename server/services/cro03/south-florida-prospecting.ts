@@ -1935,7 +1935,7 @@ export async function previewCampaignStaging(cohortRunId: string): Promise<Campa
  *
  * Per-prospect gates re-verified at execution time:
  *   - validation_status = validated_outreach_eligible
- *   - validation freshness (< 90 days)
+ *   - validation freshness (< 180 days)
  *   - suppression re-check
  *   - DBPR re-check
  *   - existing customer re-check

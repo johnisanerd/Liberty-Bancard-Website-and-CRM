@@ -146,7 +146,7 @@ async function testLaneTaxonomy() {
     businessNameSet: new Set<string>(),
   };
 
-  // emailValidationUpdatedAt must be recent (< 90 days) so D6 returns "current"
+  // emailValidationUpdatedAt must be recent (< 180 days) so D6 returns "current"
   const recentValidation = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000); // 1 day ago
   const base = {
     id: 1, firstName: "John", lastName: "Doe",

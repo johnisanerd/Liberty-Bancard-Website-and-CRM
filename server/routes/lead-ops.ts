@@ -1481,7 +1481,7 @@ Return maximum 5 segments, 4 recommendations, 4 outreach priorities, 3 quick win
 
       // MI-06: derive isStale boolean from email_validation_updated_at.
       // Kill line: do NOT mutate email_discovery_status during GET handler.
-      const STALE_DAYS = 90;
+      const STALE_DAYS = 180;
       const emailValidationUpdatedAt = biz.email_validation_updated_at ? new Date(biz.email_validation_updated_at) : null;
       const isStale = emailValidationUpdatedAt
         ? (Date.now() - emailValidationUpdatedAt.getTime()) > STALE_DAYS * 24 * 3600 * 1000 &&

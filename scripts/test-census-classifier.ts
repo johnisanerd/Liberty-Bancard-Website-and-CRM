@@ -237,7 +237,7 @@ console.log("\n[AC #19] COMPLETE_EXISTING_DATA affirmative predicate test");
 
 // Build a "perfect" contact that WOULD qualify for COMPLETE_EXISTING_DATA
 // (all affirmative conditions met). We use 2 months ago for validation date.
-const validatedAt = new Date("2026-07-07T00:00:00Z"); // ~2 months ago, within 90 days
+const validatedAt = new Date("2026-07-07T00:00:00Z"); // ~2 months ago, within 180 days
 const perfectCompleteRow = baseRow({
   id: 200,
   businessId: 42,
@@ -301,12 +301,12 @@ for (const [label, mutation] of requiredMutations) {
   );
 }
 
-// Stale validation (> 90 days) should also fail
+// Stale validation (> 180 days) should also fail
 {
   const staleRow = {
     ...perfectCompleteRow,
     id: 400,
-    emailValidationUpdatedAt: new Date("2026-01-01T00:00:00Z"), // > 90 days ago
+    emailValidationUpdatedAt: new Date("2026-01-01T00:00:00Z"), // > 180 days ago
   };
   const r = classifyContact(staleRow, perfectCtx);
   assert(

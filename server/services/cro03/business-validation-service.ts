@@ -1004,7 +1004,7 @@ export async function markStaleBusinessEmails(opts?: { limit?: number }): Promis
      WHERE id IN (
        SELECT id FROM businesses
         WHERE email_discovery_status = 'provider_valid'
-          AND email_validation_updated_at < NOW() - INTERVAL '90 days'
+          AND email_validation_updated_at < NOW() - INTERVAL '180 days'
         LIMIT ${limit}
      )
      RETURNING id

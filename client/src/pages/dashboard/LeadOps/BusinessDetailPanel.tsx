@@ -467,7 +467,7 @@ export function BusinessDetailPanel({ businessId, onClose }: Props) {
                 } />
                 {d!.isStale && (
                   <div className="flex items-center gap-1.5 text-xs text-amber-700 rounded bg-amber-50 border border-amber-200 px-2 py-1" aria-label="Email validation is stale">
-                    <Clock className="h-3 w-3" aria-hidden /> Validation is stale (&gt;90 days)
+                    <Clock className="h-3 w-3" aria-hidden /> Validation is stale (&gt;180 days)
                   </div>
                 )}
                 {d!.emailEvidenceDisplay && (

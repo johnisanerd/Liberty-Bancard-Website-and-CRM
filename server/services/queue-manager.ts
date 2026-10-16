@@ -1928,9 +1928,9 @@ export class QueueManager {
             if (dnsResult.triggered > 0 || dnsResult.errors > 0) {
               console.log(`[CRO03C BizDNS] retried=${dnsResult.triggered} errors=${dnsResult.errors}`);
             }
-            // Step 4: Mark provider_valid results as stale after 90 days (sampled — full
+            // Step 4: Mark provider_valid results as stale after 180 days (sampled — full
             // scan happens at most once per tick but is capped to avoid timeout).
-            // Uses the same 90-day TTL as evidenceTtlSeconds in recipe-contract.ts:66.
+            // Matches the 180-day validation aging window.
             const staleResult = await markStaleBusinessEmails({ limit: 50 });
             if (staleResult.marked > 0) {
               console.log(`[CRO03C BizStale] marked=${staleResult.marked}`);
