@@ -1,10 +1,19 @@
 ---
 name: Staged-email materialization
-description: How staged free-discovery emails become contacts, and why they are written unlinked and unvalidated.
+description: Staged first-party emails become contacts linked at creation to their original business through a first-party evidence kind in the native link guard.
 ---
 
-Staged emails are encrypted free_discovery_candidates rows, not contacts. A bulk path writes them through writeContact (discovery|cro03, deferred hooks) for mapped-vertical, non-DBPR canonical businesses, skipping shared/suppressed/existing addresses, max 3 per business.
+Staged emails are encrypted free_discovery_candidates rows that already carry business_id. They are materialized automatically (SFP continuous tick, no operator route) into a contact AND a verified link to that exact business, in one transaction, via a dedicated first-party evidence kind in the audited link authority. The first-party evidence kind is enforced natively by enforce_reviewed_contact_business_link(). The earlier "write unlinked, let link automation do it" design is superseded; the user rejected the claimed ZeroBounce-before-link circularity.
 
-**Why:** createValidationIntent only succeeds for contacts already inside a canonical-preparation selection (verified business link + program enrollment intent), and the SFP typed link requires an existing valid ZeroBounce receipt. Neither can run before the contact exists, so materialized contacts are written unlinked with company_name = canonical business name and the existing link automation / canonical preparation own linking and validation.
+**Why:** the old design discarded known business identity, and name re-matching is lossy. Impersonating another source type or bypassing the guard was ruled out.
 
-**How to apply:** Do not call decide*BusinessLink or createValidationIntent from the materializer. Evaluate per-business gates (mapped status, DBPR) once per distinct business in MATERIALIZED CTEs; a per-row correlated effectiveBusinessVerticalStatusSql hit the 30s statement timeout. Candidate rows are never mutated; replay safety is the source-event key.
+**How to apply:**
+- Association (identity facts only) is separate from vertical/outreach eligibility, validation, activation and recipient limits. The native branch checks candidate, hash, domain basis, shared-domain, rival hash, quarantine and no current link, never ZeroBounce or vertical. Preparation later makes the pending-validation intent or reuses a receipt.
+- Any change to the reviewed-link function body changes its pinned inverse-address md5 (canonical-address-receipt-contract.ts). It is also pinned in the native-verification certs (contact-link-automation, owner-repair). Update all in lockstep.
+- A mailbox-provider domain (gmail etc.) is never a business-owned domain, in both the TS and the native branch.
+- Named evidence is person-subject (business_id null by DB constraint), so it cannot be materialized to a business. Only role evidence qualifies.
+- Role mailboxes get business name + "Contact" as a placeholder, never an invented person.
+- Legacy imported contacts have generation 0 and no token hash; bootstrap them under the row lock before linking.
+- Holds are durable outcome rows retried after a rule-version change or 24h. The per-business cap counts usable contacts only.
+- The native quarantine branch is not covered by the disposable cert (needs an sfp_cohort_runs fixture).
+- Evaluate per-business gates in MATERIALIZED CTEs; a per-row correlated vertical check hit the 30s statement timeout.

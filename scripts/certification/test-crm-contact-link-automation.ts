@@ -91,6 +91,7 @@ try {
   for(const key of ["RELEASE_SHA","SFP_PUBLISH_ARTIFACT_SHA","SFP_PUBLISH_BUILD_ID","SFP_PUBLISH_BUILT_AT"])
     delete process.env[key];
   const guard = (await pool.query(verify)).rows[0];
+  console.log("GUARD", JSON.stringify(guard));
   check(Object.values(guard).every(v => v === true), "Real migrated native guards required");
   await assertSystemLinkDatabaseGuard(db);
   check(await getContactLinkAutomationStatus() === null, "Fresh database has no operator program");

@@ -81,7 +81,9 @@ export function canonicalAddressPreparationVerificationSql() {
       AND md5(replace(p.prosrc,
         'AND po.subject_type IN (''business'',''contact'') /* canonical_address_receipt_v1 */',
         'AND po.subject_type=''business'' AND po.subject_id=NEW.business_id'))
-        ='46f89326f7c158ac739814ce343c2559') AS address_receipt_exact,
+        IN ('46f89326f7c158ac739814ce343c2559',  -- approved original routine
+            'fb3f7591d89f5a6445d9878cab4720e8')  -- plus the migration-0361 first-party link branch
+      ) AS address_receipt_exact,
   EXISTS(SELECT 1 FROM pg_constraint
     WHERE conrelid=to_regclass('public.cr04_enrollment_intents')
       AND conname='canonical_preparation_scope_chk' AND contype='c'
