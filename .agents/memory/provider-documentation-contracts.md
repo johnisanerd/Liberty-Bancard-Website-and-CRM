@@ -25,3 +25,9 @@ Apollo Organization Search and People API Search have different documented billi
 **Why:** Documentation checked on 2026-10-01 prices Organization Search at one credit per page while People API Search is free. A common “search is free” default would understate paid usage.
 
 **How to apply:** Use operation-specific documented defaults, preserve contradictory reported usage as a conflict, and keep request/person work separate from exact provider credit usage.
+
+Apollo has no credits (owner-stated 2026-10-17), so continuing failed/ambiguous Apollo operations are expected, not a defect.
+
+**Why:** The user said the failures are because there are no credits and should not be in task scope.
+
+**How to apply:** Do not propose Apollo retry or error-typing work unless credits are restored.
