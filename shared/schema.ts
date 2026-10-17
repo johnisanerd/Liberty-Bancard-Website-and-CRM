@@ -1247,6 +1247,43 @@ export const sfpSerperLookupMemory = pgTable("sfp_serper_lookup_memory", {
   index("sfp_serper_lookup_memory_expiry_idx").on(table.expiresAt),
 ]);
 
+/** Current per-contact business-assignment disposition (observation only, never authority). */
+export const contactBusinessLinkDispositions = pgTable("contact_business_link_dispositions", {
+  contactId: integer("contact_id").primaryKey().references(() => contacts.id, { onDelete: "cascade" }),
+  outcome: text("outcome").notNull(),
+  reasonCode: text("reason_code").notNull(),
+  ruleVersion: text("rule_version").notNull(),
+  evidenceFingerprint: text("evidence_fingerprint").notNull(),
+  evidenceRefs: jsonb("evidence_refs").notNull().default(sql`'{}'::jsonb`),
+  nextRetryTrigger: text("next_retry_trigger"),
+  nextRetryAt: timestamp("next_retry_at", { withTimezone: true }),
+  businessId: integer("business_id").references(() => businesses.id, { onDelete: "set null" }),
+  runId: text("run_id"),
+  evaluationCount: integer("evaluation_count").notNull().default(1),
+  firstEvaluatedAt: timestamp("first_evaluated_at", { withTimezone: true }).notNull().defaultNow(),
+  evaluatedAt: timestamp("evaluated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("contact_business_link_dispositions_outcome_idx").on(table.outcome, table.reasonCode),
+]);
+
+/** Dated acceptance population for the business-assignment program. */
+export const contactLinkAcceptanceBaselines = pgTable("contact_link_acceptance_baselines", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  capturedAt: timestamp("captured_at", { withTimezone: true }).notNull().defaultNow(),
+  ruleVersion: text("rule_version").notNull(),
+  contactCount: integer("contact_count").notNull(),
+  population: jsonb("population").notNull().default(sql`'{}'::jsonb`),
+});
+export const contactLinkAcceptanceMembers = pgTable("contact_link_acceptance_members", {
+  baselineId: uuid("baseline_id").notNull().references(() => contactLinkAcceptanceBaselines.id, { onDelete: "cascade" }),
+  contactId: integer("contact_id").notNull().references(() => contacts.id, { onDelete: "cascade" }),
+  recordClass: text("record_class").notNull(),
+  linkedAtCapture: boolean("linked_at_capture").notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.baselineId, table.contactId] }),
+  index("contact_link_acceptance_members_contact_idx").on(table.contactId),
+]);
+
 // CRO-03C governed live execution authority is deliberately separate from the
 // immutable CRO-03B denied-generation records.
 export type Cro03cBillingSemantics = "not_billable" | "per_unit_no_result_free" | "per_unit_no_result_billable";

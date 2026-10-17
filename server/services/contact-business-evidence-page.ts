@@ -37,6 +37,7 @@ export async function loadEvidenceRelationshipPage(
       c.record_class contact_record_class,c.email_status,c.archived_at,c.address,c.city,c.state,c.phone,
       c.updated_at::text AS contact_revision,c.business_id projected_business_id,
       ${retainedSunbizCompletionExistsSql(sql`c.id`)} has_retained_sunbiz_completion,
+      c.ghl_contact_id IS NOT NULL has_ghl_contact_id,
       c.existing_merchant_customer,c.do_not_contact,c.do_not_auto_contact,c.opted_out_email,
       c.opt_out_status,c.unsubscribe_status,c.bounce_status,c.complaint_status,c.suppression_reason,
       (${changedSince && onlyContactId === undefined ? contactBusinessChangeFilter(changedSince) : sql`TRUE`})
@@ -55,7 +56,12 @@ export async function loadEvidenceRelationshipPage(
   // relationship that now passes the complete independent-evidence preview.
   // Evaluate only the bounded raw page; never rewind or widen the saved window.
   // The transient window flag is NOT part of native snapshot authority.
-  const page = contacts.slice(0, limit).map(({changed_in_window,...contact}:any)=>contact);
+  // Neither transient flag may enter the snapshot hash (it pins native decisions).
+  const ghlByContact=new Map<number,boolean>();
+  const page = contacts.slice(0, limit).map(({changed_in_window,has_ghl_contact_id,...contact}:any)=>{
+    ghlByContact.set(Number(contact.contact_id),has_ghl_contact_id===true);
+    return contact;
+  });
   const ids = page.map((c: any) => Number(c.contact_id));
   const matches = ids.length ? rows(await executor.execute(sql`
     ${evidenceRelationshipCandidateCte(ids)}
@@ -121,6 +127,12 @@ export async function loadEvidenceRelationshipPage(
        hasSupportedMaterializationEvidence:hasMaterializableSourceEvidence(c.source_event_revisions) ||
          c.has_retained_sunbiz_completion===true,
       materializationEvidenceRevision:hash(c.source_event_revisions),
+      currentDecision:c.current_decision ?? null,
+      hasGhlContactId:ghlByContact.get(Number(c.contact_id))===true,
+      sourceEvents:{count:Array.isArray(c.source_event_revisions)?c.source_event_revisions.length:0,
+        kinds:(Array.isArray(c.source_event_revisions)?c.source_event_revisions:[])
+          .map((e:any)=>`${e.source_category}:${e.source_type}`),
+        hasSupportedEvidence:hasMaterializableSourceEvidence(c.source_event_revisions)},
       candidateEvidence:alternatives.map((m:any)=>({businessId:Number(m.business_id),
         sourceLinkId:String(m.source_link_id),sourceEntityId:m.source_entity_id ?? null,
         businessRevision:m.business_revision,sourceRevision:m.source_revision,

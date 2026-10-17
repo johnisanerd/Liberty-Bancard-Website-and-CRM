@@ -1,0 +1,24 @@
+{
+  "observedAt": "2026-10-17T21:30:38.165Z",
+  "checks": 49,
+  "rule": "contact_link_disposition_v1/source_family_identity_v4/crm_evidence_identity_v3",
+  "dispositionRule": "contact_link_disposition_v1",
+  "scope": "Disposable real-DB legacy business assignment dispositions only",
+  "legacyOriginalRowAdapter": true,
+  "contactFieldsAloneNeverLink": true,
+  "durablePerContactOutcome": true,
+  "retryableFailureRecovers": true,
+  "ruleChangeReconsidersHolds": true,
+  "sharedMailboxesAndBrandLocations": true,
+  "concurrentCreationOneBusiness": true,
+  "noReceiptEnrollmentOrCommunicationFromLinks": true,
+  "throughputLinksPerSecond": 6.25,
+  "throughputPopulation": 120,
+  "queryWorstPageMs": 31,
+  "queryPopulation": {
+    "contacts": 20000,
+    "businesses": 3000
+  },
+  "externalNetworkAttempts": 0,
+  "productionExecution": false
+}

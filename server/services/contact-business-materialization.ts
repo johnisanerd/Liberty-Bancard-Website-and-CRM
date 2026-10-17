@@ -9,6 +9,7 @@ import {normalizeDomain,normalizePhoneE164} from "./sdr/dedupe";
 import {normalOrganizationName,normalOrganizationValue} from "./organization-resolution-policy";
 import {MATERIALIZATION_SOURCE_CATEGORIES,MATERIALIZATION_SOURCE_TYPES,retainedProviderPlaceId} from "./contact-business-materialization-policy";
 import {materializeRetainedSunbizContact} from "./retained-sunbiz-contact-materialization";
+import {loadLegacyOriginalRowEvidence} from "./legacy-source-business-evidence";
 
 const rows=(result:any):any[]=>result?.rows ?? result ?? [];
 const address=(value:unknown)=>String(value ?? "").toLowerCase().replace(/[^a-z0-9]/g,"");
@@ -47,7 +48,18 @@ export async function materializeSupportedContactBusiness(contactId:number,
           OR source_type IN (${sql.join(MATERIALIZATION_SOURCE_TYPES.map(value=>sql`${value}`),sql`, `)}))
       ORDER BY source_category,source_type,coalesce(source_external_id,''),id DESC
       ) latest ORDER BY id DESC`));
-    if(!events.length)return materializeRetainedSunbizContact(tx,contact,assertAuthority);
+    let adapter:string|null=null;
+    if(!events.length) {
+      // Legacy provider imports that predate businessEvidence: read the ORIGINAL
+      // retained provider row (never the contact's own fields) before the registry path.
+      const legacy=await loadLegacyOriginalRowEvidence(tx,contactId);
+      if(legacy.status==="unavailable")return {status:"held",reasonCode:legacy.reasonCode};
+      if(legacy.status==="none")return materializeRetainedSunbizContact(tx,contact,assertAuthority);
+      adapter=legacy.event.adapter;
+      events.push({id:legacy.event.id,source_category:legacy.event.source_category,
+        source_type:legacy.event.source_type,source_external_id:legacy.event.source_external_id,
+        proof:legacy.event.proof,event_metadata:legacy.event.event_metadata});
+    }
     const event=events[0],proof=event.proof as BusinessEvidence;
     const place=retainedProviderPlaceId(event.event_metadata);
     const domain=normalizeDomain(proof.websiteDomain),phone=normalizePhoneE164(proof.mainPhone);
@@ -93,15 +105,29 @@ export async function materializeSupportedContactBusiness(contactId:number,
     const link=rows(await tx.execute(sql`INSERT INTO canonical_source_links
       (business_id,source_system,source_type,stable_key,raw_evidence)
       VALUES(${resolution.business.id},${sourceSystem},'organization_location',${stableKey},
-        ${JSON.stringify({businessEvidence:proof,sourceEventId:event.id,representation:"source_family_identity_v1"})}::jsonb)
+        ${JSON.stringify({businessEvidence:proof,sourceEventId:event.id,representation:"source_family_identity_v1",
+          ...(adapter?{adapter}:{})})}::jsonb)
       ON CONFLICT(source_system,source_type,stable_key) DO UPDATE SET last_confirmed_at=clock_timestamp()
       RETURNING id,business_id`))[0];
     if(Number(link.business_id)!==resolution.business.id)
       throw new Error("CONTACT_BUSINESS_MATERIALIZATION_SOURCE_CONFLICT");
+    if(adapter) {
+      // The relationship authority independently re-proves the corroboration from a
+      // contact source event carrying the same businessEvidence. Append (never edit)
+      // that event from the verified ORIGINAL row. Execution/row coordinates stay in
+      // metadata only, so this is not a second row receipt or fulfillment record.
+      await tx.execute(sql`INSERT INTO contact_source_events
+        (contact_id,event_key,source_category,source_type,source_external_id,actor_type,actor_id,metadata)
+        VALUES(${contactId},${`legacy-original-row-v1:${event.id}:${contactId}`},${event.source_category},
+          ${event.source_type},${`legacy-original-row:${event.id}`},'system','system:contact-link-automation',
+          ${JSON.stringify({...event.event_metadata,businessEvidence:proof,adapter,
+            representation:"legacy_original_row_businessEvidence_v1",derivedFromSourceEventId:event.id})}::jsonb)
+        ON CONFLICT(contact_id,event_key) DO NOTHING`);
+    }
     await tx.execute(sql`INSERT INTO audit_logs(action,entity_type,entity_key,details,actor_type,actor_id)
       VALUES('contact_business_source_materialized','contact',${String(contactId)},
         ${JSON.stringify({businessId:resolution.business.id,sourceLinkId:link.id,sourceEventId:event.id,
-           outcome:resolution.kind,rule:"source_family_identity_v1",placeIdentity:placeMirror,paidProviderCalls:0,outboundChanges:0})}::jsonb,
+           outcome:resolution.kind,rule:"source_family_identity_v1",adapter,placeIdentity:placeMirror,paidProviderCalls:0,outboundChanges:0})}::jsonb,
         'system','system:contact-link-automation')`);
     return {status:resolution.kind==="created" ? "materialized" : "matched",
       businessId:resolution.business.id,sourceLinkId:String(link.id),sourceEventId:Number(event.id)};

@@ -55,6 +55,7 @@ async function main(): Promise<void> {
       { name: "contact-source-only-reconsideration", script: "scripts/certification/test-source-only-link-reconsideration.ts", database: true },
       { name: "canonical-evidence-candidates", script: "scripts/certification/test-contact-business-evidence-candidates.ts", database: true },
       { name: "canonical-contact-link-automation", script: "scripts/certification/test-crm-contact-link-automation.ts", database: true },
+      { name: "legacy-contact-link-dispositions", script: "scripts/certification/test-legacy-contact-link-dispositions.ts", database: true },
       { name: "canonical-flow-progression", script: "scripts/certification/test-canonical-flow-progression.ts", database: true },
       { name: "canonical-upload-recovery", script: "scripts/certification/test-provider-import-recovery.ts", database: true },
       { name: "canonical-provider-intake", script: "scripts/certification/test-canonical-provider-import.ts", database: true, poolMax:1 },

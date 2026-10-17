@@ -160,3 +160,4 @@
 - [Staged-email materialization](staged-email-materialization.md) — staged first-party emails link to their original business at creation via the first-party evidence kind in the native guard; association is separate from vertical/validation/limits; Publish cannot install the routine.
 - [Automatic native object reconciler](native-object-reconciler.md) — production startup installs reviewed functions/triggers Publish skips; manifest, preflight, drift refusal, kill switch.
 - [Serper lookup memory](serper-lookup-memory.md) — negative outcomes remembered with finite expiry; bump matcher rule version on rule changes; unlabeled scope off by default.
+- [Contact link dispositions](contact-link-dispositions.md) — durable per-contact outcome table, dated baseline, legacy original-row adapter appends derived event for the pinned native check.

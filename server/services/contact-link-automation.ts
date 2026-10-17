@@ -13,6 +13,9 @@ import { loadEvidenceRelationshipPage } from "./contact-business-evidence-page";
 import {readContactLinkAssignmentPopulation} from "./contact-link-population";
 import {mirrorEstablishedPlaceIdentities} from "./organization-resolver";
 import {MATERIALIZATION_RULE_VERSION} from "./contact-business-materialization-policy";
+import {classifyContactLinkDisposition} from "./contact-link-disposition-policy";
+import {PROGRAM_RULE_VERSION,upsertContactLinkDispositions,listDueRetryableContacts,
+  captureAcceptanceBaselineIfMissing,readContactLinkDispositionReport} from "./contact-link-dispositions";
 
 const KEY = "contact_link_automation_v1";
 const RULE = "independent_guarded_system_links_v2";
@@ -24,13 +27,17 @@ type Program = {
   scanStartedAt?: string; changedSince?: string; backfillComplete?: boolean;
   /** Materializer outcome counts (status[:reasonCode]) for contacts that reached it. */
   materialization?: Record<string, number>;
+  /** Program rule (disposition + materializer + relationship) the current pass runs under. */
+  dispositionRule?: string;
 };
 export async function getContactLinkAutomationStatus(includePopulation=true): Promise<
-  (Program & {population?:Awaited<ReturnType<typeof readContactLinkAssignmentPopulation>>}) | null> {
+  (Program & {population?:Awaited<ReturnType<typeof readContactLinkAssignmentPopulation>>;
+    dispositions?:Awaited<ReturnType<typeof readContactLinkDispositionReport>>}) | null> {
   const result = await pool.query("SELECT value FROM system_settings WHERE key=$1", [KEY]);
   const state = result.rows[0]?.value;
   return state?.version === 1 && state?.rule === RULE
-    ? {...state,...(includePopulation ? {population:await readContactLinkAssignmentPopulation()} : {})} : null;
+    ? {...state,...(includePopulation ? {population:await readContactLinkAssignmentPopulation(),
+      dispositions:await readContactLinkDispositionReport()} : {})} : null;
 }
 
 /** Operator enable/disable override; routine initialization is automatic. */
@@ -129,6 +136,18 @@ export async function processContactLinkAutomationTick(
   const state = claim[0]?.value as Program | undefined;
   if (!state) return { ran: false };
   try {
+    // A repaired adapter/materializer/relationship rule reconsiders every earlier
+    // disposition through this same bounded cursor. Counters, run identity and the
+    // operator hold are preserved; no manual replay or new pipeline is involved.
+    if (state.dispositionRule !== PROGRAM_RULE_VERSION) {
+      state.dispositionRule = PROGRAM_RULE_VERSION;
+      state.cursor = 0;
+      state.complete = false;
+      state.changedSince = undefined;
+      state.backfillComplete = false;
+      state.scanStartedAt = claim[0].scan_time;
+      await checkpoint(state, token);
+    }
     if (!state.scanStartedAt || state.complete) {
       if (state.complete) {
         state.backfillComplete = true;
@@ -167,69 +186,72 @@ export async function processContactLinkAutomationTick(
             'system','system:contact-link-automation')`);
       }
     });
-    let pages=0;
-    while (pages<maxPages && Date.now()<deadline) {
-    const preview = await previewContactBusinessSystemLinks({
-      afterContactId: state.cursor, limit: 25, changedSince: state.changedSince,
-    });
-    pages++;
-    if (!preview.schemaReady) throw new Error("COMMERCIAL_SYSTEM_LINK_DATABASE_GUARD_MISSING");
-    let processed=0;
-    for (let candidate of preview.rows) {
-      if (Date.now()>=deadline) break;
-       const current = await getContactLinkAutomationStatus(false);
-      if (!current?.enabled || current.leaseToken !== token) break;
+    const AUTHORITY_ERROR=/(?:AUTHORITY_FENCE_LOST|DATABASE_GUARD_MISSING|RUNTIME_OWNER|LEASE_LOST|AUTOMATION_DISABLED)/;
+    // One contact: materialize if supported, link through the audited writer, then
+    // record a durable disposition BEFORE the cursor checkpoint. A temporary
+    // source/query/worker failure becomes a retryable disposition, never a conclusion.
+    const processCandidate=async(candidateIn:any,scanPass:boolean):Promise<"continue"|"stop">=>{
+      let candidate=candidateIn;
+      const current = await getContactLinkAutomationStatus(false);
+      if (!current?.enabled || current.leaseToken !== token) return "stop";
       let outcome: any = null;
       let materializerOutcome: any = null;
-      if(!candidate.eligible && candidate.projectedBusinessId==null && candidate.currentDecisionId==null &&
-        candidate.hasSupportedMaterializationEvidence) {
-        const materialized=await materializeSupportedContactBusiness(candidate.contactId,authorityCheck);
-        materializerOutcome=materialized;
-        // Record the materializer's ACTUAL outcome and reason for this contact
-        // revision/evidence snapshot. The loader uses it only to bound repeat
-        // work; it is observation, never relationship authority.
-        await db.transaction(async tx=>{
-          await authorityCheck(tx);
-          await tx.execute(sql`INSERT INTO audit_logs(action,entity_type,entity_key,details,actor_type,actor_id)
-            VALUES('contact_link_materialization_outcome','contact',${String(candidate.contactId)},
-              ${JSON.stringify({status:materialized.status,
-                reasonCode:"reasonCode" in materialized ? materialized.reasonCode : null,
-                businessId:"businessId" in materialized ? materialized.businessId ?? null : null,
-                contactRevision:candidate.contactRevision,
-                evidenceRevision:(candidate as any).materializationEvidenceRevision ?? null,
-                runId:state.runId,materializerRule:MATERIALIZATION_RULE_VERSION,paidProviderCalls:0,outboundChanges:0})}::jsonb,
-              'system','system:contact-link-automation')`);
-        });
-        state.materialization=state.materialization ?? {};
-        const bucket=`${materialized.status}${"reasonCode" in materialized ? ":"+materialized.reasonCode : ""}`;
-        state.materialization[bucket]=(state.materialization[bucket] ?? 0)+1;
-        if(materialized.status==="materialized" || materialized.status==="matched") {
-          const refreshed=(await loadEvidenceRelationshipPage(db,0,1,candidate.contactId)).previews[0];
-          if(refreshed)candidate=refreshed;
+      let failure: string | null = null;
+      try {
+        if(!candidate.eligible && candidate.projectedBusinessId==null && candidate.currentDecisionId==null &&
+          candidate.hasSupportedMaterializationEvidence) {
+          const materialized=await materializeSupportedContactBusiness(candidate.contactId,authorityCheck);
+          materializerOutcome=materialized;
+          // Record the materializer's ACTUAL outcome and reason for this contact
+          // revision/evidence snapshot. The loader uses it only to bound repeat
+          // work; it is observation, never relationship authority.
+          await db.transaction(async tx=>{
+            await authorityCheck(tx);
+            await tx.execute(sql`INSERT INTO audit_logs(action,entity_type,entity_key,details,actor_type,actor_id)
+              VALUES('contact_link_materialization_outcome','contact',${String(candidate.contactId)},
+                ${JSON.stringify({status:materialized.status,
+                  reasonCode:"reasonCode" in materialized ? materialized.reasonCode : null,
+                  businessId:"businessId" in materialized ? materialized.businessId ?? null : null,
+                  contactRevision:candidate.contactRevision,
+                  evidenceRevision:(candidate as any).materializationEvidenceRevision ?? null,
+                  runId:state.runId,materializerRule:MATERIALIZATION_RULE_VERSION,paidProviderCalls:0,outboundChanges:0})}::jsonb,
+                'system','system:contact-link-automation')`);
+          });
+          state.materialization=state.materialization ?? {};
+          const bucket=`${materialized.status}${"reasonCode" in materialized ? ":"+materialized.reasonCode : ""}`;
+          state.materialization[bucket]=(state.materialization[bucket] ?? 0)+1;
+          if(materialized.status==="materialized" || materialized.status==="matched") {
+            const refreshed=(await loadEvidenceRelationshipPage(db,0,1,candidate.contactId)).previews[0];
+            if(refreshed)candidate=refreshed;
+          }
         }
+        if (candidate.eligible) outcome = await applyContactBusinessSystemLink(candidate as any, authorityCheck);
+        // Authority/lease loss is retryable, not an identity-conflict disposition.
+        // Keep this contact ahead of the cursor so restoration needs no manual
+        // rewind, source-row update, or fresh cohort.
+        if (outcome?.status === "rejected" && AUTHORITY_ERROR.test(outcome.code ?? "")) {
+          throw new Error(outcome.code);
+        }
+        // Also covers a link committed before an interrupted import's class hook.
+        // The initializer independently proves original retained provenance and
+        // current verified affiliation; it cannot promote explicit test classes.
+        const {initializeImportedLinkedContactClass}=await import("./commercial-classification-authority");
+        if(candidate.eligible || candidate.projectedBusinessId!=null) {
+          await initializeImportedLinkedContactClass(candidate.contactId,authorityCheck);
+        }
+      } catch (error:any) {
+        const code=String(error?.code ?? error?.message ?? "WORKER_ERROR").split("\n")[0];
+        if(AUTHORITY_ERROR.test(code)) throw error;
+        failure=code.replace(/[^A-Za-z0-9_]+/g,"_").slice(0,60) || "WORKER_ERROR";
       }
-      if (candidate.eligible) outcome = await applyContactBusinessSystemLink(candidate as any, authorityCheck);
-      // Authority/lease loss is retryable, not an identity-conflict disposition.
-      // Keep this contact ahead of the cursor so restoration needs no manual
-      // rewind, source-row update, or fresh cohort.
-      if (outcome?.status === "rejected" && /(?:AUTHORITY_FENCE_LOST|DATABASE_GUARD_MISSING|RUNTIME_OWNER|LEASE_LOST|AUTOMATION_DISABLED)/.test(outcome.code ?? "")) {
-        throw new Error(outcome.code);
-      }
-      // Also covers a link committed before an interrupted import's class hook.
-      // The initializer independently proves original retained provenance and
-      // current verified affiliation; it cannot promote explicit test classes.
-      const {initializeImportedLinkedContactClass}=await import("./commercial-classification-authority");
-      if(candidate.eligible || candidate.projectedBusinessId!=null) {
-        await initializeImportedLinkedContactClass(candidate.contactId,authorityCheck);
-      }
-      state.scanned++;
+      if(scanPass) state.scanned++;
       if (outcome?.status === "applied") state.committed++;
       else if (outcome?.status === "replayed") state.replayed++;
       else {
         state.held++;
         // Count the stage that actually decided: the writer's code, else the
         // materializer's own hold reason, else the preview's evidence reasons.
-        const decided=outcome?.code ? [outcome.code]
+        const decided=failure ? [`retryable:${failure}`] : outcome?.code ? [outcome.code]
           : materializerOutcome && "reasonCode" in materializerOutcome && !candidate.eligible
             ? [`materialization:${materializerOutcome.reasonCode}`]
             : candidate.reasons ?? ["independent_identity_unresolved"];
@@ -237,10 +259,46 @@ export async function processContactLinkAutomationTick(
           state.reasons[reason] = (state.reasons[reason] ?? 0) + 1;
         }
       }
-      state.cursor = candidate.contactId;
+      const draft=classifyContactLinkDisposition({
+        contactId:candidate.contactId,ruleVersion:PROGRAM_RULE_VERSION,snapshotHash:candidate.snapshotHash,
+        materializationEvidenceRevision:candidate.materializationEvidenceRevision ?? null,
+        eligible:candidate.eligible,reasons:candidate.reasons ?? [],
+        projectedBusinessId:candidate.projectedBusinessId ?? null,currentDecision:candidate.currentDecision ?? null,
+        businessId:candidate.businessId ?? null,candidateEvidence:candidate.candidateEvidence ?? [],
+        sourceEvents:candidate.sourceEvents ?? {count:0,kinds:[],hasSupportedEvidence:false},
+        hasGhlContactId:candidate.hasGhlContactId===true,
+        materializer:materializerOutcome,writer:outcome,failure});
+      await db.transaction(async tx=>{
+        await authorityCheck(tx);
+        await upsertContactLinkDispositions(tx,[draft],state.runId);
+      });
+      if(scanPass) state.cursor = candidate.contactId;
       // Save after every canonical writer receipt; a crash cannot lose page progress.
       await checkpoint(state, token);
-       processed++;
+      return "continue";
+    };
+    // Baseline is the dated acceptance population; captured once, never rewritten.
+    await captureAcceptanceBaselineIfMissing();
+    // Retryable dispositions (temporary failures) come back automatically when due.
+    let retryStopped=false;
+    for(const contactId of await listDueRetryableContacts(db,25)) {
+      if(Date.now()>=deadline)break;
+      const retry=(await loadEvidenceRelationshipPage(db,0,1,contactId)).previews[0];
+      if(!retry)continue;
+      if(await processCandidate(retry,false)==="stop"){retryStopped=true;break;}
+    }
+    let pages=0;
+    while (!retryStopped && pages<maxPages && Date.now()<deadline) {
+    const preview = await previewContactBusinessSystemLinks({
+      afterContactId: state.cursor, limit: 25, changedSince: state.changedSince,
+    });
+    pages++;
+    if (!preview.schemaReady) throw new Error("COMMERCIAL_SYSTEM_LINK_DATABASE_GUARD_MISSING");
+    let processed=0;
+    for (const candidate of preview.rows) {
+      if (Date.now()>=deadline) break;
+      if(await processCandidate(candidate,true)==="stop") break;
+      processed++;
     }
      // Never checkpoint past an unfinished changed contact. Once all changed
      // rows finish, also persist the unchanged tail (including empty pages).
