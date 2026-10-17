@@ -98,28 +98,64 @@ export function classifySerperLookupOutcome(
   }
 }
 
-/** Atomically claim a business's lookup. Returns true only for the single winning worker. */
-export async function claimSerperLookup(businessId: number, claimToken: string): Promise<boolean> {
+export interface SerperLookupInputs {
+  canonicalName?: string | null;
+  streetAddress?: string | null;
+  city?: string | null;
+  state?: string | null;
+  postalCode?: string | null;
+}
+
+/** Fingerprint of explicit lookup inputs, computed by the same SQL as the selector and writer. */
+export async function serperLookupInputsFingerprint(inputs: SerperLookupInputs): Promise<string> {
+  const row = rows(await db.execute(sql`
+    SELECT ${sql.raw(serperLookupInputFingerprintSql("x"))} AS fingerprint
+      FROM (SELECT ${inputs.canonicalName ?? null}::text AS canonical_name,
+                   ${inputs.streetAddress ?? null}::text AS street_address,
+                   ${inputs.city ?? null}::text AS city,
+                   ${inputs.state ?? null}::text AS state,
+                   ${inputs.postalCode ?? null}::text AS postal_code) x
+  `))[0];
+  return String(row.fingerprint);
+}
+
+/**
+ * Atomically claim a business's lookup and PIN the fingerprint of the inputs the lookup
+ * will be sent with (pass the exact selected inputs). Returns true only for the single
+ * winning worker, and only when the business still has those inputs: if they changed
+ * between selection and claim, the stale selection is skipped and the business reopens
+ * on its next selection under its new inputs. Without `inputs` the pin is the business's
+ * current fingerprint at claim time.
+ */
+export async function claimSerperLookup(
+  businessId: number, claimToken: string, inputs?: SerperLookupInputs,
+): Promise<boolean> {
+  const pinned = inputs ? await serperLookupInputsFingerprint(inputs) : null;
   const claimed = rows(await db.execute(sql`
-    INSERT INTO sfp_serper_lookup_memory (business_id, purpose, requested_evidence, claim_token, claim_expires_at)
-    VALUES (${businessId}, ${SERPER_LOOKUP_PURPOSE}, ${SERPER_LOOKUP_REQUESTED_EVIDENCE},
-            ${claimToken}::uuid, NOW() + make_interval(mins => ${SERPER_LOOKUP_CLAIM_MINUTES}))
+    INSERT INTO sfp_serper_lookup_memory (business_id, purpose, requested_evidence, claim_token, claim_expires_at, claim_input_fingerprint)
+    SELECT b.id, ${SERPER_LOOKUP_PURPOSE}, ${SERPER_LOOKUP_REQUESTED_EVIDENCE},
+           ${claimToken}::uuid, NOW() + make_interval(mins => ${SERPER_LOOKUP_CLAIM_MINUTES}),
+           COALESCE(${pinned}::text, ${sql.raw(serperLookupInputFingerprintSql("b"))})
+      FROM businesses b WHERE b.id=${businessId}
     ON CONFLICT (business_id, purpose) DO UPDATE
-      SET claim_token = EXCLUDED.claim_token, claim_expires_at = EXCLUDED.claim_expires_at, updated_at = NOW()
+      SET claim_token = EXCLUDED.claim_token, claim_expires_at = EXCLUDED.claim_expires_at,
+          claim_input_fingerprint = EXCLUDED.claim_input_fingerprint, updated_at = NOW()
       WHERE sfp_serper_lookup_memory.claim_expires_at IS NULL OR sfp_serper_lookup_memory.claim_expires_at < NOW()
     RETURNING claim_token
   `));
   if (claimed.length === 0) return false;
-  // Another worker may have finished between selection and this claim. Honour a fresh outcome.
-  const fresh = rows(await db.execute(sql`
-    SELECT 1 AS fresh FROM sfp_serper_lookup_memory m JOIN businesses b ON b.id=m.business_id
+  // The inputs must still be the ones the lookup will be sent with, and another worker may
+  // have finished between selection and this claim. Honour both; nothing was purchased.
+  const check = rows(await db.execute(sql`
+    SELECT (${sql.raw(serperLookupInputFingerprintSql("b"))} = m.claim_input_fingerprint) AS inputs_unchanged,
+           (m.outcome_class IS NOT NULL AND m.expires_at>NOW()
+            AND m.requested_evidence=${SERPER_LOOKUP_REQUESTED_EVIDENCE}
+            AND m.rule_version=${SERPER_MATCHER_RULE_VERSION}
+            AND m.input_fingerprint=m.claim_input_fingerprint) AS fresh_outcome
+      FROM sfp_serper_lookup_memory m JOIN businesses b ON b.id=m.business_id
      WHERE m.business_id=${businessId} AND m.purpose=${SERPER_LOOKUP_PURPOSE}
-       AND m.outcome_class IS NOT NULL AND m.expires_at>NOW()
-       AND m.requested_evidence=${SERPER_LOOKUP_REQUESTED_EVIDENCE}
-       AND m.rule_version=${SERPER_MATCHER_RULE_VERSION}
-       AND m.input_fingerprint=${sql.raw(serperLookupInputFingerprintSql("b"))}
-  `));
-  if (fresh.length > 0) {
+  `))[0];
+  if (!check || check.inputs_unchanged !== true || check.fresh_outcome === true) {
     await releaseSerperLookupClaim(businessId, claimToken);
     return false;
   }
@@ -128,14 +164,17 @@ export async function claimSerperLookup(businessId: number, claimToken: string):
 
 export async function releaseSerperLookupClaim(businessId: number, claimToken: string): Promise<void> {
   await db.execute(sql`
-    UPDATE sfp_serper_lookup_memory SET claim_token=NULL, claim_expires_at=NULL, updated_at=NOW()
+    UPDATE sfp_serper_lookup_memory SET claim_token=NULL, claim_expires_at=NULL, claim_input_fingerprint=NULL, updated_at=NOW()
      WHERE business_id=${businessId} AND purpose=${SERPER_LOOKUP_PURPOSE} AND claim_token=${claimToken}::uuid
   `);
 }
 
 /**
- * Record the outcome under the current inputs and rule version and release the claim.
- * Only the claim holder can write. Returns the class stored, or null when nothing was
+ * Record the outcome under the inputs PINNED at claim time (never re-read from the
+ * business, which may have changed while the lookup ran) and the current rule version,
+ * and release the claim. A changed business therefore fails the selector's fingerprint
+ * comparison and is reopened. Only the claim holder can write, and only a claim that
+ * carries a pinned fingerprint. Returns the class stored, or null when nothing was
  * remembered (the claim is still released).
  */
 export async function recordSerperLookupOutcome(input: {
@@ -153,13 +192,12 @@ export async function recordSerperLookupOutcome(input: {
   const updated = rows(await db.execute(sql`
     UPDATE sfp_serper_lookup_memory m
        SET outcome_class=${memoryClass}, rule_version=${SERPER_MATCHER_RULE_VERSION},
-           input_fingerprint=${sql.raw(serperLookupInputFingerprintSql("b"))},
+           input_fingerprint=m.claim_input_fingerprint,
            reason_summary=${reason}, requests_used=${Math.max(0, Math.round(input.outcome.requestsUsed ?? 0))},
            observed_at=NOW(),
            expires_at=NOW() + make_interval(hours => ${SERPER_LOOKUP_MEMORY_TTL_HOURS[memoryClass]}),
-           claim_token=NULL, claim_expires_at=NULL, updated_at=NOW()
-      FROM businesses b
-     WHERE b.id=m.business_id AND m.business_id=${input.businessId}
+           claim_token=NULL, claim_expires_at=NULL, claim_input_fingerprint=NULL, updated_at=NOW()
+     WHERE m.business_id=${input.businessId} AND m.claim_input_fingerprint IS NOT NULL
        AND m.purpose=${SERPER_LOOKUP_PURPOSE} AND m.claim_token=${input.claimToken}::uuid
     RETURNING m.outcome_class
   `));

@@ -1241,10 +1241,28 @@ export const sfpSerperLookupMemory = pgTable("sfp_serper_lookup_memory", {
   expiresAt: timestamp("expires_at", { withTimezone: true }),
   claimToken: uuid("claim_token"),
   claimExpiresAt: timestamp("claim_expires_at", { withTimezone: true }),
+  /** Fingerprint of the inputs the claimed lookup was actually sent with. */
+  claimInputFingerprint: text("claim_input_fingerprint"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   primaryKey({ columns: [table.businessId, table.purpose] }),
   index("sfp_serper_lookup_memory_expiry_idx").on(table.expiresAt),
+]);
+
+/** Durable shared credit ledger for the unlabeled Serper scope: worst-case reserved before
+ * each physical request, settled to the reported charge, or left reserved when unknown. */
+export const sfpSerperCreditLedger = pgTable("sfp_serper_credit_ledger", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  allowanceKey: text("allowance_key").notNull(),
+  runToken: uuid("run_token").notNull(),
+  endpoint: text("endpoint").notNull(),
+  reservedCredits: integer("reserved_credits").notNull(),
+  settledCredits: integer("settled_credits"),
+  state: text("state").notNull().default("reserved"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  settledAt: timestamp("settled_at", { withTimezone: true }),
+}, (table) => [
+  index("sfp_serper_credit_ledger_window_idx").on(table.allowanceKey, table.createdAt),
 ]);
 
 /** Current per-contact business-assignment disposition (observation only, never authority). */

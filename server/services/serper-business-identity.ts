@@ -523,9 +523,11 @@ export interface BusinessIdentityContext {
    * requests of one lookup. Returning false stops the lookup before that request is sent
    * (the outcome is "blocked" with reason "allowance_exhausted" and nothing is counted).
    */
-  authorizeRequest?: () => boolean | Promise<boolean>;
-  /** Called after each request that reached the provider, with the credits it reported (or null). */
-  onRequestSettled?: (info: { reportedCredits: number | null }) => void;
+  authorizeRequest?: (request: { endpoint: "/places" | "/search" }) => boolean | Promise<boolean>;
+  /** Awaited after each request that reached the provider, with the credits it reported (null = unknown). */
+  onRequestSettled?: (info: { endpoint: "/places" | "/search"; reportedCredits: number | null }) => void | Promise<void>;
+  /** Awaited when an authorized request was blocked locally and never reached the provider. */
+  onRequestNotSent?: (info: { endpoint: "/places" | "/search" }) => void | Promise<void>;
 }
 
 // ── Attempt telemetry writer ─────────────────────────────────────────────────
@@ -681,7 +683,7 @@ async function runLookup(
     // ZIP is embedded in the query string for better local specificity
     const queryString = [queryName, input.zip].filter(Boolean).join(" ");
 
-    if (context.authorizeRequest && !(await context.authorizeRequest())) {
+    if (context.authorizeRequest && !(await context.authorizeRequest({ endpoint: "/places" }))) {
       return { scored: [], outcome: "blocked", reason: "allowance_exhausted" };
     }
     strategiesAttempted.push(strategyName);
@@ -694,7 +696,9 @@ async function runLookup(
     );
     if (!gatewayResult.blocked) {
       requestsUsed++;
-      context.onRequestSettled?.({ reportedCredits: reportedCreditsOf(gatewayResult.data) });
+      await context.onRequestSettled?.({ endpoint: "/places", reportedCredits: reportedCreditsOf(gatewayResult.data) });
+    } else {
+      await context.onRequestNotSent?.({ endpoint: "/places" });
     }
 
     const elapsed = Date.now() - t0;
@@ -788,7 +792,7 @@ async function runLookup(
     const queryName = "invalid" in normResult ? nameVariant : normResult.normalized;
     const queryString = [queryName, input.zip ?? input.city, input.state].filter(Boolean).join(" ");
 
-    if (context.authorizeRequest && !(await context.authorizeRequest())) {
+    if (context.authorizeRequest && !(await context.authorizeRequest({ endpoint: "/search" }))) {
       return { scored: [], outcome: "blocked", reason: "allowance_exhausted" };
     }
     strategiesAttempted.push(strategyName);
@@ -801,7 +805,9 @@ async function runLookup(
     );
     if (!gatewayResult.blocked) {
       requestsUsed++;
-      context.onRequestSettled?.({ reportedCredits: reportedCreditsOf(gatewayResult.data) });
+      await context.onRequestSettled?.({ endpoint: "/search", reportedCredits: reportedCreditsOf(gatewayResult.data) });
+    } else {
+      await context.onRequestNotSent?.({ endpoint: "/search" });
     }
 
     const elapsed = Date.now() - t0;

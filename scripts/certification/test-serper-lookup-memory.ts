@@ -64,18 +64,21 @@ const failing = await business(`Echo Therapy ${id}`);
 
 type Response = { status: number; body: unknown };
 let serperCalls = 0;
+/** Credits the fake provider reports per request; null omits the field (unknown charge). */
+let chargeCredits: number | null = 1;
+const credited = (body: any) => (chargeCredits === null ? body : { ...body, credits: chargeCredits });
 const queries: string[] = [];
 const place = (title: string, website: string | null) => ({
   title, address: "101 Health Avenue, Miami, FL 33130", website, phoneNumber: "(305) 555-0123", category: "Medical clinic",
 });
 const respond = (path: string, q: string): Response => {
   const text = q.toLowerCase();
-  if (path === "/search") return { status: 200, body: { organic: [], credits: 1 } };
-  if (text.includes("cedar dental")) return { status: 200, body: { places: [place(`Cedar Dental ${id}`, "https://www.cedar-dental.example")], credits: 1 } };
-  if (text.includes("bravo clinic")) return { status: 200, body: { places: [place(`Bravo Clinic ${id}`, null)], credits: 1 } };
-  if (text.includes("delta pharmacy")) return { status: 200, body: { places: [place("Omega Hardware Supply", "https://omega-hardware.example")], credits: 1 } };
+  if (path === "/search") return { status: 200, body: credited({ organic: [] }) };
+  if (text.includes("cedar dental")) return { status: 200, body: credited({ places: [place(`Cedar Dental ${id}`, "https://www.cedar-dental.example")] }) };
+  if (text.includes("bravo clinic")) return { status: 200, body: credited({ places: [place(`Bravo Clinic ${id}`, null)] }) };
+  if (text.includes("delta pharmacy")) return { status: 200, body: credited({ places: [place("Omega Hardware Supply", "https://omega-hardware.example")] }) };
   if (text.includes("echo therapy")) return { status: 500, body: { message: "upstream error" } };
-  return { status: 200, body: { places: [], credits: 1 } };
+  return { status: 200, body: credited({ places: [] }) };
 };
 const originalFetch = globalThis.fetch;
 globalThis.fetch = async (input: any, init?: any) => {
@@ -180,6 +183,32 @@ try {
   check(await memory.claimSerperLookup(fresh, takeover), "An expired claim can be taken over");
   await memory.releaseSerperLookupClaim(fresh, takeover);
 
+  // ── Inputs are pinned at claim time: an old outcome cannot suppress new inputs ──
+  const inputsA = { canonicalName: `Yankee Dental ${id}`, streetAddress: "101 Health Avenue", city: "Miami", state: "FL", postalCode: "33130" };
+  const fpA = await memory.serperLookupInputsFingerprint(inputsA);
+  const currentFp = async (b: number) => (await pool.query(`SELECT ${memory.serperLookupInputFingerprintSql("b")} fp FROM businesses b WHERE b.id=$1`, [b])).rows[0].fp;
+  check(fpA === await currentFp(fresh), "The explicit-input fingerprint equals the stored-row fingerprint");
+  const pinToken = randomUUID();
+  check(await memory.claimSerperLookup(fresh, pinToken, inputsA), "A claim pins the exact inputs the lookup is sent with");
+  check((await pool.query(`SELECT claim_input_fingerprint FROM sfp_serper_lookup_memory WHERE business_id=$1`, [fresh])).rows[0].claim_input_fingerprint === fpA,
+    "The pinned fingerprint is stored with the claim");
+  await pool.query(`UPDATE businesses SET canonical_name=$2,normalized_name=lower($2) WHERE id=$1`, [fresh, `Yankee Dental Renamed ${id}`]);
+  check(await memory.recordSerperLookupOutcome({ businessId: fresh, claimToken: randomUUID(), outcome: { kind: "no_result", requestsUsed: 2 } as any, discoveredDomain: false }) === null,
+    "A wrong claim token cannot write an outcome (token fencing preserved)");
+  check(await memory.recordSerperLookupOutcome({ businessId: fresh, claimToken: pinToken, outcome: { kind: "no_result", requestsUsed: 2 } as any, discoveredDomain: false }) === "no_match",
+    "The claim holder records the outcome after the business changed in flight");
+  const storedFp = (await pool.query(`SELECT input_fingerprint,claim_input_fingerprint FROM sfp_serper_lookup_memory WHERE business_id=$1`, [fresh])).rows[0];
+  check(storedFp.input_fingerprint === fpA && storedFp.input_fingerprint !== await currentFp(fresh) && storedFp.claim_input_fingerprint === null,
+    "The outcome is stored under the pinned inputs, not the changed ones, and the pin is cleared");
+  check((await reopenSelection()).includes(fresh), "An outcome for the old inputs does not suppress the changed inputs");
+  const staleSelection = randomUUID();
+  check(!(await memory.claimSerperLookup(fresh, staleSelection, inputsA)), "A selection made under old inputs cannot claim after the inputs changed");
+  check((await pool.query(`SELECT claim_token FROM sfp_serper_lookup_memory WHERE business_id=$1`, [fresh])).rows[0].claim_token === null,
+    "A refused stale claim leaves no live claim");
+  await pool.query(`UPDATE businesses SET canonical_name=$2,normalized_name=lower($2) WHERE id=$1`, [fresh, inputsA.canonicalName]);
+  check(!(await reopenSelection()).includes(fresh), "Restoring the original inputs restores the exclusion for the original outcome");
+  await pool.query(`DELETE FROM sfp_serper_lookup_memory WHERE business_id=$1`, [fresh]);
+
   // ── Provider failure retried after its short expiry ─────────────────────────
   await pool.query(`UPDATE sfp_serper_lookup_memory SET expires_at=NOW()-INTERVAL '1 minute',claim_token=NULL,claim_expires_at=NULL WHERE business_id=$1`, [failing]);
   const beforeFail = serperCalls;
@@ -197,25 +226,151 @@ try {
   const setGate = (value: unknown) => pool.query(
     `INSERT INTO system_settings(key,value) VALUES($1,$2::jsonb) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value`,
     [allowanceMod.UNLABELED_DISCOVERY_SETTING_KEY, JSON.stringify(value)]);
-  await setGate({ enabled: true, perRunRequests: 0, dailyRequests: 10 });
+  const ledger = async () => (await pool.query(`SELECT count(*) FILTER (WHERE state<>'not_sent')::int requests,
+    COALESCE(sum(COALESCE(settled_credits,reserved_credits)) FILTER (WHERE state<>'not_sent'),0)::int credits FROM sfp_serper_credit_ledger`)).rows[0];
+  const resetAllowance = async () => {
+    await pool.query(`DELETE FROM sfp_serper_credit_ledger`);
+    await pool.query(`DELETE FROM serper_lookup_attempts`);
+    await pool.query(`DELETE FROM sfp_serper_lookup_memory WHERE business_id=ANY($1)`, [unlabeled]);
+    // Age the separate provider-operation cooldown so each schedule starts from the same pool.
+    await pool.query(`UPDATE provider_operations SET created_at=created_at-INTERVAL '3 days' WHERE target_fingerprint LIKE 'business:%' AND created_at>NOW()-INTERVAL '2 days'`);
+  };
+  const gate = (over: Record<string, unknown> = {}) => ({ enabled: true, perRunRequests: 50, dailyRequests: 500, dailyCredits: 100, maxCreditsPerRequest: 3, ...over });
+
+  // Gate parsing: a request-only or legacy credit setting cannot enforce a credit cap and stays closed.
+  for (const bad of [
+    { enabled: true, perRunRequests: 0, dailyRequests: 10, dailyCredits: 10, maxCreditsPerRequest: 1 },
+    { enabled: true, perRunRequests: 5, dailyRequests: 10 },
+    { enabled: true, perRunRequests: 5, dailyRequests: 10, dailyReportedCredits: 10 },
+    { enabled: true, perRunRequests: 5, dailyRequests: 10, dailyCredits: 10 },
+    { enabled: true, perRunRequests: 5, dailyRequests: 10, dailyCredits: 2, maxCreditsPerRequest: 3 },
+  ]) {
+    check(!allowanceMod.parseUnlabeledDiscoveryGate(bad).enabled, `Closed gate: ${JSON.stringify(bad)}`);
+  }
+  await setGate({ enabled: true, perRunRequests: 5, dailyRequests: 10, dailyReportedCredits: 10 });
   await assert.rejects(() => run("unlabeled-zero", { scope: "unlabeled" }), /SFP_UNLABELED_DISCOVERY_DISABLED/);
-  check(true, "A malformed or non-positive allowance keeps the scope closed");
+  check(true, "A setting without a hard credit cap keeps the scope closed");
   const unlabeledSelected = (await programDiscoverySelection(programId, `${actor}:unl:${randomUUID()}`, 25, "serper", "unlabeled")).targets.map((t: any) => Number(t.id));
   check(unlabeled.every((n) => unlabeledSelected.includes(n)) && !unlabeledSelected.includes(web),
     "The unlabeled scope selects only businesses with no effective vertical");
 
-  await setGate({ enabled: true, perRunRequests: 1, dailyRequests: 100 });
+  // ── Allowance-stopped run: truthful counts, preserved work, safe continuation ──
+  await resetAllowance();
+  await setGate(gate({ perRunRequests: 1 }));
   const beforeOne = serperCalls;
-  await run("unlabeled-one", { scope: "unlabeled" });
+  const stopped: any = await run("unlabeled-one", { scope: "unlabeled" });
   check(serperCalls - beforeOne === 1, "A per-run allowance of one stops a two-request lookup before its second request");
+  check(stopped.selected === unlabeled.length && stopped.allowanceDeferred === stopped.selected && stopped.processed === 0 &&
+    stopped.attempted === 1 && String(stopped.stopReason).startsWith("allowance_exhausted"),
+    `The stopped run reports selected ${stopped.selected}, attempted ${stopped.attempted}, processed ${stopped.processed}, deferred ${stopped.allowanceDeferred}, reason ${stopped.stopReason}`);
+  const stoppedRow = (await pool.query(`SELECT state,selected_count,processed_count,terminal_reason FROM sfp_stage_runs WHERE idempotency_key=$1`, [`${actor}:unlabeled-one`])).rows[0];
+  check(stoppedRow.state === "partial" && stoppedRow.selected_count === unlabeled.length && stoppedRow.processed_count === 0 &&
+    String(stoppedRow.terminal_reason).startsWith("allowance_exhausted"), "The stage run is partial with a visible stop reason, not completed");
   const midStop = (await pool.query(`SELECT business_id FROM sfp_serper_lookup_memory WHERE business_id=ANY($1) AND outcome_class IS NOT NULL`, [unlabeled])).rows;
   check(midStop.length === 0, "A lookup stopped by the allowance records no negative memory");
+  const liveClaims = (await pool.query(`SELECT count(*)::int n FROM sfp_serper_lookup_memory WHERE business_id=ANY($1) AND claim_token IS NOT NULL`, [unlabeled])).rows[0].n;
+  check(liveClaims === 0, "No claim is left behind by the stopped run");
+  const remaining = (await programDiscoverySelection(programId, `${actor}:unl2:${randomUUID()}`, 25, "serper", "unlabeled")).targets.map((t: any) => Number(t.id));
+  const partlyPaid = (await pool.query(`SELECT business_id FROM sfp_stage_items WHERE outcome_code='allowance_deferred'
+    AND stage_run_id=(SELECT id FROM sfp_stage_runs WHERE idempotency_key=$1)`, [`${actor}:unlabeled-one`])).rows.map((r) => Number(r.business_id));
+  check(partlyPaid.length === 1 && unlabeled.includes(partlyPaid[0]), "Exactly the one business stopped mid-lookup is marked allowance_deferred");
+  check(unlabeled.filter((n) => n !== partlyPaid[0]).every((n) => remaining.includes(n)),
+    "Every business the run never reached remains immediately selectable");
+  check(!remaining.includes(partlyPaid[0]), "The partly paid business stays behind the existing 24-hour provider-operation cooldown");
+  await pool.query(`UPDATE provider_operations SET created_at=created_at-INTERVAL '3 days' WHERE target_fingerprint LIKE 'business:%'`);
+  await setGate(gate());
+  const beforeContinue = serperCalls;
+  const continued: any = await run("unlabeled-continue", { scope: "unlabeled" });
+  check(continued.allowanceDeferred === 0 && continued.stopReason === null && continued.processed === unlabeled.length && continued.attempted === unlabeled.length,
+    "A fresh ordinary run key continues and completes every deferred business");
+  const outcomes = (await pool.query(`SELECT count(*)::int n FROM sfp_serper_lookup_memory WHERE business_id=ANY($1) AND outcome_class IS NOT NULL`, [unlabeled])).rows[0].n;
+  check(outcomes === unlabeled.length && serperCalls > beforeContinue, "Continuation records one outcome per business");
+  const dupEvidence = (await pool.query(`SELECT count(*)::int n FROM (SELECT business_id,field,normalized_value_hash FROM sfp_paid_candidate_evidence WHERE business_id=ANY($1)
+    GROUP BY 1,2,3 HAVING count(*)>1) d`, [unlabeled])).rows[0].n;
+  check(dupEvidence === 0, "Continuation creates no duplicate evidence");
 
-  const used = await allowanceMod.readUnlabeledDiscoveryDailyUsage();
-  await setGate({ enabled: true, perRunRequests: 50, dailyRequests: used.requests + 3 });
-  const beforeDaily = serperCalls;
-  await run("unlabeled-daily", { scope: "unlabeled" });
-  check(serperCalls - beforeDaily === 3, "The daily allowance is enforced across runs and before every request");
+  // ── Hard credit cap: reservation before each request ──────────────────────
+  // Next-request overshoot: cap 10, each request really charges 3, bound 3.
+  await resetAllowance(); chargeCredits = 3;
+  await setGate(gate({ dailyCredits: 10, maxCreditsPerRequest: 3 }));
+  let c0 = serperCalls;
+  const overshoot: any = await run("cap-overshoot", { scope: "unlabeled" });
+  const l1 = await ledger();
+  check(serperCalls - c0 === 3 && l1.credits === 9 && l1.credits <= 10,
+    `Cap 10 with 3-credit requests stops at ${serperCalls - c0} requests / ${l1.credits} credits, never above the cap`);
+  check(overshoot.allowanceDeferred > 0 && String(overshoot.stopReason).includes("daily_credits"), "The run reports the credit-cap stop reason");
+  // Missing charge fields: unknown stays at the reserved worst case, never zero.
+  await resetAllowance(); chargeCredits = null;
+  await setGate(gate({ dailyCredits: 10, maxCreditsPerRequest: 3 }));
+  c0 = serperCalls;
+  await run("cap-unknown", { scope: "unlabeled" });
+  const l2 = await ledger();
+  const unknownRows = (await pool.query(`SELECT count(*)::int n FROM sfp_serper_credit_ledger WHERE state='settled_unknown' AND settled_credits IS NULL`)).rows[0].n;
+  check(serperCalls - c0 === 3 && l2.credits === 9 && unknownRows === 3,
+    "Requests with no reported charge keep their reserved worst case; the cap still holds");
+  // A provider that charges more than the configured bound raises the measured bound.
+  await resetAllowance(); chargeCredits = 5;
+  await setGate(gate({ dailyCredits: 30, maxCreditsPerRequest: 1 }));
+  c0 = serperCalls;
+  await run("cap-underbound", { scope: "unlabeled" });
+  const l3 = await ledger();
+  check(l3.credits <= 30 + 4, `A configured bound of 1 against 5-credit charges overshoots at most one request (${l3.credits} credits recorded)`);
+  const secondBound = (await pool.query(`SELECT max(reserved_credits)::int m FROM sfp_serper_credit_ledger`)).rows[0].m;
+  check(secondBound >= 5, "After the provider reports a larger charge, later reservations use that measured bound");
+  chargeCredits = 1;
+  // Failed telemetry writes cannot weaken the ledger.
+  await resetAllowance(); chargeCredits = 3;
+  await pool.query(`CREATE OR REPLACE FUNCTION cert_telemetry_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'telemetry down'; END $$`);
+  await pool.query(`CREATE TRIGGER cert_telemetry_fail BEFORE INSERT ON serper_lookup_attempts FOR EACH ROW EXECUTE FUNCTION cert_telemetry_fail()`);
+  try {
+    await setGate(gate({ dailyCredits: 10, maxCreditsPerRequest: 3 }));
+    c0 = serperCalls;
+    await run("cap-telemetry-down", { scope: "unlabeled" });
+    const l4 = await ledger();
+    const telemetryRows = (await pool.query(`SELECT count(*)::int n FROM serper_lookup_attempts`)).rows[0].n;
+    check(telemetryRows === 0 && serperCalls - c0 === 3 && l4.credits === 9, "With every telemetry write failing, the ledger alone still enforces the credit cap");
+  } finally {
+    await pool.query(`DROP TRIGGER cert_telemetry_fail ON serper_lookup_attempts`);
+  }
+  // Concurrent allowances (different runs/businesses) cannot jointly exceed the caps.
+  await resetAllowance();
+  const parallelGate = allowanceMod.parseUnlabeledDiscoveryGate(gate({ dailyRequests: 1, dailyCredits: 10, maxCreditsPerRequest: 3 }));
+  const reqRace = await Promise.all(Array.from({ length: 6 }, () =>
+    allowanceMod.createDurableRequestAllowance(parallelGate, randomUUID()).authorizeRequest({ endpoint: "/places" })));
+  check(reqRace.filter(Boolean).length === 1 && (await ledger()).requests === 1, "Six concurrent runs against a one-request daily cap authorize exactly one request");
+  await resetAllowance();
+  const creditGate = allowanceMod.parseUnlabeledDiscoveryGate(gate({ dailyRequests: 100, dailyCredits: 7, maxCreditsPerRequest: 3 }));
+  const creditRace = await Promise.all(Array.from({ length: 8 }, () =>
+    allowanceMod.createDurableRequestAllowance(creditGate, randomUUID()).authorizeRequest({ endpoint: "/places" })));
+  check(creditRace.filter(Boolean).length === 2 && (await ledger()).credits === 6, "Eight concurrent runs against a 7-credit cap reserve at most two 3-credit requests");
+  // Retries and a lookup's second request: each physical request reserves separately.
+  await resetAllowance();
+  const retryAllowance = allowanceMod.createDurableRequestAllowance(allowanceMod.parseUnlabeledDiscoveryGate(gate({ dailyCredits: 9, maxCreditsPerRequest: 3 })), randomUUID());
+  const seq: boolean[] = [];
+  for (let i = 0; i < 5; i++) {
+    const ok = await retryAllowance.authorizeRequest({ endpoint: i % 2 ? "/search" : "/places" });
+    seq.push(ok);
+    if (ok) await retryAllowance.onRequestSettled({ endpoint: "/places", reportedCredits: null });
+  }
+  check(seq.join() === "true,true,true,false,false" && (await ledger()).credits === 9, "Retries and second requests each reserve their own worst case");
+  // A request blocked locally is released and does not consume the allowance.
+  await resetAllowance();
+  const blockedAllowance = allowanceMod.createDurableRequestAllowance(allowanceMod.parseUnlabeledDiscoveryGate(gate({ dailyCredits: 3, maxCreditsPerRequest: 3 })), randomUUID());
+  check(await blockedAllowance.authorizeRequest({ endpoint: "/places" }), "First request reserves the whole cap");
+  await blockedAllowance.onRequestNotSent({ endpoint: "/places" });
+  check(await blockedAllowance.authorizeRequest({ endpoint: "/places" }), "A request that never reached the provider is released");
+  // Ledger unavailable: fail closed.
+  await resetAllowance();
+  await pool.query(`ALTER TABLE sfp_serper_credit_ledger RENAME TO sfp_serper_credit_ledger_off`);
+  try {
+    await setGate(gate());
+    c0 = serperCalls;
+    await assert.rejects(() => run("cap-ledger-down", { scope: "unlabeled" }), /SFP_UNLABELED_DISCOVERY_ALLOWANCE_EXHAUSTED/);
+    check(serperCalls === c0, "When the ledger cannot be read, no Serper request is sent");
+  } finally {
+    await pool.query(`ALTER TABLE sfp_serper_credit_ledger_off RENAME TO sfp_serper_credit_ledger`);
+  }
+  chargeCredits = 1;
   const unlabeledVerticals = (await pool.query(`SELECT count(*)::int n FROM businesses WHERE id=ANY($1) AND vertical IS NOT NULL`, [unlabeled])).rows[0].n;
   check(unlabeledVerticals === 0, "Unlabeled discovery never manufactures a vertical");
 

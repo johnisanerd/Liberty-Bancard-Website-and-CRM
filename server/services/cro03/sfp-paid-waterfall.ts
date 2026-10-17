@@ -5,7 +5,7 @@ import {
   claimSerperLookup, recordSerperLookupOutcome, releaseSerperLookupClaim,
 } from "./sfp-serper-lookup-memory";
 import {
-  UNLABELED_DISCOVERY_CALLER, createRequestAllowance, readUnlabeledDiscoveryDailyUsage,
+  UNLABELED_DISCOVERY_CALLER, createDurableRequestAllowance,
   readUnlabeledDiscoveryGate, type RequestAllowance,
 } from "./sfp-serper-allowance";
 import { createHash, randomUUID } from "node:crypto";
@@ -2045,8 +2045,8 @@ export async function executeSfpSerperDiscovery(input: {
     if(!input.programId) throw new Error("SFP_UNLABELED_DISCOVERY_REQUIRES_PROGRAM");
     const gate=await readUnlabeledDiscoveryGate();
     if(!gate.enabled) throw new Error("SFP_UNLABELED_DISCOVERY_DISABLED");
-    allowance=createRequestAllowance(gate,await readUnlabeledDiscoveryDailyUsage());
-    if(!allowance.authorizeRequest()) throw new Error("SFP_UNLABELED_DISCOVERY_ALLOWANCE_EXHAUSTED");
+    allowance=createDurableRequestAllowance(gate,randomUUID());
+    if(!(await allowance.canStart())) throw new Error("SFP_UNLABELED_DISCOVERY_ALLOWANCE_EXHAUSTED");
   }
   const programSelection=input.programId
     ? await programDiscoverySelection(input.programId,input.idempotencyKey,maxBusinesses,"serper",scope):null;
@@ -2077,12 +2077,23 @@ export async function executeSfpSerperDiscovery(input: {
   const targets=programSelection?.targets ?? await selectSfpSerperTargets(input.cohortRunId!,maxBusinesses);
   await db.execute(sql`UPDATE sfp_stage_runs SET selected_count=${targets.length},updated_at=NOW() WHERE id=${String(stage.id)}::uuid`);
   let succeeded=0,failed=0,noResult=0,freeRecrawlFailed=0,providerRequests=0,memorySkipped=0;
-  for(const target of targets){
+  // Truthful work accounting: selected, attempted, memory-skipped and allowance-deferred
+  // are separate. A business never reached, or stopped before its lookup finished, is
+  // deferred (nothing remembered, selectable again), never counted as processed.
+  let attempted=0,allowanceDeferred=0,deferredAfterSpend=0,stopReason:string|null=null;
+  for(let targetIndex=0;targetIndex<targets.length;targetIndex++){
+    const target=targets[targetIndex];
      await renewStageRunClaim(String(stage.id),stageClaimToken);
-    if(allowance && !allowance.authorizeRequest()) break;
+    if(allowance && !(await allowance.canStart())){
+      stopReason=`allowance_exhausted:${allowance.snapshot().denial ?? "unknown"}`;
+      allowanceDeferred+=targets.length-targetIndex;
+      break;
+    }
     // One worker at a time may buy a business's lookup, and a fresh remembered outcome wins.
+    // The claim pins the exact inputs this lookup is sent with.
     const lookupClaimToken=randomUUID();
-    if(!(await claimSerperLookup(Number(target.id),lookupClaimToken))){ memorySkipped++; continue; }
+    if(!(await claimSerperLookup(Number(target.id),lookupClaimToken,{canonicalName:target.canonical_name,
+      streetAddress:target.street_address,city:target.city,state:target.state,postalCode:target.postal_code}))){ memorySkipped++; continue; }
     let lookupRecorded=false;
     let reservation:Awaited<ReturnType<typeof reserveSfpProviderOperation>>|null=null;
     try{
@@ -2097,11 +2108,12 @@ export async function executeSfpSerperDiscovery(input: {
         noResult++; continue;
       }
       providerRequests++;
+      attempted++;
        const outcome=await invokeSfpProviderTransport(reservation,() => lookupBusinessIdentity({
          businessName:String(target.canonical_name),zip:target.postal_code,city:target.city,state:target.state,address:target.street_address,
          requireGeographicCorroboration:true,
        },{caller:scope==="unlabeled"?UNLABELED_DISCOVERY_CALLER:"server/services/cro03/sfp-paid-waterfall.ts",
-         ...(allowance?{authorizeRequest:allowance.authorizeRequest,onRequestSettled:allowance.onRequestSettled}:{})}));
+         ...(allowance?{authorizeRequest:allowance.authorizeRequest,onRequestSettled:allowance.onRequestSettled,onRequestNotSent:allowance.onRequestNotSent}:{})}));
         const serperUsage = normalizeSfpProviderUsage({
           status: "known", quantity: String(outcome.requestsUsed), unit: "request",
           source: "serper_business_identity",
@@ -2160,6 +2172,21 @@ export async function executeSfpSerperDiscovery(input: {
         }else{
           noResult++;
         }
+      }else if(outcome.kind==='blocked' && outcome.reason==='allowance_exhausted'){
+        // The allowance stopped this lookup. Nothing is concluded or remembered: release the
+        // claim and leave the business selectable, even if an earlier request of it was paid.
+        await settleSfpProviderOperation({
+          reservation,outcome:'failed',observation:'transport',businessId:Number(target.id),
+          ...(outcome.requestsUsed>0?{settledUnits:outcome.requestsUsed,providerUsage:serperUsage}:{}),
+          resultData:{reasonCode:"SERPER_ALLOWANCE_DEFERRED",requestsBeforeStop:outcome.requestsUsed,reportedCredits:outcome.reportedCredits ?? null},
+        });
+        await releaseSerperLookupClaim(Number(target.id),lookupClaimToken); lookupRecorded=true;
+        await db.execute(sql`UPDATE sfp_stage_items SET state='failed',outcome_code='allowance_deferred',completed_at=NOW(),updated_at=NOW() WHERE provider_operation_id=${reservation.operationId}::uuid`);
+        if(outcome.requestsUsed>0) deferredAfterSpend++; else { providerRequests--; attempted--; }
+        allowanceDeferred++;
+        stopReason=`allowance_exhausted:${allowance?.snapshot().denial ?? "unknown"}`;
+        allowanceDeferred+=targets.length-targetIndex-1;
+        break;
       }else{
         await settleSfpProviderOperation({
           reservation,outcome:'no_result',observation:'no_result',businessId:Number(target.id),
@@ -2185,12 +2212,15 @@ export async function executeSfpSerperDiscovery(input: {
       await db.execute(sql`UPDATE sfp_stage_items SET state='failed',outcome_code=${String(error?.message ?? error).slice(0,180)},completed_at=NOW(),updated_at=NOW() WHERE stage_run_id=${String(stage.id)}::uuid AND business_id=${Number(target.id)} AND provider='serper'`).catch(()=>{});
     }
   }
+  // Completed work only: a lookup stopped after spending is attempted but not processed.
+  const processedCount=attempted-deferredAfterSpend+memorySkipped;
   await db.execute(sql`
-    UPDATE sfp_stage_runs SET state=${failed?"partial":"completed"},claim_token=NULL,lease_expires_at=NULL,processed_count=${targets.length},succeeded_count=${succeeded},
-           failed_count=${failed},skipped_count=${noResult},completed_at=NOW(),last_heartbeat_at=NOW(),updated_at=NOW()
+    UPDATE sfp_stage_runs SET state=${failed||allowanceDeferred?"partial":"completed"},claim_token=NULL,lease_expires_at=NULL,processed_count=${processedCount},succeeded_count=${succeeded},
+           failed_count=${failed},skipped_count=${noResult},terminal_reason=${stopReason},completed_at=NOW(),last_heartbeat_at=NOW(),updated_at=NOW()
      WHERE id=${String(stage.id)}::uuid AND claim_token=${stageClaimToken}::uuid
   `);
-  return {stageRunId:String(stage.id),replayed:false,processed:targets.length,succeeded,failed,noResult,freeRecrawlFailed,providerRequests,memorySkipped,
+  return {stageRunId:String(stage.id),replayed:false,selected:targets.length,processed:processedCount,attempted,succeeded,failed,noResult,freeRecrawlFailed,providerRequests,memorySkipped,
+    allowanceDeferred,stopReason,
     ...(allowance?{allowance:allowance.snapshot()}:{}),zeroOutreachConfirmed:true};
 }
 
