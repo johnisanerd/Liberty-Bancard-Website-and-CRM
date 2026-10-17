@@ -37,6 +37,29 @@ export const MIN_MARGIN_OVER_RUNNER_UP = 0.10;
  * Justification: 4 strategies × 1 call each, with Places capped at 2. */
 export const MAX_REQUESTS_PER_LOOKUP = 4;
 
+/**
+ * Version of the matcher and query rules. Lookup memory is keyed to this value, so
+ * bumping it reopens every business that was last judged under an older rule.
+ * Bump whenever scoring, geography checks, query construction or the fallback
+ * policy change in a way that can alter an outcome.
+ *   1 = original matcher (state compared as plain text)
+ *   2 = SFP returned-geography gate
+ *   3 = FL/Florida normalization, per-candidate reason codes, fallback gate
+ */
+export const SERPER_MATCHER_RULE_VERSION = 3;
+
+/** Non-identifying "reason:count" summary of rejected candidates, e.g. "name_mismatch:3,state_conflict:1". */
+export function summarizeRejectionReasons(scored: Array<{ rejectionReason: string | null; source?: string }>): string | null {
+  const counts = new Map<string, number>();
+  for (const c of scored) {
+    if (!c.rejectionReason) continue;
+    const key = c.source === "knowledge_graph" ? `kg_${c.rejectionReason}` : c.rejectionReason;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  if (counts.size === 0) return null;
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k}:${n}`).join(",");
+}
+
 // ── Name normalizer ──────────────────────────────────────────────────────────
 
 /** Terminal legal designators — only stripped at the END of the name.
@@ -194,9 +217,32 @@ function normalizeZip(zip: string | null | undefined): string | null {
   return digits.length >= 5 ? digits.slice(0, 5) : null;
 }
 
+const US_STATE_CODES: Record<string, string> = {
+  alabama: "al", alaska: "ak", arizona: "az", arkansas: "ar", california: "ca", colorado: "co",
+  connecticut: "ct", delaware: "de", "district of columbia": "dc", florida: "fl", georgia: "ga",
+  hawaii: "hi", idaho: "id", illinois: "il", indiana: "in", iowa: "ia", kansas: "ks", kentucky: "ky",
+  louisiana: "la", maine: "me", maryland: "md", massachusetts: "ma", michigan: "mi", minnesota: "mn",
+  mississippi: "ms", missouri: "mo", montana: "mt", nebraska: "ne", nevada: "nv", "new hampshire": "nh",
+  "new jersey": "nj", "new mexico": "nm", "new york": "ny", "north carolina": "nc", "north dakota": "nd",
+  ohio: "oh", oklahoma: "ok", oregon: "or", pennsylvania: "pa", "rhode island": "ri",
+  "south carolina": "sc", "south dakota": "sd", tennessee: "tn", texas: "tx", utah: "ut", vermont: "vt",
+  virginia: "va", washington: "wa", "west virginia": "wv", wisconsin: "wi", wyoming: "wy",
+};
+
+/**
+ * Canonical lowercase two-letter US state code. Accepts a code ("FL", "fl.") or a full
+ * name ("Florida"); unrecognized values are returned cleaned so they still compare
+ * equal only to themselves. Empty input returns "".
+ */
+export function normalizeStateCode(state: string | null | undefined): string {
+  const cleaned = (state ?? "").trim().toLowerCase().replace(/[^a-z\s]/g, "").replace(/\s+/g, " ").trim();
+  if (!cleaned) return "";
+  return US_STATE_CODES[cleaned] ?? cleaned;
+}
+
 function normalizeCityState(city: string | null | undefined, state: string | null | undefined): string | null {
   const c = (city ?? "").trim().toLowerCase().replace(/[^a-z\s]/g, "");
-  const s = (state ?? "").trim().toLowerCase().replace(/[^a-z]/g, "");
+  const s = normalizeStateCode(state);
   if (!c && !s) return null;
   return `${c}|${s}`;
 }
@@ -220,9 +266,28 @@ export type CandidateClassification =
   | "no_usable_fields"
   | "directory_domain";
 
+/** Where a candidate came from. Organic results never carry a returned address. */
+export type CandidateSource = "places" | "knowledge_graph" | "organic";
+
+/** Non-identifying reason codes for every non-accepted candidate. */
+export type CandidateRejectionReason =
+  | "directory_domain"
+  | "no_usable_fields"
+  | "name_mismatch"
+  | "score_below_threshold"
+  | "state_conflict"
+  | "zip_conflict"
+  | "organic_unsupported_geography"
+  | "geography_uncorroborated";
+
+/** Name similarity below this (of a possible 0.60) means the names effectively differ. */
+const NAME_MISMATCH_MAX_NAME_SCORE = 0.30;
+
 export interface ScoredCandidate {
   score: number;
   classification: CandidateClassification;
+  rejectionReason: CandidateRejectionReason | null;
+  source: CandidateSource;
   nameScore: number;
   geoScore: number;
   website: string | null;
@@ -257,6 +322,7 @@ export interface CandidateInput {
   reviewsCount?: number | string | null;
   /** Officer/agent-only hint — never used as standalone acceptance evidence */
   officerSurname?: string | null;
+  source?: CandidateSource;
 }
 
 /**
@@ -295,8 +361,10 @@ export function scoreCandidate(
   let geoScore = 0;
   const qZip = normalizeZip(query.zip);
   const cZip = normalizeZip(candidate.zip);
-  const queryState = (query.state ?? "").trim().toLowerCase();
-  const returnedState = (candidate.state ?? "").trim().toLowerCase();
+  // Businesses store both "FL" and "Florida"; returned addresses carry "FL".
+  // Compare canonical codes so identical evidence yields identical results.
+  const queryState = normalizeStateCode(query.state);
+  const returnedState = normalizeStateCode(candidate.state);
   const conflictingState = !!(queryState && returnedState && queryState !== returnedState);
   const conflictingZip = !!(qZip && cZip && qZip !== cZip);
   const zipCorroborated = !!(qZip && cZip && qZip === cZip);
@@ -348,28 +416,29 @@ export function scoreCandidate(
   const rating = candidate.rating != null ? parseFloat(String(candidate.rating)) : null;
   const reviewCount = candidate.reviewsCount != null ? parseInt(String(candidate.reviewsCount)) : null;
 
+  const source: CandidateSource = candidate.source ?? "places";
+  const base = { nameScore, geoScore, website, phone, address, category, rating, reviewCount, source };
+  const reject = (
+    classification: CandidateClassification,
+    rejectionReason: CandidateRejectionReason,
+  ): ScoredCandidate => ({ score, classification, rejectionReason, ...base });
+
   // Classification: check directory/aggregator domain first
   if (candidate.website && isDirectoryDomain(candidate.website) && !website) {
-    return {
-      score, classification: "directory_domain",
-      nameScore, geoScore, website: null, phone, address, category, rating, reviewCount,
-    };
+    return reject("directory_domain", "directory_domain");
   }
 
   // No usable fields
   if (!website && !phone && !address) {
-    return {
-      score, classification: "no_usable_fields",
-      nameScore, geoScore, website, phone, address, category, rating, reviewCount,
-    };
+    return reject("no_usable_fields", "no_usable_fields");
   }
 
   // Score too low
   if (score < MIN_IDENTITY_SCORE) {
-    return {
-      score, classification: "identity_rejected",
-      nameScore, geoScore, website, phone, address, category, rating, reviewCount,
-    };
+    return reject(
+      "identity_rejected",
+      nameScore < NAME_MISMATCH_MAX_NAME_SCORE ? "name_mismatch" : "score_below_threshold",
+    );
   }
 
   // A common-name website in another state is not the queried local business.
@@ -377,17 +446,17 @@ export function scoreCandidate(
   // than inheriting geography from the search text or the queried business.
   if (query.requireGeographicCorroboration &&
       (conflictingState || conflictingZip || !(zipCorroborated || cityStateCorroborated))) {
-    return {
-      score, classification: "identity_rejected",
-      nameScore, geoScore, website, phone, address, category, rating, reviewCount,
-    };
+    return reject(
+      "identity_rejected",
+      conflictingState ? "state_conflict"
+        : conflictingZip ? "zip_conflict"
+        : source === "organic" ? "organic_unsupported_geography"
+        : "geography_uncorroborated",
+    );
   }
 
   // All scoring done at this point; ambiguity resolved by caller after comparing all candidates
-  return {
-    score, classification: "accepted_match",
-    nameScore, geoScore, website, phone, address, category, rating, reviewCount,
-  };
+  return { score, classification: "accepted_match", rejectionReason: null, ...base };
 }
 
 // ── Outcome classification ────────────────────────────────────────────────────
@@ -418,6 +487,12 @@ export interface LookupOutcome {
   };
   /** All scored candidates for audit purposes (never includes email) */
   scoredCandidates?: ScoredCandidate[];
+  /** Non-identifying rejection-reason counts across all scored candidates. */
+  rejectionSummary?: string | null;
+  /** Set when a strategy was deliberately not run, with the reason. */
+  fallbackSkippedReason?: string;
+  /** Credits the provider reported charging across this lookup; null when it reported none. */
+  reportedCredits?: number | null;
   requestsUsed: number;
   strategiesAttempted: string[];
 }
@@ -443,6 +518,14 @@ export interface BusinessIdentityContext {
   caller: string;
   /** SerperGateway instance (injectable for tests) */
   gateway?: SerperGateway;
+  /**
+   * Consulted immediately before EVERY provider request, including the second and later
+   * requests of one lookup. Returning false stops the lookup before that request is sent
+   * (the outcome is "blocked" with reason "allowance_exhausted" and nothing is counted).
+   */
+  authorizeRequest?: () => boolean | Promise<boolean>;
+  /** Called after each request that reached the provider, with the credits it reported (or null). */
+  onRequestSettled?: (info: { reportedCredits: number | null }) => void;
 }
 
 // ── Attempt telemetry writer ─────────────────────────────────────────────────
@@ -464,6 +547,9 @@ export interface AttemptTelemetry {
   yieldCategory: boolean;
   elapsedMs: number;
   billedUnits: number;
+  /** Credits the provider reported charging for this request, when it reports them. */
+  reportedCredits?: number | null;
+  ruleVersion?: number;
 }
 
 /** Async fire-and-forget telemetry insert — never throws. */
@@ -475,8 +561,8 @@ async function recordAttemptTelemetry(tel: AttemptTelemetry): Promise<void> {
          correlation_hash, caller, strategy_version, strategy_name, endpoint,
          outcome_kind, outcome_reason, result_count, accepted_count, rejected_count,
          yield_website, yield_phone, yield_address, yield_category,
-         elapsed_ms, billed_units
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+         elapsed_ms, billed_units, reported_credits, rule_version
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
       [
         tel.correlationHash,
         tel.caller.slice(0, 200),
@@ -494,11 +580,18 @@ async function recordAttemptTelemetry(tel: AttemptTelemetry): Promise<void> {
         tel.yieldCategory,
         tel.elapsedMs,
         tel.billedUnits,
+        tel.reportedCredits ?? null,
+        tel.ruleVersion ?? SERPER_MATCHER_RULE_VERSION,
       ],
     );
   } catch {
     // Telemetry failures must never block the enrichment path
   }
+}
+
+function reportedCreditsOf(data: any): number | null {
+  const credits = data?.credits;
+  return typeof credits === "number" && Number.isFinite(credits) && credits >= 0 ? Math.round(credits) : null;
 }
 
 // ── Core lookup waterfall ─────────────────────────────────────────────────────
@@ -521,6 +614,27 @@ async function recordAttemptTelemetry(tel: AttemptTelemetry): Promise<void> {
 export async function lookupBusinessIdentity(
   input: BusinessIdentityInput,
   context: BusinessIdentityContext,
+): Promise<LookupOutcome> {
+  const tracker: LookupTracker = { credits: null, fallbackSkippedReason: undefined };
+  const outcome = await runLookup(input, context, tracker);
+  const summary = outcome.scoredCandidates ? summarizeRejectionReasons(outcome.scoredCandidates) : null;
+  return {
+    ...outcome,
+    rejectionSummary: summary,
+    reportedCredits: tracker.credits,
+    ...(tracker.fallbackSkippedReason ? { fallbackSkippedReason: tracker.fallbackSkippedReason } : {}),
+  };
+}
+
+interface LookupTracker {
+  credits: number | null;
+  fallbackSkippedReason: string | undefined;
+}
+
+async function runLookup(
+  input: BusinessIdentityInput,
+  context: BusinessIdentityContext,
+  tracker: LookupTracker,
 ): Promise<LookupOutcome> {
   // Injected unit transports must not initialize production database state.
   // The non-injected path still uses the identical governed gateway.
@@ -552,6 +666,11 @@ export async function lookupBusinessIdentity(
 
   const geoLocation = buildGeoLocation();
 
+  const noteCredits = (data: unknown) => {
+    const credits = reportedCreditsOf(data);
+    if (credits !== null) tracker.credits = (tracker.credits ?? 0) + credits;
+  };
+
   /** Execute a single /places call and score all candidates. */
   async function tryPlaces(
     nameVariant: string,
@@ -562,6 +681,9 @@ export async function lookupBusinessIdentity(
     // ZIP is embedded in the query string for better local specificity
     const queryString = [queryName, input.zip].filter(Boolean).join(" ");
 
+    if (context.authorizeRequest && !(await context.authorizeRequest())) {
+      return { scored: [], outcome: "blocked", reason: "allowance_exhausted" };
+    }
     strategiesAttempted.push(strategyName);
     const t0 = Date.now();
 
@@ -570,7 +692,10 @@ export async function lookupBusinessIdentity(
       { q: queryString, location: geoLocation, gl: "us", hl: "en" },
       `serper_business_identity:${strategyName}`,
     );
-    requestsUsed++;
+    if (!gatewayResult.blocked) {
+      requestsUsed++;
+      context.onRequestSettled?.({ reportedCredits: reportedCreditsOf(gatewayResult.data) });
+    }
 
     const elapsed = Date.now() - t0;
 
@@ -598,6 +723,7 @@ export async function lookupBusinessIdentity(
       return { scored: [], outcome: "provider_failure", reason: gatewayResult.error };
     }
 
+    noteCredits(gatewayResult.data);
     const places: CandidateInput[] = (gatewayResult.data?.places ?? []).map((p: any) => {
       // Extract the candidate's ACTUAL returned geography from the address string.
       // This is critical: we must NOT inject the query's city/state/ZIP here, or a
@@ -615,6 +741,7 @@ export async function lookupBusinessIdentity(
         category: p.category ?? null,
         rating: p.rating ?? null,
         reviewsCount: p.reviewsCount ?? null,
+        source: "places" as const,
       };
     });
 
@@ -636,7 +763,8 @@ export async function lookupBusinessIdentity(
       correlationHash, caller: context.caller,
       strategyVersion, strategyName, endpoint: "/places",
       outcomeKind: acceptedCount > 0 ? "accepted_match" : scored.length === 0 ? "no_result" : "identity_rejected",
-      outcomeReason: null,
+      outcomeReason: summarizeRejectionReasons(scored),
+      reportedCredits: reportedCreditsOf(gatewayResult.data),
       resultCount: scored.length, acceptedCount, rejectedCount,
       yieldWebsite: scored.some((s) => s.classification === "accepted_match" && !!s.website),
       yieldPhone: scored.some((s) => s.classification === "accepted_match" && !!s.phone),
@@ -660,6 +788,9 @@ export async function lookupBusinessIdentity(
     const queryName = "invalid" in normResult ? nameVariant : normResult.normalized;
     const queryString = [queryName, input.zip ?? input.city, input.state].filter(Boolean).join(" ");
 
+    if (context.authorizeRequest && !(await context.authorizeRequest())) {
+      return { scored: [], outcome: "blocked", reason: "allowance_exhausted" };
+    }
     strategiesAttempted.push(strategyName);
     const t0 = Date.now();
 
@@ -668,7 +799,10 @@ export async function lookupBusinessIdentity(
       { q: queryString, gl: "us", hl: "en", num: 10 },
       `serper_business_identity:${strategyName}`,
     );
-    requestsUsed++;
+    if (!gatewayResult.blocked) {
+      requestsUsed++;
+      context.onRequestSettled?.({ reportedCredits: reportedCreditsOf(gatewayResult.data) });
+    }
 
     const elapsed = Date.now() - t0;
 
@@ -696,6 +830,7 @@ export async function lookupBusinessIdentity(
       return { scored: [], outcome: "provider_failure", reason: gatewayResult.error };
     }
 
+    noteCredits(gatewayResult.data);
     // Extract candidates from knowledge graph + organic results (no email extraction)
     const candidates: CandidateInput[] = [];
     const kg = gatewayResult.data?.knowledgeGraph;
@@ -713,6 +848,7 @@ export async function lookupBusinessIdentity(
         category: kg.type ?? null,
         rating: null,
         reviewsCount: null,
+        source: "knowledge_graph",
       });
     }
 
@@ -730,6 +866,7 @@ export async function lookupBusinessIdentity(
         category: null,
         rating: null,
         reviewsCount: null,
+        source: "organic",
       });
     }
 
@@ -750,7 +887,8 @@ export async function lookupBusinessIdentity(
       correlationHash, caller: context.caller,
       strategyVersion, strategyName, endpoint: "/search",
       outcomeKind: acceptedCount > 0 ? "accepted_match" : scored.length === 0 ? "no_result" : "identity_rejected",
-      outcomeReason: null,
+      outcomeReason: summarizeRejectionReasons(scored),
+      reportedCredits: reportedCreditsOf(gatewayResult.data),
       resultCount: scored.length, acceptedCount, rejectedCount,
       yieldWebsite: scored.some((s) => s.classification === "accepted_match" && !!s.website),
       yieldPhone: false, // /search does not yield phone
@@ -869,7 +1007,16 @@ export async function lookupBusinessIdentity(
   }
 
   // ── Strategy 3: /search fallback ─────────────────────────────────────────
-  if (requestsUsed < MAX_REQUESTS_PER_LOOKUP) {
+  // With returned geography required, an organic result can never be accepted (it has no
+  // address); only a knowledge-graph panel can supply geography. The panel describes the
+  // same Google listing Places already evaluated, so once Places returned listings and none
+  // matched, the fallback only spends a request. It still runs when Places returned nothing,
+  // the one case where a knowledge-graph panel can add information. Recorded 20,181
+  // production fallback attempts accepted none.
+  const placesReturnedListings = allScoredCandidates.some((c) => c.source === "places");
+  const fallbackWorthRunning = !(input.requireGeographicCorroboration && placesReturnedListings);
+  if (!fallbackWorthRunning) tracker.fallbackSkippedReason = "places_listings_already_evaluated";
+  if (fallbackWorthRunning && requestsUsed < MAX_REQUESTS_PER_LOOKUP) {
     const s3 = await trySearch(input.businessName, "search_fallback");
     if (s3.outcome === "blocked") {
       return { kind: "blocked", reason: s3.reason, requestsUsed, strategiesAttempted };

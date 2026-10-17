@@ -159,3 +159,4 @@
 - [Classification coverage gap](classification-coverage-gap.md) — catch-up classification of never-classified businesses; windowed drain, capped OpenAI escalation.
 - [Staged-email materialization](staged-email-materialization.md) — staged first-party emails link to their original business at creation via the first-party evidence kind in the native guard; association is separate from vertical/validation/limits; Publish cannot install the routine.
 - [Automatic native object reconciler](native-object-reconciler.md) — production startup installs reviewed functions/triggers Publish skips; manifest, preflight, drift refusal, kill switch.
+- [Serper lookup memory](serper-lookup-memory.md) — negative outcomes remembered with finite expiry; bump matcher rule version on rule changes; unlabeled scope off by default.

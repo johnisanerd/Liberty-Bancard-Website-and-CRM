@@ -1225,6 +1225,28 @@ export const contactEmailPrefilter = pgTable("contact_email_prefilter", {
   index("contact_email_prefilter_status_idx").on(table.status),
 ]);
 
+/** Last Serper lookup outcome per business and purpose. Skipped only while unexpired and
+ * the input fingerprint and matcher rule version still match; also carries a short claim
+ * so concurrent workers cannot buy the same lookup. Stores no provider payloads. */
+export const sfpSerperLookupMemory = pgTable("sfp_serper_lookup_memory", {
+  businessId: integer("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+  purpose: text("purpose").notNull(),
+  requestedEvidence: text("requested_evidence").notNull(),
+  outcomeClass: text("outcome_class"),
+  ruleVersion: integer("rule_version"),
+  inputFingerprint: text("input_fingerprint"),
+  reasonSummary: text("reason_summary"),
+  requestsUsed: integer("requests_used").notNull().default(0),
+  observedAt: timestamp("observed_at", { withTimezone: true }),
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
+  claimToken: uuid("claim_token"),
+  claimExpiresAt: timestamp("claim_expires_at", { withTimezone: true }),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  primaryKey({ columns: [table.businessId, table.purpose] }),
+  index("sfp_serper_lookup_memory_expiry_idx").on(table.expiresAt),
+]);
+
 // CRO-03C governed live execution authority is deliberately separate from the
 // immutable CRO-03B denied-generation records.
 export type Cro03cBillingSemantics = "not_billable" | "per_unit_no_result_free" | "per_unit_no_result_billable";

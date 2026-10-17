@@ -1,6 +1,13 @@
 /** Bounded, ROI-ordered paid escalation for the South Florida program. */
 import { sql } from "drizzle-orm";
-import { programDiscoverySelection } from "./sfp-discovery-scope";
+import { programDiscoverySelection, type DiscoveryScope } from "./sfp-discovery-scope";
+import {
+  claimSerperLookup, recordSerperLookupOutcome, releaseSerperLookupClaim,
+} from "./sfp-serper-lookup-memory";
+import {
+  UNLABELED_DISCOVERY_CALLER, createRequestAllowance, readUnlabeledDiscoveryDailyUsage,
+  readUnlabeledDiscoveryGate, type RequestAllowance,
+} from "./sfp-serper-allowance";
 import { createHash, randomUUID } from "node:crypto";
 import { db } from "../../db";
 import { getPaidProviderControls } from "../paid-provider-control";
@@ -2026,11 +2033,23 @@ export async function executeSfpSerperDiscovery(input: {
   maxBusinesses?:number;
   previewSnapshotHash?:string;
   internalSkipPreviewCheck?:boolean;
+  /** "unlabeled" admits businesses with no effective vertical for evidence discovery. It is
+   * closed unless an admin setting enables it with positive request allowances. */
+  scope?:DiscoveryScope;
 }) {
   const maxBusinesses=Math.max(1,Math.min(25,Number(input.maxBusinesses ?? 10)));
   if(Boolean(input.programId)===Boolean(input.cohortRunId)) throw new Error("SFP_DISCOVERY_SCOPE_REQUIRED");
+  const scope:DiscoveryScope=input.scope ?? "target_vertical";
+  let allowance:RequestAllowance|null=null;
+  if(scope==="unlabeled"){
+    if(!input.programId) throw new Error("SFP_UNLABELED_DISCOVERY_REQUIRES_PROGRAM");
+    const gate=await readUnlabeledDiscoveryGate();
+    if(!gate.enabled) throw new Error("SFP_UNLABELED_DISCOVERY_DISABLED");
+    allowance=createRequestAllowance(gate,await readUnlabeledDiscoveryDailyUsage());
+    if(!allowance.authorizeRequest()) throw new Error("SFP_UNLABELED_DISCOVERY_ALLOWANCE_EXHAUSTED");
+  }
   const programSelection=input.programId
-    ? await programDiscoverySelection(input.programId,input.idempotencyKey,maxBusinesses,"serper"):null;
+    ? await programDiscoverySelection(input.programId,input.idempotencyKey,maxBusinesses,"serper",scope):null;
   if (!programSelection && !input.internalSkipPreviewCheck) {
     if (!input.previewSnapshotHash) throw new Error("SFP_PREVIEW_REQUIRED");
     const currentPreview=await getSfpCohortGapSnapshot(input.cohortRunId!);
@@ -2040,7 +2059,8 @@ export async function executeSfpSerperDiscovery(input: {
   if(!programSelection && !cohortHashRow) throw new Error("SFP_COHORT_RUN_NOT_FOUND");
   const payloadHash=sha256({cohortRunId:input.cohortRunId,programId:input.programId,
     cohortHash:programSelection?sha256(programSelection.snapshot):cohortHashRow.cohort_hash,maxBusinesses,
-    providers:["serper"],order:["serper","free_first_party_recrawl"],previewSnapshotHash:input.previewSnapshotHash ?? null});
+    providers:["serper"],order:["serper","free_first_party_recrawl"],previewSnapshotHash:input.previewSnapshotHash ?? null,
+    ...(scope!=="target_vertical"?{scope}:{})});
   const existing=rows(await db.execute(sql`
     SELECT * FROM sfp_stage_runs WHERE stage='paid_waterfall' AND idempotency_key=${input.idempotencyKey} LIMIT 1
   `))[0];
@@ -2056,9 +2076,14 @@ export async function executeSfpSerperDiscovery(input: {
    const stageClaimToken=await claimStageRun(String(stage.id));
   const targets=programSelection?.targets ?? await selectSfpSerperTargets(input.cohortRunId!,maxBusinesses);
   await db.execute(sql`UPDATE sfp_stage_runs SET selected_count=${targets.length},updated_at=NOW() WHERE id=${String(stage.id)}::uuid`);
-  let succeeded=0,failed=0,noResult=0,freeRecrawlFailed=0,providerRequests=0;
+  let succeeded=0,failed=0,noResult=0,freeRecrawlFailed=0,providerRequests=0,memorySkipped=0;
   for(const target of targets){
      await renewStageRunClaim(String(stage.id),stageClaimToken);
+    if(allowance && !allowance.authorizeRequest()) break;
+    // One worker at a time may buy a business's lookup, and a fresh remembered outcome wins.
+    const lookupClaimToken=randomUUID();
+    if(!(await claimSerperLookup(Number(target.id),lookupClaimToken))){ memorySkipped++; continue; }
+    let lookupRecorded=false;
     let reservation:Awaited<ReturnType<typeof reserveSfpProviderOperation>>|null=null;
     try{
       reservation=await reserveSfpProviderOperation({
@@ -2067,12 +2092,16 @@ export async function executeSfpSerperDiscovery(input: {
         purpose:"sfp_official_domain_discovery",idempotencyKey:`${input.idempotencyKey}:serper:${target.id}`,
         actorId:input.actorId,workUnit:"request",units:4,
       });
-      if(reservation.replayed){ noResult++; continue; }
+      if(reservation.replayed){
+        await releaseSerperLookupClaim(Number(target.id),lookupClaimToken); lookupRecorded=true;
+        noResult++; continue;
+      }
       providerRequests++;
        const outcome=await invokeSfpProviderTransport(reservation,() => lookupBusinessIdentity({
          businessName:String(target.canonical_name),zip:target.postal_code,city:target.city,state:target.state,address:target.street_address,
          requireGeographicCorroboration:true,
-       },{caller:"server/services/cro03/sfp-paid-waterfall.ts"}));
+       },{caller:scope==="unlabeled"?UNLABELED_DISCOVERY_CALLER:"server/services/cro03/sfp-paid-waterfall.ts",
+         ...(allowance?{authorizeRequest:allowance.authorizeRequest,onRequestSettled:allowance.onRequestSettled}:{})}));
         const serperUsage = normalizeSfpProviderUsage({
           status: "known", quantity: String(outcome.requestsUsed), unit: "request",
           source: "serper_business_identity",
@@ -2087,6 +2116,10 @@ export async function executeSfpSerperDiscovery(input: {
         const identityCandidates = [
           ...(domain ? [{ field: "website_domain", value: domain }] : []),
           ...(acceptedIdentity.phone ? [{ field: "phone", value: acceptedIdentity.phone }] : []),
+          // The listing's own category is classification evidence even when the listing has no
+          // website. It is stored as raw evidence only; #2087's authority decides any vertical.
+          ...(acceptedIdentity.category?.trim()
+            ? [{ field: "listing_category", value: acceptedIdentity.category.trim().slice(0,120) }] : []),
         ];
         await db.transaction(async (tx) => {
           const evidence = [];
@@ -2094,7 +2127,8 @@ export async function executeSfpSerperDiscovery(input: {
             evidence.push(await writeSfpPaidCandidateEvidence({
               businessId: Number(target.id), provider: "serper", field: candidate.field,
               value: candidate.value, subjectType: "business", providerOperationId: reservation!.operationId,
-              confidence: 90, candidateMetadata: { acceptedIdentityMatch: true },
+              confidence: candidate.field === "listing_category" ? 80 : 90,
+              candidateMetadata: { acceptedIdentityMatch: true, endpoint: acceptedIdentity.endpoint, strategy: acceptedIdentity.strategy },
             }, tx));
           }
           await tx.execute(sql`
@@ -2104,16 +2138,19 @@ export async function executeSfpSerperDiscovery(input: {
           await settleSfpProviderOperation({
             reservation: reservation!,outcome:'completed',observation:'unknown',businessId:Number(target.id),
              settledUnits:outcome.requestsUsed,providerUsage:serperUsage,
-             resultData:{domain,reasonCode:domain ? "SERPER_DOMAIN_DISCOVERED" : "SERPER_IDENTITY_MATCH_NO_DOMAIN"},
+             resultData:{domain,reasonCode:domain ? "SERPER_DOMAIN_DISCOVERED" : "SERPER_IDENTITY_MATCH_NO_DOMAIN",reportedCredits:outcome.reportedCredits ?? null,fallbackSkippedReason:outcome.fallbackSkippedReason ?? null},
           },tx);
           if (evidence.length) {
             await tx.execute(sql`
               UPDATE sfp_stage_items SET paid_candidate_evidence_id=${evidence[0].id}::uuid,
-                     outcome_code='candidate_found',updated_at=NOW()
+                     outcome_code=${identityCandidates[0].field==="listing_category"?"listing_category_evidence":"candidate_found"},updated_at=NOW()
                WHERE provider_operation_id=${reservation!.operationId}::uuid
             `);
           }
         });
+        // Remember an accepted identity that yielded no website so it is not re-bought.
+        await recordSerperLookupOutcome({businessId:Number(target.id),claimToken:lookupClaimToken,outcome,discoveredDomain:!!domain});
+        lookupRecorded=true;
         if(domain){
           // Domain discovery is a paid-stage success even if the subsequent
           // free crawl fails. The canonical free lane owns its own retry state.
@@ -2128,13 +2165,21 @@ export async function executeSfpSerperDiscovery(input: {
           reservation,outcome:'no_result',observation:'no_result',businessId:Number(target.id),
            settledUnits:outcome.requestsUsed,providerUsage:serperUsage,resultData:{
             domain:null,
-            reasonCode:outcome.kind==='identity_rejected' ? 'SERPER_IDENTITY_REJECTED' : 'SERPER_NO_RESULT',
+            reasonCode:serperReasonCode(outcome.kind),
             lookupOutcome:outcome.kind,
+            rejectionSummary:outcome.rejectionSummary ?? null,
+            fallbackSkippedReason:outcome.fallbackSkippedReason ?? null,
+            reportedCredits:outcome.reportedCredits ?? null,
           },
         });
+        // Provider failures and control blocks are remembered only briefly or not at all;
+        // genuine negatives are remembered under the current inputs and rule version.
+        await recordSerperLookupOutcome({businessId:Number(target.id),claimToken:lookupClaimToken,outcome,discoveredDomain:false});
+        lookupRecorded=true;
         noResult++;
       }
     }catch(error:any){
+      if(!lookupRecorded) await releaseSerperLookupClaim(Number(target.id),lookupClaimToken).catch(()=>{});
       if(reservation) await settleSfpProviderOperation({reservation,outcome:'failed',observation:'transport',businessId:Number(target.id)}).catch(()=>{});
       failed++;
       await db.execute(sql`UPDATE sfp_stage_items SET state='failed',outcome_code=${String(error?.message ?? error).slice(0,180)},completed_at=NOW(),updated_at=NOW() WHERE stage_run_id=${String(stage.id)}::uuid AND business_id=${Number(target.id)} AND provider='serper'`).catch(()=>{});
@@ -2145,5 +2190,16 @@ export async function executeSfpSerperDiscovery(input: {
            failed_count=${failed},skipped_count=${noResult},completed_at=NOW(),last_heartbeat_at=NOW(),updated_at=NOW()
      WHERE id=${String(stage.id)}::uuid AND claim_token=${stageClaimToken}::uuid
   `);
-  return {stageRunId:String(stage.id),replayed:false,processed:targets.length,succeeded,failed,noResult,freeRecrawlFailed,providerRequests,zeroOutreachConfirmed:true};
+  return {stageRunId:String(stage.id),replayed:false,processed:targets.length,succeeded,failed,noResult,freeRecrawlFailed,providerRequests,memorySkipped,
+    ...(allowance?{allowance:allowance.snapshot()}:{}),zeroOutreachConfirmed:true};
+}
+
+function serperReasonCode(kind:string):string{
+  switch(kind){
+    case 'identity_rejected': return 'SERPER_IDENTITY_REJECTED';
+    case 'ambiguous': return 'SERPER_AMBIGUOUS';
+    case 'provider_failure': return 'SERPER_PROVIDER_FAILURE';
+    case 'blocked': return 'SERPER_LOOKUP_BLOCKED';
+    default: return 'SERPER_NO_RESULT';
+  }
 }

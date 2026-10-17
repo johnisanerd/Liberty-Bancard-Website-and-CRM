@@ -3,6 +3,7 @@ import { db } from "../../db";
 import { effectiveBusinessVerticalSql } from "@shared/effective-vertical";
 import { businessHasDbprLineageSql } from "../dbpr";
 import { resolveGeographyFromCandidates } from "./sfp-geography-resolver";
+import { serperLookupExclusionSql } from "./sfp-serper-lookup-memory";
 
 const rows = (r: any): any[] => r?.rows ?? r ?? [];
 type Executor = { execute(query: any): Promise<any> };
@@ -76,7 +77,31 @@ export async function lockSfpStageScope(executor: Executor, stageRunId: string) 
 
 /** Bounded selection is a work batch, not admission or a spending allowance.
  * Full-population current facts supply targets; no frozen cohort is read. */
-export async function selectProgramDiscoveryTargets(programId: string, max: number, phase: "serper"|"paid"="paid") {
+/**
+ * Which businesses a discovery pass may select.
+ *  - "target_vertical": the ordinary scope; the business already has an effective target
+ *    vertical in the program.
+ *  - "unlabeled": the pre-classification scope for evidence discovery; the business has NO
+ *    effective vertical and has not been classified non-target. It admits a business to
+ *    look for listing evidence only. It never assigns a vertical or campaign eligibility.
+ * Geography, DBPR-lineage, status, quarantine and existing-customer fences are identical.
+ */
+export type DiscoveryScope = "target_vertical" | "unlabeled";
+
+function scopeVerticalPredicate(scope: DiscoveryScope, verticalIds: string[]) {
+  const effective = sql.raw(effectiveBusinessVerticalSql("b"));
+  if (scope === "unlabeled") {
+    return sql`(${effective} IS NULL AND NOT EXISTS (
+      SELECT 1 FROM (SELECT ev.outcome FROM sfp_classification_evidence ev
+          WHERE ev.business_id=b.id AND ev.taxonomy_version=2 AND ev.classifier_version=3
+            AND ev.terminal_state='completed'
+          ORDER BY ev.created_at DESC,ev.id DESC LIMIT 1) latest
+       WHERE latest.outcome='non_target'))`;
+  }
+  return sql`(${effective}::text=ANY(ARRAY[${sql.join(verticalIds.map((v:string)=>sql`${v}`),sql`, `)}]::text[]))`;
+}
+
+export async function selectProgramDiscoveryTargets(programId: string, max: number, phase: "serper"|"paid"="paid", scope: DiscoveryScope = "target_vertical") {
   const p = rows(await db.execute(sql`SELECT p.*,${discoveryProgramPinSql} program_hash
     FROM sfp_programs p WHERE p.id=${programId}::uuid AND p.is_active AND p.taxonomy_version=2`))[0];
   if (!p) throw new Error("SFP_PAID_BLOCKED:PROGRAM_INACTIVE");
@@ -90,7 +115,7 @@ export async function selectProgramDiscoveryTargets(programId: string, max: numb
     SELECT b.*,${discoveryBusinessPinSql} business_pin,
       ${sql.raw(effectiveBusinessVerticalSql("b"))} effective_vertical,0 AS roi_score
     FROM businesses b WHERE b.record_class='canonical'
-      AND ${sql.raw(effectiveBusinessVerticalSql("b"))}::text=ANY(ARRAY[${sql.join(p.vertical_ids.map((v:string)=>sql`${v}`),sql`, `)}]::text[])
+      AND ${scopeVerticalPredicate(scope, p.vertical_ids)}
       AND NOT ${businessHasDbprLineageSql(sql`b.id`)}
       AND lower(COALESCE(b.status,'')) NOT IN
         ('suppressed','inactive','closed','dissolved','revoked','expired','archived')
@@ -103,6 +128,9 @@ export async function selectProgramDiscoveryTargets(programId: string, max: numb
         WHERE ci.business_id=b.id AND ci.program_id=${programId}::uuid
           AND ci.preparation_state IN ('pending_validation','ready_held'))<3
       AND (${phase!=="serper"} OR NULLIF(btrim(b.website_domain),'') IS NULL)
+      -- Lookup memory is applied here, inside the candidate query, so businesses that must
+      -- not be re-bought cannot occupy the bounded batch. Finite, input- and rule-aware.
+      AND (${phase!=="serper"} OR NOT ${serperLookupExclusionSql("b")})
       AND NOT EXISTS(SELECT 1 FROM provider_operations o WHERE o.target_fingerprint='business:'||b.id::text
         AND (o.state='running' OR o.billing_state='reserved'
           OR (o.created_at>NOW()-INTERVAL '24 hours' AND o.purpose=ANY(ARRAY[
@@ -148,7 +176,7 @@ export async function assertSfpProgramDiscoveryContract(executor:Executor=db) {
   if(installed?.installed!==true) throw new Error("CANONICAL_DISCOVERY_NATIVE_CONTRACT_REQUIRED");
 }
 
-export async function programDiscoverySelection(programId:string,idempotencyKey:string,max:number,phase:"serper"|"paid") {
+export async function programDiscoverySelection(programId:string,idempotencyKey:string,max:number,phase:"serper"|"paid",scope:DiscoveryScope="target_vertical") {
   await assertSfpProgramDiscoveryContract();
   const prior=rows(await db.execute(sql`SELECT program_id,selection_snapshot FROM sfp_stage_runs
     WHERE stage='paid_waterfall' AND idempotency_key=${idempotencyKey}`))[0];
@@ -161,7 +189,7 @@ export async function programDiscoverySelection(programId:string,idempotencyKey:
     return {snapshot:prior.selection_snapshot,targets:targets.map(b=>({...b,
       geography:prior.selection_snapshot.geography[String(b.id)]}))};
   }
-  const selection=await selectProgramDiscoveryTargets(programId,max,phase);
+  const selection=await selectProgramDiscoveryTargets(programId,max,phase,scope);
   return {targets:selection.targets,snapshot:{
     programHash:selection.program.program_hash,
     businessPins:Object.fromEntries(selection.targets.map(b=>[String(b.id),b.business_pin])),
