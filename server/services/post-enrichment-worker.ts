@@ -133,6 +133,21 @@ interface EnrollmentOutcome {
   eligibilitySnapshot?: Record<string, unknown>;
 }
 
+// ── Legacy enrollment containment ────────────────────────────────────────────
+
+/**
+ * This worker is a legacy producer: it picks a sequence by vertical name, inserts an
+ * `active` sequence_enrollments row and then asks GHL to enroll the contact. It does not
+ * use the selected-recipient, validation and ready-held preparation owners, so the global
+ * outbound pause was its only fence. A pause is a temporary operating state, not an
+ * authority to enroll, so the effect is contained in code: it never creates an enrollment
+ * or a GHL side effect whatever the pause or coordinator state is. The deal stamp, stage
+ * advance and a durable pending intent (holdReason below) are kept so the work stays
+ * visible and can be routed through a reviewed release authority later.
+ */
+export const LEGACY_POST_ENRICHMENT_ENROLLMENT_CONTAINED = true as boolean;
+export const LEGACY_POST_ENRICHMENT_CONTAINMENT_CODE = "legacy_enrollment_contained";
+
 // ── Canonical enrollment command ─────────────────────────────────────────────
 
 /**
@@ -163,6 +178,16 @@ export async function executePostEnrichmentEnrollmentIntent(
   workerId: string,
 ): Promise<EnrollmentOutcome> {
   const logPrefix = `[PE-Enroll] intent=${intentId} deal=${dealId} contact=${contactId} seq=${sequenceId}`;
+
+  // ── 0. Containment: no enrollment or GHL effect regardless of pause state ──
+  if (LEGACY_POST_ENRICHMENT_ENROLLMENT_CONTAINED) {
+    return {
+      success: false,
+      errorCode: LEGACY_POST_ENRICHMENT_CONTAINMENT_CODE,
+      errorClass: "permanent",
+      reason: "Legacy post-enrichment enrollment is contained; no enrollment or GHL effect was attempted",
+    };
+  }
 
   // ── 1. Re-check authority + coordinator immediately before effect ─────────
   const { authorize } = await import("./outbound-pause-authority");
@@ -468,6 +493,12 @@ export async function recoverPendingEnrollmentIntents(workerId: string): Promise
 
   const stats = { claimed: 0, completed: 0, failed: 0, deferred: 0, blockedByCoordinator: false };
 
+  // Contained producer: claim nothing, so pending intents keep their state and attempt counts.
+  if (LEGACY_POST_ENRICHMENT_ENROLLMENT_CONTAINED) {
+    console.log(`${logPrefix} — legacy enrollment contained, no intents claimed`);
+    return stats;
+  }
+
   // Check coordinator first (batch-level early exit)
   try {
     const { canExecute } = await import("./outbound-queue-coordinator");
@@ -731,7 +762,10 @@ export async function processPostEnrichmentJob(data: PostEnrichmentJobData): Pro
 
   const decision = await authorize({});
   const coordOk = decision.allowed ? await canExecute("post-enrichment-enrollment") : false;
-  const enrollNow = decision.allowed && coordOk;
+  const enrollNow = !LEGACY_POST_ENRICHMENT_ENROLLMENT_CONTAINED && decision.allowed && coordOk;
+  const holdReason = LEGACY_POST_ENRICHMENT_ENROLLMENT_CONTAINED
+    ? LEGACY_POST_ENRICHMENT_CONTAINMENT_CODE
+    : !decision.allowed ? decision.reasonCode : "coordinator-hold";
 
   if (!sequence) {
     // No sequences at all — stamp the deal (no enrollment possible), no intent row
@@ -831,7 +865,7 @@ export async function processPostEnrichmentJob(data: PostEnrichmentJobData): Pro
             vertical,
             selectionPolicyVersion: SELECTION_POLICY_VERSION,
             decidedAt: new Date().toISOString(),
-            holdReason: !decision.allowed ? decision.reasonCode : "coordinator-hold",
+            holdReason,
           }),
         ],
       );
@@ -854,12 +888,14 @@ export async function processPostEnrichmentJob(data: PostEnrichmentJobData): Pro
         sequenceId: sequence.id,
         sequenceName: sequence.name,
         vertical,
-        holdReason: !decision.allowed ? decision.reasonCode : "coordinator-hold",
+        holdReason,
         idempotencyKey,
       },
     });
     await db.execute(sql`
-      UPDATE deals SET next_action = ${'Enrollment deferred — outbound hold active'}, updated_at = NOW()
+      UPDATE deals SET next_action = ${LEGACY_POST_ENRICHMENT_ENROLLMENT_CONTAINED
+        ? 'Enrollment held — legacy auto-enrollment is contained'
+        : 'Enrollment deferred — outbound hold active'}, updated_at = NOW()
       WHERE id = ${dealId}
     `);
     console.log(`${logPrefix} — enrollment deferred (hold active), intent written as ${idempotencyKey}`);

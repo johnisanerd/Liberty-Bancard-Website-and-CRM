@@ -53,6 +53,17 @@ import { buildSfpProviderHttpDiagnostics } from "./sfp-provider-http-diagnostics
 
 const rows = (r: any): any[] => r?.rows ?? r ?? [];
 const sha256 = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+/** Key-order-independent form. JSONB storage reorders object keys, so a request hash that must
+ * survive a round trip through a stored snapshot cannot use plain JSON.stringify. */
+const canonicalJson = (value: unknown): string => {
+  if (Array.isArray(value)) return `[${value.map((v) => canonicalJson(v === undefined ? null : v)).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value as object).filter((k) => (value as any)[k] !== undefined).sort()
+      .map((k) => `${JSON.stringify(k)}:${canonicalJson((value as any)[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+};
+const canonicalSha256 = (value: unknown) => createHash("sha256").update(canonicalJson(value)).digest("hex");
 const ROUTINE_SFP_CALLER = "server/services/cro03/sfp-paid-waterfall.ts";
 
 function providerUsage(
@@ -2046,7 +2057,7 @@ export async function executeSfpSerperDiscovery(input: {
     const gate=await readUnlabeledDiscoveryGate();
     if(!gate.enabled) throw new Error("SFP_UNLABELED_DISCOVERY_DISABLED");
     allowance=createDurableRequestAllowance(gate,randomUUID());
-    if(!(await allowance.canStart())) throw new Error("SFP_UNLABELED_DISCOVERY_ALLOWANCE_EXHAUSTED");
+    if(!(await allowance.canStart())) throw new Error(`SFP_UNLABELED_DISCOVERY_ALLOWANCE_EXHAUSTED:${allowance.snapshot().denial ?? "unknown"}`);
   }
   const programSelection=input.programId
     ? await programDiscoverySelection(input.programId,input.idempotencyKey,maxBusinesses,"serper",scope):null;
@@ -2057,15 +2068,24 @@ export async function executeSfpSerperDiscovery(input: {
   }
   const cohortHashRow=programSelection?null:rows(await db.execute(sql`SELECT cohort_hash FROM sfp_cohort_runs WHERE id=${input.cohortRunId!}::uuid`))[0];
   if(!programSelection && !cohortHashRow) throw new Error("SFP_COHORT_RUN_NOT_FOUND");
-  const payloadHash=sha256({cohortRunId:input.cohortRunId,programId:input.programId,
-    cohortHash:programSelection?sha256(programSelection.snapshot):cohortHashRow.cohort_hash,maxBusinesses,
+  // The hash must be reproducible from the STORED selection snapshot (a JSONB round trip reorders
+  // keys), so a genuine same-payload replay of a completed key matches while a changed request
+  // under the same key does not. Runs hashed before this change used plain JSON order and can
+  // only be matched by the legacy form below.
+  const hashParts=(cohortHash:unknown)=>({cohortRunId:input.cohortRunId,programId:input.programId,
+    cohortHash,maxBusinesses,
     providers:["serper"],order:["serper","free_first_party_recrawl"],previewSnapshotHash:input.previewSnapshotHash ?? null,
     ...(scope!=="target_vertical"?{scope}:{})});
+  const payloadHash=canonicalSha256(hashParts(programSelection?canonicalSha256(programSelection.snapshot):cohortHashRow.cohort_hash));
+  const legacyPayloadHash=sha256(hashParts(programSelection?sha256(programSelection.snapshot):cohortHashRow.cohort_hash));
   const existing=rows(await db.execute(sql`
     SELECT * FROM sfp_stage_runs WHERE stage='paid_waterfall' AND idempotency_key=${input.idempotencyKey} LIMIT 1
   `))[0];
-  if(existing?.payload_hash && String(existing.payload_hash)!==payloadHash) throw new Error("SFP_IDEMPOTENCY_PAYLOAD_MISMATCH");
-  if(existing?.state==='completed') return {stageRunId:String(existing.id),replayed:true,processed:Number(existing.processed_count),succeeded:Number(existing.succeeded_count),failed:Number(existing.failed_count),providerRequests:0};
+  if(existing?.payload_hash && ![payloadHash,legacyPayloadHash].includes(String(existing.payload_hash))) throw new Error("SFP_IDEMPOTENCY_PAYLOAD_MISMATCH");
+  if(existing?.state==='completed') return {stageRunId:String(existing.id),replayed:true,selected:Number(existing.selected_count ?? 0),
+    processed:Number(existing.processed_count),attempted:0,succeeded:Number(existing.succeeded_count),failed:Number(existing.failed_count),
+    noResult:Number(existing.skipped_count ?? 0),freeRecrawlFailed:0,providerRequests:0,memorySkipped:0,allowanceDeferred:0,
+    stopReason:(existing.terminal_reason as string|null) ?? null,zeroOutreachConfirmed:true as const};
   const stage=existing ?? rows(await db.execute(sql`
      INSERT INTO sfp_stage_runs(cohort_run_id,program_id,selection_snapshot,stage,idempotency_key,actor_id,state,max_items,provider_keys,payload_hash,preview_snapshot_hash,started_at,last_heartbeat_at)
      VALUES(${input.cohortRunId ?? null}::uuid,${input.programId ?? null}::uuid,

@@ -54,26 +54,27 @@ async function armPilot(cohortRunId: string, maxBusinesses: number, reason: stri
   if (reason.length < 8 || reason.length > 200) {
     throw new Error("400:An operator reason (8-200 characters) is required");
   }
-  await assertSfpRuntimeAuthority(cohortRunId);
+  try { await assertSfpRuntimeAuthority(cohortRunId); }
+  catch (error) { throw new Error(`409:${(error as Error).message}`); }
   if (process.env.CRO03_PROVIDER_TRANSPORT_ENABLED !== "true" || !process.env.SERPER_API_KEY) {
     throw new Error("422:SFP_SERPER_TRANSPORT_OR_CREDENTIAL_UNAVAILABLE");
   }
   return db.transaction(async (tx: any) => {
     const gateway = rows(await tx.execute(sql`
-      SELECT enabled,state,local_budget,window_calls FROM serper_control WHERE id=1 FOR UPDATE
+      SELECT enabled,state FROM serper_control WHERE id=1 FOR UPDATE
     `))[0];
-    if (!gateway?.enabled || gateway.state !== "closed" ||
-        Number(gateway.window_calls) + maxCallsPerBusiness * maxBusinesses > Number(gateway.local_budget)) {
+    if (!gateway?.enabled || gateway.state !== "closed") {
       throw new Error("409:SFP_SERPER_GATEWAY_NOT_READY");
     }
     const control = rows(await tx.execute(sql`
-      SELECT enabled,circuit_state,consumed_units,reserved_units,version
+      SELECT enabled,circuit_state,version
         FROM provider_controls WHERE provider='serper' FOR UPDATE
     `))[0];
     if (!control || control.circuit_state !== "closed") throw new Error("409:SFP_SERPER_CONTROL_NOT_READY");
-    const cap = Number(control.consumed_units) + Number(control.reserved_units) + maxCallsPerBusiness * maxBusinesses;
+    // Paid approvals no longer carry a budget: arming only enables the control. The limit,
+    // reserved and consumed counters are never changed by this route.
     const updated = rows(await tx.execute(sql`
-      UPDATE provider_controls SET enabled=TRUE,local_budget_units=${cap},version=version+1,updated_at=NOW()
+      UPDATE provider_controls SET enabled=TRUE,version=version+1,updated_at=NOW()
        WHERE provider='serper' RETURNING provider,enabled,circuit_state,local_budget_units,
          reserved_units,consumed_units,version
     `))[0];
@@ -90,28 +91,20 @@ async function main() {
   const armSection = routeSource.slice(routeSource.indexOf('"/api/lead-ops/sfp/runs/:runId/serper/arm-pilot"'));
   check(armSection.includes("FROM serper_control WHERE id=1 FOR UPDATE"), "route contains the exact serper_control gateway read");
   check(armSection.includes("FROM provider_controls WHERE provider='serper' FOR UPDATE"), "route contains the exact provider_controls read");
-  check(armSection.includes("reserved_units,consumed_units,version") && armSection.includes("UPDATE provider_controls SET enabled=TRUE,local_budget_units=${cap}"),
-    "route's UPDATE only touches enabled/local_budget_units/version, never reserved/consumed units");
+  check(armSection.includes("UPDATE provider_controls SET enabled=TRUE,version=version+1") &&
+    !armSection.slice(0, armSection.indexOf("res.json({ control")).includes("local_budget_units") &&
+    !armSection.slice(0, armSection.indexOf("res.json({ control")).includes("consumed_units=") &&
+    !armSection.slice(0, armSection.indexOf("res.json({ control")).includes("reserved_units="),
+    "route's UPDATE enables the control and bumps its version; it never writes the limit or reserved/consumed units");
+  check(armSection.includes("await assertSfpRuntimeAuthority(cohortRunId)") &&
+    routeSource.includes('"/api/lead-ops/sfp/runs/:runId/serper/arm-pilot", requireRole("admin")'),
+    "arm-pilot stays admin-only and checks live runtime authority before any write");
+  check(armSection.includes("gateway.state !== \"closed\"") && armSection.includes("control.circuit_state !== \"closed\""),
+    "arm-pilot still requires both the gateway and the provider control to be closed");
+  check(armSection.includes("sfp_serper_provider_approved"), "arm-pilot still writes its approval audit row");
   check(!armSection.slice(0, armSection.indexOf("res.json({ control")).includes("fetch(") &&
     !armSection.slice(0, armSection.indexOf("res.json({ control")).includes("lookupBusinessIdentity"),
     "arm-pilot handler makes no provider transport call before responding");
-
-  // --- Unit-consistency regression guard: serper_control.window_calls/local_budget
-  // (raw API calls) and provider_controls.reserved_units/consumed_units (also
-  // calls, for serper) must both be scaled by the SAME per-business call estimate.
-  // A future edit that hardcodes a numeral in either arithmetic site instead of
-  // reusing maxUnitsPerSfpReservation("serper") would silently let the two gates
-  // drift out of unit-sync — this assertion fails loudly if that regresses.
-  const preCapSection = armSection.slice(0, armSection.indexOf("const cap ="));
-  check(/maxUnitsPerSfpReservation\s*\(\s*["']serper["']\s*\)/.test(preCapSection),
-    "arm-pilot imports the per-business call estimate rather than importing it ad hoc");
-  const gatewayCheckLine = armSection.slice(armSection.indexOf("gateway?.enabled"), armSection.indexOf("SFP_SERPER_GATEWAY_NOT_READY"));
-  const capLine = armSection.slice(armSection.indexOf("const cap ="), armSection.indexOf("const cap =") + 200);
-  check(gatewayCheckLine.includes("maxCallsPerBusiness") && !/[^a-zA-Z_]4\s*\*\s*maxBusinesses/.test(gatewayCheckLine),
-    "the serper_control readiness check scales by the shared call-estimate variable, not a hardcoded literal");
-  check(capLine.includes("maxCallsPerBusiness") && !/[^a-zA-Z_]4\s*\*\s*maxBusinesses/.test(capLine),
-    "the provider_controls cap calculation scales by the same shared call-estimate variable (no unit drift between the two gates)");
-  check(maxCallsPerBusiness === 4, "maxUnitsPerSfpReservation('serper') is still the documented 4-calls-per-business ceiling this cert's fixtures assume");
 
   // --- Fixtures ---
   const programId = randomUUID();
@@ -155,8 +148,8 @@ async function main() {
   `);
 
   // 1. Requires a frozen cohort + live runtime authority
-  await assert.rejects(() => armPilot(unfrozenCohortRunId, 1, "cert pilot reason"), /NO_LIVE_RUNTIME_AUTHORITY/);
-  check(true, "arm-pilot rejects a non-frozen cohort run (no runtime authority row matches)");
+  await assert.rejects(() => armPilot(unfrozenCohortRunId, 1, "cert pilot reason"), /409:SFP_PAID_BLOCKED:COHORT_OR_PROGRAM_INACTIVE/);
+  check(true, "arm-pilot rejects a non-frozen cohort run (live runtime authority refuses it)");
 
   // 2. Input validation
   await assert.rejects(() => armPilot(cohortRunId, 0, "cert pilot reason"), /400:/);
@@ -164,14 +157,14 @@ async function main() {
   await assert.rejects(() => armPilot(cohortRunId, 1, "short"), /400:/);
   check(true, "arm-pilot validates maxBusinesses (1-10) and reason length (8-200) before touching the DB");
 
-  // 3. Successful arm: preserves consumed/reserved, only raises local_budget_units, enables control
+  // 3. Successful arm: enables the control; limit and counters are untouched
   const before = rows(await db.execute(sql`SELECT * FROM provider_controls WHERE provider='serper'`))[0];
   const armed = await armPilot(cohortRunId, 2, "cert pilot reason for one business");
   check(armed.enabled === true, "arm-pilot enables the provider control");
   check(Number(armed.reserved_units) === Number(before.reserved_units) && Number(armed.consumed_units) === Number(before.consumed_units),
     "arm-pilot preserves consumed_units and reserved_units exactly");
-  check(Number(armed.local_budget_units) === Number(before.reserved_units) + Number(before.consumed_units) + maxCallsPerBusiness * 2,
-    `arm-pilot sets local_budget_units to consumed+reserved+${maxCallsPerBusiness}*maxBusinesses (shared per-business call ceiling)`);
+  check(Number(armed.local_budget_units) === Number(before.local_budget_units),
+    "arm-pilot leaves the configured limit unchanged (paid approvals carry no budget)");
   check(Number(armed.version) === Number(before.version) + 1, "arm-pilot bumps the optimistic version counter");
 
   // 4. Never makes a provider call merely by arming: no provider_operations/stage_items rows created
@@ -181,7 +174,7 @@ async function main() {
 
   // 5. Repeat click / idempotent re-arm: re-running with the same inputs recomputes deterministically, no drift
   const rearmed = await armPilot(cohortRunId, 2, "cert pilot reason for one business");
-  check(Number(rearmed.local_budget_units) === Number(armed.local_budget_units), "repeat arm-pilot click with identical batch size recomputes the same cap (idempotent in effect)");
+  check(Number(rearmed.local_budget_units) === Number(armed.local_budget_units), "repeat arm-pilot click leaves the limit unchanged (idempotent in effect)");
   check(Number(rearmed.reserved_units) === Number(before.reserved_units) && Number(rearmed.consumed_units) === Number(before.consumed_units),
     "repeat click still preserves consumed/reserved counters");
 
@@ -192,8 +185,8 @@ async function main() {
   ]);
   const finalControl = rows(await db.execute(sql`SELECT * FROM provider_controls WHERE provider='serper'`))[0];
   check(Number(finalControl.version) === Number(rearmed.version) + 2, "two concurrent arm-pilot calls both commit (version advances by exactly 2, no lost update)");
-  check([Number(r1.local_budget_units), Number(r2.local_budget_units)].includes(Number(finalControl.local_budget_units)),
-    "the last-committed concurrent arm's cap matches the final row state (serialized by FOR UPDATE, not raced)");
+  check(Number(r1.local_budget_units) === Number(finalControl.local_budget_units) && Number(r2.local_budget_units) === Number(finalControl.local_budget_units),
+    "concurrent arms (serialized by FOR UPDATE) leave the limit unchanged");
 
   // 7. Gateway not ready blocks arming
   await db.execute(sql`UPDATE serper_control SET enabled=FALSE WHERE id=1`);

@@ -129,8 +129,12 @@ async function main() {
     });
     const r4 = await enrichMerchantWithSerper(m1, { gateway: gateway5xx });
     row = await getMerchant(m1);
-    check("5xx → outcome provider_failure with reason provider_5xx",
-      r4.outcome === "provider_failure" && row.serper_last_outcome === "provider_failure" && row.serper_last_reason_code === "provider_5xx",
+    // Since the Places-first identity lookup (#1768) the reason code is the lookup's provider-error
+    // text, not the gateway's provider_5xx classification. The contract under test is that a 5xx
+    // is a provider failure with a recorded reason, never a no-result.
+    check("5xx → outcome provider_failure with a recorded 5xx reason",
+      r4.outcome === "provider_failure" && row.serper_last_outcome === "provider_failure" &&
+      /500|5xx/.test(String(row.serper_last_reason_code)) && row.serper_last_reason_code === r4.reasonCode,
       JSON.stringify({ outcome: r4.outcome, reason: row.serper_last_reason_code }));
     check("5xx → attempts + next_eligible + checked_at unchanged",
       row.serper_no_result_attempts === before4.serper_no_result_attempts &&
@@ -156,12 +160,12 @@ async function main() {
 
     // ── Case 6: partial match resets attempts + 7d cooldown ──────────────
     console.log("\nCase 6: partial match");
-    const m2 = await createMerchant("partial");
+    const m2 = await createMerchant("partial", { city: "Miami", state: "FL", zip: "33130" });
     merchantIds.push(m2);
     await pool.query(`UPDATE sdr_merchants SET serper_no_result_attempts = 2 WHERE id = $1`, [m2]);
     const partialGateway = new SerperGateway({
       fetchOverride: fakeFetchByEndpoint({
-        "/places": { status: 200, body: { places: [{ phoneNumber: "(305) 555-0142" }] } },
+        "/places": { status: 200, body: { places: [{ title: `${PREFIX}-partial`, address: "1 Main St, Miami, FL 33130", phoneNumber: "(305) 555-0142" }] } },
         "/search": { status: 200, body: { organic: [] } },
       }),
     });
@@ -177,23 +181,25 @@ async function main() {
 
     // ── Case 7: complete match becomes ineligible ─────────────────────────
     console.log("\nCase 7: complete match");
-    const m3 = await createMerchant("complete");
+    const m3 = await createMerchant("complete", { city: "Miami", state: "FL", zip: "33130" });
     merchantIds.push(m3);
     const completeGateway = new SerperGateway({
       fetchOverride: fakeFetchByEndpoint({
-        "/places": { status: 200, body: { places: [{ website: "https://www.example-biz.com", phoneNumber: "(305) 555-0177", address: "1 Main St" }] } },
+        "/places": { status: 200, body: { places: [{ title: `${PREFIX}-complete`, website: "https://www.example-biz.com", phoneNumber: "(305) 555-0177", address: "1 Main St, Miami, FL 33130" }] } },
         "/search": { status: 200, body: { organic: [{ snippet: "contact us at info@example-biz.com" }] } },
       }),
     });
     const r7 = await enrichMerchantWithSerper(m3, { gateway: completeGateway });
     row = await getMerchant(m3);
-    check("complete match → all target fields filled, next_eligible NULL",
-      r7.outcome === "matched" && !!row.website && !!row.main_phone && !!row.main_email && row.serper_next_eligible_at === null,
+    // Serper no longer collects email (identity kill line; claimSerperCandidates excludes
+    // main_email), so a complete match is website + phone and no email is ever written.
+    check("complete match → website and phone filled, no email, next_eligible NULL",
+      r7.outcome === "matched" && !!row.website && !!row.main_phone && !row.main_email && row.serper_next_eligible_at === null,
       JSON.stringify({ website: row.website, phone: row.main_phone, email: row.main_email, next: row.serper_next_eligible_at }));
     const { rows: claim7 } = await pool.query(
       `SELECT id FROM sdr_merchants
        WHERE id = $1
-         AND (website IS NULL OR main_phone IS NULL OR main_email IS NULL)
+         AND (website IS NULL OR main_phone IS NULL)
          AND do_not_contact_flag IS NOT TRUE
          AND (serper_next_eligible_at IS NULL OR serper_next_eligible_at <= now())`,
       [m3],
@@ -258,13 +264,32 @@ async function main() {
 
     // ── Case 11: backfilled merchants are ineligible now ──────────────────
     console.log("\nCase 11: backfill leaves zero-yield merchants ineligible");
+    // The cooldown lapses by design, so a long-lived database cannot assert that rows from the
+    // original migration are STILL cooling. Assert the contract two ways instead:
+    // (1) no backfilled row lost its cooldown timestamp, and
+    // (2) the migration's own UPDATE puts a never-checked zero-yield merchant into a future
+    //     cooldown (run inside a transaction that is rolled back).
     const { rows: bf } = await pool.query(
-      `SELECT count(*) FILTER (WHERE serper_next_eligible_at > now()) AS cooling, count(*) AS total
+      `SELECT count(*) FILTER (WHERE serper_next_eligible_at IS NULL) AS lost, count(*) AS total
        FROM sdr_merchants WHERE serper_last_reason_code = 'backfill_zero_yield'`,
     );
-    check("all backfilled merchants have a future next_eligible_at",
-      Number(bf[0].total) > 0 && bf[0].cooling === bf[0].total,
-      JSON.stringify(bf[0]));
+    check("no backfilled merchant lost its cooldown timestamp", Number(bf[0].lost) === 0, JSON.stringify(bf[0]));
+    const migrationSql = (await import("node:fs")).readFileSync("migrations/0141_serper_merchant_cooldown.sql", "utf8");
+    const backfill = migrationSql.slice(migrationSql.indexOf("UPDATE sdr_merchants"), migrationSql.indexOf(";", migrationSql.indexOf("UPDATE sdr_merchants")) + 1);
+    const m11 = await createMerchant("backfill-probe");
+    merchantIds.push(m11);
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(backfill);
+      const { rows: probe } = await client.query(
+        `SELECT serper_next_eligible_at > now() AS cooling, serper_last_reason_code FROM sdr_merchants WHERE id=$1`, [m11]);
+      check("the backfill statement puts a zero-yield merchant into a future cooldown",
+        probe[0]?.cooling === true && probe[0]?.serper_last_reason_code === "backfill_zero_yield", JSON.stringify(probe[0]));
+    } finally {
+      await client.query("ROLLBACK");
+      client.release();
+    }
   } finally {
     // Cleanup test merchants (+ dependent rows) and restore control row.
     if (merchantIds.length > 0) {

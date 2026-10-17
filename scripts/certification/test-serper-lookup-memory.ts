@@ -308,15 +308,31 @@ try {
   const unknownRows = (await pool.query(`SELECT count(*)::int n FROM sfp_serper_credit_ledger WHERE state='settled_unknown' AND settled_credits IS NULL`)).rows[0].n;
   check(serperCalls - c0 === 3 && l2.credits === 9 && unknownRows === 3,
     "Requests with no reported charge keep their reserved worst case; the cap still holds");
-  // A provider that charges more than the configured bound raises the measured bound.
+  // The reproduced schedule: cap 6, attested maximum 1, provider really charges 5 per request.
+  // Reservations are serialized and the first over-bound charge closes the scope, so the loss is
+  // one request's excess, not six requests' worth (30 credits).
   await resetAllowance(); chargeCredits = 5;
-  await setGate(gate({ dailyCredits: 30, maxCreditsPerRequest: 1 }));
+  await setGate(gate({ dailyCredits: 6, maxCreditsPerRequest: 1 }));
   c0 = serperCalls;
-  await run("cap-underbound", { scope: "unlabeled" });
+  const wrong: any = await run("cap-wrong-attestation", { scope: "unlabeled" });
   const l3 = await ledger();
-  check(l3.credits <= 30 + 4, `A configured bound of 1 against 5-credit charges overshoots at most one request (${l3.credits} credits recorded)`);
-  const secondBound = (await pool.query(`SELECT max(reserved_credits)::int m FROM sfp_serper_credit_ledger`)).rows[0].m;
-  check(secondBound >= 5, "After the provider reports a larger charge, later reservations use that measured bound");
+  check(serperCalls - c0 === 1 && l3.credits === 5 && String(wrong.stopReason).includes("bound_exceeded"),
+    `A wrong attested maximum (1 vs 5 charged) stops after ${serperCalls - c0} request / ${l3.credits} credits with reason ${wrong.stopReason}`);
+  await assert.rejects(() => run("cap-wrong-attestation-2", { scope: "unlabeled" }), /ALLOWANCE_EXHAUSTED:bound_exceeded/);
+  check(true, "The scope stays closed until the maximum is re-attested");
+  await setGate(gate({ dailyCredits: 30, maxCreditsPerRequest: 5 }));
+  c0 = serperCalls;
+  await run("cap-reattested", { scope: "unlabeled" });
+  const l3b = await ledger();
+  check(serperCalls > c0 && l3b.credits <= 30, `After re-attesting a maximum of 5 the scope resumes and stays within the cap (${l3b.credits} credits)`);
+  // Telemetry history alone (any caller, any age) invalidates a too-small attestation.
+  await resetAllowance();
+  await pool.query(`INSERT INTO serper_lookup_attempts(correlation_hash,caller,strategy_name,endpoint,outcome_kind,reported_credits,created_at)
+    VALUES('history','cert','s','/places','no_result',4,NOW()-INTERVAL '90 days')`);
+  await setGate(gate({ dailyCredits: 30, maxCreditsPerRequest: 3 }));
+  c0 = serperCalls;
+  await assert.rejects(() => run("cap-telemetry-history", { scope: "unlabeled" }), /ALLOWANCE_EXHAUSTED:bound_exceeded/);
+  check(serperCalls === c0, "A 90-day-old reported charge above the attested maximum still closes the scope");
   chargeCredits = 1;
   // Failed telemetry writes cannot weaken the ledger.
   await resetAllowance(); chargeCredits = 3;
@@ -335,14 +351,31 @@ try {
   // Concurrent allowances (different runs/businesses) cannot jointly exceed the caps.
   await resetAllowance();
   const parallelGate = allowanceMod.parseUnlabeledDiscoveryGate(gate({ dailyRequests: 1, dailyCredits: 10, maxCreditsPerRequest: 3 }));
+  const authorizeAndSettle = async (a: any) => {
+    const ok = await a.authorizeRequest({ endpoint: "/places" });
+    if (ok) await a.onRequestSettled({ endpoint: "/places", reportedCredits: 3 });
+    return ok;
+  };
   const reqRace = await Promise.all(Array.from({ length: 6 }, () =>
-    allowanceMod.createDurableRequestAllowance(parallelGate, randomUUID()).authorizeRequest({ endpoint: "/places" })));
+    authorizeAndSettle(allowanceMod.createDurableRequestAllowance(parallelGate, randomUUID()))));
   check(reqRace.filter(Boolean).length === 1 && (await ledger()).requests === 1, "Six concurrent runs against a one-request daily cap authorize exactly one request");
   await resetAllowance();
   const creditGate = allowanceMod.parseUnlabeledDiscoveryGate(gate({ dailyRequests: 100, dailyCredits: 7, maxCreditsPerRequest: 3 }));
   const creditRace = await Promise.all(Array.from({ length: 8 }, () =>
-    allowanceMod.createDurableRequestAllowance(creditGate, randomUUID()).authorizeRequest({ endpoint: "/places" })));
+    authorizeAndSettle(allowanceMod.createDurableRequestAllowance(creditGate, randomUUID()))));
   check(creditRace.filter(Boolean).length === 2 && (await ledger()).credits === 6, "Eight concurrent runs against a 7-credit cap reserve at most two 3-credit requests");
+  // At most one request in flight across runs: a second run waits for the first to settle.
+  await resetAllowance();
+  const flightGate = allowanceMod.parseUnlabeledDiscoveryGate(gate({ dailyCredits: 30, maxCreditsPerRequest: 3 }));
+  const runA = allowanceMod.createDurableRequestAllowance(flightGate, randomUUID());
+  const runB = allowanceMod.createDurableRequestAllowance(flightGate, randomUUID(), undefined, { inFlightWaitMs: 400 });
+  check(await runA.authorizeRequest({ endpoint: "/places" }), "First run reserves its request");
+  check(!(await runB.authorizeRequest({ endpoint: "/places" })) && runB.snapshot().denial === "request_in_flight",
+    "A second run cannot reserve while the first request is unsettled");
+  const runC = allowanceMod.createDurableRequestAllowance(flightGate, randomUUID(), undefined, { inFlightWaitMs: 5000 });
+  const waiting = runC.authorizeRequest({ endpoint: "/places" });
+  setTimeout(() => { void runA.onRequestSettled({ endpoint: "/places", reportedCredits: 1 }); }, 500);
+  check(await waiting, "A waiting run proceeds once the in-flight request settles");
   // Retries and a lookup's second request: each physical request reserves separately.
   await resetAllowance();
   const retryAllowance = allowanceMod.createDurableRequestAllowance(allowanceMod.parseUnlabeledDiscoveryGate(gate({ dailyCredits: 9, maxCreditsPerRequest: 3 })), randomUUID());
@@ -371,6 +404,22 @@ try {
     await pool.query(`ALTER TABLE sfp_serper_credit_ledger_off RENAME TO sfp_serper_credit_ledger`);
   }
   chargeCredits = 1;
+  // ── Completed-key replay uses the ORIGINAL stored selection and request payload ──
+  await resetAllowance();
+  await pool.query(`UPDATE provider_operations SET created_at=created_at-INTERVAL '3 days' WHERE target_fingerprint LIKE 'business:%'`);
+  await setGate(gate());
+  const replayKey = `replay-${randomUUID()}`;
+  const original: any = await run(replayKey, { scope: "unlabeled", maxBusinesses: 3 });
+  const origRow = (await pool.query(`SELECT state,payload_hash,selection_snapshot FROM sfp_stage_runs WHERE idempotency_key=$1`, [`${actor}:${replayKey}`])).rows[0];
+  check(original.replayed === false && origRow.state === "completed" && original.attempted === 3, "The original run completes three businesses");
+  const callsBeforeReplay = serperCalls;
+  const opsBefore = (await pool.query(`SELECT count(*)::int n FROM provider_operations`)).rows[0].n;
+  const replay: any = await run(replayKey, { scope: "unlabeled", maxBusinesses: 3 });
+  check(replay.replayed === true && replay.processed === original.processed && serperCalls === callsBeforeReplay &&
+    (await pool.query(`SELECT count(*)::int n FROM provider_operations`)).rows[0].n === opsBefore,
+    "A same-payload replay of a completed key returns the stored result with no purchase, even though the live pool has changed");
+  await assert.rejects(() => run(replayKey, { scope: "unlabeled", maxBusinesses: 4 }), /SFP_IDEMPOTENCY_PAYLOAD_MISMATCH/);
+  check(serperCalls === callsBeforeReplay, "A changed request under the same key is rejected without a purchase");
   const unlabeledVerticals = (await pool.query(`SELECT count(*)::int n FROM businesses WHERE id=ANY($1) AND vertical IS NOT NULL`, [unlabeled])).rows[0].n;
   check(unlabeledVerticals === 0, "Unlabeled discovery never manufactures a vertical");
 

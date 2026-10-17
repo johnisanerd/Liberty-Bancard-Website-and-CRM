@@ -162,3 +162,4 @@
 - [Serper lookup memory](serper-lookup-memory.md) — negative outcomes remembered with finite expiry; bump matcher rule version on rule changes; unlabeled scope off by default.
 - [Contact link dispositions](contact-link-dispositions.md) — durable per-contact outcome table, dated baseline, legacy original-row adapter appends derived event for the pinned native check.
 - [Serper credit ledger](serper-credit-ledger.md) — Durable reserve/settle ledger is the credit authority; claim pins input fingerprint; allowance-stopped lookups defer, not conclude.
+- [Legacy enrollment containment](legacy-enrollment-containment.md) — post-enrichment worker and ZB auto-run contained in code regardless of pause; how to prove and release.

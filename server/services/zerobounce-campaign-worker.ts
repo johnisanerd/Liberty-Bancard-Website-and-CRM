@@ -238,8 +238,29 @@ export type ZbAutoRunOutcome =
  * Writes an audit log entry on every invocation (including no-ops) so admins
  * can verify the scheduled job is firing and see why it skipped when it did.
  */
+/**
+ * The unattended auto-run builds a campaign from a universe-wide filter (every unvalidated
+ * address), not from selected recipients, so the admin flag alone must not be able to start
+ * it. It stays contained until it is rebuilt on an explicit selected-contact scope (the
+ * `contactIds` filter). Operator-launched campaigns keep their own explicit request, the
+ * DBPR-lineage fence and the provider control.
+ */
+export const ZB_UNATTENDED_BROAD_AUTO_RUN_CONTAINED = true as boolean;
+
 export async function runZeroBounceAutoRun(): Promise<ZbAutoRunOutcome> {
   try {
+    if (ZB_UNATTENDED_BROAD_AUTO_RUN_CONTAINED) {
+      await storage.createAuditLog({
+        action: "zerobounce_auto_run_skipped",
+        entityType: "system",
+        entityId: 0,
+        actorType: "system",
+        actorId: "zerobounce-auto-run",
+        details: { reason: "broad_universe_auto_run_contained" },
+      });
+      console.log("[ZB auto-run] Skipped — unattended universe-wide auto-run is contained");
+      return { outcome: "skipped", reason: "broad_universe_auto_run_contained" };
+    }
     // ── 1. Feature gate: admin must explicitly enable auto-runs ──────────────
     const enabled = await storage.getSystemSetting("zerobounce_auto_run_enabled");
     if (!enabled) {
