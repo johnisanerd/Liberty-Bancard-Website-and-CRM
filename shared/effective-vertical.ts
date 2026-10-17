@@ -1,5 +1,10 @@
 import { contactTargetVerticalSql } from "./contact-vertical-taxonomy";
 import { relationshipReasonsSql } from "./relationship-evidence-sql";
+import { sfpEvidenceCurrentSql } from "./sfp-input-fingerprint";
+
+/** Admission tiers an effective-vertical reader may rely on: the deterministic exact-label tier and
+ * the policy-accepted tier (supporting facts retained on the evidence row). */
+export const EFFECTIVE_VERTICAL_ADMISSION_TIERS_SQL = "('resolved_high','policy_accepted')";
 
 const alias = (name: string) => {
   if (!/^[a-z_][a-z0-9_]*$/.test(name)) throw new Error("VERTICAL_SQL_ALIAS_INVALID");
@@ -23,7 +28,8 @@ export function effectiveBusinessVerticalSql(name: string): string {
       AND vp.policy_version=ev.policy_version
     WHERE ev.business_id=${b}.id AND ev.taxonomy_version=2 AND ev.classifier_version=3
       AND ev.terminal_state='completed')
-    THEN (SELECT CASE WHEN ev.outcome='target' AND ev.admission_tier='resolved_high'
+    THEN (SELECT CASE WHEN ev.outcome='target' AND ev.admission_tier IN ${EFFECTIVE_VERTICAL_ADMISSION_TIERS_SQL}
+        AND ${sfpEvidenceCurrentSql("ev", b)}
       THEN ev.resolved_vertical_id ELSE NULL END
       FROM sfp_classification_evidence ev
       JOIN sfp_programs vp ON vp.is_active=TRUE AND vp.taxonomy_version=2
@@ -50,7 +56,8 @@ export function effectiveBusinessVerticalStatusSql(name: string): string {
   return `COALESCE((SELECT CASE
     WHEN ev.outcome IN ('non_target','not_target') THEN 'excluded'
     WHEN ev.reason_codes::text ILIKE '%conflict%' THEN 'conflicting'
-    WHEN ev.outcome='target' AND ev.admission_tier='resolved_high' THEN 'mapped'
+    WHEN ev.outcome='target' AND ev.admission_tier IN ${EFFECTIVE_VERTICAL_ADMISSION_TIERS_SQL}
+      AND ${sfpEvidenceCurrentSql("ev", b)} THEN 'mapped'
     ELSE 'unresolved' END
     FROM sfp_classification_evidence ev JOIN sfp_programs vp
       ON vp.is_active=TRUE AND vp.taxonomy_version=2 AND vp.policy_version=ev.policy_version

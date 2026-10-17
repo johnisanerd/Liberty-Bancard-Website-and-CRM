@@ -2041,7 +2041,7 @@ Return maximum 5 segments, 4 recommendations, 4 outreach priorities, 3 quick win
             LEFT JOIN LATERAL (
               SELECT jsonb_build_object(
                 'outcome',ce.outcome,'vertical',ce.resolved_vertical_id,
-                'confidence',ce.confidence,'admissionTier',ce.admission_tier,
+                'confidence',ce.confidence,'admissionTier',ce.admission_tier,'acceptanceBasis',ce.acceptance_basis,
                 'state',ce.terminal_state,'reasons',ce.reason_codes
               ) AS snapshot
                 FROM sfp_classification_evidence ce
@@ -3910,7 +3910,7 @@ Return maximum 5 segments, 4 recommendations, 4 outreach priorities, 3 quick win
       `) as any).rows ?? [];
 
       const classificationRows = (await db.execute(sql`
-        SELECT e.id, e.outcome, e.confidence, e.resolved_vertical_id, e.admission_tier,
+        SELECT e.id, e.outcome, e.confidence, e.resolved_vertical_id, e.admission_tier, e.acceptance_basis,
                e.reason_codes, e.terminal_state, e.model_version, e.prompt_version,
                e.taxonomy_version, e.classifier_version, e.cost_micros, e.created_at,
                b.id AS business_id, b.canonical_name AS business_name

@@ -26,6 +26,16 @@ import { executeSfpOpenAiClassification } from "./sfp-live-provider-adapters";
 import { AI_MODELS } from "../../config/ai-models";
 import { sfpAiVerticalResponseSchema, validateSfpAiVerticalResult } from "./sfp-ai-vertical-result";
 import { calculateSfpUsageCostMicros, normalizeSfpProviderUsage } from "./sfp-billing-contract";
+import {
+  SFP_VERTICAL_ACCEPTANCE_POLICY_VERSION,
+  decideAiAcceptance,
+  decideDeterministicAcceptance,
+  retainedWebsiteStatements,
+  type SfpAcceptanceFacts,
+  type SfpAcceptanceBasis,
+} from "./sfp-vertical-acceptance";
+import { sfpInputFingerprint } from "./sfp-input-fingerprint";
+import { sfpEvidenceCurrentSql } from "../../../shared/sfp-input-fingerprint";
 
 const CALLER = "server/services/cro03/sfp-classification-bridge.ts";
 
@@ -43,8 +53,8 @@ const CALLER = "server/services/cro03/sfp-classification-bridge.ts";
  * defense pattern this codebase already uses.
  */
 const SFP_OPENAI_MODEL = AI_MODELS.fast;
-const SFP_OPENAI_PROMPT_VERSION = "sfp-vertical-classification-v2";
-const SFP_OPENAI_MAX_COMPLETION_TOKENS = 400;
+const SFP_OPENAI_PROMPT_VERSION = "sfp-vertical-classification-v3";
+const SFP_OPENAI_MAX_COMPLETION_TOKENS = 600;
 // Reserve the provider-specific token work-unit ceiling for this bounded
 // prompt/completion. Settlement still records the provider's exact token receipt
 // and rejects work-unit overflow; it never truncates actual usage to the reserve.
@@ -77,6 +87,10 @@ async function defaultOpenAiClassify(input: {
     `Business-record locality (not proof of an operating site): ${truncate([input.businessContext.city, input.businessContext.state, input.businessContext.postalCode].filter(Boolean).join(", ") || "(none)", 120)}`,
     `Retained website domain: ${truncate(input.businessContext.websiteDomain ?? "(none)", 200)}`,
     `Website JSON-LD types (untrusted): ${truncate((input.websiteEvidence?.jsonLdTypes ?? []).join(", ") || "(none)", 200)}`,
+    ...retainedWebsiteStatements(input.websiteEvidence).map((statement) =>
+      `Website ${statement.field.replace("website.", "")} (untrusted): ${truncate(statement.text, 300)}`),
+    `Website title tokens (untrusted): ${truncate((input.websiteEvidence?.titleTokens ?? []).join(", ") || "(none)", 300)}`,
+    `Website meta tokens (untrusted): ${truncate((input.websiteEvidence?.metaTokens ?? []).join(", ") || "(none)", 300)}`,
     `Website service tokens (untrusted): ${truncate((input.websiteEvidence?.serviceTokens ?? []).join(", ") || "(none)", 300)}`,
     `Website category tokens (untrusted): ${truncate((input.websiteEvidence?.categoryTokens ?? []).join(", ") || "(none)", 200)}`,
     `Target vertical taxonomy: ${truncate(input.targetIds.join(", "), 200)}`,
@@ -87,7 +101,10 @@ async function defaultOpenAiClassify(input: {
     `a target vertical, "non_target" if it clearly does not, or "review_required" if the evidence is ` +
     `ambiguous or insufficient. For "target", set resolvedVerticalId to the exact matching ID from ` +
     `the target taxonomy. For any other outcome, set resolvedVerticalId to null. ` +
-    `Never return "target" without assigning its specific vertical. Respond in the required JSON format.`;
+    `Never return "target" without assigning its specific vertical. For "target", also set evidenceSource to ` +
+    `"website" or "listing_category" and evidenceQuote to the exact service or category wording copied from ` +
+    `that source that shows what the business does; the business name and generic words are not evidence. ` +
+    `Otherwise set both to null. Respond in the required JSON format.`;
 
   let reservation: Awaited<ReturnType<typeof reservePreCohortSfpProviderOperation>> | null = null;
   try {
@@ -103,6 +120,7 @@ async function defaultOpenAiClassify(input: {
       const validated = validateSfpAiVerticalResult({
         outcome: prior.outcome, confidence: Number(prior.confidence),
         reasonCodes: prior.reasonCodes ?? [], resolvedVerticalId: prior.resolvedVerticalId ?? null,
+        ...("evidenceQuote" in prior ? { evidenceSource: prior.evidenceSource ?? null, evidenceQuote: prior.evidenceQuote ?? null } : {}),
       }, input.targetIds);
       if (!validated) return null;
       return {
@@ -274,6 +292,9 @@ interface SfpClassificationBusinessContext {
 }
 
 export interface PreCohortClassificationBridgeDeps {
+  /** Test seam for the first-party website read; defaults to the SSRF-guarded extractor. */
+  extractWebsiteEvidence?: (url: string, options: { timeoutMs: number }) =>
+    Promise<WebsiteClassificationEvidence | { error: string }>;
   openAiClassify?: (input: {
     businessId: number;
     rawVertical: string | null;
@@ -285,6 +306,9 @@ export interface PreCohortClassificationBridgeDeps {
     confidence: number;
     reasonCodes: string[];
     resolvedVerticalId?: string | null;
+    /** Citation the AI gave for a target; the acceptance policy verifies it against retained evidence. */
+    evidenceSource?: "website" | "listing_category" | null;
+    evidenceQuote?: string | null;
     modelVersion: string;
     promptVersion: string;
     costMicros: number;
@@ -566,6 +590,16 @@ export async function runPreCohortClassificationBridge(
           WHERE e.business_id=b.id AND e.policy_version=${input.policyVersion}
             AND e.classifier_version=${CLASSIFIER_VERSION} AND e.taxonomy_version=${taxonomyVersion}
             AND e.outcome IN ('target','non_target')
+            -- A row made from different stored category/website inputs, or one that a later
+            -- completed row superseded, no longer settles the business; it is reconsidered
+            -- automatically. Rows written before fingerprints existed keep the original rule.
+            AND (e.input_fingerprint IS NULL OR (
+              ${sql.raw(sfpEvidenceCurrentSql("e", "b"))}
+              AND e.id = (SELECT l.id FROM sfp_classification_evidence l
+                           WHERE l.business_id=b.id AND l.policy_version=${input.policyVersion}
+                             AND l.classifier_version=${CLASSIFIER_VERSION} AND l.taxonomy_version=${taxonomyVersion}
+                             AND l.terminal_state='completed'
+                           ORDER BY l.created_at DESC,l.evidence_hash ASC LIMIT 1)))
             ${input.freeOnly === true ? sql`` : sql`AND NOT (
               e.outcome='target' AND e.model_version IS NOT NULL AND e.resolved_vertical_id IS NULL
             )`}
@@ -755,14 +789,22 @@ export async function runPreCohortClassificationBridge(
       }
 
       let websiteEvidence: WebsiteClassificationEvidence | null = null;
+      // A missing or failed fetch is "no website evidence yet", never a reason to exclude the business.
+      let websiteFetchError: string | null = null;
       if (domain && allowWebsiteEvidenceFetch) {
         try {
-          const result = await extractWebsiteClassificationEvidence(`https://${domain}`, { timeoutMs: 6000 });
-          if (!("error" in result)) websiteEvidence = result;
+          const result = await (deps.extractWebsiteEvidence ?? extractWebsiteClassificationEvidence)(`https://${domain}`, { timeoutMs: 6000 });
+          if ("error" in result) websiteFetchError = String(result.error);
+          else websiteEvidence = result;
         } catch {
-          websiteEvidence = null;
+          websiteFetchError = "fetch_failed";
         }
       }
+      const inputFingerprint = sfpInputFingerprint({
+        vertical: business.vertical == null ? null : String(business.vertical),
+        industryPrimary: businessContext.industryPrimary,
+        industrySecondary: businessContext.industrySecondary,
+      });
       const evidenceHash = sha256(canonicalJson({
         rawVertical,
         businessContext,
@@ -771,6 +813,7 @@ export async function runPreCohortClassificationBridge(
         policyVersion: input.policyVersion,
         classifierVersion: CLASSIFIER_VERSION,
         taxonomyVersion,
+        acceptancePolicyVersion: taxonomyVersion === 2 ? SFP_VERTICAL_ACCEPTANCE_POLICY_VERSION : null,
       }));
 
       // sfp_classification_evidence is insert-only (a DB trigger rejects any
@@ -793,9 +836,39 @@ export async function runPreCohortClassificationBridge(
          ORDER BY created_at DESC,evidence_hash ASC LIMIT 1
       `))[0] as EvidenceRow | undefined;
       if (cached) {
+        // Supersession works through the latest completed row. If other evidence for this business was
+        // recorded after the cached row (inputs changed and then changed back), the unchanged cached
+        // decision must become the latest again, so it is re-recorded as a new insert-only row.
+        const latestCompleted = rows(await db.execute(sql`
+          SELECT id FROM sfp_classification_evidence
+           WHERE business_id=${businessId} AND policy_version=${input.policyVersion}
+             AND classifier_version=${CLASSIFIER_VERSION} AND taxonomy_version=${taxonomyVersion}
+             AND terminal_state='completed'
+           ORDER BY created_at DESC,id DESC LIMIT 1
+        `))[0];
+        let cachedEvidenceId = String(cached.id);
+        if (latestCompleted && String(latestCompleted.id) !== cachedEvidenceId) {
+          const reaffirmKey = `${input.idempotencyKey}:reaffirm:${businessId}:${cachedEvidenceId}`;
+          const reaffirmed = rows(await db.execute(sql`
+            INSERT INTO sfp_classification_evidence
+              (business_id,evidence_hash,source_refs,classifier_version,taxonomy_version,model_version,prompt_version,policy_version,
+               outcome,confidence,reason_codes,idempotency_key,cost_micros,terminal_state,resolved_vertical_id,admission_tier,
+               acceptance_basis,acceptance_policy_version,acceptance_facts,input_fingerprint,website_content_hash)
+            SELECT business_id,evidence_hash,source_refs,classifier_version,taxonomy_version,model_version,prompt_version,policy_version,
+                   outcome,confidence,reason_codes || '["REAFFIRMED_PRIOR_EVIDENCE"]'::jsonb,${reaffirmKey},0,terminal_state,
+                   resolved_vertical_id,admission_tier,acceptance_basis,acceptance_policy_version,acceptance_facts,
+                   ${inputFingerprint},website_content_hash
+              FROM sfp_classification_evidence WHERE id=${cachedEvidenceId}::uuid
+            ON CONFLICT (idempotency_key) DO NOTHING
+            RETURNING id
+          `))[0];
+          cachedEvidenceId = String(reaffirmed?.id ?? rows(await db.execute(sql`
+            SELECT id FROM sfp_classification_evidence WHERE idempotency_key=${reaffirmKey} LIMIT 1
+          `))[0]?.id ?? cachedEvidenceId);
+        }
         await db.execute(sql`
            UPDATE sfp_classification_items SET state='completed',outcome_code=${cached.outcome},
-                  evidence_id=${cached.id}::uuid,claim_token=NULL,lease_expires_at=NULL,completed_at=NOW(),updated_at=NOW()
+                  evidence_id=${cachedEvidenceId}::uuid,claim_token=NULL,lease_expires_at=NULL,completed_at=NOW(),updated_at=NOW()
             WHERE id=${String(item.id)}::uuid AND claim_token=${itemClaimToken}::uuid
         `);
         if (cached.outcome === "target") targetCount++;
@@ -819,7 +892,7 @@ export async function runPreCohortClassificationBridge(
       // it still counts as 'target' for reporting, but a selector may not
       // admit a business on this evidence alone.
       let resolvedVerticalId: string | null = deterministic.resolvedVerticalId;
-      let admissionTier: "resolved_high" | "resolved_medium" | null = deterministic.admissionTier;
+      let admissionTier: "resolved_high" | "resolved_medium" | "policy_accepted" | null = deterministic.admissionTier;
       // The lexical alias table backing hasWebsiteTargetOverlap was written
       // for the v1 taxonomy (dental/med spa/auto repair/restaurant/retail)
       // and produced a confirmed false positive under v2: a restaurant's
@@ -839,14 +912,41 @@ export async function runPreCohortClassificationBridge(
         resolvedVerticalId = null;
         admissionTier = null;
       }
-      if (outcome === "review_required" && freeOnly) {
+      // Policy acceptance. One clear business-specific source (the business's own website
+      // description or its listing category) is enough; the policy records why. Name-only,
+      // generic-keyword and unsupported-label evidence never qualifies, and reliable sources that
+      // point at two verticals are recorded as a specific conflict instead of forcing an answer.
+      let acceptance: SfpAcceptanceFacts | null = null;
+      const listingInput = {
+        structuredVertical,
+        industryPrimary: businessContext.industryPrimary,
+        industrySecondary: businessContext.industrySecondary,
+      };
+      if (taxonomyVersion === 2 && (outcome === "review_required" || (outcome === "target" && admissionTier === null))) {
+        const policyDecision = decideDeterministicAcceptance({ website: websiteEvidence, listing: listingInput, targetIds });
+        if (policyDecision.kind === "accepted") {
+          outcome = "target";
+          confidence = Math.max(confidence, 0.9);
+          resolvedVerticalId = policyDecision.verticalId;
+          admissionTier = "policy_accepted";
+          acceptance = policyDecision.facts;
+          reasonCodes = [...reasonCodes, `ACCEPTED_BY_POLICY:${policyDecision.basis}`];
+        } else if (policyDecision.kind === "conflict") {
+          outcome = "review_required";
+          resolvedVerticalId = null;
+          admissionTier = null;
+          reasonCodes = [...reasonCodes, ...policyDecision.reasonCodes];
+        }
+      }
+      const acceptanceConflict = reasonCodes.some((code) => code.startsWith("ACCEPTANCE_CONFLICT:"));
+      if (outcome === "review_required" && !acceptanceConflict && freeOnly) {
         // Free-only mode never reaches the OpenAI escalation call at all --
         // not "reaches it and gets denied", but never attempts it. Marked
         // as a non-attempt (like OPENAI_UNAVAILABLE) so a later, explicitly
         // paid run can still retry real escalation for this business.
         reasonCodes.push("FREE_ONLY_NO_ESCALATION");
         if (domain && !allowWebsiteEvidenceFetch) reasonCodes.push("FREE_ONLY_WEBSITE_EVIDENCE_NOT_FETCHED");
-      } else if (outcome === "review_required") {
+      } else if (outcome === "review_required" && !acceptanceConflict) {
         try {
             const classifyInput = { businessId, rawVertical, businessContext, websiteEvidence, targetIds };
            const openAiResult = deps.openAiClassify
@@ -866,9 +966,25 @@ export async function runPreCohortClassificationBridge(
               outcome = "review_required";
               reasonCodes = [...reasonCodes, "OPENAI_TARGET_VERTICAL_MISSING"];
             }
-            // AI classification is retained as AI evidence, never relabelled
-            // into the deterministic resolved_high admission authority.
+            // The AI result stays the AI's own result. It is accepted only by the policy, and
+            // only when the model quotes service/category text that is really in the retained
+            // evidence; a bare target or confidence is retained but not relied on.
             admissionTier = null;
+            if (outcome === "target" && resolvedVerticalId) {
+              const aiDecision = decideAiAcceptance({
+                verticalId: resolvedVerticalId,
+                citation: { source: openAiResult.evidenceSource ?? null, quote: openAiResult.evidenceQuote ?? null },
+                website: websiteEvidence,
+                listing: listingInput,
+              });
+              if (aiDecision.decision.kind === "accepted") {
+                admissionTier = "policy_accepted";
+                acceptance = aiDecision.decision.facts;
+                reasonCodes = [...reasonCodes, "ACCEPTED_BY_POLICY:ai_cited"];
+              } else {
+                reasonCodes = [...reasonCodes, aiDecision.failure ?? "AI_CITATION_MISSING", "AI_TARGET_NOT_ACCEPTED"];
+              }
+            }
           } else {
             reasonCodes.push("OPENAI_UNAVAILABLE");
           }
@@ -886,7 +1002,9 @@ export async function runPreCohortClassificationBridge(
       if (outcome !== "target") {
         resolvedVerticalId = null;
         admissionTier = null;
+        acceptance = null;
       }
+      if (websiteFetchError) reasonCodes.push(`WEBSITE_EVIDENCE_UNAVAILABLE:${websiteFetchError}`);
       if (discoveryReason) reasonCodes.push(discoveryReason);
       if (structuredVertical == null && nameSignal) {
         if (nameSignal.conflicting) reasonCodes.push(`NAME_SIGNAL_CONFLICTING:${nameSignal.matchedPhrases.join("|")}`);
@@ -917,7 +1035,10 @@ export async function runPreCohortClassificationBridge(
       const escalationNeverAttempted =
         reasonCodes.includes("OPENAI_UNAVAILABLE") || reasonCodes.includes("OPENAI_ESCALATION_NOT_CONFIGURED")
         || reasonCodes.includes("FREE_ONLY_NO_ESCALATION");
-      const terminalState = escalationNeverAttempted ? "provisional" : "completed";
+      // An unreachable website for a business that is still unresolved is "evidence not available
+      // yet": record it as provisional so a later run retries instead of caching the gap.
+      const websiteGapUnresolved = websiteFetchError !== null && outcome === "review_required" && !acceptanceConflict;
+      const terminalState = escalationNeverAttempted || websiteGapUnresolved ? "provisional" : "completed";
       const idempotencyKey = `${input.idempotencyKey}:eval:${businessId}:${evidenceHash}`;
       // classifier_version is the RULESET version (CLASSIFIER_VERSION);
       // taxonomy_version is which target-vertical list was used. These were
@@ -926,11 +1047,16 @@ export async function runPreCohortClassificationBridge(
       const insertedEvidence = rows(await db.execute(sql`
         INSERT INTO sfp_classification_evidence
           (business_id,evidence_hash,source_refs,classifier_version,taxonomy_version,model_version,prompt_version,policy_version,
-           outcome,confidence,reason_codes,idempotency_key,cost_micros,terminal_state,resolved_vertical_id,admission_tier)
+           outcome,confidence,reason_codes,idempotency_key,cost_micros,terminal_state,resolved_vertical_id,admission_tier,
+            acceptance_basis,acceptance_policy_version,acceptance_facts,input_fingerprint,website_content_hash)
         VALUES (${businessId},${evidenceHash},${JSON.stringify(sourceRefs)}::jsonb,${CLASSIFIER_VERSION},${taxonomyVersion},
                 ${modelVersion},${promptVersion},${input.policyVersion},${outcome},${confidence},
                 ${JSON.stringify(reasonCodes)}::jsonb,${idempotencyKey},${itemCost},${terminalState},
-                ${resolvedVerticalId},${admissionTier})
+                ${resolvedVerticalId},${admissionTier},
+                ${acceptance ? (acceptance.basis as SfpAcceptanceBasis) : null},
+                ${acceptance ? acceptance.policyVersion : null},
+                ${acceptance ? JSON.stringify(acceptance) : null}::jsonb,
+                ${inputFingerprint},${websiteEvidence?.contentHash ?? null})
         ON CONFLICT (idempotency_key) DO NOTHING
         RETURNING id
       `))[0];
@@ -979,7 +1105,7 @@ export async function getLatestAdmissibleClassificationEvidence(
   taxonomyVersion: 1 | 2 = 1,
 ): Promise<{
   id: string; evidenceHash: string; outcome: string; policyVersion: number; classifierVersion: number;
-  resolvedVerticalId: string | null; admissionTier: "resolved_high" | "resolved_medium" | null;
+  resolvedVerticalId: string | null; admissionTier: "resolved_high" | "resolved_medium" | "policy_accepted" | null;
 } | null> {
   const evidence = rows(await db.execute(sql`
     SELECT id,evidence_hash,outcome,policy_version,classifier_version,resolved_vertical_id,admission_tier
@@ -995,7 +1121,7 @@ export async function getLatestAdmissibleClassificationEvidence(
     policyVersion: Number(evidence.policy_version),
     classifierVersion: Number(evidence.classifier_version),
     resolvedVerticalId: evidence.resolved_vertical_id ? String(evidence.resolved_vertical_id) : null,
-    admissionTier: (evidence.admission_tier as "resolved_high" | "resolved_medium" | null) ?? null,
+    admissionTier: (evidence.admission_tier as "resolved_high" | "resolved_medium" | "policy_accepted" | null) ?? null,
   } : null;
 }
 

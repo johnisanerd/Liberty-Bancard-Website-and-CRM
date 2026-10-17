@@ -36,6 +36,7 @@ import {
   type LocationCandidateInput,
   type GeographyResolution,
 } from "./sfp-geography-resolver";
+import { sfpEvidenceCurrentSql } from "../../../shared/sfp-input-fingerprint";
 import { findStaleSfpClassificationEvidenceBusinessIds } from "./sfp-stale-classification-evidence";
 import { selectWithFiveVerticalMinimum } from "./sfp-five-vertical-fairness";
 
@@ -401,18 +402,26 @@ export async function selectRoiCohort(opts: {
   const taxonomyVersion: 1 | 2 = opts.taxonomyVersion === 2 ? 2 : 1;
   const classificationPolicyVersion = opts.policyVersion ?? opts.classificationPolicyVersion ?? 1;
   const phaseAEvidenceRows = rows(await exec.execute(sql`
-    SELECT DISTINCT ON (business_id) business_id,outcome,id,evidence_hash,policy_version,
-           classifier_version,model_version,prompt_version,confidence,reason_codes,
-           resolved_vertical_id,admission_tier
-      FROM sfp_classification_evidence
-     WHERE policy_version=${classificationPolicyVersion} AND taxonomy_version=${taxonomyVersion}
-       AND classifier_version=${CLASSIFIER_VERSION}
-       AND terminal_state='completed'
-     ORDER BY business_id,created_at DESC,evidence_hash ASC
+    SELECT DISTINCT ON (ev.business_id) ev.business_id,ev.outcome,ev.id,ev.evidence_hash,ev.policy_version,
+           ev.classifier_version,ev.model_version,ev.prompt_version,ev.confidence,ev.reason_codes,
+           ev.resolved_vertical_id,ev.admission_tier,
+           ${sql.raw(sfpEvidenceCurrentSql("ev", "evb"))} AS evidence_current
+      FROM sfp_classification_evidence ev
+      JOIN businesses evb ON evb.id=ev.business_id
+     WHERE ev.policy_version=${classificationPolicyVersion} AND ev.taxonomy_version=${taxonomyVersion}
+       AND ev.classifier_version=${CLASSIFIER_VERSION}
+       AND ev.terminal_state='completed'
+     ORDER BY ev.business_id,ev.created_at DESC,ev.evidence_hash ASC
   `));
-  const phaseAEvidenceByBusiness = new Map<number, any>(
-    phaseAEvidenceRows.map((r: any) => [Number(r.business_id), r]),
-  );
+  // The latest completed row decides, but only while it still describes the business as stored. A row
+  // made from category inputs (or a website domain) that have since changed is superseded: it neither
+  // admits nor excludes the business, which is reconsidered by the next classification pass.
+  const evidenceStaleByInput = new Set<number>();
+  const phaseAEvidenceByBusiness = new Map<number, any>();
+  for (const r of phaseAEvidenceRows as any[]) {
+    if (r.evidence_current === false) evidenceStaleByInput.add(Number(r.business_id));
+    else phaseAEvidenceByBusiness.set(Number(r.business_id), r);
+  }
 
   // ── Funnel counters ──────────────────────────────────────────────────────────
   const funnel = {
@@ -896,7 +905,7 @@ export async function selectRoiCohort(opts: {
           ? liveResult.matchedTargetId : null;
         const evidenceQualifies = phaseAEvidence
           && phaseAEvidence.outcome === "target"
-          && phaseAEvidence.admission_tier === "resolved_high"
+          && (phaseAEvidence.admission_tier === "resolved_high" || phaseAEvidence.admission_tier === "policy_accepted")
           && phaseAEvidence.resolved_vertical_id
           && verticalIds.includes(String(phaseAEvidence.resolved_vertical_id));
         const evidenceVerticalId = evidenceQualifies ? String(phaseAEvidence.resolved_vertical_id) : null;
@@ -1129,6 +1138,7 @@ export async function selectRoiCohort(opts: {
       },
       exec,
     );
+    for (const id of noEvidenceBizIds) if (evidenceStaleByInput.has(id)) staleIds.add(id);
     if (staleIds.size > 0) {
       funnel.noVerticalEvidence -= staleIds.size;
       funnel.staleEvidence += staleIds.size;

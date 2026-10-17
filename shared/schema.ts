@@ -10245,6 +10245,16 @@ export const sfpClassificationEvidence = pgTable("sfp_classification_evidence", 
    * escalation leave this null and require independent corroboration.
    */
   admissionTier: text("admission_tier"),
+  /**
+   * Policy acceptance (admission_tier='policy_accepted'): why the retained facts qualify the
+   * proposed vertical. The raw outcome/model columns stay the classifier's or AI's own result.
+   */
+  acceptanceBasis: text("acceptance_basis"),
+  acceptancePolicyVersion: integer("acceptance_policy_version"),
+  acceptanceFacts: jsonb("acceptance_facts"),
+  /** Fingerprint of the stored business facts this row was made from (shared/sfp-input-fingerprint.ts). */
+  inputFingerprint: text("input_fingerprint"),
+  websiteContentHash: text("website_content_hash"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index("sfp_classification_evidence_business_idx").on(table.businessId, table.policyVersion, table.createdAt),
@@ -10255,7 +10265,15 @@ export const sfpClassificationEvidence = pgTable("sfp_classification_evidence", 
   ),
   check(
     "sfp_classification_evidence_admission_tier_chk",
-    sql`admission_tier IS NULL OR admission_tier IN ('resolved_high', 'resolved_medium')`,
+    sql`admission_tier IS NULL OR admission_tier IN ('resolved_high', 'resolved_medium', 'policy_accepted')`,
+  ),
+  check(
+    "sfp_classification_evidence_policy_acceptance_chk",
+    sql`(admission_tier IS NOT DISTINCT FROM 'policy_accepted') = (acceptance_basis IS NOT NULL)
+      AND (acceptance_basis IS NULL OR acceptance_basis IN ('website_services','listing_category','website_and_listing','ai_cited'))
+      AND (admission_tier IS DISTINCT FROM 'policy_accepted' OR (
+        outcome = 'target' AND resolved_vertical_id IS NOT NULL AND acceptance_policy_version IS NOT NULL
+        AND acceptance_facts IS NOT NULL AND input_fingerprint IS NOT NULL))`,
   ),
   check(
     "sfp_classification_evidence_resolved_vertical_target_chk",

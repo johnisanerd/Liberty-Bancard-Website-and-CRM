@@ -12,6 +12,15 @@ export interface WebsiteClassificationEvidence {
   metaTokens: string[];
   serviceTokens: string[];
   categoryTokens: string[];
+  /**
+   * Retained business-description text. The token lists above keep only a narrow keyword
+   * vocabulary, which cannot show what a business actually does, so the page's own title,
+   * meta description and h1-h3 headings are kept (bounded) as the service description that
+   * classification and the acceptance policy read. Optional so older stored evidence stays valid.
+   */
+  titleText?: string;
+  metaDescription?: string;
+  headings?: string[];
   capturedAt: string;
   contentHash: string;
 }
@@ -146,7 +155,10 @@ export async function extractWebsiteClassificationEvidence(
     ["spa", "dental", "repair", "restaurant", "clinic", "salon"].includes(token),
   );
   const pageType = recognizedPageType(jsonLdTypes);
-  const hashInput = { jsonLdTypes, titleTokens, metaTokens, serviceTokens, categoryTokens, pageType };
+  const titleText = extractTitleText(html);
+  const metaDescription = extractMetaDescription(html);
+  const headings = extractHeadings(html);
+  const hashInput = { jsonLdTypes, titleTokens, metaTokens, serviceTokens, categoryTokens, pageType, titleText, metaDescription, headings };
   return {
     sourceUrl: parsedUrl.toString(),
     pageType,
@@ -155,6 +167,9 @@ export async function extractWebsiteClassificationEvidence(
     metaTokens,
     serviceTokens,
     categoryTokens,
+    titleText,
+    metaDescription,
+    headings,
     capturedAt: new Date().toISOString(),
     contentHash: contentHashOf(hashInput),
   };
@@ -163,7 +178,7 @@ export async function extractWebsiteClassificationEvidence(
 export function contentHashOf(
   evidence: Omit<WebsiteClassificationEvidence, "contentHash" | "capturedAt" | "sourceUrl">,
 ): string {
-  const canonical = {
+  const canonical: Record<string, unknown> = {
     jsonLdTypes: [...evidence.jsonLdTypes].sort(),
     titleTokens: [...evidence.titleTokens].sort(),
     metaTokens: [...evidence.metaTokens].sort(),
@@ -171,6 +186,12 @@ export function contentHashOf(
     categoryTokens: [...evidence.categoryTokens].sort(),
     pageType: evidence.pageType,
   };
+  // The retained description text is part of the fingerprint only when present, so evidence that
+  // never carried it keeps the hash it always had while any retained description change is a
+  // changed fingerprint that the classification cache must not reuse.
+  if (evidence.titleText) canonical.titleText = evidence.titleText;
+  if (evidence.metaDescription) canonical.metaDescription = evidence.metaDescription;
+  if (evidence.headings && evidence.headings.length > 0) canonical.headings = [...evidence.headings].sort();
   return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
 }
 
@@ -258,6 +279,42 @@ function extractTitleTokens(html: string): string[] {
 
 function extractMetaTokens(html: string): string[] {
   return tokenize(decodeEntities(extractMetaText(html)), 40);
+}
+
+const TITLE_TEXT_MAX = 160;
+const META_DESCRIPTION_MAX = 300;
+const HEADING_MAX = 120;
+const HEADINGS_MAX = 12;
+
+function collapseText(value: string, max: number): string {
+  return decodeEntities(stripTags(value)).replace(/\s+/g, " ").trim().slice(0, max);
+}
+
+function extractTitleText(html: string): string {
+  return collapseText(html.match(/<title\b[^>]*>([\s\S]*?)<\/title\s*>/i)?.[1] ?? "", TITLE_TEXT_MAX);
+}
+
+function extractMetaDescription(html: string): string {
+  const metaRegex = /<meta\b([^>]*)>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = metaRegex.exec(html))) {
+    const attrs = parseAttributes(match[1]);
+    if ((attrs.name ?? "").toLowerCase() === "description" && attrs.content) {
+      return collapseText(attrs.content, META_DESCRIPTION_MAX);
+    }
+  }
+  return "";
+}
+
+function extractHeadings(html: string): string[] {
+  const headings: string[] = [];
+  const headingRegex = /<h([1-3])\b[^>]*>([\s\S]*?)<\/h\1\s*>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = headingRegex.exec(html)) && headings.length < HEADINGS_MAX) {
+    const text = collapseText(match[2], HEADING_MAX);
+    if (text && !headings.includes(text)) headings.push(text);
+  }
+  return headings;
 }
 
 function extractMetaText(html: string): string {

@@ -2583,6 +2583,13 @@
       "when":1800400050000,
       "tag":"0365_serper_credit_ledger_and_claim_pin",
       "breakpoints":true
+    },
+    {
+      "idx":369,
+      "version":"7",
+      "when":1800400060000,
+      "tag":"0366_sfp_vertical_policy_acceptance",
+      "breakpoints":true
     }
   ]
 }
