@@ -13,3 +13,8 @@ description: How a business vertical becomes accepted (policy_accepted tier) fro
 
 **Why:** the user's attached policy: single source is enough, no manual approval for ordinary incomplete cases, classification stays separate from outreach eligibility.
 **How to apply:** change phrase tables or rules => bump SFP_VERTICAL_ACCEPTANCE_POLICY_VERSION (part of evidence hash). Disposable cert: vertical-acceptance-policy. Six other certs (canonical-flow-progression, automatic-continuity, legacy-sfp-cohort, legacy2001, integrated-pipeline, crm-repair-v2) fail identically on unmodified HEAD; compare to baseline before blaming this work.
+
+## Reconsideration discovery is a bounded cursor sweep
+Reconsideration finds work through a persisted keyset cursor (system_settings) over canonical business ids, with per-business LATERAL index lookups, up to 10 windows of 1,000 per tick and 25 businesses of work; never a whole-table DISTINCT ON.
+**Why:** the earlier whole-table form did ~340k buffer hits per tick at 93k businesses (0.2 s warm) and grows linearly; LIMIT 25 did not bound it. The harness `reconsideration-scale` in the disposable runner measures both shapes.
+**How to apply:** a due business with a current-fingerprint non-attempt is handled for 7 days (1 day if the site was unreadable), otherwise the 4.4k legacy untiered targets would refill the 25/tick budget daily. Throughput is ~25 per 10-minute tick (~3,600/day), so the 30-day recheck is a schedule, not a deadline. The escalation-pending query is still whole-set (~0.2 s, ~490k buffers at steady state); measured, not repaired.

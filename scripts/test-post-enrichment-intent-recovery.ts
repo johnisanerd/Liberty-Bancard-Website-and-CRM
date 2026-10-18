@@ -275,6 +275,7 @@ console.log("\n[PE-Recovery-Test] Starting acceptance tests...\n");
        WHERE id IN (
          SELECT id FROM post_enrichment_enrollment_intents
          WHERE id = ANY($1) AND status = 'pending'
+         ORDER BY id LIMIT 1
          FOR UPDATE SKIP LOCKED
        )
        RETURNING id`,
@@ -289,6 +290,7 @@ console.log("\n[PE-Recovery-Test] Starting acceptance tests...\n");
        WHERE id IN (
          SELECT id FROM post_enrichment_enrollment_intents
          WHERE id = ANY($1) AND status = 'pending'
+         ORDER BY id LIMIT 1
          FOR UPDATE SKIP LOCKED
        )
        RETURNING id`,
@@ -428,7 +430,8 @@ console.log("\n[PE-Recovery-Test] Starting acceptance tests...\n");
   const bouncedIntent = await createIntent({ dealId, contactId, sequenceId: seqId, idempotencyKey: `pe-tc7-bounced-${randomUUID()}` });
   const bouncedOutcome = await executePostEnrichmentEnrollmentIntent(bouncedIntent, dealId, contactId, seqId, "test-worker");
   await cleanupIntent(bouncedIntent);
-  await query(`UPDATE contacts SET email_status = NULL WHERE id = $1`, [contactId]);
+  // Restore the column's supported unvalidated state (it is NOT NULL, default 'unvalidated').
+  await query(`UPDATE contacts SET email_status = 'unvalidated' WHERE id = $1`, [contactId]);
 
   ok("TC-7c: Bounced email outcome is terminal_no_op or auth-blocked",
     bouncedOutcome.errorClass === "terminal_no_op" || !bouncedOutcome.success);

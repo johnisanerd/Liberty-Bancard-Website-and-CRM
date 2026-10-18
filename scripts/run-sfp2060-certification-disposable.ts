@@ -71,6 +71,8 @@ async function main(): Promise<void> {
       { name: "canonical-program-discovery", script: "scripts/certification/test-canonical-program-discovery.ts", database: true, seedMi09Pricing:true },
       { name: "serper-lookup-memory", script: "scripts/certification/test-serper-lookup-memory.ts", database: true, seedMi09Pricing:true },
       { name: "legacy-enrollment-containment", script: "scripts/certification/test-legacy-enrollment-containment.ts", database: true },
+      { name: "reconsideration-scale", script: "scripts/certification/measure-sfp-reconsideration-scale.ts", database: true },
+      { name: "post-enrichment-intent-recovery", script: "scripts/test-post-enrichment-intent-recovery.ts", database: true, integrationOptIn: true },
       { name: "vertical-acceptance-policy", script: "scripts/certification/test-vertical-acceptance-policy.ts", database: true },
       { name: "canonical-vertical-storage", script: "scripts/certification/test-canonical-vertical-storage.ts", database: true },
       { name: "preflight-build", script: "scripts/test-sfp2060-preflight-build.ts", database: true },
@@ -121,6 +123,7 @@ async function main(): Promise<void> {
     }
     for (const certification of selectedCertifications) {
       const env: NodeJS.ProcessEnv = { ...baseEnv };
+      if ("integrationOptIn" in certification) { env.INTEGRATION_TESTS_OPT_IN="true"; env.NODE_ENV="test"; }
       if(certification.name==="canonical-contact-link-automation") {
         // Queue topology is an authority pin; enable the serial queue before
         // the first fixture Publish rather than changing topology mid-test.

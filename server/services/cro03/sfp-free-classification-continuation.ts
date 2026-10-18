@@ -9,9 +9,11 @@ import { CLASSIFIER_VERSION } from "./sfp-vertical-classifier";
 import { runPreCohortClassificationBridge, type PreCohortClassificationBridgeDeps } from "./sfp-classification-bridge";
 import { getSfpProviderReadiness } from "./sfp-provider-operations";
 import { resolveGeographyForBusiness } from "./sfp-geography-resolver";
-import { SFP_VERTICAL_ACCEPTANCE_POLICY_VERSION } from "./sfp-vertical-acceptance";
-import { SFP_WEBSITE_RECHECK_DAYS, sfpReconsiderationDueSql } from "./sfp-reconsideration";
-import { sfpInputFingerprintSql, sfpRetainedListingCategoryHashesSql } from "../../../shared/sfp-input-fingerprint";
+import { sfpReconsiderationDueSql } from "./sfp-reconsideration";
+import {
+  discoverReconsiderationWork, readReconsiderationCursor, writeReconsiderationCursor,
+} from "./sfp-reconsideration-discovery";
+import { sfpRetainedListingCategoryHashesSql } from "../../../shared/sfp-input-fingerprint";
 
 const rows = (r: any): any[] => r?.rows ?? r ?? [];
 /** Per-tick follow-up work (geography re-checks) stays small. */
@@ -220,7 +222,9 @@ async function processPendingVerticalEscalations(program: any, deps: PreCohortCl
  *  - due: the standing decision is an unsupported pre-policy target, was made from different category
  *    or retained listing evidence, or under an older acceptance policy. A result written after it with
  *    current inputs and policy (a provisional non-attempt awaiting escalation) counts as handled for a
- *    day, then it is retried.
+ *    week (a day if the site could not be read), then it is retried; changed inputs end that at once.
+ *
+ * Discovery is a bounded cursor sweep (sfp-reconsideration-discovery.ts), not a whole-table query.
  *  - recheck: a website-based acceptance whose site has not been read for SFP_WEBSITE_RECHECK_DAYS is
  *    read again; unchanged content is a cache hit, changed content is re-evaluated and, when it no
  *    longer supports the vertical, supersedes the acceptance.
@@ -230,65 +234,31 @@ async function processVerticalReconsideration(program: any, deps: PreCohortClass
   const versions = {
     policyVersion: Number(program.policy_version), classifierVersion: CLASSIFIER_VERSION, taxonomyVersion: 2 as const,
   };
-  const latestCompleted = sql`(
-    SELECT DISTINCT ON (x.business_id) x.* FROM sfp_classification_evidence x
-     WHERE x.policy_version=${versions.policyVersion} AND x.classifier_version=${CLASSIFIER_VERSION}
-       AND x.taxonomy_version=2 AND x.terminal_state='completed'
-     ORDER BY x.business_id,x.created_at DESC,x.id DESC
-  )`;
-  const due = rows(await db.execute(sql`
-    SELECT e.business_id FROM ${latestCompleted} e
-      JOIN businesses b ON b.id=e.business_id AND b.record_class='canonical'
-     WHERE ${sql.raw(sfpReconsiderationDueSql("e", "b", versions))}
-       AND NOT EXISTS (
-         SELECT 1 FROM sfp_classification_evidence r
-          WHERE r.business_id=b.id AND r.policy_version=e.policy_version
-            AND r.classifier_version=e.classifier_version AND r.taxonomy_version=2
-            AND r.terminal_state='provisional' AND r.created_at>e.created_at
-            AND r.created_at>NOW()-INTERVAL '1 day'
-            AND r.acceptance_policy_version=${SFP_VERTICAL_ACCEPTANCE_POLICY_VERSION}
-            AND r.input_fingerprint=${sql.raw(sfpInputFingerprintSql("b"))})
-     ORDER BY e.business_id LIMIT ${RUN_LIMIT}
-  `)).map((row: any) => Number(row.business_id));
-  // Provisional results the ordinary free window left because it does not read websites: read the
-  // site now (first-party, free) so a business whose own page describes it is accepted without waiting
-  // for the paid escalation.
-  const unread = due.length >= RUN_LIMIT ? [] : rows(await db.execute(sql`
-    SELECT p.business_id FROM sfp_classification_evidence p
-      JOIN businesses b ON b.id=p.business_id AND b.record_class='canonical'
-     WHERE p.policy_version=${versions.policyVersion} AND p.classifier_version=${CLASSIFIER_VERSION}
-       AND p.taxonomy_version=2 AND p.terminal_state='provisional'
-       AND p.reason_codes @> '["FREE_ONLY_WEBSITE_EVIDENCE_NOT_FETCHED"]'::jsonb
-       AND NULLIF(btrim(b.website_domain),'') IS NOT NULL
-       AND NOT EXISTS (SELECT 1 FROM sfp_classification_evidence n
-                        WHERE n.business_id=p.business_id AND n.policy_version=p.policy_version
-                          AND n.classifier_version=p.classifier_version AND n.taxonomy_version=2
-                          AND n.created_at>p.created_at)
-     ORDER BY p.business_id LIMIT ${RUN_LIMIT - due.length}
-  `)).map((row: any) => Number(row.business_id)).filter((id: number) => !due.includes(id));
-  const recheckCapacity = RUN_LIMIT - due.length - unread.length;
-  const recheck = recheckCapacity <= 0 ? [] : rows(await db.execute(sql`
-    SELECT e.business_id FROM ${latestCompleted} e
-      JOIN businesses b ON b.id=e.business_id AND b.record_class='canonical'
-     WHERE e.outcome='target' AND e.acceptance_facts->>'websiteSourceUrl' IS NOT NULL
-       AND NOT ${sql.raw(sfpReconsiderationDueSql("e", "b", versions))}
-       AND NOT EXISTS (
-         SELECT 1 FROM sfp_classification_items i
-           JOIN sfp_classification_runs r ON r.id=i.run_id
-          WHERE i.business_id=b.id AND r.policy_version=e.policy_version AND i.state='completed'
-            AND i.completed_at>NOW()-make_interval(days => ${SFP_WEBSITE_RECHECK_DAYS}))
-     ORDER BY e.business_id LIMIT ${recheckCapacity}
-  `)).map((row: any) => Number(row.business_id));
+  const programId = String(program.id);
+  let discovered;
+  try {
+    discovered = await discoverReconsiderationWork({ programId, versions, limit: RUN_LIMIT });
+  } catch (error: any) {
+    // A discovery failure (for example its statement timeout) must not stop ordinary classification,
+    // but it is never silent: logged, and recorded on the cursor so the next tick and operators see it.
+    console.error(`[SfpFreeClassification] reconsideration discovery failed: ${String(error?.message ?? error)}`);
+    const cursor = await readReconsiderationCursor(programId, versions);
+    await writeReconsiderationCursor(programId, versions, {
+      businessId: cursor.businessId, pass: cursor.pass, lastError: String(error?.message ?? error).slice(0, 300),
+    });
+    return 0;
+  }
   let processed = 0;
-  for (const [kind, ids] of [["due", due], ["unread", unread], ["recheck", recheck]] as const) {
+  for (const kind of ["due", "unread", "recheck"] as const) {
+    const ids = discovered.work.filter((w) => w.kind === kind).map((w) => w.businessId);
     if (ids.length === 0) continue;
     const priorRuns = rows(await db.execute(sql`
       SELECT COUNT(*)::bigint AS run_count FROM sfp_classification_runs
-       WHERE program_id=${String(program.id)}::uuid
+       WHERE program_id=${programId}::uuid
     `))[0];
     const result = await runPreCohortClassificationBridge({
-      programId: String(program.id),
-      idempotencyKey: `sfp-free-continuation:${String(program.id)}:reconsider-${kind}:${Number(priorRuns?.run_count ?? 0) + 1}:${ids.join(",")}`,
+      programId,
+      idempotencyKey: `sfp-free-continuation:${programId}:reconsider-${kind}:${Number(priorRuns?.run_count ?? 0) + 1}:${ids.join(",")}`,
       actorId: "system:sfp-free-continuation",
       maxBusinesses: RUN_LIMIT,
       targetIds: (Array.isArray(program.vertical_ids) ? program.vertical_ids : []).map(String),
@@ -302,6 +272,8 @@ async function processVerticalReconsideration(program: any, deps: PreCohortClass
     if (result.costMicros !== 0) throw new Error("SFP_RECONSIDERATION_NONZERO_COST");
     processed += result.processed;
   }
+  // The cursor moves only after the discovered work was handled, so a failed run is found again.
+  await writeReconsiderationCursor(programId, versions, discovered.next);
   return processed;
 }
 
