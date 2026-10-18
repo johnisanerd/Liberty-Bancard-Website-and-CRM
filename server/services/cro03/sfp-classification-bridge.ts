@@ -14,6 +14,7 @@ import {
 import { classifyVertical, inferVerticalNameSignal, CLASSIFIER_VERSION, TAXONOMY_VERSION_V2 } from "./sfp-vertical-classifier";
 import {
   extractWebsiteClassificationEvidence,
+  WEBSITE_EXTRACTOR_VERSION,
   type WebsiteClassificationEvidence,
 } from "./sfp-website-evidence";
 import { lookupBusinessIdentity } from "../serper-business-identity";
@@ -34,7 +35,7 @@ import {
   type SfpAcceptanceFacts,
   type SfpAcceptanceBasis,
 } from "./sfp-vertical-acceptance";
-import { sfpInputFingerprint } from "./sfp-input-fingerprint";
+import { sfpInputFingerprint, sfpWebsiteSourceMarker } from "./sfp-input-fingerprint";
 import { loadRetainedListingCategories } from "./sfp-retained-listing-category";
 import { sfpSettledEvidenceSql } from "./sfp-reconsideration";
 import { sfpEvidenceCurrentSql } from "../../../shared/sfp-input-fingerprint";
@@ -72,6 +73,46 @@ const SFP_OPENAI_SYSTEM_PROMPT =
 
 function truncate(value: string, max: number): string {
   return value.length > max ? value.slice(0, max) : value;
+}
+
+/**
+ * A real OpenAI attempt that produced no usable result. The kind is kept apart so a retry decision and
+ * an operator can tell unusable model output from an unusable replay or a failed call.
+ */
+class SfpOpenAiFailure extends Error {
+  constructor(readonly kind: "invalid_output" | "unusable_result" | "bad_replay" | "call_failed") {
+    super(`OPENAI_FAILURE:${kind}`);
+  }
+}
+
+/**
+ * A successful provider operation for exactly this prompt (same business, same evidence text) already
+ * holds a validated result. Reusing it spends nothing: a retry of unchanged inputs must not buy the
+ * same answer again just because the run that asked for it was a different run.
+ */
+async function loadRetainedOpenAiResult(
+  businessId: number, promptKeyPrefix: string, targetIds: string[],
+): Promise<(NonNullable<Awaited<ReturnType<NonNullable<PreCohortClassificationBridgeDeps["openAiClassify"]>>>>) | null> {
+  const prior = rows(await db.execute(sql`
+    SELECT sfp_result_data FROM provider_operations
+     WHERE provider='openai' AND state='completed' AND idempotency_key LIKE ${`${promptKeyPrefix}:run:%`}
+       AND sfp_result_data IS NOT NULL
+     ORDER BY completed_at DESC NULLS LAST LIMIT 1
+  `))[0]?.sfp_result_data;
+  if (!prior || !["target", "non_target", "review_required"].includes(String(prior.outcome))) return null;
+  const validated = validateSfpAiVerticalResult({
+    outcome: prior.outcome, confidence: Number(prior.confidence),
+    reasonCodes: prior.reasonCodes ?? [], resolvedVerticalId: prior.resolvedVerticalId ?? null,
+    ...("evidenceQuote" in prior ? { evidenceSource: prior.evidenceSource ?? null, evidenceQuote: prior.evidenceQuote ?? null } : {}),
+  }, targetIds);
+  if (!validated) return null;
+  void businessId;
+  return {
+    ...validated,
+    modelVersion: String(prior.modelVersion ?? SFP_OPENAI_MODEL),
+    promptVersion: String(prior.promptVersion ?? SFP_OPENAI_PROMPT_VERSION),
+    costMicros: 0,
+  };
 }
 
 async function defaultOpenAiClassify(input: {
@@ -113,22 +154,25 @@ async function defaultOpenAiClassify(input: {
     `Otherwise set both to null. Respond in the required JSON format.`;
 
   let reservation: Awaited<ReturnType<typeof reservePreCohortSfpProviderOperation>> | null = null;
+  const promptKeyPrefix = `sfp-openai:${input.businessId}:${createHash("sha256").update(`${SFP_OPENAI_PROMPT_VERSION}:${prompt}`).digest("hex")}`;
   try {
+    const retained = await loadRetainedOpenAiResult(input.businessId, promptKeyPrefix, input.targetIds);
+    if (retained) return retained;
     reservation = await reservePreCohortSfpProviderOperation({
       runId: input.runId,
       businessId: input.businessId, provider: "openai_classification", purpose: "sfp_precohort_vertical_classification",
-      idempotencyKey: `sfp-openai:${input.businessId}:${createHash("sha256").update(`${SFP_OPENAI_PROMPT_VERSION}:${prompt}`).digest("hex")}`,
+      idempotencyKey: promptKeyPrefix,
       actorId: "system:sfp-classification-bridge", workUnit: "token", units: SFP_OPENAI_RESERVED_TOKENS,
     });
     if (reservation.replayed) {
       const prior = reservation.resultData;
-      if (!prior || !["target", "non_target", "review_required"].includes(String(prior.outcome))) return null;
+      if (!prior || !["target", "non_target", "review_required"].includes(String(prior.outcome))) throw new SfpOpenAiFailure("bad_replay");
       const validated = validateSfpAiVerticalResult({
         outcome: prior.outcome, confidence: Number(prior.confidence),
         reasonCodes: prior.reasonCodes ?? [], resolvedVerticalId: prior.resolvedVerticalId ?? null,
         ...("evidenceQuote" in prior ? { evidenceSource: prior.evidenceSource ?? null, evidenceQuote: prior.evidenceQuote ?? null } : {}),
       }, input.targetIds);
-      if (!validated) return null;
+      if (!validated) throw new SfpOpenAiFailure("bad_replay");
       return {
         ...validated,
         modelVersion: String(prior.modelVersion ?? SFP_OPENAI_MODEL),
@@ -156,7 +200,7 @@ async function defaultOpenAiClassify(input: {
         settledUnits: completion.usage.totalTokens,
         providerUsage,
       }).catch(() => {});
-      return null;
+      throw new SfpOpenAiFailure("invalid_output");
     }
     const validated = validateSfpAiVerticalResult(completion.classification, input.targetIds);
     if (!validated) {
@@ -165,7 +209,7 @@ async function defaultOpenAiClassify(input: {
         settledUnits: completion.usage.totalTokens,
         providerUsage,
       }).catch(() => {});
-      return null;
+      throw new SfpOpenAiFailure("unusable_result");
     }
     const costMicros = calculateSfpUsageCostMicros({
       usage: providerUsage,
@@ -188,6 +232,8 @@ async function defaultOpenAiClassify(input: {
       costMicros: Number(settled.settledMicros ?? 0),
     };
   } catch (error: any) {
+    // Already settled where a provider request happened; the kind is preserved for the caller.
+    if (error instanceof SfpOpenAiFailure) throw error;
     if (reservation) {
       await settlePreCohortSfpProviderOperation({
         reservation, outcome: "failed", observation: "transport", businessId: input.businessId,
@@ -202,7 +248,7 @@ async function defaultOpenAiClassify(input: {
     if (message.startsWith("SFP_PAID_BLOCKED:") || message.startsWith("Unapproved provider caller")) {
       throw new Error(`OPENAI_ESCALATION_NOT_CONFIGURED:${message}`);
     }
-    return null;
+    throw new SfpOpenAiFailure("call_failed");
   }
 }
 
@@ -827,6 +873,8 @@ export async function runPreCohortClassificationBridge(
         rawVertical,
         businessContext,
         websiteEvidenceContentHash: websiteEvidence?.contentHash ?? null,
+        // Only for businesses with a website, so a result that never involved one keeps its hash.
+        ...(domain ? { websiteExtractorVersion: WEBSITE_EXTRACTOR_VERSION } : {}),
         targetIds,
         policyVersion: input.policyVersion,
         classifierVersion: CLASSIFIER_VERSION,
@@ -904,6 +952,7 @@ export async function runPreCohortClassificationBridge(
       let modelVersion: string | null = null;
       let promptVersion: string | null = null;
       let itemCost = 0;
+      let reusedProvisionalEvidenceId: string | null = null;
       // resolvedVerticalId/admissionTier travel with the deterministic result
       // only. Any later promotion (website-evidence overlap or OpenAI
       // escalation) reaches outcome='target' through a NON-deterministic
@@ -1029,7 +1078,12 @@ export async function runPreCohortClassificationBridge(
           // rather than the generic "call executed but failed" code, so
           // operators can tell "never tried" apart from "tried and failed".
           const message = String(error?.message ?? error ?? "");
-          reasonCodes.push(message.startsWith("OPENAI_ESCALATION_NOT_CONFIGURED:") ? "OPENAI_ESCALATION_NOT_CONFIGURED" : "OPENAI_UNAVAILABLE");
+          if (message.startsWith("OPENAI_ESCALATION_NOT_CONFIGURED:")) reasonCodes.push("OPENAI_ESCALATION_NOT_CONFIGURED");
+          else {
+            reasonCodes.push("OPENAI_UNAVAILABLE");
+            // A real attempt that failed: record how, so it is not mistaken for a never-tried state.
+            if (message.startsWith("OPENAI_FAILURE:")) reasonCodes.push(`OPENAI_FAILURE_KIND:${message.slice("OPENAI_FAILURE:".length)}`);
+          }
         }
       }
       if (outcome !== "target") {
@@ -1091,12 +1145,34 @@ export async function runPreCohortClassificationBridge(
       }
       const terminalState = !supersedesWebsiteAcceptance && (escalationNeverAttempted || websiteGapUnresolved)
         ? "provisional" : "completed";
+      // Which website source (none, or this domain) and extractor this decision rested on. It is how a
+      // held result is reopened when a website is added or changed, or the extractor improves.
+      if (taxonomyVersion === 2) reasonCodes.push(sfpWebsiteSourceMarker(business.website_domain || domain));
       const idempotencyKey = `${input.idempotencyKey}:eval:${businessId}:${evidenceHash}`;
+      // A provisional result identical to the latest recorded one (same evidence, same inputs, same
+      // policy, same system reason codes) adds nothing. Evidence is insert-only, so repeating it would
+      // only grow the history; the existing row stands and this item points at it.
+      if (terminalState === "provisional") {
+        const systemCodes = (codes: string[]) => [...new Set(codes.filter((code) => /^[A-Z][A-Z0-9_]*(:|$)/.test(code)))].sort();
+        const latest = rows(await db.execute(sql`
+          SELECT id,outcome,terminal_state,evidence_hash,input_fingerprint,acceptance_policy_version,reason_codes
+            FROM sfp_classification_evidence
+           WHERE business_id=${businessId} AND policy_version=${input.policyVersion}
+             AND classifier_version=${CLASSIFIER_VERSION} AND taxonomy_version=${taxonomyVersion}
+           ORDER BY created_at DESC,id DESC LIMIT 1
+        `))[0];
+        if (latest && latest.terminal_state === "provisional" && latest.evidence_hash === evidenceHash &&
+            latest.outcome === outcome && latest.input_fingerprint === inputFingerprint &&
+            Number(latest.acceptance_policy_version ?? 0) === (taxonomyVersion === 2 ? SFP_VERTICAL_ACCEPTANCE_POLICY_VERSION : 0) &&
+            JSON.stringify(systemCodes(latest.reason_codes ?? [])) === JSON.stringify(systemCodes(reasonCodes))) {
+          reusedProvisionalEvidenceId = String(latest.id);
+        }
+      }
       // classifier_version is the RULESET version (CLASSIFIER_VERSION);
       // taxonomy_version is which target-vertical list was used. These were
       // previously conflated (classifier_version held the taxonomy value) --
       // both are now written explicitly and distinctly.
-      const insertedEvidence = rows(await db.execute(sql`
+      const insertedEvidence = reusedProvisionalEvidenceId ? undefined : rows(await db.execute(sql`
         INSERT INTO sfp_classification_evidence
           (business_id,evidence_hash,source_refs,classifier_version,taxonomy_version,model_version,prompt_version,policy_version,
            outcome,confidence,reason_codes,idempotency_key,cost_micros,terminal_state,resolved_vertical_id,admission_tier,
@@ -1112,7 +1188,7 @@ export async function runPreCohortClassificationBridge(
         ON CONFLICT (idempotency_key) DO NOTHING
         RETURNING id
       `))[0];
-      const evidenceId = insertedEvidence?.id ?? rows(await db.execute(sql`
+      const evidenceId = reusedProvisionalEvidenceId ?? insertedEvidence?.id ?? rows(await db.execute(sql`
         SELECT id FROM sfp_classification_evidence WHERE idempotency_key=${idempotencyKey} LIMIT 1
       `))[0]?.id;
       if (!evidenceId) throw new Error("SFP_CLASSIFICATION_EVIDENCE_PERSIST_FAILED");

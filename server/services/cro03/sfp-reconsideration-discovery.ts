@@ -16,7 +16,9 @@
  *  due     the latest completed result no longer stands (shared definition in sfp-reconsideration.ts),
  *          unless an up-to-date non-attempt was already recorded for it recently (a day when the site
  *          could not be read, otherwise a week); changed inputs make that record stale at once;
- *  unread  the latest result is a free-window non-attempt that never read the business's website;
+ *  unread  the latest result is a provisional one that never read the business's website, was made
+ *          before the business's current website source (or under an older extractor), or could not
+ *          read the site a day ago;
  *  recheck the latest result is a website-based acceptance whose site has not been read for
  *          SFP_WEBSITE_RECHECK_DAYS. This interval is a schedule, not a deadline: when the backlog of
  *          due and unread businesses is large they are served first and the pass takes longer.
@@ -24,8 +26,8 @@
 import { sql } from "drizzle-orm";
 import { db } from "../../db";
 import { SFP_VERTICAL_ACCEPTANCE_POLICY_VERSION } from "./sfp-vertical-acceptance";
-import { SFP_WEBSITE_RECHECK_DAYS, sfpReconsiderationDueSql, type SfpReconsiderationVersions } from "./sfp-reconsideration";
-import { sfpInputFingerprintSql } from "../../../shared/sfp-input-fingerprint";
+import { SFP_WEBSITE_RECHECK_DAYS, sfpAttemptedAtSql, sfpReconsiderationDueSql, type SfpReconsiderationVersions } from "./sfp-reconsideration";
+import { sfpEvidenceWebsiteSourceCurrentSql, sfpInputFingerprintSql } from "../../../shared/sfp-input-fingerprint";
 
 export const RECONSIDERATION_WINDOW = 1000;
 /** A tick scans at most this many windows (10,000 businesses) while looking for work. */
@@ -71,14 +73,21 @@ export function reconsiderationDiscoverySql(
                 WHERE r.business_id=b.id AND r.policy_version=e.policy_version
                   AND r.classifier_version=e.classifier_version AND r.taxonomy_version=${int(v.taxonomyVersion)}
                   AND r.terminal_state='provisional' AND r.created_at>e.created_at
-                  AND r.created_at>NOW()-(CASE WHEN r.reason_codes::text LIKE '%WEBSITE_EVIDENCE_UNAVAILABLE%'
+                  AND ${sfpAttemptedAtSql("r")}>NOW()-(CASE WHEN r.reason_codes::text LIKE '%WEBSITE_EVIDENCE_UNAVAILABLE%'
                                                THEN INTERVAL '1 day' ELSE INTERVAL '7 days' END)
                   AND r.acceptance_policy_version=${SFP_VERTICAL_ACCEPTANCE_POLICY_VERSION}
-                  AND r.input_fingerprint=${sfpInputFingerprintSql("b")})
+                  AND r.input_fingerprint=${sfpInputFingerprintSql("b")}
+                  -- A website added or changed since the hold, or read under an older extractor, ends it.
+                  AND ${sfpEvidenceWebsiteSourceCurrentSql("r", "b")})
           THEN 'due'
         WHEN a.terminal_state='provisional'
-             AND a.reason_codes @> '["FREE_ONLY_WEBSITE_EVIDENCE_NOT_FETCHED"]'::jsonb
              AND NULLIF(btrim(b.website_domain),'') IS NOT NULL
+             AND (a.reason_codes @> '["FREE_ONLY_WEBSITE_EVIDENCE_NOT_FETCHED"]'::jsonb
+                  -- Held on a source-poor or unreadable result: reopen when its website source changed
+                  -- (added, changed, extractor improved) or, for an unreadable site, after a day.
+                  OR NOT ${sfpEvidenceWebsiteSourceCurrentSql("a", "b")}
+                  OR (a.reason_codes::text LIKE '%WEBSITE_EVIDENCE_UNAVAILABLE%'
+                      AND ${sfpAttemptedAtSql("a")}<NOW()-INTERVAL '1 day'))
           THEN 'unread'
         WHEN e.id IS NOT NULL AND e.outcome='target' AND e.acceptance_facts->>'websiteSourceUrl' IS NOT NULL
              AND NOT ${due}

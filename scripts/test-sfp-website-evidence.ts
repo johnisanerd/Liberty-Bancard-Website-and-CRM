@@ -132,6 +132,90 @@ async function run() {
     assert.equal(protocolFetchCalls, 0);
     pass("file:// is rejected before DNS or fetch");
 
+    console.log("\n[5] Redirects, statuses, and paragraph-only services");
+    const html = (inner: string, head = "<title>Home</title>") => `<html><head>${head}</head><body>${inner}</body></html>`;
+    const respond = (status: number, body = "", headers: Record<string, string> = {}) =>
+      new Response(body || null, { status, headers: { "content-type": "text/html", ...headers } });
+    const publicResolve = async (host: string) => (host.startsWith("internal") ? "10.0.0.8" : "93.184.216.34");
+    const fake = (routes: Record<string, () => Response>, seen: string[] = []) => (async (input: any) => {
+      seen.push(String(input));
+      const route = routes[String(input)];
+      if (!route) throw new Error(`unexpected ${input}`);
+      return route();
+    }) as unknown as typeof fetch;
+    const paragraphPage = html(
+      "<nav><p>Home about us contact blog careers</p></nav><main><p>We provide comprehensive family dentistry, teeth whitening and orthodontic care for patients of all ages.</p><p>Short.</p><p>We use cookies to improve your experience on this website today.</p></main><footer><p>Copyright 2026 all rights reserved by owner</p></footer>");
+
+    const hops: string[] = [];
+    const viaWww = await extractWebsiteClassificationEvidence("https://example-dental.test/", {
+      resolveImpl: publicResolve,
+      fetchImpl: fake({
+        "https://example-dental.test/": () => respond(301, "", { location: "https://www.example-dental.test/" }),
+        "https://www.example-dental.test/": () => respond(200, paragraphPage),
+      }, hops),
+    });
+    assert.ok(!("error" in viaWww));
+    assert.equal(viaWww.sourceUrl, "https://example-dental.test/");
+    assert.equal(viaWww.finalUrl, "https://www.example-dental.test/");
+    assert.deepEqual(viaWww.serviceDescriptions, [
+      "We provide comprehensive family dentistry, teeth whitening and orthodontic care for patients of all ages.",
+    ]);
+    assert.equal(hops.length, 2);
+    pass("A redirect to the www host is followed; navigation, footer, cookie and one-word paragraphs are excluded; paragraph-only services are retained");
+
+    assert.deepEqual(await extractWebsiteClassificationEvidence("https://r.test/", {
+      resolveImpl: publicResolve,
+      fetchImpl: fake({ "https://r.test/": () => respond(302, "", { location: "http://internal.test/admin" }) }),
+    }), { error: "redirect_blocked_private_target" });
+    assert.deepEqual(await extractWebsiteClassificationEvidence("https://r.test/", {
+      resolveImpl: publicResolve,
+      fetchImpl: fake({ "https://r.test/": () => respond(302, "", { location: "ftp://r.test/x" }) }),
+    }), { error: "redirect_unsupported_protocol" });
+    pass("A redirect to a private or non-HTTP target is rejected before it is fetched");
+
+    assert.deepEqual(await extractWebsiteClassificationEvidence("https://loop.test/a", {
+      resolveImpl: publicResolve,
+      fetchImpl: fake({
+        "https://loop.test/a": () => respond(302, "", { location: "/b" }),
+        "https://loop.test/b": () => respond(302, "", { location: "/a" }),
+      }),
+    }), { error: "redirect_loop" });
+    let chain = 0;
+    const endless = (async (input: any) => respond(302, "", { location: `/p${++chain}` })) as unknown as typeof fetch;
+    assert.deepEqual(await extractWebsiteClassificationEvidence("https://loop.test/", { resolveImpl: publicResolve, fetchImpl: endless }),
+      { error: "too_many_redirects" });
+    assert.deepEqual(await extractWebsiteClassificationEvidence("https://loop.test/", {
+      resolveImpl: publicResolve, fetchImpl: fake({ "https://loop.test/": () => respond(301) }) }), { error: "redirect_failed" });
+    pass("Redirect loops, endless chains and a redirect without a location are errors");
+
+    for (const status of [403, 404, 500, 503]) {
+      assert.deepEqual(await extractWebsiteClassificationEvidence("https://s.test/", {
+        resolveImpl: publicResolve, fetchImpl: fake({ "https://s.test/": () => respond(status, html("<p>We provide family dentistry for the whole community.</p>")) }),
+      }), { error: `http_${status}` });
+    }
+    assert.deepEqual(await extractWebsiteClassificationEvidence("https://s.test/", {
+      resolveImpl: publicResolve, fetchImpl: fake({ "https://s.test/": () => respond(200, "   ") }) }), { error: "empty_response" });
+    assert.deepEqual(await extractWebsiteClassificationEvidence("https://s.test/", {
+      resolveImpl: publicResolve, fetchImpl: fake({ "https://s.test/": () => respond(200, "%PDF", { "content-type": "application/pdf" }) }) }),
+      { error: "unsupported_content_type" });
+    assert.deepEqual(await extractWebsiteClassificationEvidence("https://s.test/", {
+      resolveImpl: publicResolve,
+      fetchImpl: fake({ "https://s.test/": () => respond(200, html("<p>Please wait while we verify.</p>", "<title>Just a moment...</title>")) }),
+    }), { error: "challenge_page" });
+    pass("Non-2xx pages, empty bodies, non-HTML and bot-challenge pages are errors, never empty evidence");
+
+    const positive = await extractWebsiteClassificationEvidence("https://ok.test/", {
+      resolveImpl: publicResolve,
+      fetchImpl: fake({ "https://ok.test/": () => respond(200, html("<h1>Bright Smile Dental</h1>", "<title>Bright Smile Dental</title>")) }),
+    });
+    assert.ok(!("error" in positive) && positive.headings?.[0] === "Bright Smile Dental" && (positive.serviceDescriptions ?? []).length === 0);
+    const withParagraph = await extractWebsiteClassificationEvidence("https://ok.test/", {
+      resolveImpl: publicResolve,
+      fetchImpl: fake({ "https://ok.test/": () => respond(200, html("<h1>Bright Smile Dental</h1><p>We provide family dentistry and teeth whitening in Miami.</p>", "<title>Bright Smile Dental</title>")) }),
+    });
+    assert.ok(!("error" in withParagraph) && !("error" in positive) && withParagraph.contentHash !== positive.contentHash);
+    pass("A positive page keeps the evidence it always had; added paragraph text changes the content fingerprint");
+
     console.log(`\n${passed} assertions passed; 0 failed.`);
   } finally {
     await new Promise<void>((resolve, reject) =>

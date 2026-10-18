@@ -9,11 +9,14 @@ import { CLASSIFIER_VERSION } from "./sfp-vertical-classifier";
 import { runPreCohortClassificationBridge, type PreCohortClassificationBridgeDeps } from "./sfp-classification-bridge";
 import { getSfpProviderReadiness } from "./sfp-provider-operations";
 import { resolveGeographyForBusiness } from "./sfp-geography-resolver";
-import { sfpReconsiderationDueSql } from "./sfp-reconsideration";
+import { sfpAttemptedAtSql, sfpReconsiderationDueSql } from "./sfp-reconsideration";
+import { SFP_VERTICAL_ACCEPTANCE_POLICY_VERSION } from "./sfp-vertical-acceptance";
 import {
   discoverReconsiderationWork, readReconsiderationCursor, writeReconsiderationCursor,
 } from "./sfp-reconsideration-discovery";
-import { sfpRetainedListingCategoryHashesSql } from "../../../shared/sfp-input-fingerprint";
+import {
+  sfpEvidenceWebsiteSourceCurrentSql, sfpInputFingerprintSql, sfpRetainedListingCategoryHashesSql,
+} from "../../../shared/sfp-input-fingerprint";
 
 const rows = (r: any): any[] => r?.rows ?? r ?? [];
 /** Per-tick follow-up work (geography re-checks) stays small. */
@@ -146,20 +149,26 @@ async function ensureAutomaticSfpPass(program: any): Promise<void> {
   `);
 }
 
-async function processPendingVerticalEscalations(program: any, deps: PreCohortClassificationBridgeDeps = {}): Promise<{ escalated: number; costMicros: number }> {
-  if (!program || process.env.CRO03_PROVIDER_TRANSPORT_ENABLED !== "true") {
-    return { escalated: 0, costMicros: 0 };
-  }
-  const readiness = await getSfpProviderReadiness("openai_classification");
-  if (!readiness.ready) return { escalated: 0, costMicros: 0 };
-  const pending = rows(await db.execute(sql`
-    SELECT DISTINCT ON (e.business_id) e.business_id
+const int = (value: number): number => {
+  if (!Number.isInteger(value)) throw new Error("SFP_ESCALATION_VERSION_INVALID");
+  return value;
+};
+
+/** The exact statement that selects businesses eligible for paid escalation (also measured by the scale harness). */
+export function pendingEscalationSql(
+  versions: { policyVersion: number; classifierVersion: number; taxonomyVersion: 2 }, limit: number,
+): string {
+  return `    SELECT e.business_id
       FROM sfp_classification_evidence e
       JOIN businesses eb ON eb.id=e.business_id
-     WHERE e.policy_version=${Number(program.policy_version)}
-       AND e.taxonomy_version=2 AND e.classifier_version=${CLASSIFIER_VERSION}
+     WHERE e.policy_version=${int(versions.policyVersion)}
+       AND e.taxonomy_version=2 AND e.classifier_version=${int(CLASSIFIER_VERSION)}
        AND (e.terminal_state='provisional' OR e.reason_codes @> '["PRIOR_WEBSITE_ACCEPTANCE_SUPERSEDED"]'::jsonb)
        AND e.outcome='review_required'
+       AND e.id=(SELECT l.id FROM sfp_classification_evidence l
+                  WHERE l.business_id=e.business_id AND l.policy_version=e.policy_version
+                    AND l.taxonomy_version=e.taxonomy_version AND l.classifier_version=e.classifier_version
+                  ORDER BY l.created_at DESC,l.id DESC LIMIT 1)
        -- Paid escalation needs evidence beyond the registry name. A name-only
        -- business stays a truthful provisional non-attempt and becomes eligible
        -- automatically once it gains a website, a structured industry field or
@@ -167,12 +176,19 @@ async function processPendingVerticalEscalations(program: any, deps: PreCohortCl
        AND (NULLIF(btrim(eb.website_domain),'') IS NOT NULL
             OR NULLIF(btrim(eb.industry_primary),'') IS NOT NULL
             OR NULLIF(btrim(eb.industry_secondary),'') IS NOT NULL
-            OR ${sql.raw(sfpRetainedListingCategoryHashesSql("eb"))} <> ''
+            OR ${sfpRetainedListingCategoryHashesSql("eb")} <> ''
             OR (NULLIF(btrim(eb.vertical),'') IS NOT NULL
                 AND lower(btrim(eb.vertical)) NOT IN ('other','unknown','n/a','none','uncategorized')))
        AND (e.reason_codes @> '["FREE_ONLY_NO_ESCALATION"]'::jsonb
             OR e.reason_codes @> '["OPENAI_UNAVAILABLE"]'::jsonb
-            OR e.reason_codes @> '["OPENAI_ESCALATION_NOT_CONFIGURED"]'::jsonb)
+            OR e.reason_codes @> '["OPENAI_ESCALATION_NOT_CONFIGURED"]'::jsonb
+            OR e.reason_codes::text LIKE '%WEBSITE_EVIDENCE_UNAVAILABLE%')
+       AND (e.reason_codes @> '["FREE_ONLY_NO_ESCALATION"]'::jsonb
+            OR ${sfpAttemptedAtSql("e")} < NOW()-(CASE WHEN e.reason_codes::text LIKE '%WEBSITE_EVIDENCE_UNAVAILABLE%'
+                                             THEN INTERVAL '1 day' ELSE INTERVAL '6 hours' END)
+            OR e.input_fingerprint IS DISTINCT FROM ${sfpInputFingerprintSql("eb")}
+            OR e.acceptance_policy_version IS DISTINCT FROM ${int(SFP_VERTICAL_ACCEPTANCE_POLICY_VERSION)}
+            OR NOT ${sfpEvidenceWebsiteSourceCurrentSql("e", "eb")})
        AND NOT EXISTS (
          SELECT 1 FROM sfp_classification_evidence done
           WHERE done.business_id=e.business_id
@@ -185,13 +201,32 @@ async function processPendingVerticalEscalations(program: any, deps: PreCohortCl
                      OR done.reason_codes @> '["OPENAI_ESCALATION_NOT_CONFIGURED"]'::jsonb)
             -- A completed result that no longer stands (stale inputs, older policy, unsupported
             -- pre-policy target) does not block escalation of the business.
-            AND NOT ${sql.raw(sfpReconsiderationDueSql("done", "eb", {
-              policyVersion: Number(program.policy_version), classifierVersion: CLASSIFIER_VERSION, taxonomyVersion: 2,
-            }))}
+            AND NOT ${sfpReconsiderationDueSql("done", "eb", versions)}
        )
-     ORDER BY e.business_id,e.created_at DESC,e.evidence_hash ASC
-     LIMIT ${ESCALATION_LIMIT}
-  `));
+     ORDER BY ${sfpAttemptedAtSql("e")} ASC,e.business_id ASC
+     LIMIT ${int(limit)}`;
+}
+
+async function processPendingVerticalEscalations(program: any, deps: PreCohortClassificationBridgeDeps = {}): Promise<{ escalated: number; costMicros: number }> {
+  if (!program || process.env.CRO03_PROVIDER_TRANSPORT_ENABLED !== "true") {
+    return { escalated: 0, costMicros: 0 };
+  }
+  const readiness = await getSfpProviderReadiness("openai_classification");
+  if (!readiness.ready) return { escalated: 0, costMicros: 0 };
+  // Selection works from each business's LATEST result for its current inputs, never from an older
+  // row: an earlier free-only row must not make a business look unattempted after a real attempt
+  // already followed it. A business is eligible when
+  //   - its latest result is a never-attempted non-attempt (free-only / escalation not configured), or
+  //   - its latest result is an attempt that failed or could not read the website, and its retry delay
+  //     has passed (6 hours after an unusable OpenAI result, a day after an unreadable site), or
+  //   - its inputs changed since that result (category fields, listing evidence, acceptance policy, or
+  //     the website source / extractor), which ends any delay at once.
+  // Oldest attempt first, so unchanged work that keeps failing cannot hold the batch while newer
+  // eligible businesses (any id) wait.
+  const versions = {
+    policyVersion: Number(program.policy_version), classifierVersion: CLASSIFIER_VERSION, taxonomyVersion: 2 as const,
+  };
+  const pending = rows(await db.execute(sql.raw(pendingEscalationSql(versions, ESCALATION_LIMIT))));
   const businessIds = pending.map((row: any) => Number(row.business_id));
   if (businessIds.length === 0) return { escalated: 0, costMicros: 0 };
 

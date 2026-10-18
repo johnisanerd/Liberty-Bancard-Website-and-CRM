@@ -62,3 +62,41 @@ export function sfpEvidenceCurrentSql(evidenceAlias: string, businessAlias: stri
       OR lower(split_part(regexp_replace(${e}.acceptance_facts->>'websiteSourceUrl','^https?://(www\\.)?','','i'),'/',1))
        = lower(split_part(regexp_replace(btrim(COALESCE(${b}.website_domain::text,'')),'^(https?://)?(www\\.)?','','i'),'/',1)))))`;
 }
+
+/**
+ * Version of the website extractor (redirect handling, status handling, retained main-content text).
+ * Bump it when what the extractor can see changes: results that read, or failed to read, a website
+ * under an older extractor are reconsidered once.
+ */
+export const SFP_WEBSITE_EXTRACTOR_VERSION = 2;
+
+/**
+ * Website source marker. Every classification row records which website source (none, or the
+ * normalized domain) and which extractor version its decision rested on, as a reason code. The input
+ * fingerprint above deliberately excludes the domain, so this marker is what lets a held,
+ * source-poor result be reopened when a website is added, changed, or first becomes readable, without
+ * making an unrelated enrichment invalidate a listing-based decision.
+ */
+export const SFP_WEBSITE_SOURCE_MARKER_PREFIX = "WEBSITE_SOURCE:";
+
+export function normalizeWebsiteDomainForMarker(domain: string | null | undefined): string {
+  return (domain ?? "").trim().replace(/^(https?:\/\/)?(www\.)?/i, "").split("/")[0].toLowerCase();
+}
+
+/** SQL expression for the normalized website domain of a `businesses` alias (same rule as the TS form). */
+export function sfpNormalizedWebsiteDomainSql(alias: string): string {
+  const b = aliasName(alias);
+  return `lower(split_part(regexp_replace(btrim(COALESCE(${b}.website_domain::text,'')),'^(https?://)?(www\\.)?','','i'),'/',1))`;
+}
+
+/** SQL expression for the marker a decision made now for a `businesses` alias would carry. */
+export function sfpWebsiteSourceMarkerSql(alias: string): string {
+  const norm = sfpNormalizedWebsiteDomainSql(alias);
+  return `('${SFP_WEBSITE_SOURCE_MARKER_PREFIX}v${SFP_WEBSITE_EXTRACTOR_VERSION}:'||CASE WHEN ${norm}='' THEN 'none' ELSE left(md5(${norm}),12) END)`;
+}
+
+/** SQL: TRUE when evidence row `e` records the website source that business `b` has right now. */
+export function sfpEvidenceWebsiteSourceCurrentSql(evidenceAlias: string, businessAlias: string): string {
+  const e = aliasName(evidenceAlias);
+  return `${e}.reason_codes @> jsonb_build_array(${sfpWebsiteSourceMarkerSql(businessAlias)})`;
+}

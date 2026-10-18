@@ -32,11 +32,12 @@ let checks = 0;
 const check = (value: unknown, message: string) => { assert(value, message); checks++; };
 
 // ── pure policy ─────────────────────────────────────────────────────────────
-type Page = { title?: string; meta?: string; headings?: string[]; jsonLd?: string[] };
+type Page = { title?: string; meta?: string; headings?: string[]; jsonLd?: string[]; paras?: string[] };
 function pageEvidence(domain: string, page: Page) {
   const body = {
     jsonLdTypes: page.jsonLd ?? [], titleTokens: [], metaTokens: [], serviceTokens: [], categoryTokens: [],
     pageType: "unknown", titleText: page.title ?? "", metaDescription: page.meta ?? "", headings: page.headings ?? [],
+    ...(page.paras?.length ? { serviceDescriptions: page.paras } : {}),
   };
   return {
     sourceUrl: `https://${domain}/`, ...body, capturedAt: new Date().toISOString(), contentHash: contentHashOf(body),
@@ -468,6 +469,119 @@ await processSfpFreeClassificationTick(undefined, { bridgeDeps: { extractWebsite
 check(Number((await pool.query("SELECT count(*)::int n FROM sfp_classification_evidence")).rows[0].n) <= tickRows + 3,
   "A second tick does not repeat the reconsideration (no per-tick evidence growth)");
 check(getBlockedCertificationNetworkAttemptCount() === blockedBefore, "Reconsideration made no provider or network attempt");
+
+
+// ── Repairs: paragraph evidence, held non-attempts, retry loops and website-source changes ──────────
+{
+  const dentalPara = "We provide comprehensive family dentistry, teeth whitening and orthodontic care for patients of all ages.";
+  const autoPara = "Our technicians perform brake repair, oil changes and complete automotive engine diagnostics every day.";
+  const dp = accept.decideDeterministicAcceptance({ website: pageEvidence("para.test", { title: "Home", paras: [dentalPara] }) as any, listing: noListing, targetIds });
+  check(dp.kind === "accepted" && dp.verticalId === "Healthcare" && dp.facts.facts.some((f) => f.field === "website.service_description"),
+    "A page whose only description is body paragraphs is accepted, citing the paragraph");
+  const strong = accept.decideDeterministicAcceptance({ website: pageEvidence("para.test", { title: "Bright Smile Dental", headings: ["Family dentistry"], paras: [autoPara] }) as any, listing: noListing, targetIds });
+  check(strong.kind === "accepted" && strong.verticalId === "Healthcare", "A stray body paragraph never overrides or conflicts with what the page's own title and headings say");
+  const both = accept.decideDeterministicAcceptance({ website: pageEvidence("para.test", { title: "Home", paras: [dentalPara, autoPara] }) as any, listing: noListing, targetIds });
+  check(both.kind !== "accepted", "Paragraphs that describe two different verticals do not produce an accepted vertical");
+}
+const tickAi: number[] = [];
+let aiBehaviour: "review" | "throw" = "review";
+const tickDeps = {
+  extractWebsiteEvidence,
+  openAiClassify: async (input: { businessId: number }) => {
+    tickAi.push(input.businessId);
+    if (aiBehaviour === "throw") throw new Error("OPENAI_UNAVAILABLE_TEST");
+    return { outcome: "review_required", confidence: 0.3, reasonCodes: ["test_ai_review"], resolvedVerticalId: null,
+      modelVersion: "test", promptVersion: "test", costMicros: 0 };
+  },
+} as any;
+const aiFor = (id: number) => tickAi.filter((x) => x === id).length;
+async function setOpenAiReady() {
+  process.env.CRO03_PROVIDER_TRANSPORT_ENABLED = "true";
+  process.env.AI_INTEGRATIONS_OPENAI_API_KEY ||= "certification-fake-key";
+  await pool.query("UPDATE provider_controls SET enabled=TRUE,circuit_state='closed' WHERE provider='openai'");
+}
+// 1. Paragraph-only evidence, end to end through the bridge.
+pages.set("para-only.example.test", { title: "Home", paras: ["We provide comprehensive family dentistry, teeth whitening and orthodontic care for patients of all ages."] });
+const paraOnly = await business("paraonly", { domain: "para-only.example.test" });
+await classify([paraOnly]);
+row = await latest(paraOnly);
+check(row.admission_tier === "policy_accepted" && row.resolved_vertical_id === "Healthcare" && row.acceptance_basis === "website_services",
+  "Through the bridge, a paragraph-only site is accepted from the business's own words");
+
+// 2. A failed fetch writes no target or non-target row, and repeating it with unchanged inputs writes nothing new.
+pages.set("always-down.example.test", { error: "http_503" });
+const alwaysDown = await business("alwaysdown", { domain: "always-down.example.test" });
+for (let i = 0; i < 4; i++) await classify([alwaysDown]);
+const downRows = await allRows(alwaysDown);
+check(downRows.length === 1 && downRows[0].terminal_state === "provisional" && downRows[0].outcome === "review_required" &&
+  JSON.stringify(downRows[0].reason_codes).includes("WEBSITE_EVIDENCE_UNAVAILABLE:http_503"),
+  "Repeated unchanged failed fetches keep one provisional row (no duplicates) and never a target or non-target row");
+const downItems = Number((await pool.query("SELECT count(*)::int n FROM sfp_classification_items WHERE evidence_id=$1 AND state='completed'", [downRows[0].id])).rows[0].n);
+check(downItems >= 4, "Each repeat is still recorded as an attempt on the single row");
+
+// 3. Ordinary ticks: an AI-attempted, unreadable-website hold is not bought again while inputs are unchanged.
+await setOpenAiReady();
+const looped = await business("looped", { domain: "looped.example.test" });
+pages.set("looped.example.test", { error: "dns_resolution_failed" });
+await classify([looped]); // establishes the attempted, unreadable-site provisional row (ordinary AI path)
+const loopedRows = (await allRows(looped)).length;
+const before = aiFor(looped);
+for (let i = 0; i < 3; i++) await processSfpFreeClassificationTick(undefined, { bridgeDeps: tickDeps });
+check(aiFor(looped) === before && (await allRows(looped)).length === loopedRows,
+  "Consecutive ordinary ticks with unchanged inputs make no further AI attempt and add no row for an unreadable-site hold");
+
+// 4. Changed evidence ends the hold at once: a later-ID eligible business is served in the same tick as well.
+const lateEligible = await business("lateeligible", { domain: "late-eligible.example.test" });
+pages.set("late-eligible.example.test", { error: "fetch_failed" });
+await runPreCohortClassificationBridge({
+  programId, idempotencyKey: `${prefix}:freeonly:late`, actorId: actor.actorId, maxBusinesses: 10, targetIds,
+  policyVersion, taxonomyVersion: 2, businessIdFilter: [lateEligible], freeOnly: true,
+}, {} as any);
+await pool.query("UPDATE businesses SET industry_primary='Diagnostic services' WHERE id=$1", [looped]);
+await processSfpFreeClassificationTick(undefined, { bridgeDeps: tickDeps });
+check(aiFor(looped) === before + 1, "Changed business inputs end the hold: exactly one new attempt is made for the changed business");
+check(aiFor(lateEligible) >= 1, "A never-attempted, higher-ID business is served while lower-ID held work waits");
+const afterChange = aiFor(looped);
+await processSfpFreeClassificationTick(undefined, { bridgeDeps: tickDeps });
+await processSfpFreeClassificationTick(undefined, { bridgeDeps: tickDeps });
+check(aiFor(looped) === afterChange, "After the changed-input attempt, the next ticks do not repeat it");
+
+// 5. A transient AI failure is retried only after its delay, not every tick.
+aiBehaviour = "throw";
+const transient = await business("transient", { domain: "transient.example.test" });
+pages.set("transient.example.test", { title: "Home", headings: ["Welcome"] });
+await classify([transient]);
+const transientAfterFirst = aiFor(transient);
+const transientRowsFirst = (await allRows(transient)).length;
+for (let i = 0; i < 3; i++) await processSfpFreeClassificationTick(undefined, { bridgeDeps: tickDeps });
+check(aiFor(transient) === transientAfterFirst && (await allRows(transient)).length === transientRowsFirst &&
+  (await allRows(transient)).every((r) => r.terminal_state === "provisional"),
+  "A transient AI failure is not retried on every tick and never becomes a decision");
+aiBehaviour = "review";
+
+// 6. A website added after a source-poor hold reopens it without any manual step.
+const lateDomain = await business("latedomain", { name: `${prefix} Late Domain Holdings` });
+await classify([lateDomain]);
+check((await effective(lateDomain)).v === null && (await allRows(lateDomain)).every((r) => r.admission_tier === null), "A name-only business starts held with no vertical");
+pages.set("late-domain.example.test", { title: "Smile Studio", headings: ["Family dentistry and teeth whitening"] });
+await pool.query("UPDATE businesses SET website_domain='late-domain.example.test' WHERE id=$1", [lateDomain]);
+for (let i = 0; i < 2 && (await effective(lateDomain)).v === null; i++) await processSfpFreeClassificationTick(undefined, { bridgeDeps: tickDeps });
+check((await effective(lateDomain)).v === "Healthcare", "A website added after the hold is read by the ordinary continuation and accepted");
+
+// 7. A decision made before the current website-source rules is reopened once, then settles.
+pages.set("old-extractor.example.test", { title: "Home", paras: ["We provide comprehensive family dentistry, teeth whitening and orthodontic care for patients of all ages."] });
+const oldExtractor = await business("oldextractor", { domain: "old-extractor.example.test" });
+await pool.query(`INSERT INTO sfp_classification_evidence
+  (business_id,evidence_hash,source_refs,classifier_version,taxonomy_version,policy_version,model_version,outcome,reason_codes,idempotency_key,terminal_state,input_fingerprint,acceptance_policy_version)
+  SELECT b.id,$2,'[]'::jsonb,$3,2,$4,'legacy-test','review_required','["WEBSITE_SOURCE:v1:000000000000"]'::jsonb,$5,'completed',${sfpInputFingerprintSql("b")},$6
+    FROM businesses b WHERE b.id=$1`,
+  [oldExtractor, `${prefix}oldextractorhash`, CLASSIFIER_VERSION, policyVersion, `${prefix}:legacy:oldextractor`, accept.SFP_VERTICAL_ACCEPTANCE_POLICY_VERSION]);
+check((await effective(oldExtractor)).v === null, "A review result made under an older website extractor holds no vertical");
+for (let i = 0; i < 2 && (await effective(oldExtractor)).v === null; i++) await processSfpFreeClassificationTick(undefined, { bridgeDeps: tickDeps });
+check((await effective(oldExtractor)).v === "Healthcare", "The ordinary continuation reopens it and accepts the paragraph-described service");
+const settledRows = (await allRows(oldExtractor)).length;
+await processSfpFreeClassificationTick(undefined, { bridgeDeps: tickDeps });
+check((await allRows(oldExtractor)).length === settledRows, "Once reconsidered under the current rules it is not reopened again");
 
 // Immutability and the schema contract.
 await assert.rejects(pool.query("UPDATE sfp_classification_evidence SET admission_tier=NULL WHERE business_id=$1", [webOnly]), /immutable|cannot|not allowed|insert-only/i);

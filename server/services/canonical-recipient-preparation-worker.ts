@@ -9,6 +9,8 @@ import { runCanonicalTransaction,boundCanonicalWriteTransaction } from "./canoni
 import {assertCanonicalPreparationLease,checkpointCanonicalPreparationLease} from "./canonical-preparation-lease";
 
 const KEY="canonical_recipient_preparation_cursor";
+/** Priority-lane 25-row pages per tick (a single page per tick took 2+ days per full cycle). */
+const MAX_PRIORITY_PAGES_PER_TICK=4;
 const rows=(result:any):any[]=>result?.rows ?? result ?? [];
 type Cursor={afterContactId:number;cycles:number;scanned:number;prepared:number;held:number;
   reasons:Record<string,number>;leaseToken:string|null;leaseUntil:string|null;lastCycleAt:string|null;
@@ -50,6 +52,7 @@ export async function processCanonicalRecipientPreparationTick(
   if (!claimed) return {ran:false,reason:"current_preparation_pass_owned"};
   const state=claimed;
   state.priority ??= {afterContactId:0,cycles:0,scanned:0,prepared:0,held:0,reasons:{},lastCycleAt:null};
+  const priorityCursor=state.priority;
   const guard=async(tx:any)=>{
     await fence(tx);
     await assertCanonicalPreparationLease(tx,KEY,token);
@@ -178,17 +181,19 @@ export async function processCanonicalRecipientPreparationTick(
       populationComplete=true;
     }
     let priority={examined:0,prepared:0};
-    if (Date.now()<deadline) {
-      // Candidate retrieval only: this does not admit all stored addresses.
-      // A separate keyset revisits current bindings without waiting days for
-      // the population cursor to reach newly linked, high-ID recipients.
-      const selected=rows(await db.execute(sql`WITH priority_candidates AS (
-        SELECT c.id FROM contacts c WHERE c.id>${state.priority.afterContactId}
+    // Candidate retrieval only: this does not admit all stored addresses. A separate keyset revisits
+    // current bindings without waiting days for the population cursor to reach newly linked, high-ID
+    // recipients. Held or unchanged candidates cost little, so the lane keeps taking pages while
+    // time remains (bounded) instead of stopping after one 25-row page; a full priority cycle is then
+    // limited by preparation work, not by one fixed page per tick.
+    const PRIORITY_PAGE=25;
+    const priorityPage=async()=>rows(await db.execute(sql`WITH priority_candidates AS (
+        SELECT c.id FROM contacts c WHERE c.id>${priorityCursor.afterContactId}
           AND EXISTS(SELECT 1 FROM cr04_enrollment_intents owned WHERE owned.contact_id=c.id
             AND owned.preparation_state IN ('pending_validation','ready_held'))
         UNION
         SELECT c.id FROM contacts c ${bindingJoins}
-        WHERE c.id>${state.priority.afterContactId} AND c.record_class='production'
+        WHERE c.id>${priorityCursor.afterContactId} AND c.record_class='production'
           AND c.archived_at IS NULL AND c.do_not_contact IS NOT TRUE
           AND b.record_class='canonical' AND c.email IS NOT NULL
           AND EXISTS(SELECT 1 FROM contact_business_link_decisions independent
@@ -198,12 +203,21 @@ export async function processCanonicalRecipientPreparationTick(
           SELECT 1 FROM cr04_enrollment_intents owned WHERE owned.contact_id=c.id
             AND owned.preparation_state IN ('pending_validation','ready_held')) AS has_preparation
         FROM priority_candidates c
-        ORDER BY c.id LIMIT 25`));
-      priority=await processPage(selected,state.priority);
-      if (priority.examined===selected.length && selected.length<25) {
-        state.priority.afterContactId=0;state.priority.cycles++;
-        state.priority.lastCycleAt=new Date().toISOString();
+        ORDER BY c.id LIMIT ${PRIORITY_PAGE}`));
+    let priorityPages=0;
+    // The priority lane takes at most this share of the tick, so population coverage keeps moving.
+    const priorityDeadline=Math.min(deadline,Date.now()+50_000);
+    while (Date.now()<priorityDeadline && priorityPages<MAX_PRIORITY_PAGES_PER_TICK) {
+      const selected=await priorityPage();
+      const result=await processPage(selected,priorityCursor,priorityDeadline);
+      priorityPages++;
+      priority={examined:priority.examined+result.examined,prepared:priority.prepared+result.prepared};
+      if (result.examined===selected.length && selected.length<PRIORITY_PAGE) {
+        priorityCursor.afterContactId=0;priorityCursor.cycles++;
+        priorityCursor.lastCycleAt=new Date().toISOString();
+        break;
       }
+      if (result.examined!==selected.length) break; // deadline reached inside the page
     }
     // Spend the remaining local budget on more keyset pages, not a ten-minute
     // idle wait after every 250 unbound records. Priority always runs before
@@ -221,7 +235,7 @@ export async function processCanonicalRecipientPreparationTick(
         }
       }
     }
-    return {ran:true,...population,populationPages,cycles:state.cycles,priority};
+    return {ran:true,...population,populationPages,cycles:state.cycles,priority:{...priority,pages:priorityPages}};
   } catch (error) {
     failed=true;
     throw error;

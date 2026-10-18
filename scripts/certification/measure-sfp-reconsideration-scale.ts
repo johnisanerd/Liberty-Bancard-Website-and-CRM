@@ -19,7 +19,7 @@ const { pool } = await import("../../server/db");
 const { CLASSIFIER_VERSION, SFP_TARGET_VERTICALS_V2 } = await import("../../server/services/cro03/sfp-vertical-classifier");
 const { SFP_VERTICAL_ACCEPTANCE_POLICY_VERSION } = await import("../../server/services/cro03/sfp-vertical-acceptance");
 const { sfpReconsiderationDueSql, SFP_WEBSITE_RECHECK_DAYS } = await import("../../server/services/cro03/sfp-reconsideration");
-const { sfpInputFingerprintSql, sfpRetainedListingCategoryHashesSql } = await import("../../shared/sfp-input-fingerprint");
+const { sfpInputFingerprintSql, sfpRetainedListingCategoryHashesSql, sfpWebsiteSourceMarkerSql } = await import("../../shared/sfp-input-fingerprint");
 const discovery = await import("../../server/services/cro03/sfp-reconsideration-discovery");
 
 const BUSINESSES = 93_140;
@@ -131,23 +131,7 @@ const oldRecheck = `SELECT e.business_id FROM ${latestCompleted} e JOIN business
         AND i.completed_at>NOW()-make_interval(days => ${SFP_WEBSITE_RECHECK_DAYS}))
   ORDER BY e.business_id LIMIT ${LIMIT}`;
 
-const escalationPending = `SELECT DISTINCT ON (e.business_id) e.business_id
-  FROM sfp_classification_evidence e JOIN businesses eb ON eb.id=e.business_id
- WHERE e.policy_version=${POLICY} AND e.taxonomy_version=2 AND e.classifier_version=${CLASSIFIER_VERSION}
-   AND (e.terminal_state='provisional' OR e.reason_codes @> '["PRIOR_WEBSITE_ACCEPTANCE_SUPERSEDED"]'::jsonb)
-   AND e.outcome='review_required'
-   AND (NULLIF(btrim(eb.website_domain),'') IS NOT NULL OR NULLIF(btrim(eb.industry_primary),'') IS NOT NULL
-        OR NULLIF(btrim(eb.industry_secondary),'') IS NOT NULL OR ${sfpRetainedListingCategoryHashesSql("eb")} <> ''
-        OR (NULLIF(btrim(eb.vertical),'') IS NOT NULL AND lower(btrim(eb.vertical)) NOT IN ('other','unknown','n/a','none','uncategorized')))
-   AND (e.reason_codes @> '["FREE_ONLY_NO_ESCALATION"]'::jsonb OR e.reason_codes @> '["OPENAI_UNAVAILABLE"]'::jsonb
-        OR e.reason_codes @> '["OPENAI_ESCALATION_NOT_CONFIGURED"]'::jsonb)
-   AND NOT EXISTS (SELECT 1 FROM sfp_classification_evidence done
-     WHERE done.business_id=e.business_id AND done.policy_version=e.policy_version AND done.taxonomy_version=e.taxonomy_version
-       AND done.classifier_version=e.classifier_version AND done.terminal_state='completed'
-       AND NOT (done.reason_codes @> '["FREE_ONLY_NO_ESCALATION"]'::jsonb OR done.reason_codes @> '["OPENAI_UNAVAILABLE"]'::jsonb
-                OR done.reason_codes @> '["OPENAI_ESCALATION_NOT_CONFIGURED"]'::jsonb)
-       AND NOT ${sfpReconsiderationDueSql("done", "eb", versions)})
- ORDER BY e.business_id,e.created_at DESC,e.evidence_hash ASC LIMIT 200`;
+const escalationPending = (await import("../../server/services/cro03/sfp-free-classification-continuation")).pendingEscalationSql(versions, 200);
 
 async function repairedMeasure(label: string) {
   for (const [name, q] of Object.entries(discovery.reconsiderationExplainQueries({
@@ -189,7 +173,8 @@ console.log(`[scale] pass over ${BUSINESSES} businesses needs >= ${windowsNeeded
 // The evidence table is insert-only; the disposable harness disables its immutability trigger once.
 await pool.query("ALTER TABLE sfp_classification_evidence DISABLE TRIGGER USER");
 await pool.query(`UPDATE sfp_classification_evidence e SET input_fingerprint=${sfpInputFingerprintSql("b")},
-  acceptance_policy_version=${SFP_VERTICAL_ACCEPTANCE_POLICY_VERSION}
+  acceptance_policy_version=${SFP_VERTICAL_ACCEPTANCE_POLICY_VERSION},
+  reason_codes=e.reason_codes || jsonb_build_array(${sfpWebsiteSourceMarkerSql("b")})
   FROM businesses b WHERE b.id=e.business_id`);
 await pool.query("ALTER TABLE sfp_classification_evidence ENABLE TRIGGER USER");
 await pool.query("ANALYZE sfp_classification_evidence");

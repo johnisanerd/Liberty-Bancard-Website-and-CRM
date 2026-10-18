@@ -21,12 +21,88 @@ export interface WebsiteClassificationEvidence {
   titleText?: string;
   metaDescription?: string;
   headings?: string[];
+  /**
+   * Bounded main-content service paragraphs (page body outside navigation, header, footer, forms and
+   * cookie/legal boilerplate). Optional so older stored evidence stays valid.
+   */
+  serviceDescriptions?: string[];
+  /** Where redirects from sourceUrl ended; informational provenance, not part of the content hash. */
+  finalUrl?: string;
   capturedAt: string;
   contentHash: string;
 }
 
 type ResolveImpl = (hostname: string) => Promise<string | string[]>;
 
+export { SFP_WEBSITE_EXTRACTOR_VERSION as WEBSITE_EXTRACTOR_VERSION } from "../../../shared/sfp-input-fingerprint";
+const MAX_REDIRECTS = 5;
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+type HopCheck = { url: URL } | { error: string };
+
+function checkHopUrl(parsed: URL): string | null {
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "unsupported_protocol";
+  if (parsed.username || parsed.password) return "credentials_not_allowed";
+  if (parsed.port && parsed.port !== "80" && parsed.port !== "443") return "blocked_port";
+  return null;
+}
+
+async function checkHopTarget(parsed: URL, resolveImpl: ResolveImpl): Promise<string | null> {
+  try {
+    const resolved = await resolveImpl(parsed.hostname);
+    const addresses = Array.isArray(resolved) ? resolved : [resolved];
+    if (!addresses.length || addresses.some(isBlockedAddress)) return "blocked_private_target";
+  } catch {
+    return "dns_resolution_failed";
+  }
+  return null;
+}
+
+async function readBoundedBody(response: Response, maxBodyBytes: number, controller: AbortController): Promise<string> {
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    if (maxBodyBytes === 0) {
+      await reader.cancel().catch(() => undefined);
+      controller.abort();
+    }
+    while (totalBytes < maxBodyBytes) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const remaining = maxBodyBytes - totalBytes;
+      const chunk = value.subarray(0, remaining);
+      if (chunk.length) {
+        chunks.push(chunk);
+        totalBytes += chunk.length;
+      }
+      if (value.length >= remaining || totalBytes >= maxBodyBytes) {
+        await reader.cancel().catch(() => undefined);
+        controller.abort();
+        break;
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const body = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return new TextDecoder().decode(body);
+}
+
+/**
+ * Fetch one page and reduce it to the retained classification evidence.
+ *
+ * An error result means "no usable website evidence" and is never a decision about the business:
+ * redirects are followed (bounded, every hop validated as a public target), and a non-2xx status, a
+ * redirect that cannot be followed, a loop, an unsupported content type, an empty body or a bot
+ * challenge page are all errors rather than empty or misleading evidence.
+ */
 export async function extractWebsiteClassificationEvidence(
   url: string,
   opts?: {
@@ -42,40 +118,17 @@ export async function extractWebsiteClassificationEvidence(
   } catch {
     return { error: "invalid_url" };
   }
-  if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
-    return { error: "unsupported_protocol" };
-  }
-  if (parsedUrl.username || parsedUrl.password) {
-    return { error: "credentials_not_allowed" };
-  }
-  if (parsedUrl.port && parsedUrl.port !== "80" && parsedUrl.port !== "443") {
-    return { error: "blocked_port" };
-  }
-
-  try {
-    const resolved = await (opts?.resolveImpl ?? resolveHostname)(parsedUrl.hostname);
-    const addresses = Array.isArray(resolved) ? resolved : [resolved];
-    if (!addresses.length || addresses.some(isBlockedAddress)) {
-      return { error: "blocked_private_target" };
-    }
-  } catch {
-    return { error: "dns_resolution_failed" };
-  }
+  const resolveImpl = opts?.resolveImpl ?? resolveHostname;
+  const firstProblem = checkHopUrl(parsedUrl) ?? await checkHopTarget(parsedUrl, resolveImpl);
+  if (firstProblem) return { error: firstProblem };
 
   const maxBodyBytes = Math.max(0, Math.floor(opts?.maxBodyBytes ?? 500_000));
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), Math.max(1, opts?.timeoutMs ?? 8_000));
-  // The pre-check above proves the hostname resolved to a public address at
-  // the time of the check, but plain `fetch` performs its OWN independent
-  // DNS resolution when it actually opens the connection — a second lookup
-  // a moment later can legitimately return a different address (DNS
-  // rebinding), silently defeating the pre-check (TOCTOU). When no fake
-  // `fetchImpl` is injected (i.e. this is a real network call, not a test),
-  // pin the actual TCP connection to a `lookup` that re-validates on every
-  // real connection attempt rather than trusting a separate earlier check —
-  // there is exactly one DNS resolution and it is the one used to connect,
-  // so there is no window in which the validated address and the connected
-  // address can differ.
+  // The pre-check proves the hostname resolved to a public address at the time of the check, but
+  // plain `fetch` performs its OWN DNS resolution when it opens the connection (DNS rebinding /
+  // TOCTOU). Without an injected fake `fetchImpl`, pin the real connection to a `lookup` that
+  // re-validates on every connection attempt, for every redirect hop alike.
   const pinnedDispatcher = opts?.fetchImpl ? null : new UndiciAgent({
     connect: {
       lookup: (hostname, lookupOpts, callback) => {
@@ -91,46 +144,40 @@ export async function extractWebsiteClassificationEvidence(
     },
   });
   let html = "";
+  let finalUrl = parsedUrl;
   try {
     const doFetch = opts?.fetchImpl ?? ((input: any, init: any) => undiciFetch(input, { ...init, dispatcher: pinnedDispatcher! }) as unknown as Promise<Response>);
-    const response = await doFetch(parsedUrl.toString(), {
-      redirect: "manual",
-      signal: controller.signal,
-    });
-    if (response.body) {
-      const reader = response.body.getReader();
-      const chunks: Uint8Array[] = [];
-      let totalBytes = 0;
-      try {
-        if (maxBodyBytes === 0) {
-          await reader.cancel().catch(() => undefined);
-          controller.abort();
-        }
-        while (totalBytes < maxBodyBytes) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          const remaining = maxBodyBytes - totalBytes;
-          const chunk = value.subarray(0, remaining);
-          if (chunk.length) {
-            chunks.push(chunk);
-            totalBytes += chunk.length;
-          }
-          if (value.length >= remaining || totalBytes >= maxBodyBytes) {
-            await reader.cancel().catch(() => undefined);
-            controller.abort();
-            break;
-          }
-        }
-      } finally {
-        reader.releaseLock();
+    const visited = new Set<string>([parsedUrl.toString()]);
+    let current = parsedUrl;
+    for (let hop = 0; ; hop++) {
+      const response = await doFetch(current.toString(), { redirect: "manual", signal: controller.signal });
+      if (REDIRECT_STATUSES.has(response.status)) {
+        await response.body?.cancel().catch(() => undefined);
+        const location = response.headers.get("location");
+        if (!location) return { error: "redirect_failed" };
+        if (hop >= MAX_REDIRECTS) return { error: "too_many_redirects" };
+        let next: URL;
+        try { next = new URL(location, current); } catch { return { error: "redirect_failed" }; }
+        const problem = checkHopUrl(next) ?? await checkHopTarget(next, resolveImpl);
+        if (problem) return { error: `redirect_${problem}` };
+        const key = next.toString();
+        if (visited.has(key)) return { error: "redirect_loop" };
+        visited.add(key);
+        current = next;
+        continue;
       }
-      const body = new Uint8Array(totalBytes);
-      let offset = 0;
-      for (const chunk of chunks) {
-        body.set(chunk, offset);
-        offset += chunk.length;
+      if (response.status < 200 || response.status > 299) {
+        await response.body?.cancel().catch(() => undefined);
+        return { error: `http_${response.status}` };
       }
-      html = new TextDecoder().decode(body);
+      const contentType = response.headers.get("content-type");
+      if (contentType && !/html|xml|text\/plain/i.test(contentType)) {
+        await response.body?.cancel().catch(() => undefined);
+        return { error: "unsupported_content_type" };
+      }
+      html = await readBoundedBody(response, maxBodyBytes, controller);
+      finalUrl = current;
+      break;
     }
   } catch {
     return { error: controller.signal.aborted ? "request_timeout" : "fetch_failed" };
@@ -138,6 +185,9 @@ export async function extractWebsiteClassificationEvidence(
     clearTimeout(timeout);
     if (pinnedDispatcher) await pinnedDispatcher.close().catch(() => undefined);
   }
+
+  if (!html.trim()) return { error: "empty_response" };
+  if (isChallengePage(html)) return { error: "challenge_page" };
 
   const jsonLdTypes = extractJsonLdTypes(html);
   const titleTokens = extractTitleTokens(html);
@@ -158,9 +208,13 @@ export async function extractWebsiteClassificationEvidence(
   const titleText = extractTitleText(html);
   const metaDescription = extractMetaDescription(html);
   const headings = extractHeadings(html);
-  const hashInput = { jsonLdTypes, titleTokens, metaTokens, serviceTokens, categoryTokens, pageType, titleText, metaDescription, headings };
+  const serviceDescriptions = extractServiceDescriptions(html);
+  const hashInput = { jsonLdTypes, titleTokens, metaTokens, serviceTokens, categoryTokens, pageType, titleText, metaDescription, headings, serviceDescriptions };
   return {
+    // sourceUrl stays the business's own domain (the binding the decision's currency is checked
+    // against); finalUrl records where the redirects ended.
     sourceUrl: parsedUrl.toString(),
+    finalUrl: finalUrl.toString(),
     pageType,
     jsonLdTypes,
     titleTokens,
@@ -170,10 +224,12 @@ export async function extractWebsiteClassificationEvidence(
     titleText,
     metaDescription,
     headings,
+    serviceDescriptions,
     capturedAt: new Date().toISOString(),
     contentHash: contentHashOf(hashInput),
   };
 }
+
 
 export function contentHashOf(
   evidence: Omit<WebsiteClassificationEvidence, "contentHash" | "capturedAt" | "sourceUrl">,
@@ -192,6 +248,9 @@ export function contentHashOf(
   if (evidence.titleText) canonical.titleText = evidence.titleText;
   if (evidence.metaDescription) canonical.metaDescription = evidence.metaDescription;
   if (evidence.headings && evidence.headings.length > 0) canonical.headings = [...evidence.headings].sort();
+  if (evidence.serviceDescriptions && evidence.serviceDescriptions.length > 0) {
+    canonical.serviceDescriptions = [...evidence.serviceDescriptions].sort();
+  }
   return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
 }
 
@@ -315,6 +374,41 @@ function extractHeadings(html: string): string[] {
     if (text && !headings.includes(text)) headings.push(text);
   }
   return headings;
+}
+
+const SERVICE_PARAGRAPH_MIN_WORDS = 5;
+const SERVICE_PARAGRAPH_MAX = 300;
+const SERVICE_PARAGRAPHS_MAX = 8;
+const BOILERPLATE_PARAGRAPH = /cookie|privacy policy|terms (of|and) (use|service)|all rights reserved|copyright|\u00a9|javascript is (disabled|required)|subscribe to our newsletter/i;
+
+/** Main-content paragraphs and list items that describe what the business does, bounded and ordered as on the page. */
+function extractServiceDescriptions(html: string): string[] {
+  let body = html
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<(script|style|noscript|svg|nav|header|footer|aside|form|select|template)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, " ");
+  const scoped = body.match(/<(main|article)\b[^>]*>([\s\S]*?)<\/\1\s*>/i);
+  if (scoped) body = scoped[2];
+  const found: string[] = [];
+  const regex = /<(p|li)\b[^>]*>([\s\S]*?)<\/\1\s*>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(body)) && found.length < SERVICE_PARAGRAPHS_MAX) {
+    const text = collapseText(match[2], SERVICE_PARAGRAPH_MAX);
+    if (text.split(" ").length < SERVICE_PARAGRAPH_MIN_WORDS) continue;
+    if (BOILERPLATE_PARAGRAPH.test(text) || found.includes(text)) continue;
+    found.push(text);
+  }
+  return found;
+}
+
+const CHALLENGE_TITLE = /just a moment|attention required|access denied|are you (a )?(human|robot)|verify you are (a )?human|checking your browser|security check|captcha|request blocked|service unavailable|temporarily unavailable|bot verification/i;
+const CHALLENGE_MARKUP = /cf-browser-verification|cf-challenge|challenge-platform|g-recaptcha|h-captcha|px-captcha|_incapsula_resource|sucuri\.net\/privacy/i;
+
+/** A 2xx page that is a bot challenge or block page is no evidence about the business. */
+function isChallengePage(html: string): boolean {
+  const title = collapseText(html.match(/<title\b[^>]*>([\s\S]*?)<\/title\s*>/i)?.[1] ?? "", TITLE_TEXT_MAX);
+  if (title && CHALLENGE_TITLE.test(title)) return true;
+  const visible = collapseText(html, 100_000);
+  return CHALLENGE_MARKUP.test(html) && visible.length < 600;
 }
 
 function extractMetaText(html: string): string {

@@ -531,15 +531,28 @@ export async function processZeroBounceRun(runId: string, injectedDeps?: ZbWorke
               RETURNING email_mutation_generation`,
               [contactId, hashEmailToken(email)],
             )).rows[0].email_mutation_generation;
-            await db.transaction((tx) => createValidationIntent(tx, {
+            const created = await db.transaction((tx) => createValidationIntent(tx, {
               contactId, email, generation, purpose: "marketing_outreach",
             }));
+            if (!created) {
+              // The canonical selection does not currently choose this contact's email for validation
+              // (or the email is unusable). Validation spends nothing here and the selection rule is not
+              // bypassed; the attempt is recorded as an explicit skip instead of dereferencing an
+              // intent that was never created.
+              await pool.query(
+                `UPDATE zerobounce_attempts SET outcome = 'skipped', retryable = FALSE,
+                    error_code = 'canonical_validation_selection_required', updated_at = NOW() WHERE id = $1`,
+                [attemptId],
+              );
+              return "processed";
+            }
             const intent = await pool.query(
               `SELECT id FROM validation_intents WHERE contact_id = $1
                  AND normalized_email_token_hash = $2 AND subject_generation = $3
                  AND purpose = 'marketing_outreach'`,
               [contactId, hashEmailToken(email), generation],
             );
+            if (!intent.rows[0]) throw new Error("validation_intent_missing_after_create");
             const outcome = await processValidationIntent(intent.rows[0].id, { verifyEmail: deps.verifyEmail });
             if (outcome !== "completed") {
               await pool.query(

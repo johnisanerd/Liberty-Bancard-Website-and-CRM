@@ -74,6 +74,7 @@ async function main(): Promise<void> {
       { name: "reconsideration-scale", script: "scripts/certification/measure-sfp-reconsideration-scale.ts", database: true },
       { name: "post-enrichment-intent-recovery", script: "scripts/test-post-enrichment-intent-recovery.ts", database: true, integrationOptIn: true },
       { name: "vertical-acceptance-policy", script: "scripts/certification/test-vertical-acceptance-policy.ts", database: true },
+      { name: "zerobounce-worker-selection-required", script: "scripts/certification/test-zerobounce-worker-selection-required.ts", database: true },
       { name: "canonical-vertical-storage", script: "scripts/certification/test-canonical-vertical-storage.ts", database: true },
       { name: "preflight-build", script: "scripts/test-sfp2060-preflight-build.ts", database: true },
       { name: "publish-handoff", script: "scripts/test-sfp-publish-handoff-disposable.ts", database: true },

@@ -219,6 +219,7 @@ function statementPhraseContexts(
 }
 
 export interface RetainedWebsiteStatement { field: string; text: string }
+const SERVICE_DESCRIPTION_FIELD = "website.service_description";
 
 /** The retained, human-readable website description fields the policy and the AI both read. */
 export function retainedWebsiteStatements(evidence: WebsiteClassificationEvidence | null): RetainedWebsiteStatement[] {
@@ -227,6 +228,7 @@ export function retainedWebsiteStatements(evidence: WebsiteClassificationEvidenc
   if (evidence.titleText) statements.push({ field: "website.title", text: evidence.titleText });
   if (evidence.metaDescription) statements.push({ field: "website.meta_description", text: evidence.metaDescription });
   for (const heading of evidence.headings ?? []) statements.push({ field: "website.heading", text: heading });
+  for (const paragraph of evidence.serviceDescriptions ?? []) statements.push({ field: SERVICE_DESCRIPTION_FIELD, text: paragraph });
   return statements;
 }
 
@@ -242,17 +244,26 @@ export function decideWebsiteVertical(
   if (!evidence) return { kind: "none" };
   const facts: SfpAcceptanceFact[] = [];
   const targets = new Set(targetIds);
-  for (const statement of retainedWebsiteStatements(evidence)) {
-    for (const [verticalId, entry] of statementPhraseContexts(statement.text, targets)) {
-      if (entry.supports.length > 0) facts.push({ source: "website", field: statement.field, text: statement.text, verticalId });
+  const collect = (statements: RetainedWebsiteStatement[]) => {
+    for (const statement of statements) {
+      for (const [verticalId, entry] of statementPhraseContexts(statement.text, targets)) {
+        if (entry.supports.length > 0) facts.push({ source: "website", field: statement.field, text: statement.text, verticalId });
+      }
     }
-  }
+  };
+  const statements = retainedWebsiteStatements(evidence);
+  // Title, meta description and headings are the page's own summary of itself. Body paragraphs are
+  // read only when that summary names no service: they make a business whose description lives in the
+  // page body visible, but a stray mention in body copy never creates a conflict with, or overrides,
+  // what the page's summary says.
+  collect(statements.filter((statement) => statement.field !== SERVICE_DESCRIPTION_FIELD));
   for (const type of evidence.jsonLdTypes) {
     const verticalId = JSON_LD_TYPE_VERTICAL[normalizedType(type)];
     if (verticalId && targets.has(verticalId)) {
       facts.push({ source: "website", field: "website.json_ld_type", text: type, verticalId });
     }
   }
+  if (facts.length === 0) collect(statements.filter((statement) => statement.field === SERVICE_DESCRIPTION_FIELD));
   const verticalIds = [...new Set(facts.map((fact) => fact.verticalId))];
   if (verticalIds.length === 0) return { kind: "none" };
   if (verticalIds.length > 1) return { kind: "conflict", verticalIds, facts };
