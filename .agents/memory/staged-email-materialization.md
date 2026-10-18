@@ -21,3 +21,5 @@ Staged emails are encrypted free_discovery_candidates rows that already carry bu
 - Legacy imported contacts have generation 0 and no token hash; bootstrap them under the row lock before linking.
 - Holds are durable outcome rows retried after a rule-version change or 24h. The per-business cap counts usable contacts only.
 - Evaluate per-business gates in MATERIALIZED CTEs; a per-row correlated vertical check hit the 30s statement timeout.
+- Drain bounds: the tick runs pages of 100 inside one run (5 min / 2,000 rows) instead of a fixed 25 per 30-minute tick; the old rate left ~25k staged emails waiting. Candidates that write no outcome row (skipped, failed, hold-write failed) must be excluded within the run or they starve later pages. The queue-manager tick is one serial stage list, so a longer drain lengthens the whole tick (it already ran 12-14 minutes).
+- Faster linking feeds recipient preparation, which creates pending validation intents (ZeroBounce spend); watch validation volume after a large drain.

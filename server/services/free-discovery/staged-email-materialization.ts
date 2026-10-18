@@ -111,6 +111,8 @@ export interface MaterializationScope {
   verticalScope?: "mapped" | "all";
   /** Restrict a run to specific staged candidates (targeted reconciliation). */
   candidateIds?: string[];
+  /** Candidates already handled in this run that wrote no outcome row (skipped/failed); never reselected. */
+  excludeCandidateIds?: string[];
 }
 
 /** Candidate rows that pass every database-side gate, ranked per business. */
@@ -126,6 +128,9 @@ function eligibleCandidatesSql(limit: number | null, scope: MaterializationScope
        WHERE f.field = 'email' AND f.disposition = 'staged' AND f.subject_type = 'business'
           ${scope.candidateIds?.length
             ? sql`AND f.id = ANY(ARRAY[${sql.join(scope.candidateIds.map(id => sql`${id}::uuid`), sql`, `)}])`
+            : sql``}
+          ${scope.excludeCandidateIds?.length
+            ? sql`AND f.id <> ALL(ARRAY[${sql.join(scope.excludeCandidateIds.map(id => sql`${id}::uuid`), sql`, `)}])`
             : sql``}
          AND f.business_id IS NOT NULL AND f.promoted_at IS NULL
          AND (o.candidate_id IS NULL
@@ -209,6 +214,8 @@ export interface StagedEmailMaterializationResult {
   skipped: Record<string, number>;
   failed: number;
   contactIds: number[];
+  /** Candidate pages fetched in this run (1 unless a drain bound allowed continuation). */
+  pages: number;
   /** Set (and nothing is evaluated) while the native first-party link branch is not installed. */
   nativeBlocked?: string;
 }
@@ -444,48 +451,81 @@ async function materializeCandidate(candidate: any, actorId: string): Promise<Ro
   });
 }
 
+/** Bounded continuation inside one run: keep taking pages until the queue is empty or a bound is hit. */
+export interface MaterializationDrainBounds {
+  /** Wall-clock budget; no new page starts after it elapses (a started page always finishes). */
+  timeBudgetMs: number;
+  /** Hard ceiling on candidates examined in the run. */
+  maxRows: number;
+}
+
 export async function runStagedEmailMaterialization(input: {
   limit: number;
   actorId: string;
+  drain?: MaterializationDrainBounds;
 } & MaterializationScope): Promise<StagedEmailMaterializationResult> {
   const limit = Math.max(1, Math.min(500, Math.floor(input.limit)));
+  const drain = input.drain
+    ? { timeBudgetMs: Math.max(1, Math.floor(input.drain.timeBudgetMs)), maxRows: Math.max(limit, Math.floor(input.drain.maxRows)) }
+    : null;
+  const startedAt = Date.now();
   // Publish installs tables/columns but not PL/pgSQL bodies or triggers. Until the owner-console
   // install has run, fail closed ONCE for the whole pass instead of rolling back every candidate.
   let nativeBlocked: string | undefined;
   try { await assertFirstPartyLinkDatabaseGuard(db); }
   catch (error: any) { nativeBlocked = String(error?.message ?? error).split("\n")[0].slice(0, 300); }
-  const candidates = nativeBlocked ? [] : rows(await db.execute(eligibleCandidatesSql(limit, input)));
   const result: StagedEmailMaterializationResult = {
-    examined: candidates.length, created: 0, linkedExisting: 0, alreadyLinked: 0,
-    held: {}, skipped: {}, failed: 0, contactIds: [],
+    examined: 0, created: 0, linkedExisting: 0, alreadyLinked: 0,
+    held: {}, skipped: {}, failed: 0, contactIds: [], pages: 0,
     ...(nativeBlocked ? { nativeBlocked } : {}),
   };
   if (nativeBlocked) console.warn(`[StagedEmailMaterialization] blocked: ${nativeBlocked}`);
   const bump = (bucket: Record<string, number>, key: string) => { bucket[key] = (bucket[key] ?? 0) + 1; };
+  // Held, linked and already-linked candidates write an outcome row and drop out of the next page.
+  // Skipped and failed ones do not, so they are excluded explicitly or they would starve the queue.
+  const unrecorded = new Set<string>(input.excludeCandidateIds ?? []);
 
-  for (const candidate of candidates) {
-    try {
-      const outcome = await materializeCandidate(candidate, input.actorId);
-      result.contactIds.push(outcome.contactId);
-      if (outcome.kind === "created") result.created += 1;
-      else if (outcome.kind === "linked_existing") result.linkedExisting += 1;
-      else result.alreadyLinked += 1;
-    } catch (error: any) {
-      const message = String(error?.cause?.message ?? error?.message ?? "");
-      let code: string | null = null;
-      if (error instanceof MaterializationHold) code = error.code;
-      else if (/^COMMERCIAL_FIRST_PARTY_LINK_/.test(message)) code = message.split(/[\s:]/)[0];
-      else if (message.includes("CONTACT_WRITE_AUTHORITY_FENCE_LOST")) code = "EVIDENCE_CHANGED";
-      if (code === "ALREADY_RESOLVED" || code === "EVIDENCE_CHANGED") { bump(result.skipped, code.toLowerCase()); continue; }
-      if (code) {
-        bump(result.held, code);
-        await recordOutcome(db, String(candidate.id), "held", code, null, Number(candidate.business_id))
-          .catch((e: any) => console.error("[StagedEmailMaterialization] hold write failed:", e?.message));
-        continue;
+  while (!nativeBlocked) {
+    const pageSize = drain ? Math.min(limit, drain.maxRows - result.examined) : limit;
+    if (pageSize <= 0) break;
+    const candidates = rows(await db.execute(eligibleCandidatesSql(pageSize, {
+      ...input, excludeCandidateIds: unrecorded.size ? [...unrecorded] : undefined,
+    })));
+    if (!candidates.length) break;
+    result.pages += 1;
+    result.examined += candidates.length;
+    for (const candidate of candidates) {
+      try {
+        const outcome = await materializeCandidate(candidate, input.actorId);
+        result.contactIds.push(outcome.contactId);
+        if (outcome.kind === "created") result.created += 1;
+        else if (outcome.kind === "linked_existing") result.linkedExisting += 1;
+        else result.alreadyLinked += 1;
+      } catch (error: any) {
+        const message = String(error?.cause?.message ?? error?.message ?? "");
+        let code: string | null = null;
+        if (error instanceof MaterializationHold) code = error.code;
+        else if (/^COMMERCIAL_FIRST_PARTY_LINK_/.test(message)) code = message.split(/[\s:]/)[0];
+        else if (message.includes("CONTACT_WRITE_AUTHORITY_FENCE_LOST")) code = "EVIDENCE_CHANGED";
+        if (code === "ALREADY_RESOLVED" || code === "EVIDENCE_CHANGED") {
+          bump(result.skipped, code.toLowerCase());
+          unrecorded.add(String(candidate.id));
+          continue;
+        }
+        if (code) {
+          bump(result.held, code);
+          const wrote = await recordOutcome(db, String(candidate.id), "held", code, null, Number(candidate.business_id))
+            .then(() => true)
+            .catch((e: any) => { console.error("[StagedEmailMaterialization] hold write failed:", e?.message); return false; });
+          if (!wrote) unrecorded.add(String(candidate.id));
+          continue;
+        }
+        result.failed += 1;
+        unrecorded.add(String(candidate.id));
+        console.error("[StagedEmailMaterialization] candidate failed:", message);
       }
-      result.failed += 1;
-      console.error("[StagedEmailMaterialization] candidate failed:", message);
     }
+    if (!drain || Date.now() - startedAt >= drain.timeBudgetMs || result.examined >= drain.maxRows) break;
   }
 
   await db.execute(sql`
@@ -496,7 +536,7 @@ export async function runStagedEmailMaterialization(input: {
               ruleVersion: MATERIALIZATION_RULE_VERSION,
               examined: result.examined, created: result.created, linkedExisting: result.linkedExisting,
               alreadyLinked: result.alreadyLinked, held: result.held, skipped: result.skipped,
-              failed: result.failed, nativeBlocked: result.nativeBlocked ?? null, paidProviderCalls: 0, outboundChanges: 0,
+              failed: result.failed, pages: result.pages, nativeBlocked: result.nativeBlocked ?? null, paidProviderCalls: 0, outboundChanges: 0,
             })}::jsonb, 'user', ${input.actorId})
   `).catch((error: any) => console.error("[StagedEmailMaterialization] audit write failed:", error?.message));
   return result;

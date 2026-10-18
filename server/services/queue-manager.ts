@@ -2769,8 +2769,13 @@ export class QueueManager {
             // exact business. No provider call, send or enrollment; preparation below owns
             // recipient selection and validation intent/receipt reuse.
             const {runStagedEmailMaterialization}=await import("./free-discovery/staged-email-materialization");
-            const staged=await runStagedEmailMaterialization({limit:25,actorId:"system:staged-email-materialization"});
-            if (staged.examined>0) console.log(`[StagedEmailMaterialization] ${JSON.stringify({examined:staged.examined,created:staged.created,linkedExisting:staged.linkedExisting,alreadyLinked:staged.alreadyLinked,held:staged.held,failed:staged.failed})}`);
+            const staged=await runStagedEmailMaterialization({
+              // Pages of 100 until the queue is empty, 5 minutes elapse or 2,000 candidates are examined.
+              // The old fixed 25 per 30-minute tick left ~25k staged emails waiting for weeks.
+              limit:100,actorId:"system:staged-email-materialization",
+              drain:{timeBudgetMs:5*60_000,maxRows:2000},
+            });
+            if (staged.examined>0) console.log(`[StagedEmailMaterialization] ${JSON.stringify({examined:staged.examined,pages:staged.pages,created:staged.created,linkedExisting:staged.linkedExisting,alreadyLinked:staged.alreadyLinked,held:staged.held,failed:staged.failed})}`);
           } catch(error:any) {
             console.error("[StagedEmailMaterialization] held",safeCanonicalEnrichmentFailureDiagnostics(error));
           }

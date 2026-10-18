@@ -480,6 +480,24 @@ try {
   check(!(await one(`SELECT 1 FROM sequence_enrollments WHERE contact_id=$1`, [gmailContact.id])),
     "Business with no mapped vertical program is linked but not prepared (vertical/program eligibility stays separate)");
 
+  // ── Bounded drain: pages continue inside one run, but only within the stated bounds ──
+  {
+    const fixtures: string[] = [];
+    for (let i = 0; i < 12; i++) { const b = await business(); fixtures.push(await stage(b.id, `info@${b.domain}`)); }
+    const single = await run(3);
+    check(single.examined === 3 && single.pages === 1, "Without drain bounds a run still examines one page");
+    const bounded = await run(2, { drain: { timeBudgetMs: 60_000, maxRows: 4 } });
+    check(bounded.examined === 4 && bounded.pages === 2, "A drain never examines more than its row ceiling");
+    const timed = await run(2, { drain: { timeBudgetMs: 1, maxRows: 100 } });
+    check(timed.pages === 1 && timed.examined === 2, "An exhausted time budget stops after the page in flight");
+    const rest = await run(2, { drain: { timeBudgetMs: 60_000, maxRows: 100 } });
+    check(rest.examined === 12 - 3 - 4 - 2 && rest.pages === 2, "A drain continues until the queue is empty");
+    const done = await run(2, { drain: { timeBudgetMs: 60_000, maxRows: 100 } });
+    check(done.examined === 0 && done.pages === 0, "A drained queue examines nothing");
+    const written = Number((await one(`SELECT count(*) n FROM free_discovery_materialization_outcomes WHERE candidate_id = ANY($1::uuid[])`, [fixtures])).n);
+    check(written === 12, "Every drained candidate has exactly one outcome row");
+  }
+
   const after = await one(`SELECT
     (SELECT count(*) FROM provider_operations)::int operations,
     (SELECT count(*) FROM communication_events)::int communications,
