@@ -247,6 +247,31 @@ try {
   ]) {
     check(!allowanceMod.parseUnlabeledDiscoveryGate(bad).enabled, `Closed gate: ${JSON.stringify(bad)}`);
   }
+  // The daily limits are optional; the per-request maximum and per-run limit are not.
+  {
+    const open = allowanceMod.parseUnlabeledDiscoveryGate({ enabled: true, perRunRequests: 5, maxCreditsPerRequest: 3 });
+    check(open.enabled && open.dailyRequests === null && open.dailyCredits === null && open.maxCreditsPerRequest === 3,
+      "A setting with no daily limits is enabled and records no daily ceiling");
+    for (const malformed of [{ dailyRequests: 0 }, { dailyCredits: -1 }, { dailyCredits: "100" }, { dailyCredits: 2 }]) {
+      check(!allowanceMod.parseUnlabeledDiscoveryGate({ enabled: true, perRunRequests: 5, maxCreditsPerRequest: 3, ...malformed }).enabled,
+        `A malformed daily limit never becomes 'no limit': ${JSON.stringify(malformed)}`);
+    }
+    check(!allowanceMod.parseUnlabeledDiscoveryGate({ enabled: true, maxCreditsPerRequest: 3 }).enabled &&
+      !allowanceMod.parseUnlabeledDiscoveryGate({ enabled: true, perRunRequests: 5 }).enabled,
+      "The per-run limit and the per-request maximum stay required");
+    await resetAllowance();
+    const allowance = allowanceMod.createDurableRequestAllowance(open, randomUUID());
+    let sent = 0;
+    for (let i = 0; i < 5; i++) {
+      if (!(await allowance.authorizeRequest({ endpoint: "/places" }))) break;
+      sent++;
+      await allowance.onRequestSettled({ endpoint: "/places", reportedCredits: 3 });
+    }
+    check(sent === 5 && allowance.snapshot().denial === null && !(await allowance.authorizeRequest({ endpoint: "/places" })) &&
+      allowance.snapshot().denial === "per_run_requests",
+      "Without daily limits requests are bounded only by the per-run limit, and each is still ledgered");
+    await resetAllowance();
+  }
   await setGate({ enabled: true, perRunRequests: 5, dailyRequests: 10, dailyReportedCredits: 10 });
   await assert.rejects(() => run("unlabeled-zero", { scope: "unlabeled" }), /SFP_UNLABELED_DISCOVERY_DISABLED/);
   check(true, "A setting without a hard credit cap keeps the scope closed");

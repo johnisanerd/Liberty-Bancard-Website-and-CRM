@@ -44,15 +44,16 @@ export const UNLABELED_DISCOVERY_ALLOWANCE_KEY = "serper_unlabeled_discovery";
 export interface UnlabeledDiscoveryGate {
   enabled: boolean;
   perRunRequests: number;
-  dailyRequests: number;
-  /** Hard ceiling on credits reserved or settled in the last 24 hours. */
-  dailyCredits: number;
+  /** Optional ceiling on requests in the last 24 hours; null means the operator set no daily limit. */
+  dailyRequests: number | null;
+  /** Optional ceiling on credits reserved or settled in the last 24 hours; null means no daily limit. */
+  dailyCredits: number | null;
   /** Operator-supplied worst-case credits for one request (raised by measured provider reports). */
   maxCreditsPerRequest: number;
 }
 
 const CLOSED: UnlabeledDiscoveryGate = {
-  enabled: false, perRunRequests: 0, dailyRequests: 0, dailyCredits: 0, maxCreditsPerRequest: 0,
+  enabled: false, perRunRequests: 0, dailyRequests: null, dailyCredits: null, maxCreditsPerRequest: 0,
 };
 
 const positiveInt = (v: unknown): number | null =>
@@ -64,12 +65,17 @@ export function parseUnlabeledDiscoveryGate(value: unknown): UnlabeledDiscoveryG
   const v = value as Record<string, unknown>;
   if (v.enabled !== true) return CLOSED;
   const perRunRequests = positiveInt(v.perRunRequests);
-  const dailyRequests = positiveInt(v.dailyRequests);
-  const dailyCredits = positiveInt(v.dailyCredits);
   const maxCreditsPerRequest = positiveInt(v.maxCreditsPerRequest);
-  if (!perRunRequests || !dailyRequests || !dailyCredits || !maxCreditsPerRequest) return CLOSED;
-  // A single request that cannot fit the daily cap could never be authorized; reject the setting.
-  if (maxCreditsPerRequest > dailyCredits) return CLOSED;
+  if (!perRunRequests || !maxCreditsPerRequest) return CLOSED;
+  // A daily limit is optional, but a value that is present must be valid; a malformed one never
+  // silently turns into "no limit".
+  const optionalLimit = (raw: unknown): number | null | undefined =>
+    raw === undefined || raw === null ? null : positiveInt(raw) ?? undefined;
+  const dailyRequests = optionalLimit(v.dailyRequests);
+  const dailyCredits = optionalLimit(v.dailyCredits);
+  if (dailyRequests === undefined || dailyCredits === undefined) return CLOSED;
+  // A single request that cannot fit a daily credit cap could never be authorized; reject the setting.
+  if (dailyCredits !== null && maxCreditsPerRequest > dailyCredits) return CLOSED;
   return { enabled: true, perRunRequests, dailyRequests, dailyCredits, maxCreditsPerRequest };
 }
 
@@ -179,8 +185,8 @@ export function createDurableRequestAllowance(
       return { ok: false as const, reason: "bound_exceeded" as AllowanceDenial, bound };
     }
     const usage = await readUnlabeledDiscoveryLedgerUsage(tx);
-    if (usage.requests + 1 > gate.dailyRequests) return { ok: false as const, reason: "daily_requests" as AllowanceDenial, bound };
-    if (usage.credits + bound > gate.dailyCredits) return { ok: false as const, reason: "daily_credits" as AllowanceDenial, bound };
+    if (gate.dailyRequests !== null && usage.requests + 1 > gate.dailyRequests) return { ok: false as const, reason: "daily_requests" as AllowanceDenial, bound };
+    if (gate.dailyCredits !== null && usage.credits + bound > gate.dailyCredits) return { ok: false as const, reason: "daily_credits" as AllowanceDenial, bound };
     if (opts.forReservation) {
       // One request in flight across every run: an underestimate cannot be spent concurrently.
       const inFlight = rows(await tx.execute(sql`
