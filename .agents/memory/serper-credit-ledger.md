@@ -9,3 +9,8 @@ description: Durable reservation ledger for the unlabeled Serper scope, attested
 
 **Why:** audits found a settlement-time fingerprint race, a non-hard cap (six concurrent reservations each charged 5 against a bound of 1), overstated work counts, and replay mismatches.
 **How to apply:** any new paid-request path in this scope must call authorizeRequest/onRequestSettled/onRequestNotSent; wiring a callback into the waterfall is easy to drop silently, so check the call site. Never describe the cap as a hard actual-credit cap. The existing 24h provider-operation cooldown still holds the one business stopped mid-lookup.
+
+## Owner attestation
+- The owner attested a per-request maximum of 3 Serper credits for the unlabeled scope (2026-10-18). Production had no `sfp_serper_unlabeled_discovery` setting and an empty ledger at that time, so the scope was still closed; enabling also needs perRunRequests, dailyRequests and dailyCredits (all required, and maxCreditsPerRequest must not exceed dailyCredits).
+**Why:** the user supplied the number in answer to the open request for one.
+**How to apply:** never invent the other three limits; the cert fixtures (50/500/100) are test values only. Production is read-only for the agent, so the setting needs a sanctioned write path.
