@@ -6809,6 +6809,52 @@ export function registerAdminRoutes(app: Express) {
     }
   });
 
+  // Unlabeled-discovery request allowance: the per-request credit maximum the operator attests, the
+  // per-run request limit and optional daily limits. Without a fully valid enabled value the scope
+  // stays closed. The route validates with the same parser the runtime uses, so an accepted value is
+  // exactly what the scope will enforce.
+  app.get("/api/admin/serper/unlabeled-discovery-gate", isDashboardUser, requireRole('admin'), async (_req, res) => {
+    try {
+      const { readUnlabeledDiscoveryGate, readUnlabeledDiscoveryLedgerUsage } = await import("../services/cro03/sfp-serper-allowance");
+      res.json({ gate: await readUnlabeledDiscoveryGate(), ledgerLast24h: await readUnlabeledDiscoveryLedgerUsage() });
+    } catch (err: any) {
+      serverError(res, err);
+    }
+  });
+
+  app.put("/api/admin/serper/unlabeled-discovery-gate", isDashboardUser, requireRole('admin'), async (req, res) => {
+    try {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const reason = typeof body.reason === "string" ? body.reason.trim().slice(0, 500) : "";
+      if (!reason) return res.status(400).json({ message: "reason is required" });
+      const { parseUnlabeledDiscoveryGate, UNLABELED_DISCOVERY_SETTING_KEY } = await import("../services/cro03/sfp-serper-allowance");
+      let value: Record<string, unknown>;
+      if (body.enabled === false) {
+        value = { enabled: false };
+      } else {
+        value = { enabled: true, perRunRequests: body.perRunRequests, maxCreditsPerRequest: body.maxCreditsPerRequest };
+        if (body.dailyRequests !== undefined && body.dailyRequests !== null) value.dailyRequests = body.dailyRequests;
+        if (body.dailyCredits !== undefined && body.dailyCredits !== null) value.dailyCredits = body.dailyCredits;
+        if (!parseUnlabeledDiscoveryGate(value).enabled) {
+          return res.status(400).json({
+            message: "perRunRequests and maxCreditsPerRequest must be positive integers; a daily limit, when given, must be a positive integer and dailyCredits must be at least maxCreditsPerRequest",
+          });
+        }
+      }
+      const before = ((await db.execute(sql`SELECT value FROM system_settings WHERE key=${UNLABELED_DISCOVERY_SETTING_KEY}`)) as any).rows?.[0]?.value ?? null;
+      await db.execute(sql`INSERT INTO system_settings (key,value,updated_at) VALUES (${UNLABELED_DISCOVERY_SETTING_KEY},${JSON.stringify(value)}::jsonb,NOW())
+        ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()`);
+      await storage.createAuditLog({
+        action: "serper_unlabeled_discovery_gate_updated", entityType: "system_setting",
+        userId: (req.user as any)?.id ?? null,
+        details: { before, after: value, reason },
+      });
+      res.json({ gate: parseUnlabeledDiscoveryGate(value), stored: value });
+    } catch (err: any) {
+      serverError(res, err);
+    }
+  });
+
   app.post("/api/admin/serper/recovery", isDashboardUser, requireRole('admin'), async (req, res) => {
     try {
       const reason = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
