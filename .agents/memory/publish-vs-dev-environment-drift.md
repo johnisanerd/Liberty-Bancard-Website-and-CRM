@@ -23,3 +23,7 @@ Unlike the database, `REDIS_URL` may point to the *same* Redis instance for both
 **Why:** confirmed directly — a production-side worker-fleet identity check failed only while dev's workflow was running, and passed immediately once dev was stopped, with no other change.
 
 **How to apply:** if a production check that inspects "live worker" state via Redis fails in a way that doesn't match the actual deployed release, suspect keyspace collision with dev before assuming a deploy/config bug. The durable fix is to namespace Redis/BullMQ keys per environment (e.g. by REPL_ID or an explicit deployment identity), not to manually stop one environment during checks.
+
+## Code can deploy without its schema change
+A Publish can start the new build while production still lacks the new migration's columns (observed with the vertical-acceptance migration: new build running, new columns absent, first classification tick failed with undefined-column errors). Production startup skips migrations, so nothing repairs it automatically.
+**How to apply:** after any Publish that carries a migration, read production `information_schema.columns` for the new columns before judging progress or claiming acceptance; if absent, the user must re-run or inspect the Publish database step.
