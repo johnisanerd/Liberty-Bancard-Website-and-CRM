@@ -221,6 +221,35 @@ const queryMiamiDental: CandidateQuery = {
     `score=${s.score.toFixed(3)} class=${s.classification}`);
 }
 
+// Name tokens (rule 4): spelling variants of the SAME name must agree; different businesses must not.
+{
+  const q = (businessName: string): CandidateQuery => ({ businessName, zip: "33101", city: "Miami", state: "FL" });
+  const cand = (name: string): CandidateInput => ({ name, zip: "33101", city: "Miami", state: "FL", website: "example-biz.net" });
+  const same: Array<[string, string]> = [
+    ["Tyson's Plumbing, LLC", "Tysons Plumbing"],
+    ["Mccalls Plumbing LLC", "McCall's Plumbing"],
+    ["Tricoast Roofing of Broward, LLC", "Tri-Coast Roofing"],
+    ["Expert Construction &handyman Services LLC", "Expert Construction & Handyman Services"],
+    ["Cdn Roofing & Construction Corp..", "CDN Roofing and Construction"],
+  ];
+  for (const [a, b] of same) {
+    const s = scoreCandidate(q(a), cand(b));
+    check(`spelling variant accepted: ${a} ~ ${b}`, s.classification === "accepted_match", `score=${s.score.toFixed(3)} ${s.rejectionReason}`);
+  }
+  const different: Array<[string, string]> = [
+    ["Glenn Plumbing LLC", "Miami Plumbing Supply"],
+    ["Twins Plumbing LLC", "Tri-County Plumbing"],
+    ["Carias Roofing LLC", "Cruz Roofing and Sheet Metal"],
+    ["Tri County Auto Repair", "Tri-Coast Auto Glass"],
+  ];
+  for (const [a, b] of different) {
+    const s = scoreCandidate(q(a), cand(b));
+    check(`different business still rejected: ${a} !~ ${b}`, s.classification !== "accepted_match", `score=${s.score.toFixed(3)}`);
+  }
+  check("hyphen reading: Tri-County equals Tri County",
+    scoreCandidate(q("Tri County Plumbing"), cand("Tri-County Plumbing")).classification === "accepted_match");
+}
+
 // Geography conflict: name matches but address in wrong state
 {
   const queryTampa: CandidateQuery = { businessName: "Bay Plumbing", zip: "33601", city: "Tampa", state: "FL" };

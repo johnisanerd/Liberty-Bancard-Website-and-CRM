@@ -45,8 +45,9 @@ export const MAX_REQUESTS_PER_LOOKUP = 4;
  *   1 = original matcher (state compared as plain text)
  *   2 = SFP returned-geography gate
  *   3 = FL/Florida normalization, per-candidate reason codes, fallback gate
+ *   4 = name tokens: possessives/plurals fold, "&" = "and", connector words ignored, hyphen-joined reading
  */
-export const SERPER_MATCHER_RULE_VERSION = 3;
+export const SERPER_MATCHER_RULE_VERSION = 4;
 
 /** Non-identifying "reason:count" summary of rejected candidates, e.g. "name_mismatch:3,state_conflict:1". */
 export function summarizeRejectionReasons(scored: Array<{ rejectionReason: string | null; source?: string }>): string | null {
@@ -130,6 +131,33 @@ function tokenize(name: string): Set<string> {
       .replace(/[^a-z0-9\s]/g, " ")
       .split(/\s+/)
       .filter((t) => t.length > 0),
+  );
+}
+
+/** Connector words that carry no identity ("Roofing and Repair" vs "Roofing & Repair" vs "Roofing Repair"). */
+const NAME_CONNECTOR_TOKENS = new Set(["and", "of", "the"]);
+
+function nameTokens(name: string, joinHyphens: boolean): Set<string> {
+  const text = name
+    .toLowerCase()
+    .replace(/['’`]/g, "")              // "Tyson's" and "Tysons" must agree; never split into "tyson" + "s"
+    .replace(/&/g, " and ")             // "B&C", "B & C" and "&handyman"
+    .replace(joinHyphens ? /(?<=[a-z0-9])-(?=[a-z0-9])/g : /-/g, joinHyphens ? "" : " ")
+    .replace(/[^a-z0-9\s]/g, " ");
+  const out = new Set<string>();
+  for (const raw of text.split(/\s+/)) {
+    if (!raw || NAME_CONNECTOR_TOKENS.has(raw)) continue;
+    // Plural/possessive folding applied identically to both sides ("McCall's" = "Mccalls", "Service" = "Services").
+    out.add(raw.length > 3 && raw.endsWith("s") && !raw.endsWith("ss") ? raw.slice(0, -1) : raw);
+  }
+  return out;
+}
+
+/** Best Jaccard over hyphen-split and hyphen-joined readings ("Tri-Coast" = "Tricoast", "Tri-County" = "Tri County"). */
+function nameSimilarity(a: string, b: string): number {
+  return Math.max(
+    jaccardSimilarity(nameTokens(a, false), nameTokens(b, false)),
+    jaccardSimilarity(nameTokens(a, true), nameTokens(b, true)),
   );
 }
 
@@ -352,9 +380,7 @@ export function scoreCandidate(
   // Name similarity
   let nameScore = 0;
   if (!("invalid" in queryNorm) && !("invalid" in candidateNorm)) {
-    const qTokens = tokenize(queryNorm.normalized);
-    const cTokens = tokenize(candidateNorm.normalized);
-    nameScore = jaccardSimilarity(qTokens, cTokens) * 0.60;
+    nameScore = nameSimilarity(queryNorm.normalized, candidateNorm.normalized) * 0.60;
   }
 
   // Geographic corroboration
