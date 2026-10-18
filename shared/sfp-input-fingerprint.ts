@@ -3,6 +3,8 @@
  * structured vertical and both industry fields. A classification row records the fingerprint it was
  * made from, so a later change to any of them is detectable without re-running the classifier.
  *
+ * The retained listing-category evidence hashes are part of it too (see above).
+ *
  * Deliberately not part of it: the business name and geography (context and separate gates; routine
  * standardisation must not discard an accepted vertical) and the website domain (enrichment fills a
  * missing domain on already-classified businesses all the time, and that does not invalidate a
@@ -12,12 +14,28 @@
  * The TypeScript form (server/services/cro03/sfp-input-fingerprint.ts) and the SQL form below must
  * stay byte-identical: a unit separator joins the fields, NULL and empty are the same, UTF-8 text.
  */
-export const SFP_INPUT_FINGERPRINT_VERSION = "sfp-input-v1";
+export const SFP_INPUT_FINGERPRINT_VERSION = "sfp-input-v2";
 export const SFP_INPUT_FINGERPRINT_SEPARATOR = "\u001f";
 
 function aliasName(alias: string): string {
   if (!/^[a-z_][a-z0-9_]*$/.test(alias)) throw new Error("SFP_INPUT_FINGERPRINT_ALIAS_INVALID");
   return alias;
+}
+
+/**
+ * Retained, identity-matched provider listing categories that the acceptance policy reads
+ * (sfp_paid_candidate_evidence.listing_category), excluding quarantined businesses and discredited
+ * evidence. Their value hashes join the fingerprint, so a newly retained or withdrawn category makes
+ * the earlier decision stale. SQL for the comma-joined, byte-ordered hashes of a `businesses` alias.
+ */
+export function sfpRetainedListingCategoryHashesSql(alias: string): string {
+  const b = aliasName(alias);
+  return `COALESCE((SELECT string_agg(pe.normalized_value_hash, ',' ORDER BY pe.normalized_value_hash COLLATE "C")
+      FROM sfp_paid_candidate_evidence pe
+     WHERE pe.business_id=${b}.id AND pe.field='listing_category'
+       AND pe.candidate_metadata->>'acceptedIdentityMatch'='true'
+       AND NOT EXISTS (SELECT 1 FROM sfp_identity_quarantines q WHERE q.business_id=pe.business_id AND q.cleared_at IS NULL)
+       AND NOT EXISTS (SELECT 1 FROM sfp_discredited_paid_evidence d WHERE d.evidence_id=pe.id)),'')`;
 }
 
 /** SQL expression computing the same fingerprint for a `businesses` alias. */
@@ -27,7 +45,8 @@ export function sfpInputFingerprintSql(alias: string): string {
   return `encode(sha256(convert_to(` +
     `'${SFP_INPUT_FINGERPRINT_VERSION}'||${sep}||COALESCE(${b}.vertical::text,'')` +
     `||${sep}||COALESCE(${b}.industry_primary::text,'')` +
-    `||${sep}||COALESCE(${b}.industry_secondary::text,''),'UTF8')),'hex')`;
+    `||${sep}||COALESCE(${b}.industry_secondary::text,'')` +
+    `||${sep}||${sfpRetainedListingCategoryHashesSql(b)},'UTF8')),'hex')`;
 }
 
 /**

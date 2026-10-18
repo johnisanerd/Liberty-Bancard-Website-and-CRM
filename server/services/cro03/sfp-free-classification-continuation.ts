@@ -6,9 +6,12 @@
 import { sql } from "drizzle-orm";
 import { db } from "../../db";
 import { CLASSIFIER_VERSION } from "./sfp-vertical-classifier";
-import { runPreCohortClassificationBridge } from "./sfp-classification-bridge";
+import { runPreCohortClassificationBridge, type PreCohortClassificationBridgeDeps } from "./sfp-classification-bridge";
 import { getSfpProviderReadiness } from "./sfp-provider-operations";
 import { resolveGeographyForBusiness } from "./sfp-geography-resolver";
+import { SFP_VERTICAL_ACCEPTANCE_POLICY_VERSION } from "./sfp-vertical-acceptance";
+import { SFP_WEBSITE_RECHECK_DAYS, sfpReconsiderationDueSql } from "./sfp-reconsideration";
+import { sfpInputFingerprintSql, sfpRetainedListingCategoryHashesSql } from "../../../shared/sfp-input-fingerprint";
 
 const rows = (r: any): any[] => r?.rows ?? r ?? [];
 /** Per-tick follow-up work (geography re-checks) stays small. */
@@ -141,7 +144,7 @@ async function ensureAutomaticSfpPass(program: any): Promise<void> {
   `);
 }
 
-async function processPendingVerticalEscalations(program: any): Promise<{ escalated: number; costMicros: number }> {
+async function processPendingVerticalEscalations(program: any, deps: PreCohortClassificationBridgeDeps = {}): Promise<{ escalated: number; costMicros: number }> {
   if (!program || process.env.CRO03_PROVIDER_TRANSPORT_ENABLED !== "true") {
     return { escalated: 0, costMicros: 0 };
   }
@@ -153,7 +156,8 @@ async function processPendingVerticalEscalations(program: any): Promise<{ escala
       JOIN businesses eb ON eb.id=e.business_id
      WHERE e.policy_version=${Number(program.policy_version)}
        AND e.taxonomy_version=2 AND e.classifier_version=${CLASSIFIER_VERSION}
-       AND e.terminal_state='provisional' AND e.outcome='review_required'
+       AND (e.terminal_state='provisional' OR e.reason_codes @> '["PRIOR_WEBSITE_ACCEPTANCE_SUPERSEDED"]'::jsonb)
+       AND e.outcome='review_required'
        -- Paid escalation needs evidence beyond the registry name. A name-only
        -- business stays a truthful provisional non-attempt and becomes eligible
        -- automatically once it gains a website, a structured industry field or
@@ -161,6 +165,7 @@ async function processPendingVerticalEscalations(program: any): Promise<{ escala
        AND (NULLIF(btrim(eb.website_domain),'') IS NOT NULL
             OR NULLIF(btrim(eb.industry_primary),'') IS NOT NULL
             OR NULLIF(btrim(eb.industry_secondary),'') IS NOT NULL
+            OR ${sql.raw(sfpRetainedListingCategoryHashesSql("eb"))} <> ''
             OR (NULLIF(btrim(eb.vertical),'') IS NOT NULL
                 AND lower(btrim(eb.vertical)) NOT IN ('other','unknown','n/a','none','uncategorized')))
        AND (e.reason_codes @> '["FREE_ONLY_NO_ESCALATION"]'::jsonb
@@ -176,6 +181,11 @@ async function processPendingVerticalEscalations(program: any): Promise<{ escala
             AND NOT (done.reason_codes @> '["FREE_ONLY_NO_ESCALATION"]'::jsonb
                      OR done.reason_codes @> '["OPENAI_UNAVAILABLE"]'::jsonb
                      OR done.reason_codes @> '["OPENAI_ESCALATION_NOT_CONFIGURED"]'::jsonb)
+            -- A completed result that no longer stands (stale inputs, older policy, unsupported
+            -- pre-policy target) does not block escalation of the business.
+            AND NOT ${sql.raw(sfpReconsiderationDueSql("done", "eb", {
+              policyVersion: Number(program.policy_version), classifierVersion: CLASSIFIER_VERSION, taxonomyVersion: 2,
+            }))}
        )
      ORDER BY e.business_id,e.created_at DESC,e.evidence_hash ASC
      LIMIT ${ESCALATION_LIMIT}
@@ -198,8 +208,101 @@ async function processPendingVerticalEscalations(program: any): Promise<{ escala
     businessIdFilter: businessIds,
     allowGovernedSerperDomainDiscovery: false,
     freeOnly: false,
-  });
+  }, deps);
   return { escalated: result.processed, costMicros: result.costMicros };
+}
+
+/**
+ * Reconsideration of decisions that no longer stand or may have gone stale. Free: no provider call.
+ * It reads the business's own website (first-party) and the retained listing categories, then invokes
+ * the same bridge/acceptance authority as the ordinary pass.
+ *
+ *  - due: the standing decision is an unsupported pre-policy target, was made from different category
+ *    or retained listing evidence, or under an older acceptance policy. A result written after it with
+ *    current inputs and policy (a provisional non-attempt awaiting escalation) counts as handled for a
+ *    day, then it is retried.
+ *  - recheck: a website-based acceptance whose site has not been read for SFP_WEBSITE_RECHECK_DAYS is
+ *    read again; unchanged content is a cache hit, changed content is re-evaluated and, when it no
+ *    longer supports the vertical, supersedes the acceptance.
+ */
+async function processVerticalReconsideration(program: any, deps: PreCohortClassificationBridgeDeps = {}): Promise<number> {
+  if (!program) return 0;
+  const versions = {
+    policyVersion: Number(program.policy_version), classifierVersion: CLASSIFIER_VERSION, taxonomyVersion: 2 as const,
+  };
+  const latestCompleted = sql`(
+    SELECT DISTINCT ON (x.business_id) x.* FROM sfp_classification_evidence x
+     WHERE x.policy_version=${versions.policyVersion} AND x.classifier_version=${CLASSIFIER_VERSION}
+       AND x.taxonomy_version=2 AND x.terminal_state='completed'
+     ORDER BY x.business_id,x.created_at DESC,x.id DESC
+  )`;
+  const due = rows(await db.execute(sql`
+    SELECT e.business_id FROM ${latestCompleted} e
+      JOIN businesses b ON b.id=e.business_id AND b.record_class='canonical'
+     WHERE ${sql.raw(sfpReconsiderationDueSql("e", "b", versions))}
+       AND NOT EXISTS (
+         SELECT 1 FROM sfp_classification_evidence r
+          WHERE r.business_id=b.id AND r.policy_version=e.policy_version
+            AND r.classifier_version=e.classifier_version AND r.taxonomy_version=2
+            AND r.terminal_state='provisional' AND r.created_at>e.created_at
+            AND r.created_at>NOW()-INTERVAL '1 day'
+            AND r.acceptance_policy_version=${SFP_VERTICAL_ACCEPTANCE_POLICY_VERSION}
+            AND r.input_fingerprint=${sql.raw(sfpInputFingerprintSql("b"))})
+     ORDER BY e.business_id LIMIT ${RUN_LIMIT}
+  `)).map((row: any) => Number(row.business_id));
+  // Provisional results the ordinary free window left because it does not read websites: read the
+  // site now (first-party, free) so a business whose own page describes it is accepted without waiting
+  // for the paid escalation.
+  const unread = due.length >= RUN_LIMIT ? [] : rows(await db.execute(sql`
+    SELECT p.business_id FROM sfp_classification_evidence p
+      JOIN businesses b ON b.id=p.business_id AND b.record_class='canonical'
+     WHERE p.policy_version=${versions.policyVersion} AND p.classifier_version=${CLASSIFIER_VERSION}
+       AND p.taxonomy_version=2 AND p.terminal_state='provisional'
+       AND p.reason_codes @> '["FREE_ONLY_WEBSITE_EVIDENCE_NOT_FETCHED"]'::jsonb
+       AND NULLIF(btrim(b.website_domain),'') IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM sfp_classification_evidence n
+                        WHERE n.business_id=p.business_id AND n.policy_version=p.policy_version
+                          AND n.classifier_version=p.classifier_version AND n.taxonomy_version=2
+                          AND n.created_at>p.created_at)
+     ORDER BY p.business_id LIMIT ${RUN_LIMIT - due.length}
+  `)).map((row: any) => Number(row.business_id)).filter((id: number) => !due.includes(id));
+  const recheckCapacity = RUN_LIMIT - due.length - unread.length;
+  const recheck = recheckCapacity <= 0 ? [] : rows(await db.execute(sql`
+    SELECT e.business_id FROM ${latestCompleted} e
+      JOIN businesses b ON b.id=e.business_id AND b.record_class='canonical'
+     WHERE e.outcome='target' AND e.acceptance_facts->>'websiteSourceUrl' IS NOT NULL
+       AND NOT ${sql.raw(sfpReconsiderationDueSql("e", "b", versions))}
+       AND NOT EXISTS (
+         SELECT 1 FROM sfp_classification_items i
+           JOIN sfp_classification_runs r ON r.id=i.run_id
+          WHERE i.business_id=b.id AND r.policy_version=e.policy_version AND i.state='completed'
+            AND i.completed_at>NOW()-make_interval(days => ${SFP_WEBSITE_RECHECK_DAYS}))
+     ORDER BY e.business_id LIMIT ${recheckCapacity}
+  `)).map((row: any) => Number(row.business_id));
+  let processed = 0;
+  for (const [kind, ids] of [["due", due], ["unread", unread], ["recheck", recheck]] as const) {
+    if (ids.length === 0) continue;
+    const priorRuns = rows(await db.execute(sql`
+      SELECT COUNT(*)::bigint AS run_count FROM sfp_classification_runs
+       WHERE program_id=${String(program.id)}::uuid
+    `))[0];
+    const result = await runPreCohortClassificationBridge({
+      programId: String(program.id),
+      idempotencyKey: `sfp-free-continuation:${String(program.id)}:reconsider-${kind}:${Number(priorRuns?.run_count ?? 0) + 1}:${ids.join(",")}`,
+      actorId: "system:sfp-free-continuation",
+      maxBusinesses: RUN_LIMIT,
+      targetIds: (Array.isArray(program.vertical_ids) ? program.vertical_ids : []).map(String),
+      policyVersion: versions.policyVersion,
+      taxonomyVersion: 2,
+      businessIdFilter: ids,
+      freeOnly: true,
+      allowFirstPartyWebsiteRead: true,
+      reconsiderSettled: kind === "recheck",
+    }, deps);
+    if (result.costMicros !== 0) throw new Error("SFP_RECONSIDERATION_NONZERO_COST");
+    processed += result.processed;
+  }
+  return processed;
 }
 
 async function processResolvedGeographyFollowups(program: any): Promise<number> {
@@ -301,7 +404,7 @@ async function processResolvedGeographyFollowups(program: any): Promise<number> 
  * window after lease expiry; current evidence avoids reclassifying completed
  * target/non-target records. */
 export async function processSfpFreeClassificationTick(programIdFilter?: string,
-  options: { skipSideWork?: boolean } = {}): Promise<{
+  options: { skipSideWork?: boolean; bridgeDeps?: PreCohortClassificationBridgeDeps } = {}): Promise<{
   claimed: boolean; programId?: string; scanned?: number; processed?: number; target?: number; state?: string;
   escalated?: number; escalationCostMicros?: number;
 }> {
@@ -318,8 +421,9 @@ export async function processSfpFreeClassificationTick(programIdFilter?: string,
   const geographyFollowups = runSideWork
     ? await processResolvedGeographyFollowups(automaticProgram)
     : 0;
+  const reconsidered = runSideWork ? await processVerticalReconsideration(automaticProgram, options.bridgeDeps) : 0;
   const escalation = runSideWork
-    ? await processPendingVerticalEscalations(automaticProgram)
+    ? await processPendingVerticalEscalations(automaticProgram, options.bridgeDeps)
     : { escalated: 0, costMicros: 0 };
   const claimed = rows(await db.execute(sql`
     UPDATE sfp_free_classification_continuations AS c
@@ -335,7 +439,7 @@ export async function processSfpFreeClassificationTick(programIdFilter?: string,
   `))[0];
   if (!claimed) return {
     claimed: false, escalated: escalation.escalated, escalationCostMicros: escalation.costMicros,
-    processed: geographyFollowups,
+    processed: geographyFollowups + reconsidered,
   };
   const programId = String(claimed.program_id);
   const token = String(claimed.lease_token);
@@ -364,7 +468,7 @@ export async function processSfpFreeClassificationTick(programIdFilter?: string,
          WHERE program_id=${programId}::uuid AND state='running' AND lease_token=${token}::uuid AND lease_expires_at>NOW()
       `);
        return {
-         claimed: true, programId, scanned: 0, processed: geographyFollowups, target: 0, state: "completed",
+         claimed: true, programId, scanned: 0, processed: geographyFollowups + reconsidered, target: 0, state: "completed",
          escalated: escalation.escalated, escalationCostMicros: escalation.costMicros,
        };
     }
@@ -388,7 +492,7 @@ export async function processSfpFreeClassificationTick(programIdFilter?: string,
       taxonomyVersion: 2,
       businessIdFilter: windowIds,
       freeOnly: true,
-    });
+    }, options.bridgeDeps);
     if (bridgeRun.costMicros !== 0) throw new Error("SFP_FREE_CONTINUATION_NONZERO_COST");
     processed = bridgeRun.processed;
     target = bridgeRun.targetCount;
@@ -406,7 +510,7 @@ export async function processSfpFreeClassificationTick(programIdFilter?: string,
     `));
     if (updated.length === 0) throw new Error("SFP_FREE_CONTINUATION_LEASE_LOST");
     return { claimed: true,programId,scanned:windowIds.length,
-      processed:processed + geographyFollowups,target,state:"running",escalated:escalation.escalated,
+      processed:processed + geographyFollowups + reconsidered,target,state:"running",escalated:escalation.escalated,
       escalationCostMicros:escalation.costMicros };
   } catch (error: any) {
     await db.execute(sql`
