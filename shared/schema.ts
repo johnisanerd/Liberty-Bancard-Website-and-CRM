@@ -10264,7 +10264,7 @@ export const sfpClassificationEvidence = pgTable("sfp_classification_evidence", 
     sql`outcome IN ('target', 'non_target', 'review_required')`,
   ),
   check(
-    "sfp_classification_evidence_admission_tier_chk",
+    "sfp_classification_evidence_admission_tier_v2_chk",
     sql`admission_tier IS NULL OR admission_tier IN ('resolved_high', 'resolved_medium', 'policy_accepted')`,
   ),
   check(

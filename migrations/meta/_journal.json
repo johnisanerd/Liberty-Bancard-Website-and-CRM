@@ -2590,6 +2590,13 @@
       "when":1800400060000,
       "tag":"0366_sfp_vertical_policy_acceptance",
       "breakpoints":true
+    },
+    {
+      "idx":370,
+      "version":"7",
+      "when":1800400070000,
+      "tag":"0367_sfp_admission_tier_policy_accepted_constraint",
+      "breakpoints":true
     }
   ]
 }
