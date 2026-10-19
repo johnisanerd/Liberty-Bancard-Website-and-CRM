@@ -11,7 +11,7 @@ import { randomUUID } from "node:crypto";
 import { sfpLaunchRenderContext, renderSfpLaunchSubject, renderSfpLaunchBodyHtml } from "./sfp-launch-render";
 import {
   SEED_AUTHORIZATION_KEY, SEED_MAX_AUTHORIZATION_HOURS, SEED_MAX_MESSAGES, seedReceiptKey, normalizeSeedMailbox, hashSeedMailbox,
-  readSeedAuthorization, seedAuthorizationProblem, sha256, type SeedAuthorization, type SeedReceipt,
+  readSeedAuthorization, seedAuthorizationProblem, sha256, seedMessageHash, type SeedAuthorization, type SeedReceipt,
 } from "./sfp-seed-authority";
 
 export const SEED_PREVIEW_RECIPIENT = {
@@ -73,16 +73,29 @@ export class SeedTestError extends Error {
 
 const IDEMPOTENCY_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+/**
+ * The global pause is NOT lifted by a seed. This reports the ordinary decision (what every other sender sees) next to
+ * whether the narrow seed lease can be granted from the current pause state.
+ */
+async function seedPauseView() {
+  const { authorize, describeSeedLeaseEligibility } = await import("./outbound-pause-authority");
+  const ordinary = await authorize({}).catch(() => null);
+  const lease = await describeSeedLeaseEligibility();
+  return {
+    allowed: Boolean(ordinary?.allowed), reasonCode: ordinary?.reasonCode ?? "unavailable",
+    seedLease: { eligible: lease.eligible, reasonCode: lease.reasonCode },
+  };
+}
+
 export async function readSeedStatus() {
   const auth = await readSeedAuthorization();
-  const { authorize } = await import("./outbound-pause-authority");
-  const pause = await authorize({}).catch(() => null);
+  const pause = await seedPauseView();
   const receipts = (await pool.query(
     `SELECT key, value FROM system_settings WHERE key LIKE 'sfp_seed_test_receipt:%' ORDER BY updated_at DESC LIMIT 20`)).rows
     .map(r => ({ idempotencyKey: String(r.key).slice("sfp_seed_test_receipt:".length), ...(r.value as SeedReceipt) }));
   return {
     authorization: auth, blockedBecause: seedAuthorizationProblem(auth),
-    outboundPause: pause ? { allowed: pause.allowed, reasonCode: pause.reasonCode } : { allowed: false, reasonCode: "unavailable" },
+    outboundPause: pause,
     deliveryRedirectActive: Boolean(process.env.EMAIL_OVERRIDE_TO?.trim()),
     receipts,
   };
@@ -142,11 +155,10 @@ export async function previewSeedSend(input: { packageKey: string; stepOrder: nu
   const problem = seedAuthorizationProblem(auth);
   if (!auth) throw new SeedTestError("SEED_NOT_AUTHORIZED", 409);
   const message = await buildSeedMessage(input.packageKey, input.stepOrder, auth);
-  const { authorize } = await import("./outbound-pause-authority");
-  const pause = await authorize({}).catch(() => null);
+  const pause = await seedPauseView();
   return {
     mailbox: auth.mailbox, authorizationExpiresAt: auth.expiresAt, remainingMessages: Math.max(0, auth.maxMessages - auth.sentCount),
-    blockedBecause: problem, outboundPause: pause ? { allowed: pause.allowed, reasonCode: pause.reasonCode } : { allowed: false, reasonCode: "unavailable" },
+    blockedBecause: problem, outboundPause: pause,
     ...message,
     notes: ["The transport adds the compliance footer and a seed-only unsubscribe link and headers at send time.",
       "Nothing is sent by this preview."],
@@ -169,15 +181,17 @@ export async function executeSeedSend(input: { packageKey: string; stepOrder: nu
   const message = await buildSeedMessage(input.packageKey, input.stepOrder, auth);
   if (message.previewHash !== input.previewHash) throw new SeedTestError("SEED_PREVIEW_CHANGED", 409);
   if (message.unresolvedPlaceholders.length) throw new SeedTestError("SEED_UNRESOLVED_PLACEHOLDERS", 409);
-  // Cheap, receipt-free refusal while paused. The transport is still the authority and re-checks.
-  const { authorize } = await import("./outbound-pause-authority");
-  const pause = await authorize({}).catch(() => null);
-  if (!pause?.allowed) throw new SeedTestError("SEED_OUTBOUND_PAUSED", 409, `Outbound paused: ${pause?.reasonCode ?? "unavailable"}`);
+  // Cheap, receipt-free refusal when the pause state cannot back a seed lease (unreadable or mid-activation). The global
+  // pause itself stays on; the pause authority grants the per-message lease and re-checks everything at send time.
+  const { describeSeedLeaseEligibility } = await import("./outbound-pause-authority");
+  const lease = await describeSeedLeaseEligibility();
+  if (!lease.eligible) throw new SeedTestError("SEED_PAUSE_STATE_UNAVAILABLE", 409, `Seed lease unavailable: ${lease.reasonCode}`);
 
   const occurrenceId = randomUUID();
   const receipt: SeedReceipt = {
     state: "claimed", mailboxHash: auth.mailboxHash, occurrenceId, requestFingerprint, packageKey: message.packageKey,
     stepOrder: message.stepOrder, subjectHash: sha256(message.subject), bodyHash: sha256(message.html),
+    messageHash: seedMessageHash(message.subject, message.html), previewHash: message.previewHash,
     claimedAt: new Date().toISOString(), finishedAt: null, messageId: null, error: null, actorId: input.actorId,
   };
   const client = await pool.connect();

@@ -22,10 +22,15 @@ export interface SeedAuthorization {
   maxMessages: number; sentCount: number;
   unsubscribedAt: string | null; revokedAt: string | null;
 }
-export type SeedReceiptState = "claimed" | "sent" | "unsent" | "uncertain";
+/** claimed = admitted by the seed service; sending = consumed by the transport (single use); then sent | unsent | uncertain. */
+export type SeedReceiptState = "claimed" | "sending" | "sent" | "unsent" | "uncertain";
+/** A claim is a short lease. A claim that was never consumed within this window can no longer authorize a send. */
+export const SEED_CLAIM_LEASE_MS = 10 * 60_000;
 export interface SeedReceipt {
   state: SeedReceiptState; mailboxHash: string; occurrenceId: string; requestFingerprint: string;
   packageKey: string; stepOrder: number; subjectHash: string; bodyHash: string;
+  /** sha256 of the exact rendered subject and html the operator approved; the transport recomputes it. */
+  messageHash: string; previewHash: string;
   claimedAt: string; finishedAt: string | null; messageId: string | null; error: string | null; actorId: string;
 }
 
@@ -35,6 +40,7 @@ export const normalizeSeedMailbox = (raw: unknown): string | null => {
   return MAILBOX_RE.test(value) && value.length <= 254 ? value : null;
 };
 export const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
+export const seedMessageHash = (subject: string, html: string) => sha256(JSON.stringify([subject, html]));
 export const hashSeedMailbox = (mailbox: string) => sha256(`seed-mailbox:${mailbox}`);
 
 export async function readSeedAuthorization(): Promise<SeedAuthorization | null> {
@@ -59,8 +65,8 @@ export function seedAuthorizationProblem(auth: SeedAuthorization | null, now = n
  * link is a seed link (never a contact link).
  */
 export async function verifySeedTransportCapability(
-  params: { to: string; category?: string; contactId?: number; intendedRecipientContactId?: number;
-    inboundRequestId?: string; commercialPurpose?: string },
+  params: { to: string; subject: string; html: string; text?: string; category?: string; contactId?: number;
+    intendedRecipientContactId?: number; inboundRequestId?: string; commercialPurpose?: string },
   capability: { receiptKey: string; occurrenceId: string },
 ): Promise<{ ok: true; complianceLoader: CommercialComplianceLoader } | { ok: false; error: string }> {
   try {
@@ -80,6 +86,11 @@ export async function verifySeedTransportCapability(
     if (!receipt || receipt.state !== "claimed") return { ok: false, error: "SEED_RECEIPT_NOT_CLAIMED" };
     if (receipt.mailboxHash !== auth!.mailboxHash || receipt.occurrenceId !== capability.occurrenceId) {
       return { ok: false, error: "SEED_RECEIPT_MISMATCH" };
+    }
+    if (Date.now() - new Date(receipt.claimedAt).getTime() > SEED_CLAIM_LEASE_MS) return { ok: false, error: "SEED_CLAIM_EXPIRED" };
+    // The lease is for exactly the message the operator approved: same rendered subject and body, nothing appended.
+    if (params.text || receipt.messageHash !== seedMessageHash(params.subject, params.html)) {
+      return { ok: false, error: "SEED_MESSAGE_NOT_THE_APPROVED_MESSAGE" };
     }
     const { getCommercialComplianceConfig } = await import("./can-spam-footer");
     const { generateSeedUnsubscribeToken } = await import("./unsubscribe-token");
@@ -103,6 +114,17 @@ export async function verifySeedTransportCapability(
   } catch {
     return { ok: false, error: "SEED_AUTHORITY_UNAVAILABLE" };
   }
+}
+
+/**
+ * Single use: the first caller to move this exact claim to "sending" wins; every other caller is refused. After this
+ * the claim can never authorize another send, whatever happens to the network call.
+ */
+export async function consumeSeedClaim(receiptKey: string, occurrenceId: string): Promise<boolean> {
+  const result = await pool.query(
+    `UPDATE system_settings SET value=jsonb_set(value,'{state}','"sending"'), updated_at=NOW()
+      WHERE key=$1 AND value->>'state'='claimed' AND value->>'occurrenceId'=$2`, [receiptKey, occurrenceId]);
+  return (result.rowCount ?? 0) === 1;
 }
 
 /**

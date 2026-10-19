@@ -41,7 +41,8 @@ export type AuthorizationReasonCode =
   | "safe_default"
   | "db_error"
   | "timeout"
-  | "exception_registered";
+  | "exception_registered"
+  | "seed_lease";
 
 export interface AuthorizedSendDecision {
   allowed: boolean;
@@ -332,6 +333,67 @@ export async function authorize(opts: {
     stateSource: source,
     grantedAt,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Seed lease (operator seed test only)
+// ---------------------------------------------------------------------------
+// A narrow, per-message lease that lets ONE operator-approved seed message reach ONE operator-approved mailbox while
+// the global pause stays on. It changes no pause state, channel pause, sequence status or enrollment, and the exception
+// registry above stays empty. It is not reachable through authorize(): the only way to obtain it is to present a
+// claimed seed receipt that the seed service wrote under a live admin authorization, for exactly this recipient and
+// this rendered message. The authority re-verifies everything from durable state itself, consumes the claim (single
+// use), and refuses unless the pause state was read from the database and is not mid-activation.
+
+export interface SeedLeaseRequest {
+  to: string; subject: string; html: string; text?: string; category?: string; contactId?: number;
+  intendedRecipientContactId?: number; inboundRequestId?: string; commercialPurpose?: string;
+  receiptKey: string; occurrenceId: string;
+}
+
+/** Whether a seed lease could be granted right now from the pause state alone (read-only). */
+export async function describeSeedLeaseEligibility(): Promise<{ eligible: boolean; state: PauseState; reasonCode: string }> {
+  try {
+    const { state, source } = await getPauseState();
+    if (source !== "database") return { eligible: false, state, reasonCode: "pause_state_unreadable" };
+    if (state === "activating") return { eligible: false, state, reasonCode: "activating" };
+    return { eligible: true, state, reasonCode: state === "paused" ? "seed_lease_while_paused" : "allowed" };
+  } catch {
+    return { eligible: false, state: "paused", reasonCode: "db_error" };
+  }
+}
+
+export async function authorizeSeedSend(request: SeedLeaseRequest): Promise<AuthorizedSendDecision & { error?: string }> {
+  const grantedAt = new Date();
+  const deny = (reasonCode: AuthorizationReasonCode, epoch: bigint, source: StateSource, error?: string) =>
+    ({ allowed: false, epoch, reasonCode, stateSource: source, grantedAt, ...(error ? { error } : {}) });
+  let stateResult: OutboundPauseStateResult;
+  try { stateResult = await getPauseState(); }
+  catch { return deny("db_error", 0n, "safe_default"); }
+  const { state, epoch, source } = stateResult;
+  if (source !== "database") return deny("safe_default", epoch, source);
+  if (state === "activating") return deny("activating", epoch, source);
+  try {
+    const { verifySeedTransportCapability, consumeSeedClaim } = await import("./sfp-seed-authority");
+    const { receiptKey, occurrenceId, ...message } = request;
+    const verdict = await verifySeedTransportCapability(message, { receiptKey, occurrenceId });
+    if (!verdict.ok) return deny(state === "paused" ? "global_paused" : "allowed", epoch, source, verdict.error);
+    if (!(await consumeSeedClaim(receiptKey, occurrenceId))) {
+      return deny(state === "paused" ? "global_paused" : "allowed", epoch, source, "SEED_CLAIM_ALREADY_USED");
+    }
+  } catch {
+    return deny("db_error", epoch, source, "SEED_AUTHORITY_UNAVAILABLE");
+  }
+  return { allowed: true, epoch, reasonCode: state === "paused" ? "seed_lease" : "allowed", stateSource: source, grantedAt };
+}
+
+/** Final recheck before provider I/O for a seed lease: same epoch, still database-sourced, not activating. */
+export async function recheckSeedLeaseEpoch(authorizedEpoch: bigint): Promise<boolean> {
+  try {
+    invalidateCache();
+    const current = await getStateInternal();
+    return current.source === "database" && current.state !== "activating" && current.epoch === authorizedEpoch;
+  } catch { return false; }
 }
 
 /**

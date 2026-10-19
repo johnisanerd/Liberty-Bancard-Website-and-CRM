@@ -241,9 +241,17 @@ async function sendSmtpEmailCore(params: {
   // Every SMTP send must clear the canonical pause authority BEFORE any
   // network I/O. This is the final enforcement boundary.
   try {
-    const { authorize, recheckEpoch } = await import("./outbound-pause-authority");
+    const { authorize, recheckEpoch, authorizeSeedSend, recheckSeedLeaseEpoch } = await import("./outbound-pause-authority");
     const { registerInflight, deregisterInflight } = await import("./outbound-control-service");
-    const decision = await authorize({});
+    // An operator seed message asks the authority for a per-message seed lease (see outbound-pause-authority.ts). Every
+    // other caller gets the ordinary decision, which a paused system always refuses.
+    const seedDecision = params.seedTest
+      ? await authorizeSeedSend({ ...params, ...params.seedTest, receiptKey: params.seedTest.receiptKey })
+      : null;
+    const decision = seedDecision ?? await authorize({});
+    if (seedDecision && !seedDecision.allowed) {
+      return { success: false, error: seedDecision.error ?? `Outbound paused: ${seedDecision.reasonCode}`, outcome: "unsent" };
+    }
     if (!decision.allowed) {
       // C-16 (#1626): redact recipient and subject in operational logs
       console.warn(
@@ -255,9 +263,9 @@ async function sendSmtpEmailCore(params: {
     const token = crypto.randomUUID();
     await registerInflight(token, decision.epoch);
     try {
-      const epochOk = await recheckEpoch(decision.epoch);
+      const epochOk = seedDecision ? await recheckSeedLeaseEpoch(decision.epoch) : await recheckEpoch(decision.epoch);
       if (!epochOk) {
-        return { success: false, error: "Outbound paused: epoch changed before send" };
+        return { success: false, error: "Outbound paused: epoch changed before send", ...(seedDecision ? { outcome: "unsent" as const } : {}) };
       }
       return await _sendSmtpEmailInner({ ...params, html: rendered.html, text: rendered.text }, rendered.complianceConfig);
     } finally {
