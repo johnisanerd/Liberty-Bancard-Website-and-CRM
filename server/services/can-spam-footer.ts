@@ -108,7 +108,7 @@ export function injectCanSpamTextFooter(text: string, config: Extract<Commercial
   const unsubscribe = config.unsubscribeUrl
     ? `Unsubscribe: ${config.unsubscribeUrl}`
     : 'To unsubscribe, reply with "UNSUBSCRIBE" in the subject line.';
-  return `${body}\n\n${TEXT_FOOTER_START}\n${config.mailingAddress}\n${unsubscribe}\n${TEXT_FOOTER_END}`;
+  return `${body}\n\n${TEXT_FOOTER_START}\nCommercial message from Liberty Bancard\n${config.mailingAddress}\n${unsubscribe}\n${TEXT_FOOTER_END}`;
 }
 
 export async function renderEmailPartsForPurpose(params: {
@@ -172,6 +172,7 @@ export async function injectCanSpamFooter(
 
   const footer = `
 <div data-can-spam-footer="1" style="margin-top:32px;padding-top:16px;border-top:1px solid #e0e0e0;font-size:11px;color:#888;text-align:center;font-family:Arial,sans-serif;">
+  <p style="margin:4px 0;">Commercial message from Liberty Bancard</p>
   <p style="margin:4px 0;">${address}</p>
   <p style="margin:4px 0;">${unsubscribeLine}</p>
 </div>`;

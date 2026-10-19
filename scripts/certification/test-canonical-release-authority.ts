@@ -60,6 +60,9 @@ try {
   const sequenceId = Number((await pool.query(`INSERT INTO follow_up_sequences
     (name,status,trigger_type,trigger_config) VALUES($1,'paused','contact_created',$2::jsonb) RETURNING id`,
     [prefix,JSON.stringify({canonicalProgramId:programId,canonicalVerticals:["Automotive"]})])).rows[0].id);
+  await pool.query(`INSERT INTO sequence_steps (sequence_id,step_order,action_type,delay_days,delay_hours,subject,body)
+    VALUES($1,1,'email',0,0,'Fixture subject','Hello, fixture body')`,[sequenceId]);
+  await pool.query("UPDATE follow_up_sequences SET total_steps=1 WHERE id=$1",[sequenceId]);
   await pool.query("DELETE FROM system_settings WHERE key=$1",[release.CANONICAL_RELEASE_CONTROL_KEY]);
   const sequence = (await pool.query("SELECT * FROM follow_up_sequences WHERE id=$1",[sequenceId])).rows[0];
   const sequenceView = { retiredAt: sequence.retired_at, triggerConfig: sequence.trigger_config };

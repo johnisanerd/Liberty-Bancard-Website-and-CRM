@@ -4941,6 +4941,45 @@ Return maximum 5 segments, 4 recommendations, 4 outreach priorities, 3 quick win
     }
   });
 
+  // Launch content for the five v2 packages: reviewable rendered preview + source map,
+  // an apply that writes a NEW package version, and a readiness verify. Apply never
+  // activates a campaign/sequence and never sends.
+  app.get("/api/lead-ops/sfp/launch-content-v2/preview", requireRole("admin"), async (_req, res) => {
+    try {
+      const m = await import("../services/cro03/sfp-launch-content");
+      const { SFP_PACKAGE_KEYS_V2 } = await import("../services/cro03/sfp-campaign-packages");
+      res.json({
+        contentVersion: m.SFP_LAUNCH_CONTENT_VERSION,
+        dryRun: await m.populateSfpLaunchContentV2({ actorId: "preview", dryRun: true }),
+        renders: Object.fromEntries(SFP_PACKAGE_KEYS_V2.map((k) => [k, {
+          named_contact: m.renderLaunchPreview(k, "named_contact"),
+          role_mailbox: m.renderLaunchPreview(k, "role_mailbox"),
+          missing_name: m.renderLaunchPreview(k, "missing_name"),
+        }])),
+      });
+    } catch (err: any) {
+      res.status(400).json({ code: "SFP_LAUNCH_CONTENT_PREVIEW_ERROR", message: err?.message ?? "Unable to preview launch content" });
+    }
+  });
+
+  app.post("/api/lead-ops/sfp/launch-content-v2/apply", requireRole("admin"), async (req, res) => {
+    try {
+      const { populateSfpLaunchContentV2 } = await import("../services/cro03/sfp-launch-content");
+      res.json(await populateSfpLaunchContentV2({ actorId: `admin:${(req as any).user?.id ?? "system"}` }));
+    } catch (err: any) {
+      res.status(400).json({ code: "SFP_LAUNCH_CONTENT_APPLY_ERROR", message: err?.message ?? "Unable to apply launch content" });
+    }
+  });
+
+  app.get("/api/lead-ops/sfp/launch-content-v2/verify", requireRole("admin"), async (_req, res) => {
+    try {
+      const { verifySfpLaunchContentV2 } = await import("../services/cro03/sfp-launch-content");
+      res.json(await verifySfpLaunchContentV2());
+    } catch (err: any) {
+      res.status(400).json({ code: "SFP_LAUNCH_CONTENT_VERIFY_ERROR", message: err?.message ?? "Unable to verify launch content" });
+    }
+  });
+
   // The ready_held -> paused-enrollment bridge (Defect: staging intents have
   // no contact_id, but sequence_enrollments requires one). Resolves a
   // contact identity-safely and creates a PAUSED enrollment only -- never

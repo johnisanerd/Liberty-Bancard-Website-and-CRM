@@ -9,6 +9,9 @@ import { isGhlConfigured } from "./ghl";
 import { getEmailSignatureHtml, isColdOutreachSequence } from "./email-signatures";
 import type { SignatureType } from "./sender-policy";
 import { sanitizeFirstName } from "./contact-name-utils";
+import { renderTemplate, plainHtmlToEmailHtml } from "./message-render";
+import { resolvePolicy } from "./sender-policy";
+import { SFP_LAUNCH_ALLOWED_HOSTS, SFP_LAUNCH_SEQUENCE_FAMILY_PREFIX } from "./cro03/sfp-launch-content";
 import { hashEmailToken } from "./provider-readiness-control";
 import { getOrCreateSequenceAbAssignment, recordSequenceAbDelivery } from "./sequence-ab-authority";
 import { authorizeCommercialUseBatch } from "./commercial-resolution";
@@ -333,7 +336,9 @@ async function handleDeniedDispatchAuthorization(
   ));
 }
 
-export async function processSequenceEnrollments(): Promise<{ processed: number; errors: number }> {
+export async function processSequenceEnrollments(
+  opts: { canonicalReleaseOnly?: boolean } = {},
+): Promise<{ processed: number; errors: number }> {
   const { acquireJobLock, releaseJobLock, startJobLockHeartbeat, JOB_NAMES } = await import("./job-registry");
   const lease = await acquireJobLock(JOB_NAMES.SEQUENCE_WORKER);
   if (lease.status !== "acquired") return { processed: 0, errors: 0 };
@@ -395,6 +400,9 @@ export async function processSequenceEnrollments(): Promise<{ processed: number;
         if (sequence.status !== "active" && !canonicalReleaseAdmitted) {
           continue;
         }
+        // Release-only mode (legacy outreach flag off): nothing but an enrollment
+        // an admin released inside the live release may be processed.
+        if (opts.canonicalReleaseOnly && !canonicalReleaseAdmitted) continue;
         // This is both the durable-work claim boundary and a final safety net
         // before any sequence step can reach a transport. Non-promotional
         // sequences must declare their purpose explicitly in triggerConfig.
@@ -486,6 +494,21 @@ export async function processSequenceEnrollments(): Promise<{ processed: number;
         // An unavailable communication_events read is a durable deferral, never
         // an implicit "no reply" authorization.
         if (await applyReplyDecision(enrollment, sequence, currentStep) === "stopped") {
+          processed++;
+          continue;
+        }
+
+        // A sequence with no steps has no outreach to complete. Treating
+        // currentStep(0) >= 0 steps as "exhausted, no response" would record a
+        // successful no-response outcome for work that never happened.
+        if (steps.length === 0) {
+          await storage.updateSequenceEnrollment(enrollment.id, {
+            nextActionAt: new Date(Date.now() + 60 * 60 * 1000),
+            metadata: {
+              ...((enrollment.metadata as Record<string, unknown> | null) ?? {}),
+              deferral: { reason: "SEQUENCE_HAS_NO_STEPS", currentStep },
+            },
+          });
           processed++;
           continue;
         }
@@ -1215,6 +1238,25 @@ export async function processSequenceEnrollments(): Promise<{ processed: number;
           return result;
         };
 
+        // SFP launch steps use the shared deterministic renderer, the sender-policy
+        // identity (never the contact's assigned rep) and a single sign-off.
+        const sfpLaunchStep =
+          String(sequence.sequenceFamily ?? "").startsWith(SFP_LAUNCH_SEQUENCE_FAMILY_PREFIX) &&
+          (step.config as Record<string, unknown> | null)?.format === "plain_text";
+        const sfpSender = resolvePolicy("cold_outreach");
+        const sfpContext = {
+          firstName: contact?.firstName ?? null, lastName: contact?.lastName ?? null,
+          companyName: contact?.companyName ?? null, email: contact?.email ?? null,
+          agentName: sfpSender.displayName, agentEmail: sfpSender.replyTo, agentPhone: "954-266-8214",
+        };
+        const renderSfpSubject = (text: string | null | undefined) =>
+          renderTemplate(text ?? "", sfpContext, { format: "subject", required: ["companyName"] }).output;
+        const renderSfpBodyHtml = (text: string | null | undefined) =>
+          plainHtmlToEmailHtml(
+            renderTemplate(text ?? "", sfpContext, { format: "html", required: ["companyName", "agentName", "agentPhone"] }).output,
+            SFP_LAUNCH_ALLOWED_HOSTS,
+          );
+
         let stepExecuted = false;
 
         // Gate (b): Evaluate contactability before any automated send/trigger dispatch
@@ -1312,7 +1354,9 @@ export async function processSequenceEnrollments(): Promise<{ processed: number;
             }
 
             const sigType = resolveSignatureType((sequence.triggerConfig as any) || {});
-            const emailBody = interpolate(bodyToSend) + getEmailSignatureHtml(sigType);
+            const emailBody = sfpLaunchStep
+              ? renderSfpBodyHtml(bodyToSend)
+              : interpolate(bodyToSend) + getEmailSignatureHtml(sigType);
 
             // ── Per-channel pause gate (email) ────────────────────────────────
             // Checked after global pause (already verified above) and contactability.
@@ -1369,6 +1413,19 @@ export async function processSequenceEnrollments(): Promise<{ processed: number;
             const isColdEmail = isColdOutreachSequence(sequence);
             const useGmailForThisStep = !isColdEmail && (await isGmailOAuthConnected()) && !!contact?.email;
             const useSmtpForThisStep  = isColdEmail && isSmtpConfigured() && !!contact?.email;
+
+            // SFP launch sends have exactly one certified transport (SMTP, which
+            // carries the signed List-Unsubscribe headers). If it is unavailable the
+            // step is deferred; it never silently falls back to GHL.
+            if (sfpLaunchStep && !useSmtpForThisStep) {
+              await storage.createAuditLog({
+                action: "sequence_step_deferred_transport_unavailable",
+                entityType: "contact", entityId: enrollment.contactId ?? 0, actorType: "system",
+                details: { enrollmentId: enrollment.id, sequenceId: sequence.id, stepOrder: step.stepOrder, reason: "SFP_SMTP_TRANSPORT_REQUIRED", smtpConfigured: isSmtpConfigured() },
+              });
+              await storage.updateSequenceEnrollment(enrollment.id, { nextActionAt: new Date(Date.now() + 15 * 60 * 1000) });
+              processed++; stepExecuted = false; break;
+            }
 
             // Gmail unavailable for non-cold sequence → BLOCK, do not fall through to GHL
             if (!isColdEmail && !useGmailForThisStep) {
@@ -1453,7 +1510,7 @@ export async function processSequenceEnrollments(): Promise<{ processed: number;
             const testRedirectTo: string | null =
               typeof testRedirectRaw === "string" && testRedirectRaw.trim()
                 ? testRedirectRaw.trim() : null;
-            const interpolatedSubject = interpolate(subjectToSend);
+            const interpolatedSubject = sfpLaunchStep ? renderSfpSubject(subjectToSend) : interpolate(subjectToSend);
             const deliverySubject = testRedirectTo
               ? `[→ ${contact?.email ?? "no-email"} | ${sequence.name} | Step ${step.stepOrder}] ${interpolatedSubject}`
               : interpolatedSubject;
@@ -1488,25 +1545,8 @@ export async function processSequenceEnrollments(): Promise<{ processed: number;
                   const { db: rsvDb } = await import("../db");
                   const { sql: rsvSql } = await import("drizzle-orm");
                   const todayRsv = new Date().toISOString().slice(0, 10);
-                  const capRawRsv = await storage.getSystemSetting("outboundDailyEmailCap");
-                  let dailyCapRsv = typeof capRawRsv === "number" ? capRawRsv : parseInt(String(capRawRsv ?? "200"), 10) || 200;
-
-                  // Warmup mode: apply the same ramp cap at the atomic reservation level so
-                  // concurrent workers cannot race past the warmup limit.
-                  const warmupEnabledRsv = await storage.getSystemSetting("deliveryWarmupEnabled");
-                  if (warmupEnabledRsv === true || warmupEnabledRsv === "true") {
-                    const warmupStartRsv = await storage.getSystemSetting("deliveryWarmupStartDate");
-                    if (typeof warmupStartRsv === "string" && warmupStartRsv) {
-                      const daysSinceRsv = Math.max(1, Math.floor((Date.now() - new Date(warmupStartRsv).getTime()) / 86400000) + 1);
-                      let warmupCapRsv: number;
-                      if (daysSinceRsv >= 30) warmupCapRsv = 250;
-                      else if (daysSinceRsv >= 14) warmupCapRsv = 100;
-                      else if (daysSinceRsv >= 7) warmupCapRsv = 50;
-                      else warmupCapRsv = 20;
-                      // Warmup cap is a hard ceiling — never allow more than schedule allows
-                      dailyCapRsv = Math.min(dailyCapRsv, warmupCapRsv);
-                    }
-                  }
+                  const { getEffectiveColdDailyCap } = await import("./outbound-cold-cap");
+                  const dailyCapRsv = await getEffectiveColdDailyCap();
 
                   // Conditional upsert: only increment if count < effective cap (atomic guard against race overshoot)
                   const rsvResult = await rsvDb.execute(rsvSql`
@@ -1727,7 +1767,7 @@ export async function processSequenceEnrollments(): Promise<{ processed: number;
                   // replyTo ensures prospect replies land in a monitored inbox:
                   //   cold outreach → scott@libertybancard.com (not the dedicated send mailbox)
                   //   accounts      → accounts@libertybancard.com (monitored alias)
-                  const replyTo   = isColdEmail ? "scott@libertybancard.com" : "accounts@libertybancard.com";
+                  const replyTo   = isColdEmail ? resolvePolicy("cold_outreach").replyTo : "accounts@libertybancard.com";
                   if (testRedirectTo && isSmtpConfigured()) {
                     const { evaluateContactability } = await import("./contactability");
                     const directProviderDecision = await evaluateContactability({
@@ -1792,7 +1832,7 @@ export async function processSequenceEnrollments(): Promise<{ processed: number;
             const emailLog = await storage.createEmailLog({
               contactId: enrollment.contactId,
               direction: "outbound",
-              subject: interpolate(subjectToSend),
+              subject: sfpLaunchStep ? renderSfpSubject(subjectToSend) : interpolate(subjectToSend),
               body: emailBody,
               status: stepExecuted ? "sent" : "failed",
               metadata: abEnabled ? { stepId: step.id, sequenceId: sequence.id, abVariant: chosenVariant } : undefined,

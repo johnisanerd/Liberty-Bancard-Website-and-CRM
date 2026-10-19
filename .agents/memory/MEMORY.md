@@ -165,4 +165,5 @@
 - [Legacy enrollment containment](legacy-enrollment-containment.md) — post-enrichment worker and ZB auto-run contained in code regardless of pause; how to prove and release.
 - [Accepted-vertical policy](accepted-vertical-policy.md) — policy_accepted tier from one clear source; AI result separate; fingerprint supersession; known baseline-failing certs.
 - [Unified enrichment backlog](enrichment-backlog-read-model.md) — mirror worker gates in counts; completion lane revisits answered validations; priority action adds no spend path.
+- [Release-only runner & launch content](release-only-runner-and-launch-content.md) — SMTP-only deferral, empty-sequence guard, fake-SMTP disposable cert fixture requirements.
 - [SFP canonical release authority](sfp-canonical-release-authority.md) — capped admin release of held recipients; sender identity has no status column; county_fips empty in prod.

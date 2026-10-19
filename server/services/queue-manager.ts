@@ -2036,6 +2036,17 @@ export class QueueManager {
           decideCr06PromotionalLifecycle({ boundary: "queue_runner", purpose: "transactional" });
           if (featureFlags.LEGACY_OUTREACH_ENABLED) {
             await runSequencesTick();
+          } else {
+            // The legacy flag stays a containment switch for old producers. A live,
+            // unexpired operator release is its own explicit authority: run only the
+            // sequence worker, restricted to enrollments inside that release (no
+            // campaign queue, no Sunbiz auto-convert, no legacy enrollment).
+            const { readCanonicalReleaseControl, isControlLive } = await import("./sfp-canonical-release");
+            const control = await readCanonicalReleaseControl().catch(() => null);
+            if (control && isControlLive(control)) {
+              const { processSequenceEnrollments } = await import("./sequence-worker");
+              await processSequenceEnrollments({ canonicalReleaseOnly: true });
+            }
           }
           break;
         }

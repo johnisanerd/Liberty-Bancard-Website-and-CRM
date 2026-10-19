@@ -1741,7 +1741,11 @@ Current Provider: ${contact.currentProvider || "Unknown"}`
   });
 
   // ── CAN-SPAM unsubscribe endpoint ─────────────────────────────────────────
-  app.get("/unsubscribe", async (req, res) => {
+  // Handles both the human GET link and the RFC 8058 one-click POST that mail
+  // providers send for List-Unsubscribe-Post. Both verify the same signed token
+  // and apply the same consent command, keyed by the token's occurrence, so a
+  // repeated or replayed request cannot double-apply or write a second event.
+  const handleUnsubscribe = async (req: any, res: any) => {
     const token = typeof req.query.t === "string" ? req.query.t : "";
     const result = verifyUnsubscribeToken(token);
 
@@ -1820,6 +1824,8 @@ Current Provider: ${contact.currentProvider || "Unknown"}`
         "</body></html>"
       );
     }
-  });
+  };
+  app.get("/unsubscribe", handleUnsubscribe);
+  app.post("/unsubscribe", handleUnsubscribe);
 
 }

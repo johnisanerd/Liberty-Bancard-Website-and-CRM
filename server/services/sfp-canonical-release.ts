@@ -97,7 +97,21 @@ export interface CanonicalReleasePreview {
 async function remainingCapacity(): Promise<number> {
   const r = await pool.query(`SELECT is_active AS "isActive", warmup_status AS "warmupStatus",
     daily_limit AS "dailyLimit", sent_today AS "sentToday" FROM sending_identities`);
-  return r.rows.filter(isUsableSenderIdentity).reduce((total, i) => total + remainingDailyCapacity(i), 0);
+  const identityRemaining = r.rows.filter(isUsableSenderIdentity).reduce((total, i) => total + remainingDailyCapacity(i), 0);
+  // One definition for initial and follow-up sends: the worker reserves every cold step
+  // against the same daily cold ceiling, so a release can never be larger than what is
+  // left under that ceiling after follow-ups already due in the next 24 hours.
+  const { getEffectiveColdDailyCap } = await import("./outbound-cold-cap");
+  const ceiling = await getEffectiveColdDailyCap();
+  const used = await pool.query(
+    `SELECT COALESCE(SUM(count),0)::int AS used FROM outbound_send_counters
+      WHERE date=$1 AND channel='email' AND scope='cold_outreach'`, [new Date().toISOString().slice(0, 10)]);
+  const followUps = await pool.query(
+    `SELECT count(*)::int AS due FROM sequence_enrollments e JOIN follow_up_sequences q ON q.id=e.sequence_id
+      WHERE e.status='active' AND e.current_step>0 AND e.next_action_at<=NOW()+INTERVAL '24 hours'
+        AND q.sequence_family LIKE 'sfp-v2-cold-%'`);
+  const coldRemaining = Math.max(0, ceiling - Number(used.rows[0]?.used ?? 0) - Number(followUps.rows[0]?.due ?? 0));
+  return Math.max(0, Math.min(identityRemaining, coldRemaining));
 }
 
 /** Test seam: the recipient and capacity readers. Production always uses the real ones. */
@@ -106,12 +120,33 @@ export interface CanonicalReleaseDeps {
   capacity: () => Promise<number>;
 }
 
+/** True only when the sequence has real, renderable email steps (and, for a pinned package, a matching campaign). */
+export async function sequenceHasLaunchReadyContent(sequenceId: number): Promise<boolean> {
+  const steps = await pool.query(
+    `SELECT action_type, subject, body FROM sequence_steps WHERE sequence_id=$1 ORDER BY step_order`, [sequenceId]);
+  if (steps.rows.length === 0) return false;
+  if (steps.rows.some(r => r.action_type !== "email" || !String(r.subject ?? "").trim() || !String(r.body ?? "").trim())) return false;
+  const pkg = await pool.query(
+    `SELECT campaign_id FROM sfp_campaign_package_versions WHERE sequence_id=$1 AND lifecycle_state='current' LIMIT 1`, [sequenceId]);
+  if (pkg.rows.length === 0) return true;
+  const { checkPackageContentReadiness } = await import("./cro03/sfp-launch-content");
+  const { db } = await import("../db");
+  return (await checkPackageContentReadiness(db, Number(pkg.rows[0].campaign_id), sequenceId)).ok;
+}
+
 async function selectForRelease(requestedLimit: number, deps?: CanonicalReleaseDeps) {
   if (!Number.isInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > CANONICAL_RELEASE_MAX_SIZE) {
     throw new CanonicalReleaseError("RELEASE_LIMIT_INVALID", 400, `limit must be 1-${CANONICAL_RELEASE_MAX_SIZE}`);
   }
-  const [qualified, capacity] = await Promise.all([
+  const [allQualified, capacity] = await Promise.all([
     (deps?.listQualified ?? listQualifiedPrimaryRecipients)(), (deps?.capacity ?? remainingCapacity)()]);
+  // A sequence with no launch-ready steps must never be released: the worker would otherwise
+  // have nothing to send and nothing truthful to record. Checked once per distinct sequence.
+  const readyBySequence = new Map<number, boolean>();
+  for (const sequenceId of new Set(allQualified.map(r => r.sequenceId))) {
+    readyBySequence.set(sequenceId, await sequenceHasLaunchReadyContent(sequenceId));
+  }
+  const qualified = allQualified.filter(r => readyBySequence.get(r.sequenceId) === true);
   const size = Math.min(requestedLimit, capacity, qualified.length);
   const chosen = qualified.slice(0, size);
   return { qualified, capacity, chosen };
