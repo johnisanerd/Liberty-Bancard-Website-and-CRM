@@ -16,3 +16,5 @@ description: Narrow operator release for prepared SFP recipients, launch invento
 - nodemailer reports connection-lost-after-DATA as command "CONN"; classify as uncertain unless the message is a connect timeout/greeting failure or errno ECONNREFUSED/ENOTFOUND/EHOSTUNREACH/ENETUNREACH.
 - Cert launcher `--only` takes the cert NAME (e.g. `sfp-launch-lifecycle-e2e`, `sfp-launch-release-ui`). Clock control = shifting persisted deadlines, not a fake clock.
 - **Why:** these were the failure modes found while proving continuation, concurrency and capacity on disposable PostgreSQL.
+- Continuation release sets `next_action_at` to max(release time, last confirmed send + next step delay); the controlled-clock helper must shift `outbound_send_log.sent_at` too. Hold resolution (uncertain delivery) runs in one transaction under the enrollment row lock: attempt update + capacity settlement + hold removal commit together; a non-reopenable attempt refuses and leaves everything held.
+**Why:** reviewer reproduced early touch-2 sends after release and double capacity release under concurrent "not delivered".
