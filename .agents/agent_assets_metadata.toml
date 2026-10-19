@@ -584,3 +584,17 @@ mtime_ms = 1792029740358
 storage_uri = "gcs://replit-rams-assets-riker/rams/assets/repl:92fd513c-d028-45ae-b664-31ad54630ef0/319b0a6d-6e3a-4278-b3ce-a17cbfdc7700/174ae913-cca4-4280-ba39-de857b5ce750"
 storage_version_token = "1792030202342926"
 content_type = "text/csv"
+
+[[outputs]]
+id = "T98p71cjaLKQb7OB_NAyv"
+uri = "file://generated-artifacts/sfp-email-previews.html"
+type = "html"
+title = "Finished customer email previews (automotive, steps 1-2)"
+description = "Named contact, role mailbox and missing-name renderings. The transport adds the compliance footer at send time."
+logical_id = "b6d814bc-4200-4a41-9838-0f6f71277b91"
+content_hash = "sha256:578c0807e92fcefd72d6311a4ecb457a69261e8a155db85225562e73618e647e"
+size = 9023
+mtime_ms = 1792431774499
+storage_uri = "gcs://replit-rams-assets-riker/rams/assets/repl:92fd513c-d028-45ae-b664-31ad54630ef0/b6d814bc-4200-4a41-9838-0f6f71277b91/09ee00e2-f73e-460f-9fbb-fb023ba064a1"
+storage_version_token = "1792432787286454"
+content_type = "text/html"
