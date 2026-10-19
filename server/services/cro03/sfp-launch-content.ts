@@ -283,8 +283,12 @@ async function populateOne(packageKey: SfpPackageKeyV2, opts: { actorId: string;
       if (stray.campaign.status !== "draft" || stray.sequence.status !== "paused") {
         return { packageKey, status: "skipped_needs_review" as const, reason: "PINNED_COPY_NOT_INERT: the copy the package is pinned to is not a draft campaign with a paused sequence" };
       }
-      const strayEnrollments = Number(rows(await tx.execute(sql`SELECT count(*) n FROM sequence_enrollments WHERE sequence_id=${strayId.sequenceId}`))[0]?.n ?? 0);
-      if (strayEnrollments > 0) return { packageKey, status: "skipped_needs_review" as const, reason: `PINNED_COPY_HAS_ENROLLMENTS:${strayEnrollments}` };
+      // Held (paused, never-started) enrollments the staging lane prepared on the copy are inert: they stay on the
+      // retired copy and the stale-package lane re-prepares those contacts on the home sequence. Anything that
+      // started or is live blocks the move.
+      const strayEnrollments = Number(rows(await tx.execute(sql`SELECT count(*) n FROM sequence_enrollments
+        WHERE sequence_id=${strayId.sequenceId} AND (status<>'paused' OR current_step<>0)`))[0]?.n ?? 0);
+      if (strayEnrollments > 0) return { packageKey, status: "skipped_needs_review" as const, reason: `PINNED_COPY_HAS_LIVE_ENROLLMENTS:${strayEnrollments}` };
     }
     const liveEnrollments = Number(rows(await tx.execute(sql`SELECT count(*) n FROM sequence_enrollments WHERE sequence_id=${sequenceId} AND status='active'`))[0]?.n ?? 0);
     if (liveEnrollments > 0) return { packageKey, status: "skipped_needs_review" as const, reason: `SEQUENCE_HAS_ACTIVE_ENROLLMENTS:${liveEnrollments}` };

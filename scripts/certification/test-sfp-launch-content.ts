@@ -153,7 +153,15 @@ try {
   await pool.query(`UPDATE sfp_campaign_package_versions SET lifecycle_state='superseded',superseded_at=NOW() WHERE id=$1`, [home.id]);
   await pool.query(`INSERT INTO sfp_campaign_package_versions (package_key,vertical,campaign_id,campaign_name,sequence_id,sequence_name,sequence_family,content_hash,lifecycle_state,effective_at,actor_id,notes)
     SELECT package_key,vertical,$2,campaign_name||' copy',$3,sequence_name||' copy',sequence_family,'copyhash','current',NOW(),'cert',notes FROM sfp_campaign_package_versions WHERE id=$1`, [home.id, copyCampaign, copySeq]);
+  // A held (paused, never-started) enrollment prepared on the copy does not block the move; a started one does.
+  const stray = Number((await pool.query(`INSERT INTO contacts(first_name,last_name,email,phone,record_class) VALUES ('Stray','Held',$1,'+13055550142','production') RETURNING id`, [`stray-${tag}@example-business.test`])).rows[0].id);
+  const strayEnr = Number((await pool.query(`INSERT INTO sequence_enrollments(sequence_id,contact_id,current_step,status) VALUES ($1,$2,0,'paused') RETURNING id`, [copySeq, stray])).rows[0].id);
+  await pool.query(`UPDATE sequence_enrollments SET current_step=1 WHERE id=$1`, [strayEnr]);
+  const blockedMove = (await content.populateSfpLaunchContentV2({ actorId: "cert" })).find(r => r.packageKey === "sfp.automotive.v2");
+  check(blockedMove?.status === "skipped_needs_review" && /PINNED_COPY_HAS_LIVE_ENROLLMENTS/.test(blockedMove.reason ?? ""), "A started enrollment on the copy blocks returning home");
+  await pool.query(`UPDATE sequence_enrollments SET current_step=0 WHERE id=$1`, [strayEnr]);
   const rehomed = (await content.populateSfpLaunchContentV2({ actorId: "cert" })).find(r => r.packageKey === "sfp.automotive.v2");
+  check((await pool.query(`SELECT sequence_id,status FROM sequence_enrollments WHERE id=$1`, [strayEnr])).rows[0].sequence_id === copySeq, "The held enrollment stays inert on the retired copy");
   const homeAfter = (await pool.query(`SELECT campaign_id, sequence_id FROM sfp_campaign_package_versions WHERE package_key='sfp.automotive.v2' AND lifecycle_state='current'`)).rows[0];
   check(rehomed?.status === "populated" && homeAfter.sequence_id === home.sequence_id && homeAfter.campaign_id === home.campaign_id, `A package pinned to a copy returns to its home rows (${rehomed?.reason ?? rehomed?.status})`);
   check((await pool.query(`SELECT retired_at FROM follow_up_sequences WHERE id=$1`, [copySeq])).rows[0].retired_at !== null, "The copy sequence is retired");
