@@ -66,6 +66,14 @@ export function registerCanonicalEnrichmentRoutes(app: Express) {
       res.json({ ...status, capacity });
     } catch { res.status(503).json({ message: "The release state is unavailable." }); }
   });
+  // Read-only: what each current launch package renders for a fictional recipient. Writes and sends nothing.
+  app.get("/api/canonical-enrichment/seed-test/rendering", isDashboardUser, requireRole("admin"), async (_req, res) => {
+    try {
+      res.set("Cache-Control", "no-store");
+      const { previewSeedRendering } = await import("../services/sfp-seed-test");
+      res.json(await previewSeedRendering());
+    } catch { res.status(503).json({ message: "The seed rendering is unavailable; nothing was rendered." }); }
+  });
   app.post("/api/canonical-enrichment/release/preview", isDashboardUser, requireRole("admin"), async (req, res) => {
     try {
       res.set("Cache-Control", "no-store");

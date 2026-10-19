@@ -13,9 +13,9 @@ import { isGhlConfigured } from "./ghl";
 import { getEmailSignatureHtml, isColdOutreachSequence } from "./email-signatures";
 import type { SignatureType } from "./sender-policy";
 import { sanitizeFirstName } from "./contact-name-utils";
-import { renderTemplate, plainHtmlToEmailHtml } from "./message-render";
 import { resolvePolicy } from "./sender-policy";
-import { SFP_LAUNCH_ALLOWED_HOSTS, SFP_LAUNCH_SEQUENCE_FAMILY_PREFIX } from "./cro03/sfp-launch-content";
+import { sfpLaunchRenderContext, renderSfpLaunchSubject, renderSfpLaunchBodyHtml } from "./sfp-launch-render";
+import { SFP_LAUNCH_SEQUENCE_FAMILY_PREFIX } from "./cro03/sfp-launch-content";
 import { hashEmailToken } from "./provider-readiness-control";
 import { getOrCreateSequenceAbAssignment, recordSequenceAbDelivery } from "./sequence-ab-authority";
 import { authorizeCommercialUseBatch } from "./commercial-resolution";
@@ -1263,19 +1263,9 @@ export async function processSequenceEnrollments(
         const sfpLaunchStep =
           String(sequence.sequenceFamily ?? "").startsWith(SFP_LAUNCH_SEQUENCE_FAMILY_PREFIX) &&
           (step.config as Record<string, unknown> | null)?.format === "plain_text";
-        const sfpSender = resolvePolicy("cold_outreach");
-        const sfpContext = {
-          firstName: contact?.firstName ?? null, lastName: contact?.lastName ?? null,
-          companyName: contact?.companyName ?? null, email: contact?.email ?? null,
-          agentName: sfpSender.displayName, agentEmail: sfpSender.replyTo, agentPhone: "954-266-8214",
-        };
-        const renderSfpSubject = (text: string | null | undefined) =>
-          renderTemplate(text ?? "", sfpContext, { format: "subject", required: ["companyName"] }).output;
-        const renderSfpBodyHtml = (text: string | null | undefined) =>
-          plainHtmlToEmailHtml(
-            renderTemplate(text ?? "", sfpContext, { format: "html", required: ["companyName", "agentName", "agentPhone"] }).output,
-            SFP_LAUNCH_ALLOWED_HOSTS,
-          );
+        const sfpContext = sfpLaunchRenderContext(contact);
+        const renderSfpSubject = (text: string | null | undefined) => renderSfpLaunchSubject(text, sfpContext);
+        const renderSfpBodyHtml = (text: string | null | undefined) => renderSfpLaunchBodyHtml(text, sfpContext);
 
         let stepExecuted = false;
 

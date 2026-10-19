@@ -408,6 +408,18 @@ try {
   const newHash = (await one(`SELECT preparation_snapshot->>'contentHash' h FROM cr04_enrollment_intents WHERE id=$1::uuid`, [pk[0].intentId])).h;
   check(reprepared.some(r => r.binding.contentHash === newHash), "Selection binds to the current package hash");
 
+  // Seed rendering is read-only and uses the real renderer for a fictional recipient.
+  const seedTables = ["contacts", "sequence_enrollments", "outbound_send_log", "outbound_send_counters", "cr04_enrollment_intents"];
+  const seedCounts = async () => Promise.all(seedTables.map(async t => Number((await pool.query(`SELECT count(*) n FROM ${t}`)).rows[0].n)));
+  const seedBefore = await seedCounts(), sentBeforeSeed = captured.length;
+  const seedPreview = await (await import("../../server/services/sfp-seed-test")).previewSeedRendering();
+  check(seedPreview.packages.length > 0 && seedPreview.packages.every(p => p.steps.length > 0), "Seed rendering covers every current package with its email steps");
+  check(seedPreview.packages.every(p => p.steps.every(s => s.unresolvedPlaceholders.length === 0 && s.subject.length > 0 && s.html.length > 0)),
+    "Seed rendering leaves no raw template placeholders");
+  check(seedPreview.fromAddress.toLowerCase() === "scott@mail.libertybancard.com", "Seed rendering uses the cold-outreach sender identity");
+  check(seedPreview.packages.every(p => p.steps.every(s => s.html.includes("Seed Preview Business"))), "Seed rendering uses the fictional recipient, never a real prospect");
+  check((await seedCounts()).join() === seedBefore.join() && captured.length === sentBeforeSeed, "Seed rendering wrote nothing and sent nothing");
+
   // Stale-package refresh lane: a republish is repaired in ONE tick even when both keyset cursors have already
   // passed every contact (the previous behaviour waited for each cursor to wrap, hours per republish in production).
   const staleSql = `SELECT count(*)::int n FROM cr04_enrollment_intents i
