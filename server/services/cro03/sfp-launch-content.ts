@@ -256,22 +256,6 @@ async function sourceIdentity(exec: { execute: (q: any) => Promise<any> }, campa
   };
 }
 
-/** Copies one row (every column except id) with overrides; used to publish content into new immutable rows. */
-async function cloneRow(tx: { execute: (q: any) => Promise<any> }, table: "campaigns" | "follow_up_sequences", id: number, overrides: Record<string, unknown>): Promise<number> {
-  const cols = rows(await tx.execute(sql`SELECT column_name FROM information_schema.columns
-    WHERE table_schema='public' AND table_name=${table} AND column_name<>'id' AND is_generated='NEVER' AND is_identity='NO' ORDER BY ordinal_position`))
-    .map((r) => String(r.column_name));
-  if (!cols.length) throw new Error(`SFP_CLONE_NO_COLUMNS:${table}`);
-  for (const k of Object.keys(overrides)) if (!cols.includes(k)) throw new Error(`SFP_CLONE_UNKNOWN_COLUMN:${table}.${k}`);
-  const list = sql.raw(cols.map((c) => `"${c.replace(/"/g, '""')}"`).join(","));
-  const out = rows(await tx.execute(sql`
-    INSERT INTO ${sql.raw(table)} (${list})
-    SELECT ${list} FROM jsonb_populate_record(NULL::${sql.raw(table)}, (SELECT to_jsonb(t) FROM ${sql.raw(table)} t WHERE t.id=${id}) || ${JSON.stringify(overrides)}::jsonb)
-    RETURNING id`));
-  if (!out[0]) throw new Error(`SFP_CLONE_FAILED:${table}`);
-  return Number(out[0].id);
-}
-
 async function populateOne(packageKey: SfpPackageKeyV2, opts: { actorId: string; dryRun?: boolean }): Promise<PopulateResultRow> {
   const drafts = buildLaunchStepDrafts(packageKey);
   return db.transaction(async (tx) => {
@@ -282,10 +266,28 @@ async function populateOne(packageKey: SfpPackageKeyV2, opts: { actorId: string;
     if (!String(pkg.sequence_family).startsWith(SFP_LAUNCH_SEQUENCE_FAMILY_PREFIX)) {
       return { packageKey, status: "skipped_needs_review" as const, reason: `UNEXPECTED_SEQUENCE_FAMILY:${pkg.sequence_family}` };
     }
-    const campaignId = Number(pkg.campaign_id), sequenceId = Number(pkg.sequence_id);
+    // The package's home campaign/sequence is the one its first version pinned. Prepared recipients, paused
+    // enrollments and receipts are all keyed by that sequence, so every republish rewrites the home rows in place
+    // and pins a new version to them; it never moves the package to a different sequence.
+    const home = rows(await tx.execute(sql`
+      SELECT campaign_id,campaign_name,sequence_id,sequence_name FROM sfp_campaign_package_versions
+       WHERE package_key=${packageKey} ORDER BY created_at ASC, id ASC LIMIT 1`))[0];
+    const campaignId = Number(home.campaign_id), sequenceId = Number(home.sequence_id);
+    const strayId = Number(pkg.sequence_id) === sequenceId ? null : { campaignId: Number(pkg.campaign_id), sequenceId: Number(pkg.sequence_id) };
     const { campaign, sequence } = await lockLivePackageContentRows(tx, campaignId, sequenceId);
     if (campaign.status !== "draft") return { packageKey, status: "skipped_needs_review" as const, reason: `CAMPAIGN_NOT_DRAFT:${campaign.status}` };
     if (sequence.status !== "paused") return { packageKey, status: "skipped_needs_review" as const, reason: `SEQUENCE_NOT_PAUSED:${sequence.status}` };
+    if (strayId) {
+      // A previous republish pinned the package to a copy. Its rows must be inert before the package returns home.
+      const stray = await lockLivePackageContentRows(tx, strayId.campaignId, strayId.sequenceId);
+      if (stray.campaign.status !== "draft" || stray.sequence.status !== "paused") {
+        return { packageKey, status: "skipped_needs_review" as const, reason: "PINNED_COPY_NOT_INERT: the copy the package is pinned to is not a draft campaign with a paused sequence" };
+      }
+      const strayEnrollments = Number(rows(await tx.execute(sql`SELECT count(*) n FROM sequence_enrollments WHERE sequence_id=${strayId.sequenceId}`))[0]?.n ?? 0);
+      if (strayEnrollments > 0) return { packageKey, status: "skipped_needs_review" as const, reason: `PINNED_COPY_HAS_ENROLLMENTS:${strayEnrollments}` };
+    }
+    const liveEnrollments = Number(rows(await tx.execute(sql`SELECT count(*) n FROM sequence_enrollments WHERE sequence_id=${sequenceId} AND status='active'`))[0]?.n ?? 0);
+    if (liveEnrollments > 0) return { packageKey, status: "skipped_needs_review" as const, reason: `SEQUENCE_HAS_ACTIVE_ENROLLMENTS:${liveEnrollments}` };
 
     const core = await sourceIdentity(tx, CORE_SOURCE, [1, 2, 5]);
     if (!core) return { packageKey, status: "skipped_needs_review" as const, reason: `SOURCE_NOT_FOUND:${CORE_SOURCE}` };
@@ -307,18 +309,16 @@ async function populateOne(packageKey: SfpPackageKeyV2, opts: { actorId: string;
     let pinnedNotes: any = null;
     try { pinnedNotes = JSON.parse(String(pkg.notes ?? "")); } catch { /* legacy notes */ }
     const versionsMoved = pinnedNotes?.contentVersion !== SFP_LAUNCH_CONTENT_VERSION || pinnedNotes?.presentationVersion !== SFP_LAUNCH_PRESENTATION_VERSION;
-    if (sameAsDrafts && readiness.ok && liveHash === String(pkg.content_hash) && !versionsMoved) {
+    if (sameAsDrafts && readiness.ok && liveHash === String(pkg.content_hash) && !versionsMoved && !strayId) {
       return { packageKey, status: "already_current" as const, packageVersionId: String(pkg.id) };
     }
-    // A pinned sequence that already has different steps is never edited in place: republish into a NEW draft
-    // campaign and paused sequence (cloned from the old rows) and pin a new package version to them.
-    const republish = existing.length > 0;
-    if (republish) {
-      // Only an intended content/presentation version bump may republish (the old rows stay untouched and are
-      // superseded). The same versions with different live content is drift (an edit nobody published) and stays a refusal.
-      if (!versionsMoved) {
-        return { packageKey, status: "skipped_needs_review" as const, reason: `PINNED_SEQUENCE_ALREADY_HAS_DIFFERENT_STEPS(${existing.length}): live content differs from the pinned version without a content/presentation version change (drift needs review)` };
-      }
+    // Existing different steps are rewritten only for an intended content/presentation version bump (or to bring a
+    // package back from a copy). The same versions with different live content is drift (an edit nobody published).
+    if (existing.length > 0 && !versionsMoved && !strayId) {
+      return { packageKey, status: "skipped_needs_review" as const, reason: `PINNED_SEQUENCE_ALREADY_HAS_DIFFERENT_STEPS(${existing.length}): live content differs from the pinned version without a content/presentation version change (drift needs review)` };
+    }
+    if (existing.length > drafts.length) {
+      return { packageKey, status: "skipped_needs_review" as const, reason: `PINNED_SEQUENCE_HAS_MORE_STEPS_THAN_LAUNCH_CONTENT(${existing.length})` };
     }
 
     const map = drafts.map((d) => ({
@@ -328,41 +328,46 @@ async function populateOne(packageKey: SfpPackageKeyV2, opts: { actorId: string;
     }));
     if (opts.dryRun) return { packageKey, status: "would_populate" as const, map };
 
-    let targetCampaignId = campaignId, targetSequenceId = sequenceId;
-    let targetCampaignName = String(pkg.campaign_name), targetSequenceName = String(pkg.sequence_name);
     const description = `South Florida v2 ${pkg.vertical} launch content (${SFP_LAUNCH_CONTENT_VERSION}); draft until separately approved. Content sources: ${CORE_SOURCE}, ${vSource.campaignName}.`;
-    if (republish) {
-      const revisionTag = SFP_LAUNCH_CONTENT_VERSION.replace(/^sfp-launch-content-/, "");
-      targetCampaignName = `${String(pkg.campaign_name).replace(/ \(launch [^)]*\)$/, "")} (launch ${revisionTag})`;
-      targetSequenceName = `${String(pkg.sequence_name).replace(/ — launch .*$/, "")} — launch ${revisionTag}`;
-      targetCampaignId = await cloneRow(tx, "campaigns", campaignId, { name: targetCampaignName, status: "draft", total_steps: drafts.length, content_revision: 1, description });
-      targetSequenceId = await cloneRow(tx, "follow_up_sequences", sequenceId, { name: targetSequenceName, status: "paused", total_steps: drafts.length });
-    }
+    // Rewrite in place by step order so step identities (and everything that references them) are preserved.
+    const campaignSteps = rows(await tx.execute(sql`SELECT step_order FROM campaign_steps WHERE campaign_id=${campaignId}`)).map((r) => Number(r.step_order));
     for (const d of drafts) {
-      await tx.execute(sql`INSERT INTO campaign_steps (campaign_id,step_order,step_type,delay_days,subject,body_template,use_ai_personalization,channel)
-        VALUES (${targetCampaignId},${d.stepOrder},${d.touch === "intro" ? "initial_outreach" : d.touch === "follow_up" ? "follow_up" : "breakup"},${d.delayDays},${d.subject},${d.body},FALSE,'email')`);
-      await tx.execute(sql`INSERT INTO sequence_steps (sequence_id,step_order,action_type,delay_days,delay_hours,subject,body,config)
-        VALUES (${targetSequenceId},${d.stepOrder},'email',${d.delayDays},0,${d.subject},${d.body},
-          ${JSON.stringify({ format: "plain_text", contentVersion: SFP_LAUNCH_CONTENT_VERSION, presentationVersion: SFP_LAUNCH_PRESENTATION_VERSION, touch: d.touch, source: { campaign: d.sourceCampaignName, stepOrders: d.sourceCampaignStepOrders } })}::jsonb)`);
+      const stepType = d.touch === "intro" ? "initial_outreach" : d.touch === "follow_up" ? "follow_up" : "breakup";
+      if (campaignSteps.includes(d.stepOrder)) {
+        await tx.execute(sql`UPDATE campaign_steps SET step_type=${stepType},delay_days=${d.delayDays},subject=${d.subject},body_template=${d.body},use_ai_personalization=FALSE,channel='email'
+          WHERE campaign_id=${campaignId} AND step_order=${d.stepOrder}`);
+      } else {
+        await tx.execute(sql`INSERT INTO campaign_steps (campaign_id,step_order,step_type,delay_days,subject,body_template,use_ai_personalization,channel)
+          VALUES (${campaignId},${d.stepOrder},${stepType},${d.delayDays},${d.subject},${d.body},FALSE,'email')`);
+      }
+      const config = JSON.stringify({ format: "plain_text", contentVersion: SFP_LAUNCH_CONTENT_VERSION, presentationVersion: SFP_LAUNCH_PRESENTATION_VERSION, touch: d.touch, source: { campaign: d.sourceCampaignName, stepOrders: d.sourceCampaignStepOrders } });
+      if (existing.some((e) => Number(e.step_order) === d.stepOrder)) {
+        await tx.execute(sql`UPDATE sequence_steps SET action_type='email',delay_days=${d.delayDays},delay_hours=0,subject=${d.subject},body=${d.body},config=${config}::jsonb
+          WHERE sequence_id=${sequenceId} AND step_order=${d.stepOrder}`);
+      } else {
+        await tx.execute(sql`INSERT INTO sequence_steps (sequence_id,step_order,action_type,delay_days,delay_hours,subject,body,config)
+          VALUES (${sequenceId},${d.stepOrder},'email',${d.delayDays},0,${d.subject},${d.body},${config}::jsonb)`);
+      }
     }
     await tx.execute(sql`UPDATE campaigns SET total_steps=${drafts.length}, content_revision=content_revision+1,
       description=${description},
-      updated_at=NOW() WHERE id=${targetCampaignId}`);
-    await tx.execute(sql`UPDATE follow_up_sequences SET total_steps=${drafts.length} WHERE id=${targetSequenceId}`);
+      updated_at=NOW() WHERE id=${campaignId}`);
+    await tx.execute(sql`UPDATE follow_up_sequences SET total_steps=${drafts.length} WHERE id=${sequenceId}`);
 
-    const after = await checkPackageContentReadiness(tx, targetCampaignId, targetSequenceId);
+    const after = await checkPackageContentReadiness(tx, campaignId, sequenceId);
     if (!after.ok) throw new Error(`SFP_LAUNCH_CONTENT_NOT_READY:${after.issues.join("|")}`);
 
-    const contentHash = await computeLivePackageContentHash(tx, targetCampaignId, targetSequenceId);
+    const contentHash = await computeLivePackageContentHash(tx, campaignId, sequenceId);
     await tx.execute(sql`UPDATE sfp_campaign_package_versions SET lifecycle_state='superseded',superseded_at=NOW(),updated_at=NOW() WHERE id=${String(pkg.id)}::uuid`);
+    if (strayId) await tx.execute(sql`UPDATE follow_up_sequences SET retired_at=NOW() WHERE id=${strayId.sequenceId} AND retired_at IS NULL`);
     const inserted = rows(await tx.execute(sql`
       INSERT INTO sfp_campaign_package_versions
         (package_key,vertical,campaign_id,campaign_name,sequence_id,sequence_name,sequence_family,content_hash,lifecycle_state,effective_at,actor_id,notes)
-      VALUES (${packageKey},${pkg.vertical},${targetCampaignId},${targetCampaignName},${targetSequenceId},${targetSequenceName},${pkg.sequence_family},${contentHash},
-              'current',NOW(),${opts.actorId},${JSON.stringify({ contentVersion: SFP_LAUNCH_CONTENT_VERSION, presentationVersion: SFP_LAUNCH_PRESENTATION_VERSION, republished: republish, map })})
+      VALUES (${packageKey},${pkg.vertical},${campaignId},${String(home.campaign_name)},${sequenceId},${String(home.sequence_name)},${pkg.sequence_family},${contentHash},
+              'current',NOW(),${opts.actorId},${JSON.stringify({ contentVersion: SFP_LAUNCH_CONTENT_VERSION, presentationVersion: SFP_LAUNCH_PRESENTATION_VERSION, rehomedFromSequenceId: strayId?.sequenceId ?? null, map })})
       RETURNING id`))[0];
     return { packageKey, status: "populated" as const, packageVersionId: String(inserted.id), contentHash, supersededVersionId: String(pkg.id), map,
-      ...(republish ? { reason: `REPUBLISHED_INTO_NEW_DRAFT_CAMPAIGN_AND_PAUSED_SEQUENCE(campaign=${targetCampaignId},sequence=${targetSequenceId})` } : {}) };
+      ...(strayId ? { reason: `RETURNED_TO_HOME_SEQUENCE(${sequenceId}); copy sequence ${strayId.sequenceId} retired` } : {}) };
   });
 }
 

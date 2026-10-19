@@ -129,19 +129,34 @@ try {
   const drifted = await content.populateSfpLaunchContentV2({ actorId: "cert" });
   check(drifted.find(r => r.packageKey === "sfp.automotive.v2")?.status === "skipped_needs_review", "Populate refuses to overwrite different existing steps in place");
 
-  // Versioned republish: a content/presentation version bump publishes into NEW rows and leaves the old ones intact.
+  // Versioned republish: a content/presentation version bump rewrites the home rows IN PLACE (recipients, enrollments and
+  // receipts are keyed by the sequence) and pins a new version to them; the old version is superseded.
   await pool.query(`UPDATE sequence_steps SET body=replace(body,' edited','') WHERE sequence_id=$1 AND step_order=2`, [emptySeq]);
   const beforeRepublish = (await pool.query(`SELECT v.package_key, v.id, v.sequence_id, v.campaign_id, v.content_hash FROM sfp_campaign_package_versions v WHERE lifecycle_state='current' ORDER BY package_key`)).rows;
-  const oldStepHash = (await pool.query(`SELECT md5(string_agg(subject||body,'|' ORDER BY step_order)) h FROM sequence_steps WHERE sequence_id=$1`, [emptySeq])).rows[0].h;
+  const stepIdsBefore = (await pool.query(`SELECT string_agg(id::text,',' ORDER BY step_order) ids FROM sequence_steps WHERE sequence_id=$1`, [emptySeq])).rows[0].ids;
+  await pool.query(`UPDATE sequence_steps SET body='stale presentation-era text' WHERE sequence_id=$1 AND step_order=1`, [emptySeq]);
   await pool.query(`UPDATE sfp_campaign_package_versions SET notes='{"contentVersion":"legacy-1","map":[]}' WHERE lifecycle_state='current'`);
   const republished = await content.populateSfpLaunchContentV2({ actorId: "cert" });
   check(republished.every(r => r.status === "populated"), `A content/presentation version change republishes every package (${JSON.stringify(republished.map(r => r.reason ?? r.status))})`);
   const afterRepublish = (await pool.query(`SELECT v.package_key, v.id, v.sequence_id, v.campaign_id, v.content_hash FROM sfp_campaign_package_versions v WHERE lifecycle_state='current' ORDER BY package_key`)).rows;
-  check(afterRepublish.every((a: any, i: number) => a.id !== beforeRepublish[i].id && a.sequence_id !== beforeRepublish[i].sequence_id
-    && a.campaign_id !== beforeRepublish[i].campaign_id), "Republish pins a new version, campaign and sequence");
-  check((await pool.query(`SELECT md5(string_agg(subject||body,'|' ORDER BY step_order)) h FROM sequence_steps WHERE sequence_id=$1`, [emptySeq])).rows[0].h === oldStepHash, "The superseded sequence's steps are untouched");
+  check(afterRepublish.every((a: any, i: number) => a.id !== beforeRepublish[i].id && a.content_hash !== beforeRepublish[i].content_hash
+    && a.sequence_id === beforeRepublish[i].sequence_id && a.campaign_id === beforeRepublish[i].campaign_id), "Republish pins a new version to the SAME campaign and sequence");
+  check((await pool.query(`SELECT string_agg(id::text,',' ORDER BY step_order) ids FROM sequence_steps WHERE sequence_id=$1`, [emptySeq])).rows[0].ids === stepIdsBefore, "Step identities are preserved by the in-place rewrite");
+  check((await pool.query(`SELECT body FROM sequence_steps WHERE sequence_id=$1 AND step_order=1`, [emptySeq])).rows[0].body.includes("free statement review"), "The rewrite installed the current launch text");
   check((await pool.query(`SELECT status FROM follow_up_sequences s JOIN sfp_campaign_package_versions v ON v.sequence_id=s.id WHERE v.lifecycle_state='current'`)).rows.every((r: any) => r.status === "paused"), "Republished sequences are paused");
   check((await content.verifySfpLaunchContentV2()).ok, "Republished packages verify");
+
+  // A package pinned to a COPY of its rows (the earlier republish shape) returns to its home sequence; the copy is retired.
+  const home = (await pool.query(`SELECT v.id, v.campaign_id, v.sequence_id FROM sfp_campaign_package_versions v WHERE package_key='sfp.automotive.v2' AND lifecycle_state='current'`)).rows[0];
+  const copyCampaign = (await pool.query(`INSERT INTO campaigns (name,status,total_steps,content_revision) SELECT name||' copy','draft',total_steps,1 FROM campaigns WHERE id=$1 RETURNING id`, [home.campaign_id])).rows[0].id;
+  const copySeq = (await pool.query(`INSERT INTO follow_up_sequences (name,status,trigger_type,trigger_config,total_steps,sequence_family) SELECT name||' copy','paused',trigger_type,trigger_config,0,sequence_family FROM follow_up_sequences WHERE id=$1 RETURNING id`, [home.sequence_id])).rows[0].id;
+  await pool.query(`UPDATE sfp_campaign_package_versions SET lifecycle_state='superseded',superseded_at=NOW() WHERE id=$1`, [home.id]);
+  await pool.query(`INSERT INTO sfp_campaign_package_versions (package_key,vertical,campaign_id,campaign_name,sequence_id,sequence_name,sequence_family,content_hash,lifecycle_state,effective_at,actor_id,notes)
+    SELECT package_key,vertical,$2,campaign_name||' copy',$3,sequence_name||' copy',sequence_family,'copyhash','current',NOW(),'cert',notes FROM sfp_campaign_package_versions WHERE id=$1`, [home.id, copyCampaign, copySeq]);
+  const rehomed = (await content.populateSfpLaunchContentV2({ actorId: "cert" })).find(r => r.packageKey === "sfp.automotive.v2");
+  const homeAfter = (await pool.query(`SELECT campaign_id, sequence_id FROM sfp_campaign_package_versions WHERE package_key='sfp.automotive.v2' AND lifecycle_state='current'`)).rows[0];
+  check(rehomed?.status === "populated" && homeAfter.sequence_id === home.sequence_id && homeAfter.campaign_id === home.campaign_id, `A package pinned to a copy returns to its home rows (${rehomed?.reason ?? rehomed?.status})`);
+  check((await pool.query(`SELECT retired_at FROM follow_up_sequences WHERE id=$1`, [copySeq])).rows[0].retired_at !== null, "The copy sequence is retired");
   check((await content.populateSfpLaunchContentV2({ actorId: "cert" })).every(r => r.status === "already_current"), "Republish is idempotent");
   // The presentation is part of the pinned hash: a different presentation fingerprint changes the live hash.
   const pres = await import("../../server/services/cro03/sfp-launch-presentation");
