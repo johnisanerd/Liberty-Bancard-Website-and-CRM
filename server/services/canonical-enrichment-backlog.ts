@@ -146,6 +146,21 @@ function businessLadder(gateOpen: boolean) {
   return sql.raw(body);
 }
 
+/** Program verticals that have a live sequence or current package bound to them (same rule as recipient preparation). */
+export function boundVerticalsCte() {
+  return sql`bound_verticals AS MATERIALIZED (
+    -- Same binding rule as recipient preparation: a live sequence that names the program vertical,
+    -- or carries a current package for it. Evaluated once per vertical, not once per business.
+    SELECT DISTINCT v.vertical FROM sfp_programs p
+      CROSS JOIN LATERAL unnest(p.vertical_ids) AS v(vertical)
+      JOIN follow_up_sequences seq ON seq.retired_at IS NULL AND (
+        (seq.trigger_config->>'canonicalProgramId'=p.id::text AND seq.trigger_config->'canonicalVerticals' ? v.vertical)
+        OR EXISTS(SELECT 1 FROM sfp_campaign_package_versions pkg WHERE pkg.sequence_id=seq.id
+          AND pkg.lifecycle_state='current' AND ${sql.raw(contactTargetVerticalSql("pkg.vertical"))}=v.vertical))
+     WHERE p.is_active AND p.taxonomy_version=2
+  )`;
+}
+
 /** Per-business facts. Restricted to `idFilter` when given (contact queries only need linked businesses). */
 function businessFacts(idFilter: ReturnType<typeof sql> | null, gateOpen: boolean) {
   const VERT = effectiveBusinessVerticalSql("bb");
@@ -190,16 +205,7 @@ function businessFacts(idFilter: ReturnType<typeof sql> | null, gateOpen: boolea
           AND f.business_id IS NOT NULL AND f.promoted_at IS NULL
           AND COALESCE(o.outcome,'') NOT IN ('linked','already_linked') GROUP BY f.business_id) sa ON sa.business_id=bb.id
     WHERE bb.record_class='canonical' ${idFilter ? sql`AND bb.id IN (${idFilter})` : sql``}
-  ), bound_verticals AS MATERIALIZED (
-    -- Same binding rule as recipient preparation: a live sequence that names the program vertical,
-    -- or carries a current package for it. Evaluated once per vertical, not once per business.
-    SELECT DISTINCT v.vertical FROM sfp_programs p
-      CROSS JOIN LATERAL unnest(p.vertical_ids) AS v(vertical)
-      JOIN follow_up_sequences seq ON seq.retired_at IS NULL AND (
-        (seq.trigger_config->>'canonicalProgramId'=p.id::text AND seq.trigger_config->'canonicalVerticals' ? v.vertical)
-        OR EXISTS(SELECT 1 FROM sfp_campaign_package_versions pkg WHERE pkg.sequence_id=seq.id
-          AND pkg.lifecycle_state='current' AND ${sql.raw(contactTargetVerticalSql("pkg.vertical"))}=v.vertical))
-     WHERE p.is_active AND p.taxonomy_version=2
+  ), ${boundVerticalsCte()}
   ), bound AS (
     SELECT f.*,
       (f.vid IS NOT NULL AND EXISTS(SELECT 1 FROM sfp_programs p WHERE p.is_active AND p.taxonomy_version=2
@@ -218,11 +224,10 @@ const bump = (tally: Tally, family: string, key: string, n: number) => {
   tally.set(family, inner);
 };
 
-/** Territory check identical to the one provider selection and recipient preparation apply. */
-function territory(
+/** Resolve a business to a county with the same resolver provider selection and recipient preparation use. */
+export function resolveBusinessCounty(
   g: { gstate: string | null; gzip: string | null; gcity: string | null; glocs: string | null },
-  countyFips: string[],
-): "in" | "outside" | "unresolved" {
+): { outcome: "resolved" | "unresolved"; countyFips: string | null } {
   const locations: any[] = g.glocs ? JSON.parse(g.glocs) : [];
   const resolution = resolveGeographyFromCandidates([
     ...locations.map(l => ({
@@ -231,8 +236,20 @@ function territory(
     })),
     { locationId: null, isPrimary: false, city: g.gcity, state: g.gstate, postalCode: g.gzip, countyFips: null },
   ]);
-  if (resolution.outcome !== "resolved" || !resolution.eligible || !resolution.countyFips) return "unresolved";
-  return countyFips.includes(resolution.countyFips) ? "in" : "outside";
+  if (resolution.outcome !== "resolved" || !resolution.eligible || !resolution.countyFips) {
+    return { outcome: "unresolved", countyFips: null };
+  }
+  return { outcome: "resolved", countyFips: resolution.countyFips };
+}
+
+/** Territory check identical to the one provider selection and recipient preparation apply. */
+function territory(
+  g: { gstate: string | null; gzip: string | null; gcity: string | null; glocs: string | null },
+  countyFips: string[],
+): "in" | "outside" | "unresolved" {
+  const r = resolveBusinessCounty(g);
+  if (r.outcome !== "resolved" || !r.countyFips) return "unresolved";
+  return countyFips.includes(r.countyFips) ? "in" : "outside";
 }
 
 const FAMILY_META: Record<string, { label: string; unit: string; handoff: string }> = {

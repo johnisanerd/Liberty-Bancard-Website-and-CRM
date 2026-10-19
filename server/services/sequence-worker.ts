@@ -1,3 +1,4 @@
+import { isCanonicalReleaseAdmitted, reconcileExpiredCanonicalRelease } from "./sfp-canonical-release";
 import { storage } from "../storage";
 import { db as defaultSequenceWorkerDb } from "../db";
 import { sequenceEnrollments as sequenceEnrollmentsTable } from "../../shared/schema";
@@ -365,6 +366,9 @@ export async function processSequenceEnrollments(): Promise<{ processed: number;
   }
 
   try {
+    await reconcileExpiredCanonicalRelease().catch((error) => {
+      console.error("[SFP_CANONICAL_RELEASE_EXPIRY_RECONCILE_FAILED]", error instanceof Error ? error.name : "UnknownError");
+    });
     const dueEnrollments = await storage.getActiveEnrollments();
     await authorizeCommercialUseBatch({
       subjects: dueEnrollments
@@ -384,7 +388,11 @@ export async function processSequenceEnrollments(): Promise<{ processed: number;
       heartbeat.assertOwned();
       try {
         const sequence = await storage.getFollowUpSequence(enrollment.sequenceId!);
-        if (!sequence || sequence.retiredAt || sequence.status !== "active") {
+        if (!sequence || sequence.retiredAt) continue;
+        // A canonical SFP sequence stays paused; only an enrollment released by an admin inside the
+        // live, unexpired release is admitted. Every other send gate below still applies to it.
+        const canonicalReleaseAdmitted = await isCanonicalReleaseAdmitted(enrollment, sequence);
+        if (sequence.status !== "active" && !canonicalReleaseAdmitted) {
           continue;
         }
         // This is both the durable-work claim boundary and a final safety net
@@ -395,7 +403,7 @@ export async function processSequenceEnrollments(): Promise<{ processed: number;
           boundary: "sequence_claim",
           purpose: cr06Purpose,
         });
-        if (!cr06Decision.allowed) {
+        if (!cr06Decision.allowed && !canonicalReleaseAdmitted) {
           await storage.updateSequenceEnrollment(enrollment.id, {
             nextActionAt: new Date(Date.now() + 60 * 60 * 1000),
             metadata: {
@@ -1615,7 +1623,7 @@ export async function processSequenceEnrollments(): Promise<{ processed: number;
                 if (!decideCr06PromotionalLifecycle({
                   boundary: "sequence_transport",
                   purpose: cr06Purpose,
-                }).allowed) {
+                }).allowed && !canonicalReleaseAdmitted) {
                   await defaultSequenceWorkerDb.update(sequenceEnrollmentsTable).set({
                     nextActionAt: new Date(Date.now() + 60 * 60 * 1000),
                     updatedAt: new Date(),

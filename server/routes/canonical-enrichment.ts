@@ -1,3 +1,8 @@
+import {
+  CANONICAL_RELEASE_MAX_HOURS, CANONICAL_RELEASE_MAX_SIZE, CanonicalReleaseError, executeCanonicalRelease,
+  isControlLive, previewCanonicalRelease, readCanonicalReleaseControl, revokeCanonicalRelease,
+} from "../services/sfp-canonical-release";
+import { readSfpLaunchInventory } from "../services/sfp-launch-inventory";
 import type { Express } from "express";
 import { isDashboardUser, requireRole } from "../replit_integrations/auth";
 import { readCanonicalEnrichmentStatus } from "../services/canonical-enrichment-status";
@@ -33,6 +38,64 @@ export function registerCanonicalEnrichmentRoutes(app: Express) {
     } catch {
       res.status(503).json({ message: "The enrichment backlog is unavailable; nothing was counted." });
     }
+  });
+
+  // Current prepared recipients re-checked against every launch requirement. Read-only; sends nothing.
+  app.get("/api/canonical-enrichment/launch-inventory", isDashboardUser, requireRole("admin", "manager"), async (req, res) => {
+    try {
+      res.set("Cache-Control", "no-store");
+      const fresh = req.query.fresh === "1" && (req.user as any)?.role === "admin";
+      res.json(await readSfpLaunchInventory({ fresh }));
+    } catch {
+      res.status(503).json({ message: "The launch inventory is unavailable; nothing was counted." });
+    }
+  });
+
+  // Narrow operator release of current canonical recipients. Preview is read-only. Execute and revoke
+  // are admin-only and audit-logged. None of these lift the outbound pause.
+  const actor = (req: any) => String(req.user?.id ?? req.user?.email ?? "unknown");
+  const releaseError = (res: any, error: unknown) => {
+    if (error instanceof CanonicalReleaseError) return res.status(error.status).json({ code: error.code, message: error.message });
+    return res.status(503).json({ message: "The release request could not be completed; nothing was released." });
+  };
+  app.get("/api/canonical-enrichment/release", isDashboardUser, requireRole("admin", "manager"), async (_req, res) => {
+    try {
+      res.set("Cache-Control", "no-store");
+      const control = await readCanonicalReleaseControl();
+      res.json({ control, live: isControlLive(control), maxSize: CANONICAL_RELEASE_MAX_SIZE, maxHours: CANONICAL_RELEASE_MAX_HOURS });
+    } catch { res.status(503).json({ message: "The release state is unavailable." }); }
+  });
+  app.post("/api/canonical-enrichment/release/preview", isDashboardUser, requireRole("admin"), async (req, res) => {
+    try {
+      res.set("Cache-Control", "no-store");
+      res.json(await previewCanonicalRelease(Number(req.body?.limit)));
+    } catch (error) { releaseError(res, error); }
+  });
+  app.post("/api/canonical-enrichment/release/execute", isDashboardUser, requireRole("admin"), async (req, res) => {
+    try {
+      const commandKey = req.header("Idempotency-Key") ?? "";
+      const result = await executeCanonicalRelease({
+        requestedLimit: Number(req.body?.limit), snapshotHash: String(req.body?.snapshotHash ?? ""),
+        commandKey, expiresInHours: Number(req.body?.expiresInHours), actorId: actor(req),
+      });
+      await storage.createAuditLog({
+        action: "sfp_canonical_release_executed", entityType: "sfp_canonical_release",
+        entityKey: result.control.releaseId ?? undefined, userId: actor(req),
+        details: { replayed: result.replayed, releaseId: result.control.releaseId, size: result.control.enrollmentIds.length,
+          expiresAt: result.control.expiresAt, snapshotHash: result.control.snapshotHash },
+      } as any);
+      res.json(result);
+    } catch (error) { releaseError(res, error); }
+  });
+  app.post("/api/canonical-enrichment/release/revoke", isDashboardUser, requireRole("admin"), async (req, res) => {
+    try {
+      const result = await revokeCanonicalRelease(actor(req));
+      await storage.createAuditLog({
+        action: "sfp_canonical_release_revoked", entityType: "sfp_canonical_release", userId: actor(req),
+        details: { ...result },
+      } as any);
+      res.json(result);
+    } catch (error) { releaseError(res, error); }
   });
 
   // Optional: ask the existing background worker to work the highest-priority backlog now.

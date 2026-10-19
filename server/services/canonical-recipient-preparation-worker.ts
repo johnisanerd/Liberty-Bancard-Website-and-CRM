@@ -127,7 +127,7 @@ export async function processCanonicalRecipientPreparationTick(
           FOR UPDATE OF i`));
         for (const intent of obsolete) {
           await tx.execute(sql`UPDATE sequence_enrollments SET status='cancelled',updated_at=NOW()
-            WHERE id=${intent.enrollment_id} AND status='paused'
+            WHERE id=${intent.enrollment_id} AND status IN ('paused','active')
               AND metadata->>'canonicalPreparationId'=${String(intent.id)}`);
           await tx.execute(sql`UPDATE cr04_enrollment_intents SET preparation_state='exception',
             enrollment_id=NULL,reason_code='CURRENT_RECIPIENT_FACTS_CHANGED' WHERE id=${String(intent.id)}::uuid`);

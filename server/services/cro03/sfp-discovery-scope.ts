@@ -1,3 +1,4 @@
+import { southFloridaProgramZips } from "../cro03a/geography";
 import { sql } from "drizzle-orm";
 import { db } from "../../db";
 import { effectiveBusinessVerticalSql } from "@shared/effective-vertical";
@@ -107,6 +108,7 @@ export async function selectProgramDiscoveryTargets(programId: string, max: numb
   if (!p) throw new Error("SFP_PAID_BLOCKED:PROGRAM_INACTIVE");
   if(!p.vertical_ids.length || !p.county_fips.length) throw new Error("SFP_PROGRAM_SCOPE_EMPTY");
   const selected:any[]=[];
+  const localZips=sql`ARRAY[${sql.join(southFloridaProgramZips().map(zip=>sql`${zip}`),sql`, `)}]`;
   const batchSize=Math.max(1,Math.min(500,max*10));
   // Scan every candidate when necessary, retaining only a bounded batch.
   // Outside-territory rows at the front must never starve later local rows.
@@ -137,7 +139,14 @@ export async function selectProgramDiscoveryTargets(programId: string, max: numb
             ${sql.join((phase==="serper"?["sfp_official_domain_discovery"]:
               ["sfp_business_identity_discovery","sfp_named_decision_maker_discovery"]).map(v=>sql`${v}`),sql`, `)}
           ]::text[]))))
-    ORDER BY COALESCE((SELECT max(s.created_at) FROM sfp_stage_items i
+    -- Nearest to a usable local recipient first. The territory resolver below still decides eligibility;
+    -- this only stops out-of-territory rows from occupying the bounded batch ahead of local ones,
+    -- and (paid phase) puts businesses whose site is already known ahead of ones that need a site search.
+    ORDER BY (left(btrim(COALESCE(b.postal_code,'')),5)=ANY(${localZips}::text[])
+        OR EXISTS(SELECT 1 FROM business_locations bl WHERE bl.business_id=b.id
+          AND left(btrim(COALESCE(bl.postal_code,'')),5)=ANY(${localZips}::text[]))) DESC,
+      (${phase!=="serper"} AND NULLIF(btrim(b.website_domain),'') IS NOT NULL) DESC,
+      COALESCE((SELECT max(s.created_at) FROM sfp_stage_items i
       JOIN sfp_stage_runs s ON s.id=i.stage_run_id
       WHERE i.business_id=b.id AND s.program_id=${programId}::uuid),TIMESTAMPTZ 'epoch'),b.id
     LIMIT ${batchSize} OFFSET ${offset}

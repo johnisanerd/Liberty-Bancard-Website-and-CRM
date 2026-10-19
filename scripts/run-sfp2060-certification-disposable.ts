@@ -65,6 +65,7 @@ async function main(): Promise<void> {
       { name: "staged-email-materialization", script: "scripts/certification/test-staged-email-materialization.ts", database: true },
       { name: "first-party-native-install", script: "scripts/certification/test-first-party-native-install.ts", database: true },
       { name: "canonical-recipient-preparation", script: "scripts/certification/test-canonical-recipient-preparation.ts", database: true },
+      { name: "canonical-release-authority", script: "scripts/certification/test-canonical-release-authority.ts", database: true },
       { name: "canonical-address-validation", script: "scripts/certification/test-canonical-address-validation.ts", database: true },
       { name: "canonical-source-outbox", script: "scripts/certification/test-canonical-source-outbox.ts", database: true },
       { name: "canonical-owner-repair", script: "scripts/certification/test-canonical-address-preparation-owner-repair.ts", database: true },

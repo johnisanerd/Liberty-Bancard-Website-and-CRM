@@ -12,6 +12,7 @@ import { getGhlCircuitState } from "../services/ghl-sync";
 import { createPreferenceAwareNotification, sendCriticalEmailNotification } from "../services/digest-service";
 import { serverError, safeMessage, logOperationalDiagnostic } from "../utils/server-error";
 import { sanitizeAuditPayload } from "../services/audit-sanitizer";
+import { isUsableSenderIdentity } from "../services/sdr/sender-identity-state";
 
 // Block-list patterns — no raw/test/demo/DNC records (matches pilot-preview policy)
 const BLOCKED_NAME_PATTERNS = [/test/i, /demo/i, /example/i, /liberty-test/i];
@@ -244,7 +245,7 @@ export function registerActivationRoutes(app: Express, dependencies: {
   app.get("/api/operator/activation-status", requireRole("admin", "manager"), async (_req, res) => {
     try {
       const identities = await storage.getSendingIdentities();
-      const activeIdentities = identities.filter((i: any) => i.isActive !== false && i.status !== "paused");
+      const activeIdentities = identities.filter((i: any) => isUsableSenderIdentity(i));
 
       const heartbeat = await storage.getSystemSetting("sequence_runner_last_tick");
       const slaHeartbeat = await storage.getSystemSetting("sla_worker_last_tick");
@@ -584,7 +585,7 @@ export function registerActivationRoutes(app: Express, dependencies: {
       const { isSmtpConfigured } = await import("../services/smtp-email");
 
       const identities = await storage.getSendingIdentities();
-      const activeIdentities = identities.filter((i: any) => i.status === "active" && i.isActive !== false);
+      const activeIdentities = identities.filter((i: any) => isUsableSenderIdentity(i));
       const totalCapacity = activeIdentities.reduce((sum: number, i: any) => sum + (i.dailyLimit || 0), 0);
       const totalSentToday = activeIdentities.reduce((sum: number, i: any) => sum + (i.sentToday || 0), 0);
 
@@ -1001,7 +1002,7 @@ export function registerActivationRoutes(app: Express, dependencies: {
       let inboxValue = "No active senders";
       try {
         const identities = await storage.getSendingIdentities();
-        const active = identities.filter((i: any) => i.status === "active" && i.isActive !== false);
+        const active = identities.filter((i: any) => isUsableSenderIdentity(i));
         const withCapacity = active.filter((i: any) => (i.sentToday || 0) < (i.dailyLimit || 0));
         if (withCapacity.length > 0) {
           inboxStatus = "green";

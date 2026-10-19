@@ -32,6 +32,7 @@
  * invalid/bounced/suppressed/archived ones. Candidate evidence rows are never
  * mutated.
  */
+import { southFloridaProgramZips } from "../cro03a/geography";
 import { createHash } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { db } from "../../db";
@@ -118,11 +119,13 @@ export interface MaterializationScope {
 /** Candidate rows that pass every database-side gate, ranked per business. */
 function eligibleCandidatesSql(limit: number | null, scope: MaterializationScope = {}) {
   const mappedOnly = scope.verticalScope === "mapped";
+  const localZips = sql`ARRAY[${sql.join(southFloridaProgramZips().map(zip => sql`${zip}`), sql`, `)}]`;
   return sql`
     WITH staged AS MATERIALIZED (
       SELECT f.id, f.business_id, f.normalized_value_hash, f.confidence, f.created_at,
              f.envelope_ciphertext, f.envelope_nonce, f.envelope_tag, f.envelope_key_version,
-             f.source, f.attribution_scope, f.domain, f.person_name_evidence, f.person_title_evidence
+             f.source, f.attribution_scope, f.domain, f.person_name_evidence, f.person_title_evidence,
+             (o.candidate_id IS NULL) AS never_evaluated
         FROM free_discovery_candidates f
         LEFT JOIN free_discovery_materialization_outcomes o ON o.candidate_id = f.id
        WHERE f.field = 'email' AND f.disposition = 'staged' AND f.subject_type = 'business'
@@ -145,7 +148,11 @@ function eligibleCandidatesSql(limit: number | null, scope: MaterializationScope
                  AND COALESCE(c.bounce_status, 'none') <> 'hard'
                  AND COALESCE(c.email_status, 'unvalidated') NOT IN ('invalid','bounced','unsafe','opted_out')
                  AND c.suppression_reason IS NULL) AS usable_contacts,
-             (${sql.raw(effectiveBusinessVerticalStatusSql("b"))} = 'mapped') AS vertical_mapped
+             (${sql.raw(effectiveBusinessVerticalStatusSql("b"))} = 'mapped') AS vertical_mapped,
+             -- Ordering only: eligibility is decided later by the full territory resolver.
+             (left(btrim(COALESCE(b.postal_code,'')),5) = ANY(${localZips}::text[])
+              OR EXISTS (SELECT 1 FROM business_locations bl WHERE bl.business_id = b.id
+                          AND left(btrim(COALESCE(bl.postal_code,'')),5) = ANY(${localZips}::text[]))) AS local_territory
         FROM businesses b
        WHERE b.id IN (SELECT business_id FROM staged)
          AND b.record_class = 'canonical' AND COALESCE(b.do_not_visit, FALSE) = FALSE
@@ -157,7 +164,7 @@ function eligibleCandidatesSql(limit: number | null, scope: MaterializationScope
       SELECT normalized_value_hash FROM staged
        GROUP BY normalized_value_hash HAVING count(DISTINCT business_id) > 1
     ), base AS (
-      SELECT s.*, eb.usable_contacts, eb.vertical_mapped
+      SELECT s.*, eb.usable_contacts, eb.vertical_mapped, eb.local_territory
         FROM staged s
         JOIN eligible_business eb ON eb.id = s.business_id
        WHERE s.normalized_value_hash NOT IN (SELECT normalized_value_hash FROM shared_hash)
@@ -170,7 +177,7 @@ function eligibleCandidatesSql(limit: number | null, scope: MaterializationScope
     )
     SELECT * FROM ranked
      WHERE rn <= GREATEST(0, ${MAX_USABLE_CONTACTS_PER_BUSINESS} - usable_contacts)
-     ORDER BY vertical_mapped DESC, business_id, rn
+     ORDER BY vertical_mapped DESC, local_territory DESC, never_evaluated DESC, business_id, rn
      ${limit ? sql`LIMIT ${limit}` : sql``}
   `;
 }

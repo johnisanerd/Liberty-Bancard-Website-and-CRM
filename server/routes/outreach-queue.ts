@@ -241,7 +241,10 @@ export function registerOutreachQueueRoutes(app: Express) {
       if (!idempotencyKey || idempotencyKey.length > 200) {
         return res.status(400).json({ message: "Idempotency-Key is required" });
       }
-      if (typeof req.body?.cohortRunId !== "string") {
+      // Email uses the current canonical preparation authority, which needs no frozen cohort.
+      // Other channels still require one.
+      const cohortRunId = typeof req.body?.cohortRunId === "string" ? req.body.cohortRunId : null;
+      if (channel !== "email" && !cohortRunId) {
         return res.status(422).json({ message: "A current frozen cohort is required" });
       }
       const result = await enrollThroughCr04Fence({
@@ -251,7 +254,7 @@ export function registerOutreachQueueRoutes(app: Express) {
         idempotencyKey,
         source: "outreach_queue",
         actor: scope,
-        cohortRunId: req.body.cohortRunId,
+        cohortRunId,
       });
       if ((result as any).blocked) {
         return res.status(422).json({

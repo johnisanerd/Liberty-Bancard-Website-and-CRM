@@ -6,6 +6,7 @@ import {
   type BacklogFamily, type BacklogProcessRequest, type BacklogProcessResponse, type BacklogState,
   type BacklogStageSummary, type CanonicalEnrichmentBacklog,
 } from "@shared/canonical-enrichment-backlog";
+import type { LaunchInventoryPopulation, SfpLaunchInventory } from "@shared/sfp-launch-inventory";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
@@ -188,6 +189,158 @@ function ProcessPanel({ isAdmin, last }: { isAdmin: boolean; last: CanonicalEnri
   );
 }
 
+function PopulationCard({ title, note, pop }: { title: string; note: string; pop: LaunchInventoryPopulation }) {
+  return (
+    <div className="rounded-xl border border-border/70 bg-card p-4">
+      <p className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">{title}</p>
+      <p className="mt-2 font-mono text-2xl font-semibold tracking-tight">{n(pop.qualified)} <span className="text-sm font-normal text-muted-foreground">of {n(pop.recorded)} pass every check now</span></p>
+      <p className="mt-1 text-xs text-muted-foreground">
+        {n(pop.qualifiedBusinesses)} businesses · {n(pop.primaryRecipients)} primary recipients · {n(pop.alternates)} alternates
+      </p>
+      <p className="mt-2 text-xs leading-5 text-muted-foreground">{note}</p>
+      {pop.blocked.length > 0 && (
+        <ul className="mt-3 space-y-1 text-xs">
+          {pop.blocked.slice(0, 6).map(r => (
+            <li key={`${r.gate}-${r.code}`} className="flex justify-between gap-3">
+              <span>{r.label}</span><span className="font-mono">{n(r.count)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+interface ReleaseStatus {
+  control: { enabled: boolean; releaseId: string | null; expiresAt: string | null; enrollmentIds: number[]; releasedAt: string | null };
+  live: boolean; maxSize: number; maxHours: number;
+}
+interface ReleasePreview { commandKey?: string; snapshotHash: string; size: number; dailyCapacityRemaining: number; qualifiedPrimaryRecipients: number; notes: string[] }
+
+function ReleasePanel() {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [limit, setLimit] = useState(10);
+  const [hours, setHours] = useState(24);
+  const [preview, setPreview] = useState<ReleasePreview | null>(null);
+  const { data: status } = useQuery<ReleaseStatus>({ queryKey: ["/api/canonical-enrichment/release"] });
+  const refresh = () => {
+    queryClient.invalidateQueries({ queryKey: ["/api/canonical-enrichment/release"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/canonical-enrichment/launch-inventory"] });
+  };
+  const fail = (error: unknown) => toast({ title: "Release request failed", variant: "destructive",
+    description: error instanceof Error ? error.message : "Nothing was released." });
+  const previewMutation = useMutation({
+    mutationFn: async () => (await apiRequest("POST", "/api/canonical-enrichment/release/preview", { limit })).json() as Promise<ReleasePreview>,
+    onSuccess: p => setPreview({ ...p, commandKey: crypto.randomUUID() }), onError: fail,
+  });
+  const executeMutation = useMutation({
+    mutationFn: async () => (await apiRequest("POST", "/api/canonical-enrichment/release/execute",
+      { limit, snapshotHash: preview!.snapshotHash, expiresInHours: hours }, { "Idempotency-Key": preview!.commandKey! })).json(),
+    onSuccess: () => { setPreview(null); refresh(); toast({ title: "Recipients released", description: "They are active but still need every send check, and the outbound pause is unchanged." }); },
+    onError: fail,
+  });
+  const revokeMutation = useMutation({
+    mutationFn: async () => (await apiRequest("POST", "/api/canonical-enrichment/release/revoke")).json(),
+    onSuccess: () => { refresh(); toast({ title: "Release revoked", description: "Released recipients were returned to held." }); },
+    onError: fail,
+  });
+  const live = status?.live === true;
+  return (
+    <div className="mt-3 rounded-xl border border-border/70 bg-card p-4" data-testid="release-panel">
+      <p className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">Operator release</p>
+      <p className="mt-1 text-sm text-muted-foreground">
+        Releases up to a capped number of qualified primary recipients. Releasing does not lift the outbound pause; nothing sends
+        until the pause is lifted separately and each recipient passes the ordinary send checks.
+      </p>
+      {live ? (
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <span className="text-sm">{n(status!.control.enrollmentIds.length)} recipients released; expires {when(status!.control.expiresAt!)}.</span>
+          <Button variant="outline" size="sm" onClick={() => revokeMutation.mutate()} disabled={revokeMutation.isPending}>Revoke and re-hold</Button>
+        </div>
+      ) : (
+        <div className="mt-3 flex flex-wrap items-end gap-3">
+          <label className="text-sm"><span className="mb-1 block text-xs text-muted-foreground">Recipients (1–{status?.maxSize ?? 50})</span>
+            <input type="number" min={1} max={status?.maxSize ?? 50} value={limit} onChange={e => { setLimit(Number(e.target.value)); setPreview(null); }}
+              className="w-24 rounded-md border border-input bg-background px-2 py-1.5 text-sm" /></label>
+          <label className="text-sm"><span className="mb-1 block text-xs text-muted-foreground">Expires in hours (1–{status?.maxHours ?? 72})</span>
+            <input type="number" min={1} max={status?.maxHours ?? 72} value={hours} onChange={e => setHours(Number(e.target.value))}
+              className="w-24 rounded-md border border-input bg-background px-2 py-1.5 text-sm" /></label>
+          <Button variant="outline" size="sm" onClick={() => previewMutation.mutate()} disabled={previewMutation.isPending}>Preview</Button>
+          {preview && (
+            <Button size="sm" onClick={() => executeMutation.mutate()} disabled={executeMutation.isPending || preview.size === 0}>
+              Release {n(preview.size)} recipient{preview.size === 1 ? "" : "s"}
+            </Button>
+          )}
+        </div>
+      )}
+      {preview && !live && (
+        <p className="mt-2 text-xs text-muted-foreground">
+          {n(preview.size)} selected of {n(preview.qualifiedPrimaryRecipients)} qualified; {n(preview.dailyCapacityRemaining)} messages of sender capacity remain today.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function LaunchInventory({ isAdmin }: { isAdmin: boolean }) {
+  const { data, isLoading, isError } = useQuery<SfpLaunchInventory>({
+    queryKey: ["/api/canonical-enrichment/launch-inventory"],
+    refetchInterval: 10 * 60 * 1000,
+  });
+  if (isLoading) return <div className="h-40 animate-pulse rounded-xl border border-border/60 bg-card" aria-busy="true" />;
+  if (isError || !data) {
+    return <p className="rounded-xl border border-destructive/25 bg-card p-4 text-sm text-muted-foreground">
+      The launch inventory could not be read, so nothing is shown. Nothing has been inferred.</p>;
+  }
+  return (
+    <section data-testid="launch-inventory">
+      <h2 className="text-xl font-semibold tracking-tight">Launch inventory</h2>
+      <p className="mb-4 mt-1 max-w-3xl text-sm text-muted-foreground">
+        Prepared recipients re-checked now against every launch requirement. A recipient that passes is not authorized to send;
+        sending stays held until an operator releases it. Observed {when(data.observedAt)}.
+      </p>
+      <div className="grid gap-3 lg:grid-cols-2">
+        <PopulationCard title="Ready, held" pop={data.readyHeld}
+          note="Validated, owned paused membership in place." />
+        <PopulationCard title="Pending validation" pop={data.pendingValidation}
+          note="Checked on every rule except validation and membership." />
+      </div>
+      <div className="mt-3 grid gap-3 lg:grid-cols-2">
+        <div className="rounded-xl border border-border/70 bg-card p-4">
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">Before anything can send</p>
+          <ul className="mt-3 space-y-2 text-sm">
+            {data.releaseBlockers.map(b => (
+              <li key={b.key}>
+                <span className="font-medium">{b.label}</span>{" "}
+                <Badge variant={b.state === "ok" ? "outline" : "secondary"}>{b.state === "ok" ? "Clear" : b.state === "blocked" ? "Blocked" : "Unknown"}</Badge>
+                <p className="text-xs leading-5 text-muted-foreground">{b.detail}</p>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-3 text-xs text-muted-foreground">
+            {data.sender.daysOfFirstTouches === null
+              ? "No daily sending capacity, so the time to send first touches cannot be estimated."
+              : `At ${n(data.sender.dailyCapacity)} messages per day, ${n(data.readyHeld.primaryRecipients)} primary recipients are about ${data.sender.daysOfFirstTouches} days of first touches.`}
+          </p>
+        </div>
+        <div className="rounded-xl border border-border/70 bg-card p-4">
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">Qualified ready-held businesses by county and vertical</p>
+          {data.byCountyAndVertical.length === 0
+            ? <p className="mt-3 text-sm text-muted-foreground">No ready-held recipient currently passes every check.</p>
+            : <table className="mt-3 w-full text-sm">
+                <thead><tr className="text-left text-xs text-muted-foreground"><th className="pb-1 font-medium">County</th><th className="pb-1 font-medium">Vertical</th><th className="pb-1 text-right font-medium">Businesses</th></tr></thead>
+                <tbody>{data.byCountyAndVertical.map(c => (
+                  <tr key={`${c.county}-${c.vertical}`}><td>{c.county}</td><td>{humanize(c.vertical)}</td><td className="text-right font-mono">{n(c.businesses)}</td></tr>
+                ))}</tbody>
+              </table>}
+        </div>
+      </div>
+      {isAdmin && <ReleasePanel />}
+    </section>
+  );
+}
+
 export function CanonicalBacklog({ isAdmin }: { isAdmin: boolean }) {
   const { data, isLoading, isError, error, refetch, isFetching } = useQuery<CanonicalEnrichmentBacklog>({
     queryKey: ["/api/canonical-enrichment/backlog"],
@@ -228,6 +381,8 @@ export function CanonicalBacklog({ isAdmin }: { isAdmin: boolean }) {
           {data.separate.sendingAuthority.note}
         </p>
       </div>
+
+      <LaunchInventory isAdmin={isAdmin} />
 
       <section>
         <h2 className="text-xl font-semibold tracking-tight">Funnel</h2>

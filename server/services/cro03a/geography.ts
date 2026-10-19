@@ -530,3 +530,12 @@ export function evaluateSouthFloridaGeographyV1(input: {
 export const _ZIP_COUNTY_V2_FOR_TEST: Readonly<Record<string, string[]>> = ZIP_COUNTY_V2;
 /** Exported for testing — the full v2 city map. */
 export const _CITY_COUNTY_V2_FOR_TEST: Readonly<Record<string, string[]>> = CITY_COUNTY_V2;
+
+/**
+ * Five-digit ZIP codes the current reference resolves to exactly one enabled program county.
+ * For ordering and prioritisation only: it never decides eligibility, which stays with the
+ * full resolver (direct county evidence, city inference and ambiguity handling).
+ */
+export function southFloridaProgramZips(): string[] {
+  return Object.keys(ZIP_COUNTY_V2).filter(zip => evaluateSouthFloridaGeography({ zip }).eligible);
+}
