@@ -10,3 +10,10 @@ description: Why republished packages strand prepared recipients, how preview co
 - UI cert needs the client built to generated-artifacts/ui-verify-public at repo root (vite outDir defaults under client/).
 - Measured in production: each stale re-preparation costs ~5s (commit alone ~2.3s), so a 30s lane share refreshes only ~6 recipients per tick and the scheduled tick runs every 30 minutes. Throughput is time-share bound, not selection bound; size lane budget and operator-pass count against that, and judge by stale→current counts.
 - A seed-send capability needs more than a new sender category: the shared SMTP service still enforces the global pause, so the operator must lift pause for a seed send; keep customer sends blocked by having no release active.
+
+## Seed-test design (built, certified on fake SMTP; not yet used live)
+- Authority lives in system_settings (no migration): one authorization row, per-idempotency-key receipts, per-occurrence unsubscribe events. The transport re-verifies from durable state; callers pass only a receipt key + occurrence id.
+- Seed unsubscribe tokens are a distinct kind (`seed.` prefix); they never verify as contact tokens and vice versa. Seed sends are capped (<=3 per authorization) but NOT counted in outbound_send_counters.
+- The global pause authority still gates the seed at the transport. A real seed therefore needs the global pause lifted. Unpause also (a) flips ~918 `_globalPauseBlock*` paused enrollments back to active (VFC-22 sweep) and (b) writes `release_pending` coordinator holds for gated queue keys.
+- Other paths on unpause: sequence worker needs sequence.status active (prod: 32 active sequences, 0 active enrollments; 420 active enrollments sit in paused sequences) plus channel flags (emailChannelPaused/coldEmailChannelPaused/smsChannelPaused all true in prod). Prod BACKGROUND_JOB_PROFILE (per .replit shared env) omits outreach/operations groups. Direct sendSmtpEmail callers (auth, partner, merchant, proposal, alert emails) are gated only by the global pause.
+**Why:** tell the owner exactly what a global unpause exposes before asking for seed authorization.
