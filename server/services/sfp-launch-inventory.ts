@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { sfpLaunchPresentationFingerprint } from "./cro03/sfp-launch-presentation";
 import { sql } from "drizzle-orm";
 import { db } from "../db";
 import { effectiveBusinessVerticalSql, effectiveBusinessVerticalStatusSql } from "@shared/effective-vertical";
@@ -74,7 +75,9 @@ export function computeBindingHash(binding: RecipientBinding): string {
   const b = binding;
   return createHash("sha256").update(JSON.stringify([
     b.intentId, b.contactId, b.emailHash, b.emailGeneration, b.businessId, b.programId, b.sequenceId, b.vertical,
-    b.county, b.packageVersionId, b.contentHash, b.policyVersion, b.businessFingerprint])).digest("hex");
+    b.county, b.packageVersionId, b.contentHash, b.policyVersion, b.businessFingerprint,
+    // Rendered presentation is part of what the administrator approves; a change invalidates approvals and held releases.
+    sfpLaunchPresentationFingerprint()])).digest("hex");
 }
 
 /** Reasons a held, ended journey may be continued by an explicit new release. Revoked journeys are not listed. */

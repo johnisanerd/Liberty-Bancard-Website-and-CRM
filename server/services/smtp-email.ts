@@ -353,7 +353,8 @@ async function _sendSmtpEmailInner(params: {
 
   try {
     const info = await transport.sendMail({
-      from: fromAddress,
+      // Cold outreach shows the sender policy's person name (Scott Stevenson); the mailbox address is unchanged.
+      from: params.category === "cold_outreach" ? `"${resolvePolicy("cold_outreach").displayName.replace(/["\\]/g, "")}" <${fromAddress}>` : fromAddress,
       to: effectiveTo,
       subject: effectiveSubject,
       html: params.html,

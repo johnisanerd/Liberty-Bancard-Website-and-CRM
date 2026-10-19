@@ -158,7 +158,10 @@ try {
   check(/^From: .*Scott@mail\.libertybancard\.com/mi.test(m1) && /^Reply-To: .*Scott@mail\.libertybancard\.com/mi.test(m1), "Sender policy supplies From and Reply-To");
   check(/List-Unsubscribe:\s*<https:\/\/liberty\.example\.test\/unsubscribe\?t=/i.test(m1) && /List-Unsubscribe-Post: List-Unsubscribe=One-Click/i.test(m1), "Signed List-Unsubscribe and one-click headers are present");
   const decoded = m1.replace(/=\r\n/g, "").replace(/=3D/g, "=");
-  check(decoded.includes("Hi Maria,") && decoded.includes("https://libertybancard.com/upload-statement"), "Body is rendered with the person greeting and secure upload CTA");
+  check(decoded.includes("Hi Maria,") && !decoded.includes("upload-statement") && /interested in a free statement review/.test(decoded), "Touch 1 is rendered reply-first with the person greeting and no upload CTA");
+  check(/^From: "?Scott Stevenson"? <Scott@mail\.libertybancard\.com>/mi.test(m1), "From carries the Scott Stevenson display name");
+  check((decoded.match(/data-sfp-signature/g) ?? []).length === 1 && (decoded.match(/<img\b/g) ?? []).length === 1 && decoded.includes('alt="Liberty Bancard logo"')
+    && decoded.indexOf("<img") < decoded.indexOf("data-can-spam-footer"), "One signature, one logo with alt text, above the single transport footer");
   check(!/\{\{|undefined/.test(decoded), "No unresolved token ships");
   check(decoded.includes("Commercial message from Liberty Bancard") && decoded.includes("100 Test Way"), "One footer with commercial notice and postal address");
   check((decoded.match(/data-can-spam-footer/g) ?? []).length === 1, "Exactly one footer");

@@ -4,7 +4,7 @@
  */
 import { renderTemplate, plainHtmlToEmailHtml } from "./message-render";
 import { resolvePolicy } from "./sender-policy";
-import { SFP_LAUNCH_ALLOWED_HOSTS } from "./cro03/sfp-launch-content";
+import { SFP_LAUNCH_ALLOWED_HOSTS, applySfpLaunchPresentation } from "./cro03/sfp-launch-presentation";
 
 export interface SfpLaunchRecipientFacts {
   firstName?: string | null; lastName?: string | null; companyName?: string | null; email?: string | null;
@@ -24,8 +24,14 @@ type Ctx = ReturnType<typeof sfpLaunchRenderContext>;
 export const renderSfpLaunchSubject = (text: string | null | undefined, ctx: Ctx) =>
   renderTemplate(text ?? "", ctx, { format: "subject", required: ["companyName"] }).output;
 
-export const renderSfpLaunchBodyHtml = (text: string | null | undefined, ctx: Ctx) =>
-  plainHtmlToEmailHtml(
-    renderTemplate(text ?? "", ctx, { format: "html", required: ["companyName", "agentName", "agentPhone"] }).output,
+/**
+ * Finished launch body: the step's paragraphs plus the shared signature and logo. The step text itself carries no
+ * signature (the presentation owns it, so it can never appear twice) and the transport adds the one footer.
+ */
+export const renderSfpLaunchBodyHtml = (text: string | null | undefined, ctx: Ctx) => {
+  const body = plainHtmlToEmailHtml(
+    renderTemplate(text ?? "", ctx, { format: "html", required: ["companyName"] }).output,
     SFP_LAUNCH_ALLOWED_HOSTS,
   );
+  return applySfpLaunchPresentation(body, { agentName: ctx.agentName, agentPhone: ctx.agentPhone });
+};

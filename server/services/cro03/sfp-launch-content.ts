@@ -7,15 +7,21 @@
  * only into the package's own campaign/sequence steps, and a NEW immutable
  * package version (new content hash) supersedes the previous current one.
  *
- * Token vocabulary is limited to {{companyName}}, {{firstName}} (greeting
- * only), {{agentName}} and {{agentPhone}}; the shared renderer rejects anything
- * else. There is no SMS, call or voicemail step, no savings figure and no
- * statistic. The only CTA is the secure upload page.
+ * Token vocabulary is limited to {{companyName}} and {{firstName}} (greeting
+ * only); the shared renderer rejects anything else. The signature and logo are
+ * added by the shared presentation (sfp-launch-presentation), never by step
+ * text. There is no SMS, call or voicemail step, no savings figure and no
+ * statistic. The first email asks for a reply; the secure upload page is the
+ * CTA of the follow-ups.
  */
 import { sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { db } from "../../db";
-import { renderTemplate, plainHtmlToEmailHtml, RenderError } from "../message-render";
+import { renderTemplate, RenderError } from "../message-render";
+import { renderSfpLaunchBodyHtml, renderSfpLaunchSubject, sfpLaunchRenderContext } from "../sfp-launch-render";
+import {
+  SFP_LAUNCH_ALLOWED_HOSTS, SFP_LAUNCH_PRESENTATION_VERSION, applySfpLaunchPresentationText,
+} from "./sfp-launch-presentation";
 import {
   SFP_PACKAGE_KEYS_V2,
   type SfpPackageKeyV2,
@@ -26,12 +32,11 @@ import {
 const rows = (r: any): any[] => r?.rows ?? r ?? [];
 
 export const SFP_SECURE_UPLOAD_URL = "https://libertybancard.com/upload-statement";
-export const SFP_LAUNCH_ALLOWED_HOSTS = ["libertybancard.com"];
-export const SFP_LAUNCH_CONTENT_VERSION = "sfp-launch-content-2026-10-19.1";
+export { SFP_LAUNCH_ALLOWED_HOSTS };
+export const SFP_LAUNCH_CONTENT_VERSION = "sfp-launch-content-2026-10-19.2";
 export const SFP_LAUNCH_SEQUENCE_FAMILY_PREFIX = "sfp-v2-cold-";
 export const SFP_LAUNCH_STEP_DELAYS_DAYS = [0, 3, 5] as const;
 
-const SIGNOFF = "{{agentName}}\nLiberty Bancard\n{{agentPhone}}";
 
 interface VerticalSource {
   campaignName: string;
@@ -100,21 +105,21 @@ export function buildLaunchStepDrafts(packageKey: SfpPackageKeyV2): LaunchStepDr
   const core = (extra: number[]) => ({ sourceCampaignName: CORE_SOURCE, sourceCampaignStepOrders: extra });
   return [
     {
-      stepOrder: 1, touch: "intro", subject: v.subject, delayDays: SFP_LAUNCH_STEP_DELAYS_DAYS[0], cta: SFP_SECURE_UPLOAD_URL,
-      body: `Hi {{firstName}},\n\n${v.opener}\n\nThe review separates network costs, processor markup and fixed fees. There’s no obligation to switch, and we’ll tell you if your current pricing is already competitive.\n\nWould a free statement review be useful? You can use our secure upload page: ${SFP_SECURE_UPLOAD_URL}\n\n${SIGNOFF}`,
+      stepOrder: 1, touch: "intro", subject: v.subject, delayDays: SFP_LAUNCH_STEP_DELAYS_DAYS[0], cta: "reply",
+      body: `Hi {{firstName}},\n\n${v.opener}\n\nThe review separates network costs, processor markup and fixed fees. There’s no obligation to switch, and we’ll tell you if your current pricing is already competitive.\n\nWould you be interested in a free statement review? A quick reply is all I need to get started.`,
       sourceCampaignName: v.verticalSource.campaignName,
       sourceCampaignStepOrders: v.verticalSource.stepOrders,
-      reason: `${v.reasonOpener} Statement-review core from SDR-01 step 1; replaced “forward your statement to {{agentEmail}}” with the secure upload page; removed “10 minutes”/“true effective rate” promises.`,
+      reason: `${v.reasonOpener} Statement-review core from SDR-01 step 1; reply-first intro (the secure upload page moved to the follow-ups; no statement-forwarding instruction); removed “10 minutes”/“true effective rate” promises.`,
     },
     {
       stepOrder: 2, touch: "follow_up", subject: "A clearer breakdown of your processing fees", delayDays: SFP_LAUNCH_STEP_DELAYS_DAYS[1], cta: SFP_SECURE_UPLOAD_URL,
-      body: `Hello,\n\nFollowing up on my note about {{companyName}}. A statement review shows your total effective rate as well as the individual fees behind it, so you can compare options using the same transaction volume.\n\nIf you’d like that breakdown, our secure upload page is ${SFP_SECURE_UPLOAD_URL}. Please use the form rather than emailing financial documents.\n\n${SIGNOFF}`,
+      body: `Hello,\n\nFollowing up on my note about {{companyName}}. A statement review shows your total effective rate as well as the individual fees behind it, so you can compare options using the same transaction volume.\n\nIf you’d like that breakdown, our secure upload page is ${SFP_SECURE_UPLOAD_URL}. Please use the form rather than emailing financial documents.`,
       ...core([2]),
       reason: "SDR-01 step 2 follow-up: removed fake “Re:” subject prefix, the $50K/month illustration and the instruction to email a statement; one secure-upload CTA; fixed generic greeting.",
     },
     {
       stepOrder: 3, touch: "close_loop", subject: "Should I close the loop?", delayDays: SFP_LAUNCH_STEP_DELAYS_DAYS[2], cta: SFP_SECURE_UPLOAD_URL,
-      body: `Hello,\n\nI’ll close the loop on my processing-review offer for {{companyName}}. If it would be useful later, you can request a review at ${SFP_SECURE_UPLOAD_URL}.\n\nNo need to reply if the timing isn’t right. This is my final follow-up on this offer.\n\n${SIGNOFF}`,
+      body: `Hello,\n\nI’ll close the loop on my processing-review offer for {{companyName}}. If it would be useful later, you can request a review at ${SFP_SECURE_UPLOAD_URL}.\n\nNo need to reply if the timing isn’t right. This is my final follow-up on this offer.`,
       ...core([5]),
       reason: "SDR-01 step 5 breakup: removed the “24 hours” turnaround and “Florida and the Southeast” claims and the email-a-statement CTA; skipped SDR-01 steps 3-4 (unsupported “2.6% quoted vs 3.4% actual” and “hundreds/70-30” claims).",
     },
@@ -138,23 +143,26 @@ const PREVIEW_CONTACTS: Record<PreviewAudience, { firstName: string | null; emai
   missing_name: { firstName: null, email: "owner-office@example-business.test" },
 };
 
+/**
+ * Finished preview: goes through the same renderer, sender identity and presentation (signature + logo) the sequence
+ * worker and the seed test use. The transport adds the one compliance footer at send time, so none is shown here.
+ */
 export function renderLaunchPreview(
   packageKey: SfpPackageKeyV2,
   audience: PreviewAudience,
   companyName = "Example Business",
-  sender = { agentName: "Scott Stevenson", agentPhone: "954-266-8214" },
 ): RenderedPreview[] {
   const c = PREVIEW_CONTACTS[audience];
+  const ctx = sfpLaunchRenderContext({ firstName: c.firstName, email: c.email, companyName });
   return buildLaunchStepDrafts(packageKey).map((s) => {
-    const ctx = { firstName: c.firstName, email: c.email, companyName, ...sender, agentEmail: "Scott@mail.libertybancard.com" };
-    const html = renderTemplate(s.body, ctx, { format: "html", required: ["companyName", "agentName", "agentPhone"] });
-    const text = renderTemplate(s.body, ctx, { format: "text", required: ["companyName", "agentName", "agentPhone"] });
+    const greeting = renderTemplate(s.body, ctx, { format: "html", required: ["companyName"] }).greeting;
+    const text = renderTemplate(s.body, ctx, { format: "text", required: ["companyName"] }).output;
     return {
       stepOrder: s.stepOrder,
-      subject: renderTemplate(s.subject, ctx, { format: "subject", required: ["companyName"] }).output,
-      html: plainHtmlToEmailHtml(html.output, SFP_LAUNCH_ALLOWED_HOSTS),
-      text: text.output,
-      greeting: html.greeting,
+      subject: renderSfpLaunchSubject(s.subject, ctx),
+      html: renderSfpLaunchBodyHtml(s.body, ctx),
+      text: applySfpLaunchPresentationText(text, { agentName: ctx.agentName, agentPhone: ctx.agentPhone }),
+      greeting,
     };
   });
 }
@@ -189,6 +197,11 @@ export async function checkPackageContentReadiness(
     if (i === 0 && Number(s.delay_days ?? 0) !== 0) issues.push("FIRST_STEP_DELAYED");
     if (i > 0 && Number(s.delay_days ?? 0) < 1) issues.push(`FOLLOW_UP_NOT_RELATIVELY_DELAYED:${s.step_order}`);
     const ctxProbe = { firstName: "Maria", email: "maria@example-business.test", companyName: "Probe Co", agentName: "Probe", agentPhone: "000", agentEmail: "p@x.test" };
+    // The shared presentation owns the signature; step text carrying its own would print it twice.
+    if (/\{\{\s*(?:contact\.)?agent_?(?:name|phone|email)\s*\}\}/i.test(String(s.body ?? ""))
+      || /data-sfp-signature|data-can-spam-footer/i.test(String(s.body ?? ""))) issues.push(`DUPLICATE_SIGNATURE_OR_FOOTER_IN_STEP:${s.step_order}`);
+    // Reply-first: the secure upload link belongs to the follow-ups, not the first email.
+    if (i === 0 && String(s.body ?? "").includes(SFP_SECURE_UPLOAD_URL)) issues.push("UPLOAD_CTA_IN_FIRST_EMAIL");
     try {
       renderTemplate(String(s.body ?? ""), ctxProbe, { format: "html" });
       renderTemplate(String(s.subject ?? ""), ctxProbe, { format: "subject" });
@@ -243,11 +256,27 @@ async function sourceIdentity(exec: { execute: (q: any) => Promise<any> }, campa
   };
 }
 
+/** Copies one row (every column except id) with overrides; used to publish content into new immutable rows. */
+async function cloneRow(tx: { execute: (q: any) => Promise<any> }, table: "campaigns" | "follow_up_sequences", id: number, overrides: Record<string, unknown>): Promise<number> {
+  const cols = rows(await tx.execute(sql`SELECT column_name FROM information_schema.columns
+    WHERE table_schema='public' AND table_name=${table} AND column_name<>'id' AND is_generated='NEVER' AND is_identity='NO' ORDER BY ordinal_position`))
+    .map((r) => String(r.column_name));
+  if (!cols.length) throw new Error(`SFP_CLONE_NO_COLUMNS:${table}`);
+  for (const k of Object.keys(overrides)) if (!cols.includes(k)) throw new Error(`SFP_CLONE_UNKNOWN_COLUMN:${table}.${k}`);
+  const list = sql.raw(cols.map((c) => `"${c.replace(/"/g, '""')}"`).join(","));
+  const out = rows(await tx.execute(sql`
+    INSERT INTO ${sql.raw(table)} (${list})
+    SELECT ${list} FROM jsonb_populate_record(NULL::${sql.raw(table)}, (SELECT to_jsonb(t) FROM ${sql.raw(table)} t WHERE t.id=${id}) || ${JSON.stringify(overrides)}::jsonb)
+    RETURNING id`));
+  if (!out[0]) throw new Error(`SFP_CLONE_FAILED:${table}`);
+  return Number(out[0].id);
+}
+
 async function populateOne(packageKey: SfpPackageKeyV2, opts: { actorId: string; dryRun?: boolean }): Promise<PopulateResultRow> {
   const drafts = buildLaunchStepDrafts(packageKey);
   return db.transaction(async (tx) => {
     const pkg = rows(await tx.execute(sql`
-      SELECT id,vertical,campaign_id,campaign_name,sequence_id,sequence_name,sequence_family
+      SELECT id,vertical,campaign_id,campaign_name,sequence_id,sequence_name,sequence_family,content_hash,notes
         FROM sfp_campaign_package_versions WHERE package_key=${packageKey} AND lifecycle_state='current' FOR UPDATE`))[0];
     if (!pkg) return { packageKey, status: "skipped_needs_review" as const, reason: "NO_CURRENT_PACKAGE_VERSION: run package convergence first" };
     if (!String(pkg.sequence_family).startsWith(SFP_LAUNCH_SEQUENCE_FAMILY_PREFIX)) {
@@ -273,11 +302,23 @@ async function populateOne(packageKey: SfpPackageKeyV2, opts: { actorId: string;
     const sameAsDrafts = existing.length === drafts.length && drafts.every((d, i) =>
       existing[i].subject === d.subject && existing[i].body === d.body && Number(existing[i].delay_days) === d.delayDays && existing[i].action_type === "email");
     const readiness = await checkPackageContentReadiness(tx, campaignId, sequenceId);
-    if (sameAsDrafts && readiness.ok) {
+    // Same step text is not enough: a changed shared presentation changes the live hash, so it republishes too.
+    const liveHash = await computeLivePackageContentHash(tx, campaignId, sequenceId);
+    let pinnedNotes: any = null;
+    try { pinnedNotes = JSON.parse(String(pkg.notes ?? "")); } catch { /* legacy notes */ }
+    const versionsMoved = pinnedNotes?.contentVersion !== SFP_LAUNCH_CONTENT_VERSION || pinnedNotes?.presentationVersion !== SFP_LAUNCH_PRESENTATION_VERSION;
+    if (sameAsDrafts && readiness.ok && liveHash === String(pkg.content_hash) && !versionsMoved) {
       return { packageKey, status: "already_current" as const, packageVersionId: String(pkg.id) };
     }
-    if (existing.length > 0) {
-      return { packageKey, status: "skipped_needs_review" as const, reason: `PINNED_SEQUENCE_ALREADY_HAS_DIFFERENT_STEPS(${existing.length}): publish a new package sequence instead of mutating content in place` };
+    // A pinned sequence that already has different steps is never edited in place: republish into a NEW draft
+    // campaign and paused sequence (cloned from the old rows) and pin a new package version to them.
+    const republish = existing.length > 0;
+    if (republish) {
+      // Only an intended content/presentation version bump may republish (the old rows stay untouched and are
+      // superseded). The same versions with different live content is drift (an edit nobody published) and stays a refusal.
+      if (!versionsMoved) {
+        return { packageKey, status: "skipped_needs_review" as const, reason: `PINNED_SEQUENCE_ALREADY_HAS_DIFFERENT_STEPS(${existing.length}): live content differs from the pinned version without a content/presentation version change (drift needs review)` };
+      }
     }
 
     const map = drafts.map((d) => ({
@@ -287,30 +328,41 @@ async function populateOne(packageKey: SfpPackageKeyV2, opts: { actorId: string;
     }));
     if (opts.dryRun) return { packageKey, status: "would_populate" as const, map };
 
+    let targetCampaignId = campaignId, targetSequenceId = sequenceId;
+    let targetCampaignName = String(pkg.campaign_name), targetSequenceName = String(pkg.sequence_name);
+    const description = `South Florida v2 ${pkg.vertical} launch content (${SFP_LAUNCH_CONTENT_VERSION}); draft until separately approved. Content sources: ${CORE_SOURCE}, ${vSource.campaignName}.`;
+    if (republish) {
+      const revisionTag = SFP_LAUNCH_CONTENT_VERSION.replace(/^sfp-launch-content-/, "");
+      targetCampaignName = `${String(pkg.campaign_name).replace(/ \(launch [^)]*\)$/, "")} (launch ${revisionTag})`;
+      targetSequenceName = `${String(pkg.sequence_name).replace(/ — launch .*$/, "")} — launch ${revisionTag}`;
+      targetCampaignId = await cloneRow(tx, "campaigns", campaignId, { name: targetCampaignName, status: "draft", total_steps: drafts.length, content_revision: 1, description });
+      targetSequenceId = await cloneRow(tx, "follow_up_sequences", sequenceId, { name: targetSequenceName, status: "paused", total_steps: drafts.length });
+    }
     for (const d of drafts) {
       await tx.execute(sql`INSERT INTO campaign_steps (campaign_id,step_order,step_type,delay_days,subject,body_template,use_ai_personalization,channel)
-        VALUES (${campaignId},${d.stepOrder},${d.touch === "intro" ? "initial_outreach" : d.touch === "follow_up" ? "follow_up" : "breakup"},${d.delayDays},${d.subject},${d.body},FALSE,'email')`);
+        VALUES (${targetCampaignId},${d.stepOrder},${d.touch === "intro" ? "initial_outreach" : d.touch === "follow_up" ? "follow_up" : "breakup"},${d.delayDays},${d.subject},${d.body},FALSE,'email')`);
       await tx.execute(sql`INSERT INTO sequence_steps (sequence_id,step_order,action_type,delay_days,delay_hours,subject,body,config)
-        VALUES (${sequenceId},${d.stepOrder},'email',${d.delayDays},0,${d.subject},${d.body},
-          ${JSON.stringify({ format: "plain_text", contentVersion: SFP_LAUNCH_CONTENT_VERSION, touch: d.touch, source: { campaign: d.sourceCampaignName, stepOrders: d.sourceCampaignStepOrders } })}::jsonb)`);
+        VALUES (${targetSequenceId},${d.stepOrder},'email',${d.delayDays},0,${d.subject},${d.body},
+          ${JSON.stringify({ format: "plain_text", contentVersion: SFP_LAUNCH_CONTENT_VERSION, presentationVersion: SFP_LAUNCH_PRESENTATION_VERSION, touch: d.touch, source: { campaign: d.sourceCampaignName, stepOrders: d.sourceCampaignStepOrders } })}::jsonb)`);
     }
     await tx.execute(sql`UPDATE campaigns SET total_steps=${drafts.length}, content_revision=content_revision+1,
-      description=${`South Florida v2 ${pkg.vertical} launch content (${SFP_LAUNCH_CONTENT_VERSION}); draft until separately approved. Content sources: ${CORE_SOURCE}, ${vSource.campaignName}.`},
-      updated_at=NOW() WHERE id=${campaignId}`);
-    await tx.execute(sql`UPDATE follow_up_sequences SET total_steps=${drafts.length} WHERE id=${sequenceId}`);
+      description=${description},
+      updated_at=NOW() WHERE id=${targetCampaignId}`);
+    await tx.execute(sql`UPDATE follow_up_sequences SET total_steps=${drafts.length} WHERE id=${targetSequenceId}`);
 
-    const after = await checkPackageContentReadiness(tx, campaignId, sequenceId);
+    const after = await checkPackageContentReadiness(tx, targetCampaignId, targetSequenceId);
     if (!after.ok) throw new Error(`SFP_LAUNCH_CONTENT_NOT_READY:${after.issues.join("|")}`);
 
-    const contentHash = await computeLivePackageContentHash(tx, campaignId, sequenceId);
+    const contentHash = await computeLivePackageContentHash(tx, targetCampaignId, targetSequenceId);
     await tx.execute(sql`UPDATE sfp_campaign_package_versions SET lifecycle_state='superseded',superseded_at=NOW(),updated_at=NOW() WHERE id=${String(pkg.id)}::uuid`);
     const inserted = rows(await tx.execute(sql`
       INSERT INTO sfp_campaign_package_versions
         (package_key,vertical,campaign_id,campaign_name,sequence_id,sequence_name,sequence_family,content_hash,lifecycle_state,effective_at,actor_id,notes)
-      VALUES (${packageKey},${pkg.vertical},${campaignId},${pkg.campaign_name},${sequenceId},${pkg.sequence_name},${pkg.sequence_family},${contentHash},
-              'current',NOW(),${opts.actorId},${JSON.stringify({ contentVersion: SFP_LAUNCH_CONTENT_VERSION, map })})
+      VALUES (${packageKey},${pkg.vertical},${targetCampaignId},${targetCampaignName},${targetSequenceId},${targetSequenceName},${pkg.sequence_family},${contentHash},
+              'current',NOW(),${opts.actorId},${JSON.stringify({ contentVersion: SFP_LAUNCH_CONTENT_VERSION, presentationVersion: SFP_LAUNCH_PRESENTATION_VERSION, republished: republish, map })})
       RETURNING id`))[0];
-    return { packageKey, status: "populated" as const, packageVersionId: String(inserted.id), contentHash, supersededVersionId: String(pkg.id), map };
+    return { packageKey, status: "populated" as const, packageVersionId: String(inserted.id), contentHash, supersededVersionId: String(pkg.id), map,
+      ...(republish ? { reason: `REPUBLISHED_INTO_NEW_DRAFT_CAMPAIGN_AND_PAUSED_SEQUENCE(campaign=${targetCampaignId},sequence=${targetSequenceId})` } : {}) };
   });
 }
 

@@ -17,6 +17,7 @@
  * authorities, unchanged by this task.
  */
 
+import { sfpLaunchPresentationFingerprint } from "./sfp-launch-presentation";
 import { sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { db } from "../../db";
@@ -158,7 +159,9 @@ export async function computeLivePackageContentHash(
     SELECT step_order, action_type, subject, body, delay_days, delay_hours, config
     FROM sequence_steps WHERE sequence_id = ${sequenceId} ORDER BY step_order ASC
   `));
-  return sha256({ campaignRow, campaignStepRows, sequenceRow, sequenceStepRows });
+  // The shared launch presentation (signature, logo, links) is part of what a recipient sees, so it is versioned
+  // content: changing it changes this hash and stales every preparation/approval pinned to the old one.
+  return sha256({ campaignRow, campaignStepRows, sequenceRow, sequenceStepRows, presentation: sfpLaunchPresentationFingerprint() });
 }
 
 /**

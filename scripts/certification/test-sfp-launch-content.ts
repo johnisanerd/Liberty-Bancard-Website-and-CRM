@@ -52,12 +52,19 @@ try {
       check(steps.length === 3, `${key}/${audience}: three email touches`);
       steps.forEach((s) => {
         for (const re of forbidden) assert(!re.test(s.subject) && !re.test(s.text) && !re.test(s.html), `${key}/${audience}/${s.stepOrder}: forbidden ${re}`);
-        assert(s.text.includes(content.SFP_SECURE_UPLOAD_URL), `${key}/${audience}/${s.stepOrder}: secure upload CTA present`);
-        assert((s.text.match(/https?:\/\//g) ?? []).length === 1, `${key}/${audience}/${s.stepOrder}: exactly one URL`);
-        assert(/Scott Stevenson\nLiberty Bancard\n954-266-8214$/.test(s.text), `${key}/${audience}/${s.stepOrder}: single sign-off`);
-        assert(s.html.includes(`<a href="${content.SFP_SECURE_UPLOAD_URL}">`), `${key}/${audience}/${s.stepOrder}: link rendered`);
+        const first = s.stepOrder === 1;
+        assert(s.text.includes(content.SFP_SECURE_UPLOAD_URL) === !first, `${key}/${audience}/${s.stepOrder}: upload CTA only in follow-ups`);
+        assert((s.text.match(/https?:\/\//g) ?? []).length === (first ? 0 : 1), `${key}/${audience}/${s.stepOrder}: URL count`);
+        assert(/Scott Stevenson\nLiberty Bancard\n954-266-8214 \| libertybancard\.com$/.test(s.text), `${key}/${audience}/${s.stepOrder}: single polished signature (text)`);
+        assert((s.text.match(/Liberty Bancard/g) ?? []).length === 1 + Number(/Liberty Bancard about/.test(s.text)), `${key}/${audience}/${s.stepOrder}: one signature in text`);
+        assert((s.html.match(/data-sfp-signature/g) ?? []).length === 1, `${key}/${audience}/${s.stepOrder}: one signature block in html`);
+        assert(!/data-can-spam-footer/.test(s.html), `${key}/${audience}/${s.stepOrder}: no footer in the rendered body (transport adds the one footer)`);
+        assert(s.html.indexOf("<img") > s.html.indexOf("954-266-8214") && s.html.includes('alt="Liberty Bancard logo"') && (s.html.match(/<img/g) ?? []).length === 1,
+          `${key}/${audience}/${s.stepOrder}: single logo beneath the signature with alt text`);
+        assert(first ? !s.html.includes("upload-statement") : s.html.includes(`<a href="${content.SFP_SECURE_UPLOAD_URL}">`), `${key}/${audience}/${s.stepOrder}: link rendered where expected`);
+        assert(!/\{\{|\}\}|undefined/.test(s.html + s.text + s.subject), `${key}/${audience}/${s.stepOrder}: no unresolved placeholders`);
       });
-      checks += 3 * 5;
+      checks += 3 * 12;
       if (audience === "named_contact") check(steps[0].text.startsWith("Hi Maria,"), `${key}: touch 1 greets a named contact`);
       else check(steps[0].text.startsWith("Hello,"), `${key}/${audience}: touch 1 renders Hello,`);
       check(steps[1].text.startsWith("Hello,") && steps[2].text.startsWith("Hello,"), `${key}/${audience}: follow-ups use the generic greeting`);
@@ -121,6 +128,28 @@ try {
   check(!drift.ok && drift.packages.some(p => p.issues.includes("PINNED_HASH_DIFFERS_FROM_LIVE_CONTENT")), "Live content that differs from its pinned hash fails readiness");
   const drifted = await content.populateSfpLaunchContentV2({ actorId: "cert" });
   check(drifted.find(r => r.packageKey === "sfp.automotive.v2")?.status === "skipped_needs_review", "Populate refuses to overwrite different existing steps in place");
+
+  // Versioned republish: a content/presentation version bump publishes into NEW rows and leaves the old ones intact.
+  await pool.query(`UPDATE sequence_steps SET body=replace(body,' edited','') WHERE sequence_id=$1 AND step_order=2`, [emptySeq]);
+  const beforeRepublish = (await pool.query(`SELECT v.package_key, v.id, v.sequence_id, v.campaign_id, v.content_hash FROM sfp_campaign_package_versions v WHERE lifecycle_state='current' ORDER BY package_key`)).rows;
+  const oldStepHash = (await pool.query(`SELECT md5(string_agg(subject||body,'|' ORDER BY step_order)) h FROM sequence_steps WHERE sequence_id=$1`, [emptySeq])).rows[0].h;
+  await pool.query(`UPDATE sfp_campaign_package_versions SET notes='{"contentVersion":"legacy-1","map":[]}' WHERE lifecycle_state='current'`);
+  const republished = await content.populateSfpLaunchContentV2({ actorId: "cert" });
+  check(republished.every(r => r.status === "populated"), `A content/presentation version change republishes every package (${JSON.stringify(republished.map(r => r.reason ?? r.status))})`);
+  const afterRepublish = (await pool.query(`SELECT v.package_key, v.id, v.sequence_id, v.campaign_id, v.content_hash FROM sfp_campaign_package_versions v WHERE lifecycle_state='current' ORDER BY package_key`)).rows;
+  check(afterRepublish.every((a: any, i: number) => a.id !== beforeRepublish[i].id && a.sequence_id !== beforeRepublish[i].sequence_id
+    && a.campaign_id !== beforeRepublish[i].campaign_id), "Republish pins a new version, campaign and sequence");
+  check((await pool.query(`SELECT md5(string_agg(subject||body,'|' ORDER BY step_order)) h FROM sequence_steps WHERE sequence_id=$1`, [emptySeq])).rows[0].h === oldStepHash, "The superseded sequence's steps are untouched");
+  check((await pool.query(`SELECT status FROM follow_up_sequences s JOIN sfp_campaign_package_versions v ON v.sequence_id=s.id WHERE v.lifecycle_state='current'`)).rows.every((r: any) => r.status === "paused"), "Republished sequences are paused");
+  check((await content.verifySfpLaunchContentV2()).ok, "Republished packages verify");
+  check((await content.populateSfpLaunchContentV2({ actorId: "cert" })).every(r => r.status === "already_current"), "Republish is idempotent");
+  // The presentation is part of the pinned hash: a different presentation fingerprint changes the live hash.
+  const pres = await import("../../server/services/cro03/sfp-launch-presentation");
+  const sig = pres.renderSfpLaunchSignatureHtml({ agentName: "A", agentPhone: "1" });
+  check(pres.sfpLaunchPresentationFingerprint().length === 64 && sig.includes(pres.SFP_LAUNCH_LOGO_URL), "Presentation fingerprint is derived from the rendered signature markup");
+  let dup = false;
+  try { pres.applySfpLaunchPresentation(`<p>x</p>${sig}`, { agentName: "A", agentPhone: "1" }); } catch { dup = true; }
+  check(dup, "A body that already carries a signature is refused");
 
   check(getBlockedCertificationNetworkAttemptCount() === 0, "No provider or network call was attempted");
   console.log(`PASS SFP launch content (${checks} checks)`);

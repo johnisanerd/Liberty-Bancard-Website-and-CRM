@@ -265,6 +265,16 @@ check(msg.all.includes(preview.subject) || msg.header("Subject")?.includes(previ
 const plainBody = preview.html.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim().slice(0, 40);
 check(msg.all.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").includes(plainBody), "It carries the same rendered body the sequence worker would send");
 check(/data-can-spam-footer/.test(msg.all) && msg.all.includes("100 Test Way, Miami, FL 33130") && msg.all.includes("Commercial message from Liberty Bancard"), "The transport added the compliance footer and mailing address");
+// Finished customer format: exactly the sequence worker's rendering, through the real transport.
+const norm = msg.all.replace(/\r\n/g, "\n");
+const occurs = (re: RegExp) => (norm.match(re) ?? []).length;
+check(/^"?Scott Stevenson"?\s*</.test(msg.header("From") ?? ""), "The From display name is Scott Stevenson");
+check(occurs(/data-sfp-signature/g) === 1 && occurs(/data-can-spam-footer/g) === 1, "The HTML part has one signature and one transport footer");
+check(occurs(/\[CAN-SPAM-FOOTER\]/g) === 1 && occurs(/Scott Stevenson\nLiberty Bancard\n954-266-8214 \| libertybancard\.com/g) === 1, "The plain-text part has one signature and one transport footer");
+check(occurs(/<img\b/g) === 1 && msg.all.includes('src="https://libertybancard.com/logo-blue.png"') && msg.all.includes('alt="Liberty Bancard logo"'), "One small existing logo with descriptive alt text");
+check(msg.all.indexOf("<img") > msg.all.indexOf("data-sfp-signature") && msg.all.indexOf("<img") < msg.all.indexOf("data-can-spam-footer"), "The logo sits beneath the signature and above the transport footer");
+check(!/\{\{|\}\}|undefined|\[object/.test(msg.all), "No unresolved placeholders reach the recipient");
+check(msg.all.includes('<a href="https://libertybancard.com"'), "The signature website link is present");
 const unsubUrl = /https:\/\/liberty\.example\.test\/unsubscribe\?t=([^"\s<>]+)/.exec(msg.all);
 check(!!unsubUrl && decodeURIComponent(unsubUrl[1]).startsWith("seed."), "The footer's unsubscribe link is a seed link, not a contact link");
 check(/<https:\/\/liberty\.example\.test\/unsubscribe\?t=seed\./.test(msg.header("List-Unsubscribe") ?? ""), "The List-Unsubscribe header carries the same seed link");
