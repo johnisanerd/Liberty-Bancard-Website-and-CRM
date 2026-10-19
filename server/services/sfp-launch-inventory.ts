@@ -80,7 +80,22 @@ export function computeBindingHash(binding: RecipientBinding): string {
 /** Reasons a held, ended journey may be continued by an explicit new release. Revoked journeys are not listed. */
 export const CONTINUABLE_ENDED_REASONS = ["journey_expired", "package_content_changed", "validation_not_current"] as const;
 
-async function evaluateLaunchRows(opts: { intentIds?: string[]; mode?: "release" | "dispatch" } = {}): Promise<{ results: Row[] }> {
+/** Applies the shared contact/promotion/hygiene/send decision to one row that passed every recorded-fact gate. */
+async function applyContactPolicy(row: Row): Promise<void> {
+  try {
+    const decisions = await evaluateContactDecisions(
+      { contactId: row.contactId, businessId: row.businessId, channel: "email", mode: "dryRun" });
+    const blocked = [decisions.promotion, decisions.dataHygiene, decisions.send]
+      .find(d => d && d.status !== "eligible");
+    if (blocked) row.failure = { gate: "contact_policy", code: blocked.reasonCodes[0] ?? "CONTACT_POLICY_HOLD" };
+  } catch {
+    row.failure = { gate: "contact_policy", code: "contact_policy_unreadable" };
+  }
+}
+
+async function evaluateLaunchRows(
+  opts: { intentIds?: string[]; mode?: "release" | "dispatch"; deferPolicy?: boolean } = {},
+): Promise<{ results: Row[] }> {
   const mode = opts.mode ?? "release";
   const policy = await getActiveSfpOutreachPolicy({ bypassCache: true });
   const VERT = effectiveBusinessVerticalSql("b");
@@ -198,19 +213,12 @@ async function evaluateLaunchRows(opts: { intentIds?: string[]; mode?: "release"
       evidence: { validationOperationId: r.obs_operation_id ?? null, linkDecisionId: r.link_decision_id ?? null } };
   });
 
-  // Consent, hygiene and promotion rules come from the same authority recipient preparation uses.
-  const remaining = results.filter(r => !r.failure);
-  await mapWithConcurrency(remaining, POLICY_CONCURRENCY, async row => {
-    try {
-      const decisions = await evaluateContactDecisions(
-        { contactId: row.contactId, businessId: row.businessId, channel: "email", mode: "dryRun" });
-      const blocked = [decisions.promotion, decisions.dataHygiene, decisions.send]
-        .find(d => d && d.status !== "eligible");
-      if (blocked) row.failure = { gate: "contact_policy", code: blocked.reasonCodes[0] ?? "CONTACT_POLICY_HOLD" };
-    } catch {
-      row.failure = { gate: "contact_policy", code: "contact_policy_unreadable" };
-    }
-  });
+  // Consent, hygiene and promotion rules come from the same authority recipient preparation uses. Evaluating them
+  // costs a few hundred milliseconds per recipient, so callers that only need the first N recipients defer it and
+  // apply it row by row (`applyContactPolicy`); the full inventory count still evaluates every remaining row.
+  if (!opts.deferPolicy) {
+    await mapWithConcurrency(results.filter(r => !r.failure), POLICY_CONCURRENCY, applyContactPolicy);
+  }
 
   return { results };
 }
@@ -348,8 +356,23 @@ export interface QualifiedReadyHeldRecipient {
  * one per normalized address; a business or address that already has a journey in flight is skipped. Distinct
  * businesses and people are never merged: the others simply stay held.
  */
-export async function listQualifiedPrimaryRecipients(): Promise<QualifiedReadyHeldRecipient[]> {
-  const { results } = await evaluateLaunchRows();
+export async function listQualifiedPrimaryRecipients(
+  opts: { limit?: number; accept?: (row: { sequenceId: number }) => Promise<boolean> | boolean } = {},
+): Promise<QualifiedReadyHeldRecipient[]> {
+  return (await selectPrimaryRecipients(opts)).chosen;
+}
+
+/**
+ * With a limit or an accept filter the shared contact policy is applied only to the recipients actually considered
+ * for selection (in order), not to every candidate, so selection cost follows the release size rather than the
+ * whole prepared population. `primaryCandidates` counts distinct primary recipients that pass every recorded-fact
+ * gate before that policy check.
+ */
+export async function selectPrimaryRecipients(
+  opts: { limit?: number; accept?: (row: { sequenceId: number }) => Promise<boolean> | boolean } = {},
+): Promise<{ chosen: QualifiedReadyHeldRecipient[]; primaryCandidates: number }> {
+  const lazy = opts.limit !== undefined || opts.accept !== undefined;
+  const { results } = await evaluateLaunchRows({ deferPolicy: lazy });
   const inFlight = rows(await db.execute(sql`
     SELECT i.business_id, i.normalized_email_hash AS email_hash
       FROM sequence_enrollments e JOIN cr04_enrollment_intents i ON i.id::text=e.metadata->>'canonicalPreparationId'
@@ -362,12 +385,26 @@ export async function listQualifiedPrimaryRecipients(): Promise<QualifiedReadyHe
   const businesses = new Set<number>(busyBusinesses);
   const addresses = new Set<string>(busyAddresses);
   const chosen: Row[] = [];
+  const accepted = new Map<number, boolean>();
+  const seenBusinesses = new Set<number>(busyBusinesses), seenAddresses = new Set<string>(busyAddresses);
+  let primaryCandidates = 0;
   for (const r of candidates) {
+    if (seenBusinesses.has(r.businessId) || seenAddresses.has(r.emailHash)) continue;
+    seenBusinesses.add(r.businessId); seenAddresses.add(r.emailHash); primaryCandidates++;
+  }
+  for (const r of candidates) {
+    if (opts.limit !== undefined && chosen.length >= opts.limit) break;
     if (businesses.has(r.businessId) || addresses.has(r.emailHash)) continue;
+    if (opts.accept) {
+      if (!accepted.has(r.sequenceId!)) accepted.set(r.sequenceId!, await opts.accept({ sequenceId: r.sequenceId! }));
+      if (!accepted.get(r.sequenceId!)) continue;
+    }
+    // A recipient the shared policy refuses must not consume its business or address: an alternate may still qualify.
+    if (lazy) { await applyContactPolicy(r); if (r.failure) continue; }
     businesses.add(r.businessId); addresses.add(r.emailHash); chosen.push(r);
   }
-  return chosen.map(r => ({ intentId: r.id, enrollmentId: r.enrollmentId!, contactId: r.contactId, businessId: r.businessId,
-    sequenceId: r.sequenceId!, county: r.county ? (COUNTY_NAMES[r.county] ?? r.county) : null, vertical: r.vertical,
-    kind: r.kind, currentStep: r.currentStep, emailHash: r.emailHash, binding: r.binding, bindingHash: r.bindingHash,
-    evidence: r.evidence }));
+  return { primaryCandidates, chosen: chosen.map(r => ({ intentId: r.id, enrollmentId: r.enrollmentId!, contactId: r.contactId,
+    businessId: r.businessId, sequenceId: r.sequenceId!, county: r.county ? (COUNTY_NAMES[r.county] ?? r.county) : null,
+    vertical: r.vertical, kind: r.kind, currentStep: r.currentStep, emailHash: r.emailHash, binding: r.binding,
+    bindingHash: r.bindingHash, evidence: r.evidence })) };
 }

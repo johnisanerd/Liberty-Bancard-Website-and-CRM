@@ -331,7 +331,7 @@ function ReleasePanel() {
           {status.admissionOpen && <p className="mt-2 text-xs text-muted-foreground">A new release can be made once the admission window closes or the release is revoked.</p>}
           {preview && !status.admissionOpen && (
             <p className="mt-2 text-xs text-muted-foreground" data-testid="release-preview">
-              {n(preview.size)} selected of {n(preview.qualifiedPrimaryRecipients)} qualified
+              {n(preview.size)} selected of {n(preview.qualifiedPrimaryRecipients)} primary candidates
               {preview.continuations > 0 ? ` (${n(preview.continuations)} continuing an earlier journey)` : ""}; {n(preview.dailyCapacityRemaining)} messages of sender capacity can still be admitted today.
             </p>
           )}

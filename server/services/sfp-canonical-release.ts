@@ -23,7 +23,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { pool } from "../db";
 import {
-  listQualifiedPrimaryRecipients, verifyRecipientBinding, CONTINUABLE_ENDED_REASONS,
+  selectPrimaryRecipients, verifyRecipientBinding, CONTINUABLE_ENDED_REASONS,
   type QualifiedReadyHeldRecipient, type RecipientBinding,
 } from "./sfp-launch-inventory";
 import { preparedFactsCurrentSql } from "./canonical-recipient-preparation";
@@ -302,19 +302,27 @@ async function selectForRelease(requestedLimit: number, deps?: CanonicalReleaseD
     throw new CanonicalReleaseError("RELEASE_LIMIT_INVALID", 400, `limit must be 1-${policy.maxRecipientsPerRelease}`);
   }
   const capacityDetail = deps ? null : await readSenderCapacity();
-  const [allQualified, capacity] = await Promise.all([
-    (deps?.listQualified ?? listQualifiedPrimaryRecipients)(),
-    deps ? deps.capacity() : Promise.resolve(capacityDetail!.remaining)]);
-  // A sequence with no launch-ready steps must never be released: the worker would otherwise
-  // have nothing to send and nothing truthful to record. Checked once per distinct sequence.
-  const readyBySequence = new Map<number, boolean>();
-  for (const sequenceId of new Set(allQualified.map(r => r.sequenceId))) {
-    readyBySequence.set(sequenceId, await sequenceHasLaunchReadyContent(sequenceId));
+  const capacity = deps ? await deps.capacity() : capacityDetail!.remaining;
+  if (deps) {
+    const allQualified = await deps.listQualified();
+    // A sequence with no launch-ready steps must never be released: the worker would otherwise
+    // have nothing to send and nothing truthful to record. Checked once per distinct sequence.
+    const readyBySequence = new Map<number, boolean>();
+    for (const sequenceId of new Set(allQualified.map(r => r.sequenceId))) {
+      readyBySequence.set(sequenceId, await sequenceHasLaunchReadyContent(sequenceId));
+    }
+    const qualified = allQualified.filter(r => readyBySequence.get(r.sequenceId) === true);
+    const size = Math.min(requestedLimit, capacity, qualified.length);
+    return { policy, qualified: qualified.length, capacity, capacityDetail, chosen: qualified.slice(0, size) };
   }
-  const qualified = allQualified.filter(r => readyBySequence.get(r.sequenceId) === true);
-  const size = Math.min(requestedLimit, capacity, qualified.length);
-  const chosen = qualified.slice(0, size);
-  return { policy, qualified, capacity, capacityDetail, chosen };
+  // Production path: the shared contact policy is evaluated only for the recipients considered for this release
+  // (in order), so preview and execute cost follows the release size, not the whole prepared population.
+  // A sequence with no launch-ready content is skipped here (once per distinct sequence).
+  const picked = await selectPrimaryRecipients({
+    limit: Math.min(requestedLimit, capacity),
+    accept: r => sequenceHasLaunchReadyContent(r.sequenceId),
+  });
+  return { policy, qualified: picked.primaryCandidates, capacity, capacityDetail, chosen: picked.chosen };
 }
 
 const snapshotOf = (chosen: QualifiedReadyHeldRecipient[], requestedLimit: number) =>
@@ -324,11 +332,12 @@ export async function previewCanonicalRelease(requestedLimit: number, deps?: Can
   const [{ policy, qualified, capacity, capacityDetail, chosen }, control] = await Promise.all([selectForRelease(requestedLimit, deps), readCanonicalReleaseControl()]);
   return {
     snapshotHash: snapshotOf(chosen, requestedLimit), size: chosen.length, requestedLimit, dailyCapacityRemaining: capacity,
-    qualifiedPrimaryRecipients: qualified.length, continuations: chosen.filter(c => c.kind === "continuation").length,
+    qualifiedPrimaryRecipients: qualified, continuations: chosen.filter(c => c.kind === "continuation").length,
     recipients: chosen.map(c => ({ enrollmentId: c.enrollmentId, businessId: c.businessId, county: c.county, vertical: c.vertical,
       sequenceId: c.sequenceId, kind: c.kind, currentStep: c.currentStep, bindingHash: c.bindingHash })),
     policy, capacity: capacityDetail, releases: control.releases,
     notes: [
+      "Primary candidates pass every recorded-fact check. Consent, hygiene and send policy is re-run for the selected recipients, here and again at execution and at every send.",
       "Size is the smaller of the requested limit, the administrator policy limit, actual capacity of the selected sender today and qualified recipients.",
       "Releasing does not lift the outbound pause. A released recipient still needs every ordinary send check to pass.",
       "Each recipient is bound to its exact address, business, sequence and package content; the binding is rechecked at execution and at every send.",

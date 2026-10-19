@@ -189,6 +189,29 @@ export async function processCanonicalRecipientPreparationTick(
           {afterContactId:0,cycles:0,scanned:0,prepared:0,held:0,reasons:{},lastCycleAt:null},
           Math.min(deadline,Date.now()+30_000))
       : {examined:0,prepared:0};
+    // Stale-package refresh lane. Republishing a package makes every recipient prepared against the previous
+    // content stale (not releasable until re-prepared). The keyset cursors only reach those contacts as they wrap,
+    // which took many hours per republish, so contacts whose live preparation pins a superseded package are revisited
+    // first, a bounded slice per tick. Re-preparation updates the existing intent in place (same membership,
+    // receipts and ownership) and touches neither cursor. The slice rotates every 30 minutes so a recipient that
+    // cannot become current never starves the others.
+    const stalePackagePage=async()=>rows(await db.execute(sql`SELECT stale.id,TRUE AS has_preparation FROM (
+        SELECT DISTINCT i.contact_id AS id FROM cr04_enrollment_intents i
+        WHERE i.program_id IS NOT NULL AND i.preparation_state IN ('pending_validation','ready_held')
+          AND EXISTS (SELECT 1 FROM sfp_campaign_package_versions cur
+            WHERE cur.sequence_id=i.sequence_id AND cur.lifecycle_state='current')
+          AND NOT EXISTS (SELECT 1 FROM sfp_campaign_package_versions pkg
+            WHERE pkg.sequence_id=i.sequence_id AND pkg.lifecycle_state='current'
+              AND pkg.id::text=i.preparation_snapshot->>'packageVersionId'
+              AND pkg.content_hash=i.preparation_snapshot->>'contentHash')) stale
+      ORDER BY md5(stale.id::text||floor(extract(epoch FROM now())/1800)::text)
+      LIMIT 150`));
+    const staleContacts=await stalePackagePage();
+    const stalePackage=staleContacts.length
+      ? await processPage(staleContacts,
+          {afterContactId:0,cycles:0,scanned:0,prepared:0,held:0,reasons:{},lastCycleAt:null},
+          Math.min(deadline,Date.now()+30_000))
+      : {examined:0,prepared:0};
     const contacts=await populationPage();
     // Keep the population pass first so priority work cannot starve coverage.
     const population=await processPage(contacts,state,Math.min(deadline,Date.now()+45_000));
@@ -253,7 +276,7 @@ export async function processCanonicalRecipientPreparationTick(
         }
       }
     }
-    return {ran:true,...population,populationPages,cycles:state.cycles,priority:{...priority,pages:priorityPages},completion};
+    return {ran:true,...population,populationPages,cycles:state.cycles,priority:{...priority,pages:priorityPages},completion,stalePackage};
   } catch (error) {
     failed=true;
     throw error;

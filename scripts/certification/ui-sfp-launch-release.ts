@@ -137,7 +137,7 @@ try {
 
   // ── Preview → execute through the UI ───────────────────────────────────────
   await clickText("^Preview$");
-  await waitPanel(/2 selected of 3 qualified/);
+  await waitPanel(/2 selected of 3 primary candidates/);
   check(/2 messages of sender capacity/.test(await panelText()), "Preview is bounded by actual sender capacity, not an arbitrary count");
   await shot("02-admin-preview");
   await clickText("^Release 2 recipients$");

@@ -223,6 +223,15 @@ try {
   check(sel.length === 2, "The real selector qualifies exactly one primary recipient per business");
   check(new Set(sel.map(s => s.businessId)).size === 2, "No business appears twice in the selection");
   check(sel.every(s => s.bindingHash && s.binding.contentHash && s.binding.emailHash && s.evidence), "Each selected recipient carries exact binding evidence");
+  // Selection cost follows the release size: with a limit the contact policy is applied only to recipients considered.
+  const lazyOne = await inventory.selectPrimaryRecipients({ limit: 1 });
+  check(lazyOne.chosen.length === 1 && lazyOne.chosen[0].enrollmentId === sel[0].enrollmentId && lazyOne.primaryCandidates === 2,
+    "A limited selection picks the same first recipient as the full selection and still counts both primary candidates");
+  const lazyAll = await inventory.selectPrimaryRecipients({ limit: 10 });
+  check(lazyAll.chosen.map(c => c.bindingHash).join() === sel.map(c => c.bindingHash).join(),
+    "A limited selection large enough for everyone binds exactly the same recipients as the full selection");
+  const lazyZero = await inventory.selectPrimaryRecipients({ limit: 0 });
+  check(lazyZero.chosen.length === 0, "A zero limit selects nobody and evaluates no recipient policy");
   const first = await releaseAll(10, 24, "life-1");
   check(first.p.size === 2 && first.release.enrollmentIds.length === 2, "Preview and execute agree on the selected recipients");
   check(!first.replayed, "First execute is not a replay");
@@ -398,6 +407,28 @@ try {
   check(pk.every(r => reprepared.some(q => q.enrollmentId === r.enrollmentId)) && reprepared.every(r => r.binding.contentHash), "The normal preparation worker re-prepared the released recipients under the new package pin and kept their memberships");
   const newHash = (await one(`SELECT preparation_snapshot->>'contentHash' h FROM cr04_enrollment_intents WHERE id=$1::uuid`, [pk[0].intentId])).h;
   check(reprepared.some(r => r.binding.contentHash === newHash), "Selection binds to the current package hash");
+
+  // Stale-package refresh lane: a republish is repaired in ONE tick even when both keyset cursors have already
+  // passed every contact (the previous behaviour waited for each cursor to wrap, hours per republish in production).
+  const staleSql = `SELECT count(*)::int n FROM cr04_enrollment_intents i
+     WHERE i.preparation_state='ready_held' AND i.sequence_id=$1 AND NOT EXISTS (
+       SELECT 1 FROM sfp_campaign_package_versions pkg WHERE pkg.sequence_id=i.sequence_id AND pkg.lifecycle_state='current'
+         AND pkg.id::text=i.preparation_snapshot->>'packageVersionId' AND pkg.content_hash=i.preparation_snapshot->>'contentHash')`;
+  const membersBefore = (await one(`SELECT count(*)::int n FROM sequence_enrollments WHERE sequence_id=$1`, [seq.sequenceId])).n;
+  await replacePackageWording(seq, "\n\nP.S. second revision.");
+  check((await one(staleSql, [seq.sequenceId])).n > 0, "Stale lane setup: prepared recipients pin the superseded package");
+  const beyond = { afterContactId: 2_000_000_000, cycles: 1, scanned: 0, prepared: 0, held: 0, reasons: {}, leaseToken: null,
+    leaseUntil: null, lastCycleAt: null,
+    priority: { afterContactId: 2_000_000_000, cycles: 1, scanned: 0, prepared: 0, held: 0, reasons: {}, lastCycleAt: null } };
+  await pool.query(`INSERT INTO system_settings(key,value,updated_at) VALUES('canonical_recipient_preparation_cursor',$1::jsonb,NOW())
+    ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value`, [JSON.stringify(beyond)]);
+  const staleRun: any = await processCanonicalRecipientPreparationTick();
+  check(staleRun.ran !== false && staleRun.stalePackage.examined > 0 && staleRun.stalePackage.prepared > 0,
+    "The stale-package lane re-prepared recipients on its own, with both cursors past every contact");
+  check((await one(staleSql, [seq.sequenceId])).n === 0, "No ready-held recipient still pins the superseded package after one tick");
+  check((await one(`SELECT count(*)::int n FROM sequence_enrollments WHERE sequence_id=$1`, [seq.sequenceId])).n === membersBefore,
+    "Refreshing created no extra memberships");
+  check((await qualified()).length > 0, "Refreshed recipients are selectable again");
   await reset();
 
   // A continued journey keeps the due time its last confirmed send implies, not the release time.

@@ -2818,7 +2818,7 @@ export class QueueManager {
               priorityRun.preparationPasses=pass+1;
               if (!preparations.ran) break;
               priorityRun.prepared=Number(priorityRun.prepared)+Number((preparations as any).prepared ?? 0)
-                +Number((preparations as any).priority?.prepared ?? 0)+Number((preparations as any).completion?.prepared ?? 0);
+                +Number((preparations as any).priority?.prepared ?? 0)+Number((preparations as any).completion?.prepared ?? 0)+Number((preparations as any).stalePackage?.prepared ?? 0);
             }
           } catch(error:any) {
             console.error("[CanonicalRecipientPreparation] held",safeCanonicalEnrichmentFailureDiagnostics(error));
