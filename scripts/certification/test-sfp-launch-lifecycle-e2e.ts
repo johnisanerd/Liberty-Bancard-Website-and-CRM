@@ -184,6 +184,8 @@ async function advance(ms: number) {
   }
   await pool.query(`UPDATE sequence_enrollments SET next_action_at=next_action_at - ($1 || ' milliseconds')::interval
     WHERE next_action_at IS NOT NULL AND NOT (metadata ? 'canonicalRelease')`, [String(ms)]);
+  // The clock moves for recorded sends too: due times derive from the last confirmed send.
+  await pool.query(`UPDATE outbound_send_log SET sent_at=sent_at - ($1 || ' milliseconds')::interval WHERE sent_at IS NOT NULL`, [String(ms)]);
 }
 const tick = async () => { await release.reconcileCanonicalReleases(); return processSequenceEnrollments({ canonicalReleaseOnly: true }); };
 const enr = async (id: number) => one("SELECT * FROM sequence_enrollments WHERE id=$1", [id]);
@@ -398,6 +400,36 @@ try {
   check(reprepared.some(r => r.binding.contentHash === newHash), "Selection binds to the current package hash");
   await reset();
 
+  // A continued journey keeps the due time its last confirmed send implies, not the release time.
+  await setSender(30);
+  const cd = await seqRecipients(1);
+  await releaseAll(1, 24, "cont-due-1");
+  await tick();
+  check(sentTo(cd[0].email) === 1, "Continuation due-time: touch 1 sent");
+  await advance(3 * DAY + 60_000);
+  await tick();
+  check(sentTo(cd[0].email) === 2, "Continuation due-time: touch 2 sent 3 days after touch 1");
+  await advance(DAY);
+  // The journey deadline passes while touch 3 (due 5 days after touch 2) is still waiting.
+  const ctl = (await one(`SELECT value FROM system_settings WHERE key=$1`, [release.CANONICAL_RELEASE_CONTROL_KEY])).value;
+  for (const r of ctl.releases) r.journeyExpiresAt = new Date(Date.now() - 60_000).toISOString();
+  await pool.query(`UPDATE system_settings SET value=$2::jsonb WHERE key=$1`, [release.CANONICAL_RELEASE_CONTROL_KEY, JSON.stringify(ctl)]);
+  await release.reconcileCanonicalReleases();
+  const cdHeld = await enr(cd[0].enrollmentId);
+  check(cdHeld.status === "paused" && cdHeld.metadata.canonicalRelease?.endedReason === "journey_expired" && Number(cdHeld.current_step) === 2, "The journey is paused at touch 3 with touch 3 not yet due");
+  const cdSel = (await qualified()).find(q => q.enrollmentId === cd[0].enrollmentId);
+  check(cdSel?.kind === "continuation" && cdSel.currentStep === 2, "The paused journey is offered as a continuation at touch 3");
+  await releaseAll(1, 24, "cont-due-2");
+  const cdRel = await enr(cd[0].enrollmentId);
+  const dueInDays = (new Date(cdRel.next_action_at).getTime() - Date.now()) / DAY;
+  check(cdRel.status === "active" && dueInDays > 3.9 && dueInDays < 4.1, `The continued journey keeps its due time (touch 3 due ~4 days from now, got ${dueInDays.toFixed(2)})`);
+  await tick();
+  check(sentTo(cd[0].email) === 2, "Releasing the continuation does not send touch 3 early");
+  await advance(4 * DAY + 60_000);
+  await tick();
+  check(sentTo(cd[0].email) === 3, "Touch 3 sends once it is due, 5 days after touch 2");
+  await reset();
+
   // ═══ 6. Preparation worker preserves released journeys, retires genuine changes ════════════════════════════
   const pw = await seqRecipients(2);
   await releaseAll(2, 24, "prep-1");
@@ -484,6 +516,30 @@ try {
   check(sentTo(un[0].email) === 2, "After not-delivered the same first touch is sent (counting the lost attempt)");
   const noDouble = await one(`SELECT count(*) c FROM outbound_send_log WHERE sequence_enrollment_id=$1 AND status='sent'`, [un[1].enrollmentId]);
   check(Number(noDouble.c) === 1, "After delivered the step is recorded once and not resent");
+  await reset();
+
+  // Resolving an uncertain delivery is atomic and exactly-once.
+  const ar = await seqRecipients(2);
+  await releaseAll(2, 24, "uncertain-2");
+  smtpMode = "drop";
+  await tick();
+  smtpMode = "ok";
+  check((await capacityLib.readSenderCapacity()).identityUsedByLaunch === 2, "Two uncertain sends hold two allowances");
+  const race = await Promise.all([release.resolveCanonicalHold(ar[0].enrollmentId, "not_delivered"), release.resolveCanonicalHold(ar[0].enrollmentId, "not_delivered")]);
+  check(race.filter(r => r.resolved).length === 1, "Two simultaneous not-delivered requests resolve the hold exactly once");
+  check((await capacityLib.readSenderCapacity()).identityUsedByLaunch === 1, "The allowance is freed once, not twice");
+  const again = await release.resolveCanonicalHold(ar[0].enrollmentId, "not_delivered");
+  check(!again.resolved && again.reason === "NO_HOLD" && (await capacityLib.readSenderCapacity()).identityUsedByLaunch === 1, "Repeating a settled resolution changes nothing");
+  // The attempt can no longer be proven unsent (the provider later confirmed it): not-delivered is refused and nothing is freed or resumed.
+  await pool.query(`UPDATE outbound_send_log SET status='sent', sent_at=NOW() WHERE sequence_enrollment_id=$1`, [ar[1].enrollmentId]);
+  const refused = await release.resolveCanonicalHold(ar[1].enrollmentId, "not_delivered");
+  const stillHeld = await enr(ar[1].enrollmentId);
+  check(!refused.resolved && refused.reason === "HELD_ATTEMPT_NOT_REOPENABLE", "Not-delivered is refused when the attempt cannot be reopened");
+  check(stillHeld.status === "paused" && stillHeld.metadata.canonicalRelease.hold === "UNCERTAIN_DELIVERY" && stillHeld.metadata.canonicalRelease.heldReservation,
+    "A refused resolution leaves the journey held with its reservation");
+  check((await capacityLib.readSenderCapacity()).identityUsedByLaunch === 1, "A refused resolution frees no allowance");
+  const okDelivered = await release.resolveCanonicalHold(ar[1].enrollmentId, "delivered");
+  check(okDelivered.resolved && (await capacityLib.readSenderCapacity()).identityUsedByLaunch === 1, "The delivered decision still settles it, keeping the allowance used");
   await reset();
 
   // ═══ 9. Concurrency: two workers, one delivery ═══════════════════════════════════════════════════════════

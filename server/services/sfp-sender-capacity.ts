@@ -140,8 +140,20 @@ export async function reserveSenderCapacity(now: Date = new Date()): Promise<Res
   }
 }
 
-/** Frees one reservation. Call only when the transport proved the message was not accepted. */
-export async function releaseSenderCapacity(reservation: CapacityReservation): Promise<void> {
+/**
+ * Frees one reservation. Call only when the transport proved the message was not accepted.
+ * With `within`, the decrement joins the caller's transaction so the caller can settle the reservation atomically
+ * with the state change that makes the release correct (and exactly once).
+ */
+export async function releaseSenderCapacity(reservation: CapacityReservation, within?: { query: (q: string, p?: unknown[]) => Promise<any> }): Promise<void> {
+  if (within) {
+    for (const scope of [senderScope(reservation.identityId), GLOBAL_COLD_SCOPE]) {
+      await within.query(
+        `UPDATE outbound_send_counters SET count=GREATEST(0,count-1), updated_at=now()
+          WHERE date=$1 AND channel=$2 AND scope=$3`, [reservation.day, SENDER_COUNTER_CHANNEL, scope]);
+    }
+    return;
+  }
   const client = await pool.connect();
   try {
     await client.query("BEGIN");

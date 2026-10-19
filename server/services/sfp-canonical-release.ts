@@ -406,7 +406,16 @@ export async function executeCanonicalRelease(input: {
         : `e.status='paused' AND e.current_step=0 AND (NOT (COALESCE(e.metadata,'{}'::jsonb) ? 'canonicalRelease')
              OR e.metadata->'canonicalRelease'->>'endedReason' = ANY($5::text[]))`;
       const updated = await client.query(
-        `UPDATE sequence_enrollments e SET status='active', next_action_at=$3::timestamptz, updated_at=NOW(),
+        `UPDATE sequence_enrollments e SET status='active',
+                -- A continued journey keeps the due time its last confirmed send implies: never earlier than release time,
+                -- never earlier than (last confirmed send + the next step's delay). A first touch has no send, so it is due now.
+                next_action_at=GREATEST($3::timestamptz, COALESCE(
+                  (SELECT max(l.sent_at) FROM outbound_send_log l WHERE l.sequence_enrollment_id=e.id
+                      AND l.status IN ('sent','delivered','bounced','complained') AND l.sent_at IS NOT NULL)
+                  + (SELECT make_interval(days=>COALESCE(s.delay_days,0), hours=>COALESCE(s.delay_hours,0))
+                       FROM sequence_steps s WHERE s.sequence_id=e.sequence_id ORDER BY s.step_order OFFSET e.current_step LIMIT 1),
+                  $3::timestamptz)),
+                updated_at=NOW(),
                 metadata = (COALESCE(e.metadata,'{}'::jsonb) - 'canonicalRelease') || jsonb_build_object(
                   'outboundAuthorized', true, 'canonicalRelease', $2::jsonb,
                   'canonicalReleaseHistory', COALESCE(e.metadata->'canonicalReleaseHistory','[]'::jsonb)
@@ -601,31 +610,53 @@ export type HoldResolution = "delivered" | "not_delivered" | "clear_hold";
 export async function resolveCanonicalHold(
   enrollmentId: number, resolution: HoldResolution, now: Date = new Date(),
 ): Promise<{ resolved: boolean; reason?: string }> {
-  const row = (await pool.query(
-    `SELECT status, metadata FROM sequence_enrollments WHERE id=$1`, [enrollmentId])).rows[0];
-  const marker = row?.metadata?.canonicalRelease;
-  if (!row || row.status !== "paused" || !marker?.hold) return { resolved: false, reason: "NO_HOLD" };
-  const key: string | undefined = marker.heldIdempotencyKey;
-  if (marker.hold === "UNCERTAIN_DELIVERY") {
-    if (!key) return { resolved: false, reason: "HELD_ATTEMPT_UNKNOWN" };
-    const sendLog = await import("./outbound-send-log");
-    if (resolution === "delivered") await sendLog.markSendSent({ idempotencyKey: key });
-    else if (resolution === "not_delivered") {
-      await sendLog.reopenUnsentAttempt({ idempotencyKey: key, failureReason: "operator_confirmed_not_delivered" });
-      if (marker.heldReservation) {
-        const { releaseSenderCapacity } = await import("./sfp-sender-capacity");
-        await releaseSenderCapacity(marker.heldReservation);
-      }
-    } else return { resolved: false, reason: "UNCERTAIN_DELIVERY_REQUIRES_DECISION" };
-  } else if (resolution !== "clear_hold") {
-    return { resolved: false, reason: "RESOLUTION_NOT_APPLICABLE" };
+  // One transaction: the enrollment row lock serializes concurrent resolutions, so the hold is consumed once; the send
+  // attempt update and the capacity settlement commit or roll back together with it.
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const row = (await client.query(
+      `SELECT status, metadata FROM sequence_enrollments WHERE id=$1 FOR UPDATE`, [enrollmentId])).rows[0];
+    const marker = row?.metadata?.canonicalRelease;
+    if (!row || row.status !== "paused" || !marker?.hold) { await client.query("ROLLBACK"); return { resolved: false, reason: "NO_HOLD" }; }
+    const refuse = async (reason: string) => { await client.query("ROLLBACK"); return { resolved: false, reason }; };
+    if (marker.hold === "UNCERTAIN_DELIVERY") {
+      const key: string | undefined = marker.heldIdempotencyKey;
+      if (!key) return refuse("HELD_ATTEMPT_UNKNOWN");
+      if (resolution === "delivered") {
+        const sent = await client.query(
+          `UPDATE outbound_send_log SET status='sent', sent_at=COALESCE(sent_at,NOW()), updated_at=NOW()
+            WHERE idempotency_key=$1 AND sequence_enrollment_id=$2 AND status IN ('pending','dispatching','sent') RETURNING id`, [key, enrollmentId]);
+        if (sent.rowCount !== 1) return refuse("HELD_ATTEMPT_NOT_SETTLEABLE");
+      } else if (resolution === "not_delivered") {
+        const reopened = await client.query(
+          `UPDATE outbound_send_log SET status='pending', claim_expires_at=NOW() - INTERVAL '1 second', updated_at=NOW(),
+                  failure_reason='operator_confirmed_not_delivered'
+            WHERE idempotency_key=$1 AND sequence_enrollment_id=$2 AND status IN ('pending','dispatching') RETURNING id`, [key, enrollmentId]);
+        // A failure to reopen means the attempt is not provably unsent: the journey stays held and nothing is freed.
+        if (reopened.rowCount !== 1) return refuse("HELD_ATTEMPT_NOT_REOPENABLE");
+        if (marker.heldReservation) {
+          const { releaseSenderCapacity } = await import("./sfp-sender-capacity");
+          await releaseSenderCapacity(marker.heldReservation, client);
+        }
+      } else return refuse("UNCERTAIN_DELIVERY_REQUIRES_DECISION");
+    } else if (resolution !== "clear_hold") {
+      return refuse("RESOLUTION_NOT_APPLICABLE");
+    }
+    const r = await client.query(
+      `UPDATE sequence_enrollments SET status='active', next_action_at=$2::timestamptz, updated_at=NOW(),
+              metadata=jsonb_set(metadata,'{canonicalRelease}',(metadata->'canonicalRelease')
+                - 'hold' - 'holdAt' - 'holdDetail' - 'heldReservation' - 'heldIdempotencyKey' - 'unsentRetries' - 'unsentRetryStep')
+        WHERE id=$1 AND status='paused' AND metadata->'canonicalRelease' ? 'hold'`, [enrollmentId, now.toISOString()]);
+    if ((r.rowCount ?? 0) !== 1) return refuse("NO_HOLD");
+    await client.query("COMMIT");
+    return { resolved: true };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
   }
-  const r = await pool.query(
-    `UPDATE sequence_enrollments SET status='active', next_action_at=$2::timestamptz, updated_at=NOW(),
-            metadata=jsonb_set(metadata,'{canonicalRelease}',(metadata->'canonicalRelease')
-              - 'hold' - 'holdAt' - 'holdDetail' - 'heldReservation' - 'heldIdempotencyKey' - 'unsentRetries' - 'unsentRetryStep')
-      WHERE id=$1 AND status='paused' AND metadata->'canonicalRelease' ? 'hold'`, [enrollmentId, now.toISOString()]);
-  return { resolved: (r.rowCount ?? 0) > 0 };
 }
 
 // ── Status for the operator UI ───────────────────────────────────────────────
