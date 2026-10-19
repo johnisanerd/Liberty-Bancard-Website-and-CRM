@@ -8,3 +8,11 @@ description: Narrow operator release for prepared SFP recipients, launch invento
 - `sending_identities` has NO `status` column; readiness must use the shared helper (isActive + warm/warming). Earlier checks on `status==="active"` were always false.
 - `business_locations.county_fips` is empty in production; territory comes from the TS zip/city resolver. Zip lists are ordering signals only.
 - End-to-end proof of first step, reply-stop, unsubscribe, retry and follow-up needs real sends; it was not performed. Certified only with fixtures (canonical-release-authority cert).
+
+## Launch repair (two-period lifecycle, binding, capacity)
+- Journey authority is two separate periods: a short admission window (first touch only) and a finite journey period (follow-ups). Expired/content-held memberships are continued only by an explicit new admin release; revoked or `send_gate_stopped` journeys are never auto-extended.
+- Release binds the exact recipient address/business/sequence/package hash; rechecked at execute and at final dispatch. The prep worker refreshes stale pins; a package hash change must not be bypassed by the explicit-sequence-binding branch of `preparedFactsCurrentSql` (that branch applies only when the sequence has no current package).
+- One capacity definition (`sfp-sender-capacity.ts`: selected sender + global cold ceiling, counters are authority) is used by preview, execute, readiness and dispatch. Uncertain sends keep their reservation and hold the journey until an operator resolves it.
+- nodemailer reports connection-lost-after-DATA as command "CONN"; classify as uncertain unless the message is a connect timeout/greeting failure or errno ECONNREFUSED/ENOTFOUND/EHOSTUNREACH/ENETUNREACH.
+- Cert launcher `--only` takes the cert NAME (e.g. `sfp-launch-lifecycle-e2e`, `sfp-launch-release-ui`). Clock control = shifting persisted deadlines, not a fake clock.
+- **Why:** these were the failure modes found while proving continuation, concurrency and capacity on disposable PostgreSQL.
