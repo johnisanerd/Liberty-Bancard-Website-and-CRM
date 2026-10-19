@@ -2734,6 +2734,13 @@ export class QueueManager {
           break;
         }
         case QUEUE_NAMES.SFP_CONTINUOUS_DISCOVERY: {
+          // Optional operator request from the enrichment backlog page. Same workers, same gates:
+          // it only enlarges the local staged-email budget, repeats local recipient preparation and,
+          // when asked, wakes the already-governed provider ticks. Ordinary scheduled ticks carry none.
+          const { parseBacklogProcessRequest, recordBacklogPriorityRun } = await import("./canonical-enrichment-backlog-run");
+          const priorityRequest = parseBacklogProcessRequest((_job.data as any)?.priorityRequest);
+          const priorityRun: Record<string, unknown> = { staged: null, preparationPasses: 0, prepared: 0, providerTicks: "not_requested" };
+          const priorityStartedAt = new Date().toISOString();
           // Local-only reconciliation does not depend on discovery providers
           // being enabled. Its own durable program/pause checkpoint is authoritative.
           const { processContactLinkCoverageServerTick } = await import("./contact-link-coverage");
@@ -2775,6 +2782,7 @@ export class QueueManager {
               limit:100,actorId:"system:staged-email-materialization",
               drain:{timeBudgetMs:5*60_000,maxRows:2000},
             });
+            priorityRun.staged={examined:staged.examined,pages:staged.pages,created:staged.created,linkedExisting:staged.linkedExisting,alreadyLinked:staged.alreadyLinked,held:staged.held,failed:staged.failed};
             if (staged.examined>0) console.log(`[StagedEmailMaterialization] ${JSON.stringify({examined:staged.examined,pages:staged.pages,created:staged.created,linkedExisting:staged.linkedExisting,alreadyLinked:staged.alreadyLinked,held:staged.held,failed:staged.failed})}`);
           } catch(error:any) {
             console.error("[StagedEmailMaterialization] held",safeCanonicalEnrichmentFailureDiagnostics(error));
@@ -2788,14 +2796,36 @@ export class QueueManager {
           }
           try {
             const {processCanonicalRecipientPreparationTick}=await import("./canonical-recipient-preparation-worker");
-            const preparations=await processCanonicalRecipientPreparationTick();
-            if (preparations.ran) console.log(`[CanonicalRecipientPreparation] ${JSON.stringify(preparations)}`);
+            for (let pass=0;pass<(priorityRequest ? 3 : 1);pass++) {
+              const preparations=await processCanonicalRecipientPreparationTick();
+              if (preparations.ran) console.log(`[CanonicalRecipientPreparation] ${JSON.stringify(preparations)}`);
+              priorityRun.preparationPasses=pass+1;
+              if (!preparations.ran) break;
+              priorityRun.prepared=Number(priorityRun.prepared)+Number((preparations as any).prepared ?? 0)
+                +Number((preparations as any).priority?.prepared ?? 0)+Number((preparations as any).completion?.prepared ?? 0);
+            }
           } catch(error:any) {
             console.error("[CanonicalRecipientPreparation] held",safeCanonicalEnrichmentFailureDiagnostics(error));
           }
-          const { processSfpContinuousDiscoveryTick } = await import("./cro03/sfp-continuous-discovery");
-          const result = await processSfpContinuousDiscoveryTick();
-          if (result.ran) console.log(`[SfpContinuousDiscovery] ${JSON.stringify(result)}`);
+          if (priorityRequest?.scope === "local_only") {
+            priorityRun.providerTicks = "skipped_local_only";
+          } else {
+            const { processSfpContinuousDiscoveryTick } = await import("./cro03/sfp-continuous-discovery");
+            const result = await processSfpContinuousDiscoveryTick();
+            if (result.ran) console.log(`[SfpContinuousDiscovery] ${JSON.stringify(result)}`);
+            if (priorityRequest) {
+              priorityRun.providerTicks = result.ran ? "discovery_ran_under_existing_controls" : "discovery_did_not_run_under_existing_controls";
+              // Wake the shared validation tick once; its own pause, budget and receipt rules still apply.
+              try {
+                const validationQueue = this.queues.get(QUEUE_NAMES.SFP_CONTINUOUS_VALIDATION);
+                await validationQueue?.add("tick", {}, { jobId: `canonical-backlog-validation:${Math.floor(Date.now() / 600_000)}` });
+              } catch (error: any) {
+                priorityRun.providerTicks = "validation_wake_failed";
+                console.error("[CanonicalBacklog] validation wake failed", safeCanonicalEnrichmentFailureDiagnostics(error));
+              }
+            }
+          }
+          if (priorityRequest) await recordBacklogPriorityRun(priorityRequest, priorityStartedAt, priorityRun);
           break;
         }
         case QUEUE_NAMES.SFP_CONTINUOUS_VALIDATION: {

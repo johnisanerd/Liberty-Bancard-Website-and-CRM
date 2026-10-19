@@ -171,6 +171,24 @@ export async function processCanonicalRecipientPreparationTick(
         SELECT 1 FROM cr04_enrollment_intents owned WHERE owned.contact_id=c.id
           AND owned.preparation_state IN ('pending_validation','ready_held')))
       ORDER BY c.id LIMIT 250`));
+    // Validation completion lane. A finished provider answer is stored against the address, but the
+    // pending recipient only advances when preparation revisits its contact. Waiting for the keyset
+    // cursors to wrap left answered recipients pending for days, so contacts whose pending
+    // preparation already has a definite stored answer are revisited first, a bounded slice per tick.
+    // The slice rotates every 30 minutes so a recipient that cannot advance never starves the others.
+    const completionPage=async()=>rows(await db.execute(sql`SELECT answered.id,TRUE AS has_preparation FROM (
+        SELECT DISTINCT i.contact_id AS id FROM cr04_enrollment_intents i
+        JOIN provider_observations po ON po.provider='zerobounce' AND po.email_token_hash=i.normalized_email_hash
+          AND po.retryable=FALSE AND po.outcome IN ('valid','invalid')
+        WHERE i.program_id IS NOT NULL AND i.preparation_state='pending_validation') answered
+      ORDER BY md5(answered.id::text||floor(extract(epoch FROM now())/1800)::text)
+      LIMIT 150`));
+    const completionContacts=await completionPage();
+    const completion=completionContacts.length
+      ? await processPage(completionContacts,
+          {afterContactId:0,cycles:0,scanned:0,prepared:0,held:0,reasons:{},lastCycleAt:null},
+          Math.min(deadline,Date.now()+30_000))
+      : {examined:0,prepared:0};
     const contacts=await populationPage();
     // Keep the population pass first so priority work cannot starve coverage.
     const population=await processPage(contacts,state,Math.min(deadline,Date.now()+45_000));
@@ -235,7 +253,7 @@ export async function processCanonicalRecipientPreparationTick(
         }
       }
     }
-    return {ran:true,...population,populationPages,cycles:state.cycles,priority:{...priority,pages:priorityPages}};
+    return {ran:true,...population,populationPages,cycles:state.cycles,priority:{...priority,pages:priorityPages},completion};
   } catch (error) {
     failed=true;
     throw error;

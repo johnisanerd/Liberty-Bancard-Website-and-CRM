@@ -26,6 +26,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/hooks/use-auth";
 import { UploadLedger } from "./UploadLedger";
+import { CanonicalBacklog } from "./CanonicalBacklog";
 import {
   Card,
   CardContent,
@@ -34,10 +35,11 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 
-type ViewKey = "pipeline" | "records" | "imports" | "exceptions" | "health";
+type ViewKey = "pipeline" | "backlog" | "records" | "imports" | "exceptions" | "health";
 
 const views: { key: ViewKey; label: string; eyebrow: string }[] = [
   { key: "pipeline", label: "Pipeline", eyebrow: "At a glance" },
+  { key: "backlog", label: "Backlog", eyebrow: "What happens next" },
   { key: "records", label: "Records", eyebrow: "Evidence & identity" },
   { key: "imports", label: "Imports & Sources", eyebrow: "Source history" },
   { key: "exceptions", label: "Exceptions", eyebrow: "Needs attention" },
@@ -621,7 +623,9 @@ export default function CanonicalEnrichment() {
           </nav>
         </header>
 
-        {isLoading && (
+        {activeView === "backlog" && <CanonicalBacklog isAdmin={isAdmin} />}
+
+        {activeView !== "backlog" && isLoading && (
           <div className="space-y-5" aria-label="Loading canonical enrichment status" aria-busy="true">
             <div className="h-5 w-56 animate-pulse rounded bg-muted" />
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -633,7 +637,7 @@ export default function CanonicalEnrichment() {
           </div>
         )}
 
-        {isError && (
+        {activeView !== "backlog" && isError && (
           <section className="rounded-2xl border border-destructive/25 bg-card p-6 sm:p-8" role="alert">
             <div className="mx-auto max-w-xl text-center">
               <span className="mx-auto grid h-11 w-11 place-items-center rounded-full bg-destructive/10 text-destructive">
@@ -652,9 +656,9 @@ export default function CanonicalEnrichment() {
           </section>
         )}
 
-        {!isLoading && !isError && data && content}
+        {activeView !== "backlog" && !isLoading && !isError && data && content}
 
-        {!isLoading && !isError && !data && (
+        {activeView !== "backlog" && !isLoading && !isError && !data && (
           <section className="rounded-2xl border border-border bg-card p-8 text-center">
             <Database className="mx-auto h-6 w-6 text-muted-foreground" />
             <h2 className="mt-3 font-semibold">No status snapshot available</h2>
@@ -663,7 +667,7 @@ export default function CanonicalEnrichment() {
           </section>
         )}
 
-        {data && data.contacts.total === 0 && data.businesses.total === 0 && (
+        {activeView !== "backlog" && data && data.contacts.total === 0 && data.businesses.total === 0 && (
           <p className="mt-5 rounded-xl border border-dashed border-border bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
             The current production inventory is empty. No record workflow or recipient activity is implied.
           </p>

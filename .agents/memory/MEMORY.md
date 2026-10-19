@@ -164,3 +164,4 @@
 - [Serper credit ledger](serper-credit-ledger.md) — Durable reserve/settle ledger is the credit authority; claim pins input fingerprint; allowance-stopped lookups defer, not conclude.
 - [Legacy enrollment containment](legacy-enrollment-containment.md) — post-enrichment worker and ZB auto-run contained in code regardless of pause; how to prove and release.
 - [Accepted-vertical policy](accepted-vertical-policy.md) — policy_accepted tier from one clear source; AI result separate; fingerprint supersession; known baseline-failing certs.
+- [Unified enrichment backlog](enrichment-backlog-read-model.md) — mirror worker gates in counts; completion lane revisits answered validations; priority action adds no spend path.
