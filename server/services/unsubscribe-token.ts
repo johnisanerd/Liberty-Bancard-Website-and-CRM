@@ -77,3 +77,33 @@ export function verifyUnsubscribeToken(token: string): { valid: true; contactId:
     return { valid: false };
   }
 }
+
+// ── Seed-test unsubscribe tokens ─────────────────────────────────────────────
+// A seed message has no contact. Its token is a different kind ("seed.<occurrence>.<hmac>", signed over a different
+// string), so it can never verify as a contact token and a contact token can never verify as a seed token.
+const SEED_OCCURRENCE_RE = /^[a-f0-9-]{36}$/i;
+
+function signSeedUnsubscribeToken(occurrenceId: string, secret: string): string {
+  return crypto.createHmac("sha256", secret).update(`seed_email_unsubscribe:${occurrenceId}`).digest("hex");
+}
+
+export function generateSeedUnsubscribeToken(occurrenceId: string): string {
+  if (!SEED_OCCURRENCE_RE.test(occurrenceId)) throw new Error("SEED_OCCURRENCE_INVALID");
+  return `seed.${occurrenceId}.${signSeedUnsubscribeToken(occurrenceId, getUnsubscribeTokenSecret())}`;
+}
+
+export function verifySeedUnsubscribeToken(token: string): { valid: true; occurrenceId: string } | { valid: false } {
+  try {
+    if (!token || typeof token !== "string") return { valid: false };
+    const segments = token.split(".");
+    if (segments.length !== 3 || segments[0] !== "seed") return { valid: false };
+    const [, occurrenceId, supplied] = segments;
+    if (!SEED_OCCURRENCE_RE.test(occurrenceId) || !HMAC_HEX_RE.test(supplied)) return { valid: false };
+    const expected = Buffer.from(signSeedUnsubscribeToken(occurrenceId, getUnsubscribeTokenSecret()), "hex");
+    const given = Buffer.from(supplied, "hex");
+    if (expected.length !== given.length || !crypto.timingSafeEqual(expected, given)) return { valid: false };
+    return { valid: true, occurrenceId };
+  } catch {
+    return { valid: false };
+  }
+}

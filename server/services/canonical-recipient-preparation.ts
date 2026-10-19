@@ -26,6 +26,8 @@ export interface CanonicalPreparationInput {
   /** Outside the write transaction: renew only a still-live worker claim and
    * checkpoint around potentially slow qualification. Never send authority. */
   checkpoint?: () => Promise<unknown>;
+  /** Optional phase stopwatch (milliseconds per phase, accumulated). Diagnostic only; never affects behaviour. */
+  timings?: Record<string, number>;
 }
 
 export async function assertCanonicalPreparationDatabaseGuard(tx: any) {
@@ -89,6 +91,12 @@ async function prepareCanonicalRecipientPass(input: CanonicalPreparationInput) {
     replayed: false, blocked: true, reasonCode, enrollmentId: null,
     preparationState: "exception" as PreparationState,
   });
+  let mark = Date.now();
+  const lap = (phase: string) => {
+    const now = Date.now();
+    if (input.timings) input.timings[phase] = (input.timings[phase] ?? 0) + now - mark;
+    mark = now;
+  };
   if (!Number.isSafeInteger(input.contactId) || input.contactId < 1 ||
       !Number.isSafeInteger(input.sequenceId) || input.sequenceId < 1) {
     throw new Error("CANONICAL_PREPARATION_IDENTIFIERS_INVALID");
@@ -99,26 +107,38 @@ async function prepareCanonicalRecipientPass(input: CanonicalPreparationInput) {
   // This evaluates channel readiness but does NOT require a cohort or provider
   // request. Pending validation may persist a local preparation and membership.
   const { evaluateCr04ChannelQualification } = await import("./cr04-cohort-ready-authority");
+  lap("setup");
   if (input.checkpoint) await input.checkpoint();
+  lap("checkpoint");
   const decision = await evaluateCr04ChannelQualification(input.contactId, {
     channel: "email", sequenceId: input.sequenceId, scope: input.actor, persist: true,
   });
+  lap("qualification");
   if (input.checkpoint) await input.checkpoint();
+  lap("checkpoint");
   if (!decision.id) return held("CHANNEL_QUALIFICATION_SNAPSHOT_UNAVAILABLE");
   // A read-only candidate peek must not hold the singleton runtime pins.
   // The contact is locked and its affiliation rechecked inside the write unit.
   const peek = rows(await db.execute(sql`SELECT business_id FROM contacts WHERE id=${input.contactId}`))[0];
   if (!peek?.business_id) return held("INDEPENDENT_BUSINESS_AFFILIATION_REQUIRED");
 
-  return runCanonicalTransaction("preparation_commit", () => db.transaction(async tx => {
+  lap("peek");
+  const txStartedAt = Date.now();
+  const innerBefore = input.timings ? Object.values(input.timings).reduce((a, b) => a + b, 0) : 0;
+  const committed = await runCanonicalTransaction("preparation_commit", () => db.transaction(async tx => {
+    lap("tx_open");
     await boundCanonicalWriteTransaction(tx);
     if (input.beforeWrite) await input.beforeWrite(tx);
+    lap("tx_worker_guard");
     await assertSystemLinkDatabaseGuard(tx);
     await assertCanonicalPreparationDatabaseGuard(tx);
+    lap("tx_native_guards");
     const policy = await lockCurrentSfpOutreachPolicy(tx);
+    lap("tx_policy_lock");
     await lockCommercialGraph(tx, [
       { type: "business", id: Number(peek.business_id) }, { type: "contact", id: input.contactId },
     ], ["contact_business","relationship"]);
+    lap("tx_graph_lock");
     const contact = rows(await tx.execute(sql`
       SELECT id,business_id,email,assigned_to,archived_at,email_mutation_generation,email_status
         FROM contacts WHERE id=${input.contactId} FOR UPDATE
@@ -191,6 +211,7 @@ async function prepareCanonicalRecipientPass(input: CanonicalPreparationInput) {
     const emailHash = createHash("sha256").update(email).digest("hex");
     // Inspect current alternatives without creating intents for every stored
     // email. Duplicate normalized addresses rank once, regardless of contact IDs.
+    lap("tx_reads_and_binding");
     const preferred=rows(await tx.execute(sql`SELECT email_hash FROM (
       SELECT DISTINCT ON (lower(trim(c.email)))
         encode(sha256(convert_to(lower(trim(c.email)),'UTF8')),'hex') email_hash,
@@ -212,6 +233,7 @@ async function prepareCanonicalRecipientPass(input: CanonicalPreparationInput) {
             AND independent.decision='verified' AND independent.superseded_at IS NULL)
       ORDER BY lower(trim(c.email)),${recipientPrioritySql("c")},c.id
     ) distinct_addresses ORDER BY committed DESC,priority,id LIMIT 3`));
+    lap("tx_preferred_recipients");
     const priorPreparation=rows(await tx.execute(sql`SELECT id FROM cr04_enrollment_intents
       WHERE business_id=${Number(business.id)} AND program_id=${String(binding.program_id)}::uuid
         AND normalized_email_hash=${emailHash} AND sequence_id=${input.sequenceId}`))[0];
@@ -228,13 +250,16 @@ async function prepareCanonicalRecipientPass(input: CanonicalPreparationInput) {
     }
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(
       ${`canonical-preparation:${business.id}:${binding.program_id}`},0))`);
+    lap("tx_prior_and_lock");
     const receipt = await findFreshProviderObservation({
       businessId: Number(business.id), emailTokenHash: emailHash, ttlDays: policy.validationTtlDays,
     }, tx);
     const eligibility = await evaluateContactDecisions({
       contactId: input.contactId, businessId: Number(business.id),
     }, tx);
+    lap("tx_receipt_and_decisions");
     const suppressedAddress=await isCanonicallySuppressed([emailHash],tx,[email]);
+    lap("tx_suppression");
     let preparationState: PreparationState = eligibility.promotion.status !== "eligible"
       ? "suppressed" : receipt?.outcome === "invalid" ? "rejected"
         : suppressedAddress ? "suppressed"
@@ -381,12 +406,21 @@ async function prepareCanonicalRecipientPass(input: CanonicalPreparationInput) {
         contactId:input.contactId,email,generation:Number(contact.email_mutation_generation),
       });
     }
+    lap("tx_writes");
     // Revalidate AFTER qualification/locks/writes. A transaction that outlives
     // its cursor or deployment lease rolls back all intent/member mutations.
     if (input.beforeWrite) await input.beforeWrite(tx);
+    lap("tx_final_guard");
     return { replayed: Boolean(existing), blocked: enrollmentId === null, intentId: String(intentId), enrollmentId,
       preparationState, reasonCode, decision, outboundAuthorized: false,receiptProjectionChanged };
   }));
+  if (input.timings) {
+    // Whatever the transaction spent beyond its measured phases (BEGIN/COMMIT, deferred constraint and trigger work).
+    const innerAfter = Object.values(input.timings).reduce((a, b) => a + b, 0);
+    input.timings.tx_commit_and_unmeasured = (input.timings.tx_commit_and_unmeasured ?? 0)
+      + Math.max(0, Date.now() - txStartedAt - (innerAfter - innerBefore));
+  }
+  return committed;
 }
 
 /**

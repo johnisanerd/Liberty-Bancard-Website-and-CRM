@@ -3,6 +3,7 @@ import nodemailer from "nodemailer";
 import { resolvePolicy, assertNotProhibitedSync, isProhibitedAddress } from "./sender-policy";
 import type { MessageCategory } from "./sender-policy";
 import { getCommercialComplianceConfig, renderEmailPartsForPurpose } from "./can-spam-footer";
+import type { CommercialComplianceLoader } from "./can-spam-footer";
 import { redactToken } from "./audit-sanitizer";
 import { denyCro03OrCro08aForbiddenEffect as denyCro03cForbiddenEffect } from "./cro03/cro08a-effect-fence";
 
@@ -168,11 +169,24 @@ async function sendSmtpEmailCore(params: {
   commercialPurpose?: "marketing_outreach" | "transactional_response";
   inboundRequestId?: string;
   intendedRecipientContactId?: number;
+  /**
+   * Operator seed test only. Never a bypass: the transport re-verifies, from durable state, that this exact message
+   * was claimed for the one mailbox the operator authorized. No contact exists for a seed, so it can never touch,
+   * suppress or unsubscribe a prospect. The global pause authority below still applies.
+   */
+  seedTest?: { receiptKey: string; occurrenceId: string };
 }): Promise<SmtpSendResult> {
   // CRO-03C initial-batch continuations are evidence-only. This is a canonical
   // SMTP boundary, so an inherited fence records and terminalizes the attempt.
   await denyCro03cForbiddenEffect("smtp_email");
   const isCommercial = params.category === "cold_outreach" || params.commercialPurpose === "marketing_outreach";
+  let seedLoader: CommercialComplianceLoader | undefined;
+  if (params.seedTest) {
+    const { verifySeedTransportCapability } = await import("./sfp-seed-authority");
+    const verdict = await verifySeedTransportCapability(params, params.seedTest);
+    if (!verdict.ok) return { success: false, error: verdict.error, outcome: "unsent" };
+    seedLoader = verdict.complianceLoader;
+  }
   let rendered;
   try {
     rendered = await renderEmailPartsForPurpose({
@@ -180,6 +194,7 @@ async function sendSmtpEmailCore(params: {
       text: params.text,
       purpose: isCommercial ? "marketing_outreach" : "transactional_response",
       contactId: params.contactId,
+      ...(seedLoader ? { complianceLoader: seedLoader } : {}),
     });
   } catch (error: any) {
     return { success: false, error: error.message ?? "COMPLIANCE_CONFIGURATION_UNAVAILABLE" };
@@ -189,7 +204,9 @@ async function sendSmtpEmailCore(params: {
   const serverOwnedNoContactCategories = new Set<MessageCategory>([
     "internal_ops", "security", "onboarding", "support", "partners",
   ]);
-  if (params.contactId) {
+  if (seedLoader) {
+    // Authorized by the verified seed capability above; a seed has no contact by construction.
+  } else if (params.contactId) {
     try {
       const { authorizeCommercialUse } = await import("./commercial-resolution");
       const trustedTransactionalCategories = new Set<MessageCategory>([

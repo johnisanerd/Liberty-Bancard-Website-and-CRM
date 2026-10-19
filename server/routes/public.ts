@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { storage } from "../storage";
 import { z } from "zod";
 import { and, isNull, sql } from "drizzle-orm";
-import { verifyUnsubscribeToken } from "../services/unsubscribe-token";
+import { verifyUnsubscribeToken, verifySeedUnsubscribeToken } from "../services/unsubscribe-token";
 import { sendGhlEmail, sendGhlSms } from "../services/ghl";
 import { generateDealBlueprint } from "../services/deal-blueprint";
 import { autoGenerateProposal } from "../services/proposal-engine";
@@ -1747,6 +1747,20 @@ Current Provider: ${contact.currentProvider || "Unknown"}`
   // repeated or replayed request cannot double-apply or write a second event.
   const handleUnsubscribe = async (req: any, res: any) => {
     const token = typeof req.query.t === "string" ? req.query.t : "";
+    // Operator seed-test links are a different token kind. They record a seed event only and never reach a contact.
+    if (token.startsWith("seed.")) {
+      const seed = verifySeedUnsubscribeToken(token);
+      if (!seed.valid) {
+        return res.status(400).send("<!DOCTYPE html><html><head><title>Invalid Link</title></head><body><h2>This unsubscribe link is invalid or has expired.</h2></body></html>");
+      }
+      try {
+        const { applySeedUnsubscribe } = await import("../services/sfp-seed-authority");
+        await applySeedUnsubscribe(seed.occurrenceId);
+        return res.send("<!DOCTYPE html><html><head><title>Unsubscribed</title></head><body style='font-family:Arial,sans-serif;max-width:600px;margin:60px auto;text-align:center;'><h2 style='color:#333;'>You have been unsubscribed.</h2><p style='color:#666;'>This was a seed test message. No prospect was affected.</p></body></html>");
+      } catch {
+        return res.status(500).send("<!DOCTYPE html><html><head><title>Error</title></head><body><h2>An error occurred.</h2></body></html>");
+      }
+    }
     const result = verifyUnsubscribeToken(token);
 
     if (!result.valid) {

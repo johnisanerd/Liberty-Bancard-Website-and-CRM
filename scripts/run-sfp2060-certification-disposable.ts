@@ -69,6 +69,7 @@ async function main(): Promise<void> {
       { name: "sfp-launch-content", script: "scripts/certification/test-sfp-launch-content.ts", database: true },
       { name: "sfp-launch-runner-e2e", script: "scripts/certification/test-sfp-launch-runner-e2e.ts", database: true },
       { name: "sfp-launch-lifecycle-e2e", script: "scripts/certification/test-sfp-launch-lifecycle-e2e.ts", database: true },
+      { name: "sfp-seed-test", script: "scripts/certification/test-sfp-seed-test.ts", database: true },
       { name: "sfp-launch-release-ui", script: "scripts/certification/ui-sfp-launch-release.ts", database: true },
       { name: "canonical-address-validation", script: "scripts/certification/test-canonical-address-validation.ts", database: true },
       { name: "canonical-source-outbox", script: "scripts/certification/test-canonical-source-outbox.ts", database: true },

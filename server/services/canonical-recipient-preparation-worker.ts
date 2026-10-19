@@ -82,20 +82,28 @@ export async function processCanonicalRecipientPreparationTick(
         WHERE pkg.sequence_id=seq.id AND pkg.lifecycle_state='current'
           AND ${sql.raw(contactTargetVerticalSql("pkg.vertical"))}=${sql.raw(effectiveBusinessVerticalSql("b"))})
     )`;
+  // Diagnostic stopwatch per lane (milliseconds). Read-only observation of where a tick spends its time.
+  const timingsByLane:Record<string,Record<string,number>>={completion:{},stale:{},priority:{},population:{}};
+  let active=timingsByLane.population;
+  const timed=async<T>(phase:string,work:()=>Promise<T>):Promise<T>=>{
+    const startedAt=Date.now();
+    try {return await work();} finally {active[phase]=(active[phase] ?? 0)+Date.now()-startedAt;}
+  };
   const processPage=async(contacts:any[],progress:NonNullable<Cursor["priority"]>,pageDeadline=deadline)=>{
     let examined=0,prepared=0;
+    const laneTimings=active;
     // This is candidate retrieval, never write authority. Unbound contacts need
     // no per-row owner-locked transaction; genuine prepared slots still retire
     // under the existing guard, and every actual preparation rechecks its
     // binding and native/runtime authority before writing.
-    const bindings=contacts.length ? rows(await db.execute(sql`
+    const bindings=contacts.length ? rows(await timed("bindings_query",()=>db.execute(sql`
       SELECT DISTINCT c.id AS contact_id,p.id AS program_id,seq.id AS sequence_id
       FROM contacts c ${bindingJoins}
       WHERE c.id IN (${sql.join(contacts.map(contact=>sql`${Number(contact.id)}`),sql`,`)})
         AND c.archived_at IS NULL AND c.do_not_contact IS NOT TRUE
         AND b.record_class='canonical' AND c.email IS NOT NULL
       ORDER BY c.id,p.id,seq.id
-    `)) : [];
+    `))) : [];
     const bindingsByContact=new Map<number,Map<string,number[]>>();
     for (const binding of bindings) {
       const contactId=Number(binding.contact_id),programId=String(binding.program_id);
@@ -108,10 +116,10 @@ export async function processCanonicalRecipientPreparationTick(
       // Unbound population rows do not regain a per-row authority transaction.
       // Renew between bounded pages/time slices; actual effects checkpoint
       // independently before/after qualification and after their commits.
-      if (Date.now()-lastCheckpointAt>=30_000) await checkpoint();
+      if (Date.now()-lastCheckpointAt>=30_000) await timed("worker_checkpoint",checkpoint);
       // Include unavailable/changed recipients: stale paused slots must retire,
       // so suppressions and affiliation changes cannot strand the allowance.
-      if (contact.has_preparation===true) await runCanonicalTransaction("preparation_retirement",()=>db.transaction(async tx=>{
+      if (contact.has_preparation===true) await timed("retirement",()=>runCanonicalTransaction("preparation_retirement",()=>db.transaction(async tx=>{
         await guard(tx);
         const obsolete=rows(await tx.execute(sql`SELECT i.id,i.enrollment_id
           FROM cr04_enrollment_intents i LEFT JOIN contacts c ON c.id=i.contact_id
@@ -139,7 +147,7 @@ export async function processCanonicalRecipientPreparationTick(
             enrollment_id=NULL,reason_code='CURRENT_RECIPIENT_FACTS_CHANGED' WHERE id=${String(intent.id)}::uuid`);
         }
         await guard(tx);
-      }));
+      })));
       const programs=bindingsByContact.get(Number(contact.id)) ?? new Map<string,number[]>();
       let advanced=false,reason="NO_CURRENT_PROGRAM_BINDING_OR_AVAILABLE_EMAIL";
       for (const [programId,sequences] of programs) {
@@ -149,7 +157,7 @@ export async function processCanonicalRecipientPreparationTick(
           const result=await prepareCanonicalRecipient({
             contactId:Number(contact.id),programId,sequenceId:sequences[0],
             actor:{role:"admin",actorId,email:null},source:"canonical_automatic_selection",beforeWrite:guard,
-            checkpoint,
+            checkpoint,timings:laneTimings,
           });
           if (result.enrollmentId) {advanced=true;prepared++;}
           else reason=result.reasonCode;
@@ -160,11 +168,12 @@ export async function processCanonicalRecipientPreparationTick(
         }
       }
       progress.afterContactId=Number(contact.id);progress.scanned++;examined++;
+      laneTimings.contacts=(laneTimings.contacts ?? 0)+1;
       if (advanced) progress.prepared++;
       else {progress.held++;progress.reasons[reason]=(progress.reasons[reason] ?? 0)+1;}
-      if (advanced || contact.has_preparation===true || Date.now()-lastCheckpointAt>=30_000) await checkpoint();
+      if (advanced || contact.has_preparation===true || Date.now()-lastCheckpointAt>=30_000) await timed("worker_checkpoint",checkpoint);
     }
-    await checkpoint();
+    await timed("worker_checkpoint",checkpoint);
     return {examined,prepared};
   };
   let failed=false;
@@ -190,6 +199,7 @@ export async function processCanonicalRecipientPreparationTick(
       ORDER BY md5(answered.id::text||floor(extract(epoch FROM now())/1800)::text)
       LIMIT 150`));
     const completionContacts=await completionPage();
+    active=timingsByLane.completion;
     const completion=completionContacts.length
       ? await processPage(completionContacts,
           {afterContactId:0,cycles:0,scanned:0,prepared:0,held:0,reasons:{},lastCycleAt:null},
@@ -213,12 +223,14 @@ export async function processCanonicalRecipientPreparationTick(
       ORDER BY md5(stale.id::text||floor(extract(epoch FROM now())/1800)::text)
       LIMIT 150`));
     const staleContacts=await stalePackagePage();
+    active=timingsByLane.stale;
     const stalePackage=staleContacts.length
       ? await processPage(staleContacts,
           {afterContactId:0,cycles:0,scanned:0,prepared:0,held:0,reasons:{},lastCycleAt:null},
           Math.min(deadline,Date.now()+staleBudgetMs))
       : {examined:0,prepared:0};
     const contacts=await populationPage();
+    active=timingsByLane.population;
     // Keep the population pass first so priority work cannot starve coverage.
     const population=await processPage(contacts,state,Math.min(deadline,Date.now()+45_000));
     let populationPages=1;
@@ -256,6 +268,7 @@ export async function processCanonicalRecipientPreparationTick(
     const priorityDeadline=Math.min(deadline,Date.now()+50_000);
     while (Date.now()<priorityDeadline && priorityPages<MAX_PRIORITY_PAGES_PER_TICK) {
       const selected=await priorityPage();
+      active=timingsByLane.priority;
       const result=await processPage(selected,priorityCursor,priorityDeadline);
       priorityPages++;
       priority={examined:priority.examined+result.examined,prepared:priority.prepared+result.prepared};
@@ -272,6 +285,7 @@ export async function processCanonicalRecipientPreparationTick(
     if (!populationComplete && population.examined===contacts.length) {
       while (populationPages<maxPopulationPages && Date.now()<deadline) {
         const next=await populationPage();
+        active=timingsByLane.population;
         const result=await processPage(next,state);
         populationPages++;
         population.examined+=result.examined;population.prepared+=result.prepared;
@@ -282,7 +296,8 @@ export async function processCanonicalRecipientPreparationTick(
         }
       }
     }
-    return {ran:true,...population,populationPages,cycles:state.cycles,priority:{...priority,pages:priorityPages},completion,stalePackage};
+    return {ran:true,...population,populationPages,cycles:state.cycles,priority:{...priority,pages:priorityPages},completion,stalePackage,
+      timingsMs:Object.fromEntries(Object.entries(timingsByLane).filter(([,v])=>Object.keys(v).length>0))};
   } catch (error) {
     failed=true;
     throw error;

@@ -126,7 +126,8 @@ export async function renderEmailPartsForPurpose(params: {
   if (params.purpose === "transactional_response") {
     return { html: params.html, text: baseText };
   }
-  if (!params.contactId) throw new Error("COMMERCIAL_CONTACT_REQUIRED");
+  // A caller-supplied compliance loader is the seed-test path (its unsubscribe link is not a contact link).
+  if (!params.contactId && !params.complianceLoader) throw new Error("COMMERCIAL_CONTACT_REQUIRED");
   const resolved = await (params.complianceLoader ?? getCommercialComplianceConfig)(params.contactId);
   if (!resolved.ok) throw new Error(resolved.error);
   return {

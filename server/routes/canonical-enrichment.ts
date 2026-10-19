@@ -74,6 +74,45 @@ export function registerCanonicalEnrichmentRoutes(app: Express) {
       res.json(await previewSeedRendering());
     } catch { res.status(503).json({ message: "The seed rendering is unavailable; nothing was rendered." }); }
   });
+  // Operator seed test: one real message to ONE explicitly authorized mailbox, through the real cold sender, renderer
+  // and SMTP service. Never a prospect; the global outbound pause still applies. See sfp-seed-test.ts.
+  type SeedLib = typeof import("../services/sfp-seed-test");
+  const withSeed = (handler: (lib: SeedLib, req: any, res: any) => Promise<void>) => async (req: any, res: any) => {
+    try {
+      res.set("Cache-Control", "no-store");
+      await handler(await import("../services/sfp-seed-test"), req, res);
+    } catch (error: any) {
+      if (error?.name === "SeedTestError") return res.status(error.status).json({ code: error.code, message: error.message });
+      res.status(503).json({ message: "The seed test is unavailable; nothing was sent." });
+    }
+  };
+  app.get("/api/canonical-enrichment/seed-test/status", isDashboardUser, requireRole("admin"),
+    withSeed(async (lib, _req, res) => { res.json(await lib.readSeedStatus()); }));
+  app.post("/api/canonical-enrichment/seed-test/authorize", isDashboardUser, requireRole("admin"),
+    withSeed(async (lib, req, res) => {
+      const authorization = await lib.authorizeSeedMailbox({ mailbox: req.body?.mailbox, expiresInHours: req.body?.expiresInHours,
+        maxMessages: req.body?.maxMessages, actorId: actor(req) });
+      await storage.createAuditLog({ action: "sfp_seed_test_mailbox_authorized", entityType: "sfp_seed_test", userId: actor(req),
+        details: { mailboxHash: authorization.mailboxHash, expiresAt: authorization.expiresAt, maxMessages: authorization.maxMessages } } as any);
+      res.json({ authorization });
+    }));
+  app.post("/api/canonical-enrichment/seed-test/revoke", isDashboardUser, requireRole("admin"),
+    withSeed(async (lib, req, res) => {
+      const result = await lib.revokeSeedMailbox();
+      await storage.createAuditLog({ action: "sfp_seed_test_mailbox_revoked", entityType: "sfp_seed_test", userId: actor(req), details: result } as any);
+      res.json(result);
+    }));
+  app.post("/api/canonical-enrichment/seed-test/send/preview", isDashboardUser, requireRole("admin"),
+    withSeed(async (lib, req, res) => { res.json(await lib.previewSeedSend({ packageKey: String(req.body?.packageKey ?? ""), stepOrder: Number(req.body?.stepOrder) })); }));
+  app.post("/api/canonical-enrichment/seed-test/send", isDashboardUser, requireRole("admin"),
+    withSeed(async (lib, req, res) => {
+      const result = await lib.executeSeedSend({ packageKey: String(req.body?.packageKey ?? ""), stepOrder: Number(req.body?.stepOrder),
+        previewHash: String(req.body?.previewHash ?? ""), idempotencyKey: req.header("Idempotency-Key") ?? "", actorId: actor(req) });
+      await storage.createAuditLog({ action: "sfp_seed_test_send", entityType: "sfp_seed_test", userId: actor(req),
+        details: { replayed: result.replayed, state: result.receipt.state, packageKey: result.receipt.packageKey,
+          stepOrder: result.receipt.stepOrder, mailboxHash: result.receipt.mailboxHash } } as any);
+      res.json(result);
+    }));
   app.post("/api/canonical-enrichment/release/preview", isDashboardUser, requireRole("admin"), async (req, res) => {
     try {
       res.set("Cache-Control", "no-store");
