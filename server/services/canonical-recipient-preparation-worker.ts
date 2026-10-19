@@ -20,11 +20,17 @@ type Cursor={afterContactId:number;cycles:number;scanned:number;prepared:number;
 /** Local selection only. Uses the existing published owner, enrollment ledger
  * and queue tick. Provider pauses never gate this pass; it cannot send or spend. */
 export async function processCanonicalRecipientPreparationTick(
-  budget:{maxPopulationPages?:number}={},
+  budget:{maxPopulationPages?:number;staleBudgetMs?:number}={},
 ) {
   const maxPopulationPages=budget.maxPopulationPages ?? 20;
   if (!Number.isInteger(maxPopulationPages) || maxPopulationPages<1 || maxPopulationPages>20) {
     throw new Error("CANONICAL_PREPARATION_INVALID_TICK_BUDGET");
+  }
+  // Each re-preparation costs several seconds against the production database, so the stale-package lane's time
+  // share is adjustable; the tick deadline grows by the same extra so population coverage is never squeezed out.
+  const staleBudgetMs=budget.staleBudgetMs ?? 30_000;
+  if (!Number.isInteger(staleBudgetMs) || staleBudgetMs<1_000 || staleBudgetMs>240_000) {
+    throw new Error("CANONICAL_PREPARATION_INVALID_STALE_BUDGET");
   }
   const actorId="system:canonical-recipient-preparation";
   const owner=await runCanonicalTransaction("preparation_owner_claim",claimSfpRuntimeDeploymentOwner);
@@ -65,7 +71,7 @@ export async function processCanonicalRecipientPreparationTick(
     }));
     lastCheckpointAt=Date.now();
   };
-  const deadline=Date.now()+90_000;
+  const deadline=Date.now()+90_000+Math.max(0,staleBudgetMs-30_000);
   const bindingJoins=sql`JOIN businesses b ON b.id=c.business_id
     JOIN sfp_programs p ON p.is_active AND p.taxonomy_version=2
       AND ${sql.raw(effectiveBusinessVerticalSql("b"))}=ANY(p.vertical_ids)
@@ -210,7 +216,7 @@ export async function processCanonicalRecipientPreparationTick(
     const stalePackage=staleContacts.length
       ? await processPage(staleContacts,
           {afterContactId:0,cycles:0,scanned:0,prepared:0,held:0,reasons:{},lastCycleAt:null},
-          Math.min(deadline,Date.now()+30_000))
+          Math.min(deadline,Date.now()+staleBudgetMs))
       : {examined:0,prepared:0};
     const contacts=await populationPage();
     // Keep the population pass first so priority work cannot starve coverage.

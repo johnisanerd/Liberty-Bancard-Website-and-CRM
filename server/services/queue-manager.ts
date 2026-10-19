@@ -2812,8 +2812,14 @@ export class QueueManager {
           }
           try {
             const {processCanonicalRecipientPreparationTick}=await import("./canonical-recipient-preparation-worker");
-            for (let pass=0;pass<(priorityRequest ? 3 : 1);pass++) {
-              const preparations=await processCanonicalRecipientPreparationTick();
+            // Stale-package refresh is the slow lane (several seconds per recipient). Scheduled ticks give it a larger
+            // time share; an operator request keeps passing while it is still making progress, bounded to 10 minutes.
+            const preparationStartedAt=Date.now();
+            let lastStaleExamined=0;
+            for (let pass=0;pass<(priorityRequest ? 10 : 1);pass++) {
+              if (priorityRequest && pass>=3 && (lastStaleExamined===0 || Date.now()-preparationStartedAt>10*60_000)) break;
+              const preparations=await processCanonicalRecipientPreparationTick({staleBudgetMs:priorityRequest ? 90_000 : 60_000});
+              lastStaleExamined=Number((preparations as any).stalePackage?.examined ?? 0);
               if (preparations.ran) console.log(`[CanonicalRecipientPreparation] ${JSON.stringify(preparations)}`);
               priorityRun.preparationPasses=pass+1;
               if (!preparations.ran) break;
