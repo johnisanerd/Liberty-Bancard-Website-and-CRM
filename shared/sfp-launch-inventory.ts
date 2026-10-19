@@ -6,7 +6,7 @@
 export type LaunchGateKey =
   | "contact_current" | "address_unchanged" | "business_link_current" | "business_current"
   | "accepted_vertical" | "sequence_bound" | "in_territory" | "fresh_validation"
-  | "paused_membership" | "contact_policy";
+  | "paused_membership" | "contact_policy" | "prepared_facts_current";
 
 export const LAUNCH_GATE_LABELS: Record<LaunchGateKey, string> = {
   contact_current: "Contact is a current, unsuppressed production contact",
@@ -19,6 +19,7 @@ export const LAUNCH_GATE_LABELS: Record<LaunchGateKey, string> = {
   fresh_validation: "A fresh valid address validation is on file",
   paused_membership: "The owned sequence membership exists and is paused",
   contact_policy: "Consent, hygiene and promotion rules allow an email",
+  prepared_facts_current: "Recorded preparation still matches current records, including the package version",
 };
 
 export interface LaunchReasonCount { gate: LaunchGateKey; code: string; label: string; count: number }

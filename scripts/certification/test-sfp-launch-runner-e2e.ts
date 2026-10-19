@@ -113,19 +113,20 @@ try {
   const prepared = await prepareCanonicalRecipient({ contactId: Number(contact.id), sequenceId, programId, actor, source: prefix });
   check(prepared.enrollmentId != null, "Preparation owns a paused membership");
   const enrollmentId = Number(prepared.enrollmentId);
-  await pool.query("UPDATE cr04_enrollment_intents SET preparation_state='ready_held' WHERE id=$1", [prepared.intentId]);
-  const recipients = [{ intentId: String(prepared.intentId), enrollmentId, contactId: Number(contact.id), businessId: Number(business.id),
-    sequenceId, county: "Miami-Dade", vertical: "Automotive" }];
-  const deps = { listQualified: async () => recipients, capacity: async () => 5 };
+  // The real selector and real capacity definition: one warm sender able to send five a day.
+  const { COLD_OUTREACH_FROM } = await import("../../server/services/sender-policy");
+  await pool.query(`DELETE FROM sending_identities WHERE lower(email_address)=lower($1)`, [COLD_OUTREACH_FROM]);
+  await pool.query(`INSERT INTO sending_identities (label,domain,email_address,is_active,warmup_status,daily_limit,sent_today)
+    VALUES('cert','mail.libertybancard.com',$1,TRUE,'warm',5,0)`, [COLD_OUTREACH_FROM]);
   const enrollment = async () => one("SELECT * FROM sequence_enrollments WHERE id=$1", [enrollmentId]);
 
   // Not released: nothing sends even with the legacy flag off and release-only mode on.
   await processSequenceEnrollments({ canonicalReleaseOnly: true });
   check(captured.length === 0, "Unreleased membership sends nothing");
 
-  const p = await release.previewCanonicalRelease(1, deps);
+  const p = await release.previewCanonicalRelease(1);
   check(p.size === 1, "Release preview selects the single ready recipient (content-ready sequence)");
-  await release.executeCanonicalRelease({ requestedLimit: 1, snapshotHash: p.snapshotHash, commandKey: `${prefix}-1`, expiresInHours: 2, actorId: "admin:cert", deps });
+  await release.executeCanonicalRelease({ requestedLimit: 1, snapshotHash: p.snapshotHash, commandKey: `${prefix}-1`, expiresInHours: 2, actorId: "admin:cert" });
   await pool.query("UPDATE sequence_enrollments SET next_action_at=NOW()-interval '1 minute' WHERE id=$1", [enrollmentId]);
 
   // Transport rule: SMTP unavailable -> deferred, never a silent fallback.

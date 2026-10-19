@@ -260,12 +260,25 @@ async function prepareCanonicalRecipientPass(input: CanonicalPreparationInput) {
       FROM cr04_enrollment_intents old
       WHERE old.contact_id=${input.contactId} AND old.program_id=${String(binding.program_id)}::uuid
         AND old.normalized_email_hash<>${emailHash} AND se.id=old.enrollment_id
-        AND se.status='paused' AND se.metadata->>'canonicalPreparationId'=old.id::text`);
+        AND se.status IN ('paused','active') AND se.metadata->>'canonicalPreparationId'=old.id::text`);
     await tx.execute(sql`UPDATE cr04_enrollment_intents SET preparation_state='exception',
       reason_code='CURRENT_ADDRESS_CHANGED',enrollment_id=NULL
       WHERE contact_id=${input.contactId} AND program_id=${String(binding.program_id)}::uuid
         AND normalized_email_hash<>${emailHash}
         AND preparation_state IN ('pending_validation','ready_held')`);
+    // A recipient whose journey already started (completed, stopped by a reply/opt-out, or retired after
+    // sends) must never be re-prepared into a fresh paused membership: that would restart touch 1.
+    if (preparationState === "pending_validation" || preparationState === "ready_held") {
+      const startedBefore = rows(await tx.execute(sql`SELECT se.id FROM sequence_enrollments se
+        WHERE se.contact_id=${input.contactId} AND se.sequence_id=${input.sequenceId}
+          AND se.status NOT IN ('active','paused')
+          AND (se.current_step>0 OR EXISTS (SELECT 1 FROM outbound_send_log l WHERE l.sequence_enrollment_id=se.id))
+        LIMIT 1`))[0];
+      if (startedBefore) {
+        preparationState = "exception";
+        reasonCode = "JOURNEY_ALREADY_STARTED_FOR_THIS_RECIPIENT";
+      }
+    }
     const intentId = existing?.id ?? randomUUID();
     const snapshot = {
       programId: String(binding.program_id), policyVersion: binding.policy_version,
@@ -306,7 +319,23 @@ async function prepareCanonicalRecipientPass(input: CanonicalPreparationInput) {
         SELECT id,status,metadata FROM sequence_enrollments WHERE contact_id=${input.contactId}
           AND sequence_id=${input.sequenceId} AND status IN ('active','paused') FOR UPDATE
       `))[0];
-      if (!member || member.status !== "paused" || member.metadata?.canonicalPreparationId
+      const ownedJourney = !!member && member.status === "active"
+        && member.metadata?.canonicalPreparationId === String(intentId) && !!member.metadata?.canonicalRelease;
+      if (ownedJourney) {
+        // A released journey in progress is valid work, not an exception. Re-evaluation preserves its step,
+        // ownership and send receipts; only genuine changes to approved content or validation hold it.
+        enrollmentId = Number(member.id);
+        const approvedHash = member.metadata.canonicalRelease?.binding?.contentHash ?? null;
+        const holdReason = preparationState === "pending_validation" ? "validation_not_current"
+          : approvedHash && binding.content_hash && approvedHash !== binding.content_hash ? "package_content_changed" : null;
+        if (holdReason) {
+          await tx.execute(sql`UPDATE sequence_enrollments SET status='paused',next_action_at=NULL,updated_at=NOW(),
+            metadata=metadata||jsonb_build_object('outboundAuthorized',false,'canonicalRelease',
+              (metadata->'canonicalRelease')||jsonb_build_object('endedReason',${holdReason}::text,'endedAt',NOW()::text))
+            WHERE id=${enrollmentId} AND status='active'
+              AND metadata->>'canonicalPreparationId'=${String(intentId)}`);
+        }
+      } else if (!member || member.status !== "paused" || member.metadata?.canonicalPreparationId
           && member.metadata.canonicalPreparationId!==String(intentId)) {
         preparationState = "exception";
         reasonCode = "EXISTING_ACTIVE_MEMBERSHIP_NOT_CANONICAL_READY_HELD";
@@ -320,8 +349,9 @@ async function prepareCanonicalRecipientPass(input: CanonicalPreparationInput) {
             AND (metadata->>'canonicalPreparationId' IS NULL OR metadata->>'canonicalPreparationId'=${String(intentId)})`);
       }
     } else if (enrollmentId) {
-      await tx.execute(sql`UPDATE sequence_enrollments SET status='cancelled',updated_at=NOW()
-        WHERE id=${enrollmentId} AND status='paused'
+      await tx.execute(sql`UPDATE sequence_enrollments SET status='cancelled',updated_at=NOW(),
+          metadata=metadata||jsonb_build_object('retiredReason',${reasonCode}::text)
+        WHERE id=${enrollmentId} AND status IN ('paused','active')
           AND metadata->>'canonicalPreparationId'=${String(intentId)}`);
       enrollmentId = null;
     }
@@ -359,9 +389,44 @@ async function prepareCanonicalRecipientPass(input: CanonicalPreparationInput) {
   }));
 }
 
+/**
+ * The one definition of "the prepared recipient's recorded facts are still current". Aliases: i = intent,
+ * c = contact, b = business, p = program, seq = sequence. Used by validation selection, the launch
+ * inventory and the release/dispatch recheck so none of them can drift from the preparation writer.
+ * It includes the package pin: a changed package content hash makes the preparation stale.
+ */
+export function preparedFactsCurrentSql(): string {
+  return `p.is_active AND p.taxonomy_version=2
+       AND i.preparation_snapshot->>'policyVersion'=p.policy_version::text
+       AND i.preparation_snapshot->>'emailMutationGeneration'=c.email_mutation_generation::text
+       AND i.preparation_snapshot->>'canonicalVertical'=${effectiveBusinessVerticalSql("b")}
+       AND i.preparation_snapshot->>'canonicalVertical'=ANY(p.vertical_ids)
+       AND i.preparation_snapshot->'geography'->>'countyFips'=ANY(p.county_fips)
+       AND i.preparation_snapshot->>'businessSourceFingerprint'=
+         md5(to_jsonb(b)::text||COALESCE((SELECT jsonb_agg(to_jsonb(bl) ORDER BY bl.id)::text
+           FROM business_locations bl WHERE bl.business_id=b.id),'[]'))
+       AND EXISTS (SELECT 1 FROM contact_business_link_decisions l
+         LEFT JOIN contact_business_system_link_evidence proof ON proof.id=l.system_evidence_id
+         WHERE l.contact_id=c.id AND l.business_id=b.id AND l.decision='verified'
+           AND l.superseded_at IS NULL AND (proof.id IS NULL OR
+             ${relationshipReasonsSql("c.id","b.id","proof.source_link_id","proof.source_entity_id")}
+               <@ ARRAY['current_link_decision_exists']::text[]))
+       AND (i.preparation_snapshot->>'packageVersionId' IS NOT NULL AND EXISTS (
+         SELECT 1 FROM sfp_campaign_package_versions pkg
+          WHERE pkg.id=(i.preparation_snapshot->>'packageVersionId')::uuid
+            AND pkg.sequence_id=seq.id AND pkg.lifecycle_state='current'
+            AND pkg.content_hash=i.preparation_snapshot->>'contentHash'
+       ) OR NOT EXISTS (SELECT 1 FROM sfp_campaign_package_versions cur
+             WHERE cur.sequence_id=seq.id AND cur.lifecycle_state='current')
+         AND i.preparation_snapshot->'explicitSequenceBinding'=seq.trigger_config
+         AND seq.trigger_config->>'canonicalProgramId'=p.id::text
+         AND seq.trigger_config->'canonicalVerticals' ? (i.preparation_snapshot->>'canonicalVertical'))`;
+}
+
 /** Only current, actually prepared recipients can enter paid hygiene work. */
 export async function currentCanonicalValidationSelection(
   contactId: number, emailTokenHash: string, tx: any = db,
+  options: { allowReleasedMembership?: boolean } = {},
 ) {
   await assertCanonicalPreparationDatabaseGuard(tx);
   if (tx!==db) {
@@ -382,35 +447,14 @@ export async function currentCanonicalValidationSelection(
       JOIN sfp_programs p ON p.id=i.program_id
       JOIN follow_up_sequences seq ON seq.id=i.sequence_id AND seq.retired_at IS NULL
       JOIN sequence_enrollments se ON se.id=i.enrollment_id AND se.contact_id=c.id
-       AND se.sequence_id=i.sequence_id AND se.status='paused'
+       AND se.sequence_id=i.sequence_id
+       AND se.status IN (${sql.raw(options.allowReleasedMembership ? "'paused','active'" : "'paused'")})
         AND se.metadata->>'canonicalPreparationId'=i.id::text
      WHERE c.id=${contactId} AND i.normalized_email_hash=${emailTokenHash}
        AND encode(sha256(convert_to(lower(trim(c.email)),'UTF8')),'hex')=${emailTokenHash}
        AND c.archived_at IS NULL AND b.record_class='canonical'
        AND i.preparation_state IN ('pending_validation','ready_held')
-       AND p.is_active AND p.taxonomy_version=2
-       AND i.preparation_snapshot->>'policyVersion'=p.policy_version::text
-       AND i.preparation_snapshot->>'emailMutationGeneration'=c.email_mutation_generation::text
-       AND i.preparation_snapshot->>'canonicalVertical'=${sql.raw(effectiveBusinessVerticalSql("b"))}
-       AND i.preparation_snapshot->>'canonicalVertical'=ANY(p.vertical_ids)
-       AND i.preparation_snapshot->'geography'->>'countyFips'=ANY(p.county_fips)
-       AND i.preparation_snapshot->>'businessSourceFingerprint'=
-         md5(to_jsonb(b)::text||COALESCE((SELECT jsonb_agg(to_jsonb(bl) ORDER BY bl.id)::text
-           FROM business_locations bl WHERE bl.business_id=b.id),'[]'))
-       AND EXISTS (SELECT 1 FROM contact_business_link_decisions l
-         LEFT JOIN contact_business_system_link_evidence proof ON proof.id=l.system_evidence_id
-         WHERE l.contact_id=c.id AND l.business_id=b.id AND l.decision='verified'
-           AND l.superseded_at IS NULL AND (proof.id IS NULL OR
-             ${sql.raw(relationshipReasonsSql("c.id","b.id","proof.source_link_id","proof.source_entity_id"))}
-               <@ ARRAY['current_link_decision_exists']::text[]))
-       AND (i.preparation_snapshot->>'packageVersionId' IS NOT NULL AND EXISTS (
-         SELECT 1 FROM sfp_campaign_package_versions pkg
-          WHERE pkg.id=(i.preparation_snapshot->>'packageVersionId')::uuid
-            AND pkg.sequence_id=seq.id AND pkg.lifecycle_state='current'
-            AND pkg.content_hash=i.preparation_snapshot->>'contentHash'
-       ) OR i.preparation_snapshot->'explicitSequenceBinding'=seq.trigger_config
-         AND seq.trigger_config->>'canonicalProgramId'=p.id::text
-         AND seq.trigger_config->'canonicalVerticals' ? (i.preparation_snapshot->>'canonicalVertical'))
+       AND ${sql.raw(preparedFactsCurrentSql())}
       ORDER BY i.created_at,i.id LIMIT 1 ${tx!==db ? sql`FOR SHARE OF i,p,seq,se` : sql``}
   `))[0];
   if (!selected) return null;

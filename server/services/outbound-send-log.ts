@@ -324,6 +324,26 @@ export async function markSendFailed(params: {
 }
 
 /**
+ * Definitive non-delivery (the transport proved the message was not accepted, or the dispatch was
+ * denied before any I/O): re-open the claim so the same step can be retried. The idempotency key and
+ * its history are kept. Never use for an uncertain outcome.
+ */
+export async function reopenUnsentAttempt(params: { idempotencyKey: string; failureReason: string }): Promise<boolean> {
+  try {
+    const r = await db.execute(sql`
+      UPDATE outbound_send_log
+         SET status = 'pending', claim_expires_at = NOW() - INTERVAL '1 second', updated_at = NOW(),
+             failure_reason = ${params.failureReason}
+       WHERE idempotency_key = ${params.idempotencyKey} AND status IN ('pending','dispatching')
+       RETURNING id`);
+    return r.rows.length > 0;
+  } catch (err) {
+    console.warn("[SendLog] reopenUnsentAttempt error:", err);
+    return false;
+  }
+}
+
+/**
  * Update status to 'bounced' or 'complained' when GHL webhook reports it.
  * providerMessageId is used to look up the row if the idempotency key is unknown.
  */

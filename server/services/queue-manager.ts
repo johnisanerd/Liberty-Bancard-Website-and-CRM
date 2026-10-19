@@ -2041,9 +2041,14 @@ export class QueueManager {
             // unexpired operator release is its own explicit authority: run only the
             // sequence worker, restricted to enrollments inside that release (no
             // campaign queue, no Sunbiz auto-convert, no legacy enrollment).
-            const { readCanonicalReleaseControl, isControlLive } = await import("./sfp-canonical-release");
+            const { readCanonicalReleaseControl, controlHasLiveAuthority, reconcileCanonicalReleases } = await import("./sfp-canonical-release");
+            // Deadlines are applied on every tick BEFORE deciding whether anything is live, so an expired
+            // admission window or journey is always cleaned up even when no release remains to run.
+            await reconcileCanonicalReleases().catch((error) => {
+              console.error("[SFP_CANONICAL_RELEASE_RECONCILE_FAILED]", error instanceof Error ? error.name : "UnknownError");
+            });
             const control = await readCanonicalReleaseControl().catch(() => null);
-            if (control && isControlLive(control)) {
+            if (control && controlHasLiveAuthority(control)) {
               const { processSequenceEnrollments } = await import("./sequence-worker");
               await processSequenceEnrollments({ canonicalReleaseOnly: true });
             }

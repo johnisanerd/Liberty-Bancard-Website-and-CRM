@@ -83,6 +83,44 @@ export async function verifySmtpLive(): Promise<boolean> {
 }
 
 /**
+ * What is known about a send that did not succeed.
+ *  - "unsent": refused before any bytes left this process, or rejected by the server before it accepted
+ *    the message. Safe to treat as not delivered.
+ *  - "uncertain": the connection failed after the message body was transmitted. The server may or may not
+ *    have accepted it, so it must never be treated as unsent or retried automatically.
+ */
+export type SmtpSendOutcome = "sent" | "unsent" | "uncertain";
+export interface SmtpSendResult { success: boolean; messageId?: string; error?: string; outcome?: SmtpSendOutcome }
+
+/** Conservative: only errors that prove the message was not accepted are "unsent". */
+export function classifySmtpFailure(err: any): SmtpSendOutcome {
+  const command = String(err?.command ?? "").toUpperCase();
+  const code = String(err?.code ?? "");
+  const responseCode = Number(err?.responseCode);
+  const beforeData = ["EHLO", "HELO", "STARTTLS", "AUTH", "MAIL FROM", "RCPT TO", "API"].includes(command);
+  if (code === "EAUTH" || code === "EENVELOPE" || code === "EMESSAGE" || code === "ECONNREFUSED" || code === "ENOTFOUND" || code === "EDNS") return "unsent";
+  // nodemailer reports every connection-level failure, including a connection lost AFTER the body was sent, as
+  // command "CONN". Only the connect-phase messages prove nothing was transmitted; anything else is uncertain.
+  if (command === "CONN") {
+    const message = String(err?.message ?? "");
+    const errno = String(err?.errno ?? err?.syscall ?? "");
+    return /^(Connection timeout|Greeting never received)/i.test(message)
+      || ["ECONNREFUSED", "ENOTFOUND", "EHOSTUNREACH", "ENETUNREACH"].includes(errno) ? "unsent" : "uncertain";
+  }
+  if (beforeData) return "unsent";
+  // A reply to the end of DATA with a final 4xx/5xx status means the server declined the message.
+  if (command.startsWith("DATA") && Number.isFinite(responseCode) && responseCode >= 400 && responseCode < 600) return "unsent";
+  return "uncertain";
+}
+
+/** Public SMTP entry point. Failures carry an outcome so callers can tell "not sent" from "unknown". */
+export async function sendSmtpEmail(params: Parameters<typeof sendSmtpEmailCore>[0]): Promise<SmtpSendResult> {
+  const result = await sendSmtpEmailCore(params);
+  if (result.success) return { ...result, outcome: "sent" };
+  return { ...result, outcome: result.outcome ?? "unsent" };
+}
+
+/**
  * Send an email via SMTP.
  *
  * Sender resolution order (when `category` is supplied):
@@ -96,7 +134,7 @@ export async function verifySmtpLive(): Promise<boolean> {
  * Either way, the resolved From address is checked against the prohibition
  * guard — no-reply/noreply on any Liberty Bancard domain throws immediately.
  */
-export async function sendSmtpEmail(params: {
+async function sendSmtpEmailCore(params: {
   to: string;
   subject: string;
   html: string;
@@ -130,7 +168,7 @@ export async function sendSmtpEmail(params: {
   commercialPurpose?: "marketing_outreach" | "transactional_response";
   inboundRequestId?: string;
   intendedRecipientContactId?: number;
-}): Promise<{ success: boolean; messageId?: string; error?: string }> {
+}): Promise<SmtpSendResult> {
   // CRO-03C initial-batch continuations are evidence-only. This is a canonical
   // SMTP boundary, so an inherited fence records and terminalizes the attempt.
   await denyCro03cForbiddenEffect("smtp_email");
@@ -226,7 +264,7 @@ async function _sendSmtpEmailInner(params: {
   unsubscribeUrl?: string;
   contactId?: number;
   commercialPurpose?: "marketing_outreach" | "transactional_response";
-}, complianceConfig?: Awaited<ReturnType<typeof getCommercialComplianceConfig>>): Promise<{ success: boolean; messageId?: string; error?: string }> {
+}, complianceConfig?: Awaited<ReturnType<typeof getCommercialComplianceConfig>>): Promise<SmtpSendResult> {
   const transport = getTransporter();
   if (!transport) {
     return { success: false, error: "SMTP not configured (set SMTP_HOST, SMTP_USER, SMTP_PASS)" };
@@ -300,9 +338,9 @@ async function _sendSmtpEmailInner(params: {
     });
 
     console.log(`[SMTP] Email sent to ${redactToken(effectiveTo)} from ${fromAddress} — messageId: ${info.messageId}`);
-    return { success: true, messageId: info.messageId };
+    return { success: true, messageId: info.messageId, outcome: "sent" };
   } catch (err: any) {
     console.error(`[SMTP] Failed to send email to ${redactToken(params.to)}:`, err.message);
-    return { success: false, error: err.message };
+    return { success: false, error: err.message, outcome: classifySmtpFailure(err) };
   }
 }

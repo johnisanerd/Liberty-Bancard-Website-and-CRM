@@ -1,6 +1,6 @@
 import {
-  CANONICAL_RELEASE_MAX_HOURS, CANONICAL_RELEASE_MAX_SIZE, CanonicalReleaseError, executeCanonicalRelease,
-  isControlLive, previewCanonicalRelease, readCanonicalReleaseControl, revokeCanonicalRelease,
+  CanonicalReleaseError, describeCanonicalRelease, executeCanonicalRelease, previewCanonicalRelease,
+  resolveCanonicalHold, revokeCanonicalRelease, writeReleasePolicy, type HoldResolution,
 } from "../services/sfp-canonical-release";
 import { readSfpLaunchInventory } from "../services/sfp-launch-inventory";
 import type { Express } from "express";
@@ -61,8 +61,9 @@ export function registerCanonicalEnrichmentRoutes(app: Express) {
   app.get("/api/canonical-enrichment/release", isDashboardUser, requireRole("admin", "manager"), async (_req, res) => {
     try {
       res.set("Cache-Control", "no-store");
-      const control = await readCanonicalReleaseControl();
-      res.json({ control, live: isControlLive(control), maxSize: CANONICAL_RELEASE_MAX_SIZE, maxHours: CANONICAL_RELEASE_MAX_HOURS });
+      const { readSenderCapacity } = await import("../services/sfp-sender-capacity");
+      const [status, capacity] = await Promise.all([describeCanonicalRelease(), readSenderCapacity().catch(() => null)]);
+      res.json({ ...status, capacity });
     } catch { res.status(503).json({ message: "The release state is unavailable." }); }
   });
   app.post("/api/canonical-enrichment/release/preview", isDashboardUser, requireRole("admin"), async (req, res) => {
@@ -80,11 +81,12 @@ export function registerCanonicalEnrichmentRoutes(app: Express) {
       });
       await storage.createAuditLog({
         action: "sfp_canonical_release_executed", entityType: "sfp_canonical_release",
-        entityKey: result.control.releaseId ?? undefined, userId: actor(req),
-        details: { replayed: result.replayed, releaseId: result.control.releaseId, size: result.control.enrollmentIds.length,
-          expiresAt: result.control.expiresAt, snapshotHash: result.control.snapshotHash },
+        entityKey: result.release.releaseId, userId: actor(req),
+        details: { replayed: result.replayed, releaseId: result.release.releaseId, size: result.release.enrollmentIds.length,
+          admissionClosesAt: result.release.admissionClosesAt, journeyExpiresAt: result.release.journeyExpiresAt,
+          snapshotHash: result.release.snapshotHash },
       } as any);
-      res.json(result);
+      res.json({ replayed: result.replayed, release: result.release });
     } catch (error) { releaseError(res, error); }
   });
   app.post("/api/canonical-enrichment/release/revoke", isDashboardUser, requireRole("admin"), async (req, res) => {
@@ -95,6 +97,34 @@ export function registerCanonicalEnrichmentRoutes(app: Express) {
         details: { ...result },
       } as any);
       res.json(result);
+    } catch (error) { releaseError(res, error); }
+  });
+
+  // Administrator-configurable admission policy (size ceiling, admission window, journey period). Bounded and audited.
+  app.put("/api/canonical-enrichment/release/policy", isDashboardUser, requireRole("admin"), async (req, res) => {
+    try {
+      const policy = await writeReleasePolicy(req.body, actor(req));
+      await storage.createAuditLog({
+        action: "sfp_canonical_release_policy_updated", entityType: "sfp_canonical_release", userId: actor(req), details: { ...policy },
+      } as any);
+      res.json({ policy });
+    } catch (error) { releaseError(res, error); }
+  });
+  // Operator decision for a held journey (uncertain delivery, repeated unsent). Never automatic.
+  app.post("/api/canonical-enrichment/release/enrollments/:id/resolve", isDashboardUser, requireRole("admin"), async (req, res) => {
+    try {
+      const resolution = String(req.body?.resolution ?? "") as HoldResolution;
+      if (!["delivered", "not_delivered", "clear_hold"].includes(resolution)) {
+        return res.status(400).json({ code: "RESOLUTION_INVALID", message: "resolution must be delivered, not_delivered or clear_hold" });
+      }
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id)) return res.status(400).json({ code: "ENROLLMENT_INVALID" });
+      const result = await resolveCanonicalHold(id, resolution);
+      await storage.createAuditLog({
+        action: "sfp_canonical_hold_resolved", entityType: "sequence_enrollment", entityKey: String(id), userId: actor(req),
+        details: { resolution, ...result },
+      } as any);
+      res.status(result.resolved ? 200 : 409).json(result);
     } catch (error) { releaseError(res, error); }
   });
 

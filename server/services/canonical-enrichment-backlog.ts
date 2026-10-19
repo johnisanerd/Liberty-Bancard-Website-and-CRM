@@ -205,8 +205,7 @@ function businessFacts(idFilter: ReturnType<typeof sql> | null, gateOpen: boolea
           AND f.business_id IS NOT NULL AND f.promoted_at IS NULL
           AND COALESCE(o.outcome,'') NOT IN ('linked','already_linked') GROUP BY f.business_id) sa ON sa.business_id=bb.id
     WHERE bb.record_class='canonical' ${idFilter ? sql`AND bb.id IN (${idFilter})` : sql``}
-  ), ${boundVerticalsCte()}
-  ), bound AS (
+  ), ${boundVerticalsCte()}, bound AS (
     SELECT f.*,
       (f.vid IS NOT NULL AND EXISTS(SELECT 1 FROM sfp_programs p WHERE p.is_active AND p.taxonomy_version=2
          AND f.vid=ANY(p.vertical_ids))) AS in_program,

@@ -211,11 +211,29 @@ function PopulationCard({ title, note, pop }: { title: string; note: string; pop
   );
 }
 
-interface ReleaseStatus {
-  control: { enabled: boolean; releaseId: string | null; expiresAt: string | null; enrollmentIds: number[]; releasedAt: string | null };
-  live: boolean; maxSize: number; maxHours: number;
+interface ReleaseRecordView {
+  releaseId: string; releasedAt: string; admissionClosesAt: string; journeyExpiresAt: string;
+  admissionClosedAt: string | null; journeyEndedAt: string | null; revokedAt: string | null; enrollmentIds: number[];
 }
-interface ReleasePreview { commandKey?: string; snapshotHash: string; size: number; dailyCapacityRemaining: number; qualifiedPrimaryRecipients: number; notes: string[] }
+interface ReleaseStatus {
+  releases: ReleaseRecordView[]; latest: ReleaseRecordView | null; admissionOpen: boolean; live: boolean;
+  journeys: Record<string, number>; holds: Record<string, number>;
+  heldEnrollments: Array<{ id: number; hold: string; holdAt: string | null }>;
+  policy: { maxRecipientsPerRelease: number; maxAdmissionWindowHours: number; journeyDays: number };
+  capacity: { identityRemaining: number; identityLimit: number; globalRemaining: number; globalCeiling: number; committedNext24h: number; remaining: number; limitedBy: string; sender: { emailAddress: string; usable: boolean } | null } | null;
+}
+interface ReleasePreview {
+  commandKey?: string; snapshotHash: string; size: number; dailyCapacityRemaining: number; qualifiedPrimaryRecipients: number;
+  continuations: number; notes: string[];
+}
+const JOURNEY_LABELS: Record<string, string> = {
+  in_progress: "In progress", journey_expired: "Journey period ended (can be continued)", package_content_changed: "Held: content changed (can be continued)",
+  validation_not_current: "Held: validation lapsed (can be continued)", revoked: "Revoked", recipient_facts_changed: "Stopped: recipient facts changed",
+  binding_changed: "Stopped: approved binding changed", duplicate_journey: "Stopped: duplicate address or business", completed: "Completed", paused: "Paused", cancelled: "Cancelled",
+};
+const HOLD_LABELS: Record<string, string> = {
+  UNCERTAIN_DELIVERY: "Delivery outcome unknown", REPEATED_UNSENT: "Repeated send failures", SEND_ATTEMPT_FAILED: "Send attempt failed",
+};
 
 function ReleasePanel() {
   const { toast } = useToast();
@@ -223,7 +241,7 @@ function ReleasePanel() {
   const [limit, setLimit] = useState(10);
   const [hours, setHours] = useState(24);
   const [preview, setPreview] = useState<ReleasePreview | null>(null);
-  const { data: status } = useQuery<ReleaseStatus>({ queryKey: ["/api/canonical-enrichment/release"] });
+  const { data: status, isLoading, isError } = useQuery<ReleaseStatus>({ queryKey: ["/api/canonical-enrichment/release"] });
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ["/api/canonical-enrichment/release"] });
     queryClient.invalidateQueries({ queryKey: ["/api/canonical-enrichment/launch-inventory"] });
@@ -242,42 +260,82 @@ function ReleasePanel() {
   });
   const revokeMutation = useMutation({
     mutationFn: async () => (await apiRequest("POST", "/api/canonical-enrichment/release/revoke")).json(),
-    onSuccess: () => { refresh(); toast({ title: "Release revoked", description: "Released recipients were returned to held." }); },
+    onSuccess: () => { refresh(); toast({ title: "Release revoked", description: "Unsent recipients returned to held; started journeys stopped where they are." }); },
     onError: fail,
   });
-  const live = status?.live === true;
+  const resolveMutation = useMutation({
+    mutationFn: async (v: { id: number; resolution: string }) =>
+      (await apiRequest("POST", `/api/canonical-enrichment/release/enrollments/${v.id}/resolve`, { resolution: v.resolution })).json(),
+    onSuccess: () => { refresh(); toast({ title: "Hold resolved" }); }, onError: fail,
+  });
+  const maxSize = status?.policy.maxRecipientsPerRelease ?? 1;
+  const maxHours = status?.policy.maxAdmissionWindowHours ?? 72;
+  const cap = status?.capacity ?? null;
+  const latest = status?.latest ?? null;
   return (
     <div className="mt-3 rounded-xl border border-border/70 bg-card p-4" data-testid="release-panel">
       <p className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">Operator release</p>
       <p className="mt-1 text-sm text-muted-foreground">
-        Releases up to a capped number of qualified primary recipients. Releasing does not lift the outbound pause; nothing sends
-        until the pause is lifted separately and each recipient passes the ordinary send checks.
+        A release starts first touches for qualified primary recipients during a short admission window. Each admitted recipient then
+        follows the approved schedule within a finite journey period. Releasing does not lift the outbound pause; nothing sends until the
+        pause is lifted separately and each recipient passes the ordinary send checks.
       </p>
-      {live ? (
-        <div className="mt-3 flex flex-wrap items-center gap-3">
-          <span className="text-sm">{n(status!.control.enrollmentIds.length)} recipients released; expires {when(status!.control.expiresAt!)}.</span>
-          <Button variant="outline" size="sm" onClick={() => revokeMutation.mutate()} disabled={revokeMutation.isPending}>Revoke and re-hold</Button>
-        </div>
-      ) : (
-        <div className="mt-3 flex flex-wrap items-end gap-3">
-          <label className="text-sm"><span className="mb-1 block text-xs text-muted-foreground">Recipients (1–{status?.maxSize ?? 50})</span>
-            <input type="number" min={1} max={status?.maxSize ?? 50} value={limit} onChange={e => { setLimit(Number(e.target.value)); setPreview(null); }}
-              className="w-24 rounded-md border border-input bg-background px-2 py-1.5 text-sm" /></label>
-          <label className="text-sm"><span className="mb-1 block text-xs text-muted-foreground">Expires in hours (1–{status?.maxHours ?? 72})</span>
-            <input type="number" min={1} max={status?.maxHours ?? 72} value={hours} onChange={e => setHours(Number(e.target.value))}
-              className="w-24 rounded-md border border-input bg-background px-2 py-1.5 text-sm" /></label>
-          <Button variant="outline" size="sm" onClick={() => previewMutation.mutate()} disabled={previewMutation.isPending}>Preview</Button>
-          {preview && (
-            <Button size="sm" onClick={() => executeMutation.mutate()} disabled={executeMutation.isPending || preview.size === 0}>
-              Release {n(preview.size)} recipient{preview.size === 1 ? "" : "s"}
-            </Button>
+      {isLoading && <p className="mt-3 text-sm text-muted-foreground" data-testid="release-loading">Reading release state…</p>}
+      {isError && <p className="mt-3 text-sm text-destructive" data-testid="release-error">The release state could not be read. Nothing is shown as released.</p>}
+      {status && (
+        <>
+          <dl className="mt-3 grid gap-x-6 gap-y-1 text-sm sm:grid-cols-2" data-testid="release-status">
+            <div><dt className="inline text-muted-foreground">Admission window: </dt>
+              <dd className="inline">{status.admissionOpen && latest ? `open until ${when(latest.admissionClosesAt)}` : latest ? `closed${latest.revokedAt ? " (revoked)" : ""}` : "no release yet"}</dd></div>
+            <div><dt className="inline text-muted-foreground">Journey period: </dt>
+              <dd className="inline">{latest ? (latest.revokedAt ? "revoked" : status.live ? `ends ${when(latest.journeyExpiresAt)}` : `ended ${when(latest.journeyExpiresAt)}`) : "none"} ({status.policy.journeyDays} days per release)</dd></div>
+            <div><dt className="inline text-muted-foreground">Sender capacity today: </dt>
+              <dd className="inline">{cap ? `${n(cap.remaining)} admittable (${cap.sender?.emailAddress ?? "no sender"}: ${n(cap.identityRemaining)} of ${n(cap.identityLimit)}; global ${n(cap.globalRemaining)} of ${n(cap.globalCeiling)}; ${n(cap.committedNext24h)} already due)` : "unavailable"}</dd></div>
+            <div><dt className="inline text-muted-foreground">Journeys: </dt>
+              <dd className="inline">{Object.keys(status.journeys).length === 0 ? "none" : Object.entries(status.journeys).map(([k, v]) => `${JOURNEY_LABELS[k] ?? k}: ${n(v)}`).join(" · ")}</dd></div>
+          </dl>
+          {status.heldEnrollments.length > 0 && (
+            <ul className="mt-3 space-y-2 text-sm" data-testid="release-holds">
+              {status.heldEnrollments.map(h => (
+                <li key={h.id} className="flex flex-wrap items-center gap-2">
+                  <Badge variant="secondary">{HOLD_LABELS[h.hold] ?? h.hold}</Badge><span className="font-mono text-xs">enrollment {h.id}</span>
+                  {h.hold === "UNCERTAIN_DELIVERY" ? (<>
+                    <Button size="sm" variant="outline" disabled={resolveMutation.isPending} onClick={() => resolveMutation.mutate({ id: h.id, resolution: "delivered" })}>Confirmed delivered</Button>
+                    <Button size="sm" variant="outline" disabled={resolveMutation.isPending} onClick={() => resolveMutation.mutate({ id: h.id, resolution: "not_delivered" })}>Confirmed not delivered</Button>
+                  </>) : (
+                    <Button size="sm" variant="outline" disabled={resolveMutation.isPending} onClick={() => resolveMutation.mutate({ id: h.id, resolution: "clear_hold" })}>Resume</Button>
+                  )}
+                </li>
+              ))}
+            </ul>
           )}
-        </div>
-      )}
-      {preview && !live && (
-        <p className="mt-2 text-xs text-muted-foreground">
-          {n(preview.size)} selected of {n(preview.qualifiedPrimaryRecipients)} qualified; {n(preview.dailyCapacityRemaining)} messages of sender capacity remain today.
-        </p>
+          <div className="mt-3 flex flex-wrap items-end gap-3">
+            {status.live && (
+              <Button variant="outline" size="sm" onClick={() => revokeMutation.mutate()} disabled={revokeMutation.isPending}>Revoke and re-hold</Button>
+            )}
+            {!status.admissionOpen && (<>
+              <label className="text-sm"><span className="mb-1 block text-xs text-muted-foreground">Recipients (1–{maxSize})</span>
+                <input type="number" min={1} max={maxSize} value={limit} onChange={e => { setLimit(Number(e.target.value)); setPreview(null); }}
+                  className="w-24 rounded-md border border-input bg-background px-2 py-1.5 text-sm" /></label>
+              <label className="text-sm"><span className="mb-1 block text-xs text-muted-foreground">Admission window, hours (1–{maxHours})</span>
+                <input type="number" min={1} max={maxHours} value={hours} onChange={e => setHours(Number(e.target.value))}
+                  className="w-24 rounded-md border border-input bg-background px-2 py-1.5 text-sm" /></label>
+              <Button variant="outline" size="sm" onClick={() => previewMutation.mutate()} disabled={previewMutation.isPending}>Preview</Button>
+              {preview && (
+                <Button size="sm" onClick={() => executeMutation.mutate()} disabled={executeMutation.isPending || preview.size === 0}>
+                  Release {n(preview.size)} recipient{preview.size === 1 ? "" : "s"}
+                </Button>
+              )}
+            </>)}
+          </div>
+          {status.admissionOpen && <p className="mt-2 text-xs text-muted-foreground">A new release can be made once the admission window closes or the release is revoked.</p>}
+          {preview && !status.admissionOpen && (
+            <p className="mt-2 text-xs text-muted-foreground" data-testid="release-preview">
+              {n(preview.size)} selected of {n(preview.qualifiedPrimaryRecipients)} qualified
+              {preview.continuations > 0 ? ` (${n(preview.continuations)} continuing an earlier journey)` : ""}; {n(preview.dailyCapacityRemaining)} messages of sender capacity can still be admitted today.
+            </p>
+          )}
+        </>
       )}
     </div>
   );

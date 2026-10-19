@@ -8,7 +8,9 @@ const worker = readFileSync("server/services/sequence-worker.ts", "utf8");
 assert.equal(decideCr06PromotionalLifecycle({ boundary: "sequence_transport" }).allowed, false);
 
 // Both the claim boundary and the email transport boundary honor the release, and nothing else bypasses the authority.
-assert.match(worker, /const canonicalReleaseAdmitted = await isCanonicalReleaseAdmitted\(enrollment, sequence\)/);
+assert.match(worker, /const canonicalAuthority = await evaluateCanonicalAuthority\(enrollment, sequence\);\s*const canonicalReleaseAdmitted = canonicalAuthority\.admitted/);
+// The final dispatch re-derives authority and the exact recipient binding from live facts.
+assert.match(worker, /evaluateCanonicalAuthority\(enrollment, sequence, \{ verifyFacts: true \}\)/);
 assert.match(worker, /sequence\.status !== "active" && !canonicalReleaseAdmitted/);
 assert.match(worker, /!cr06Decision\.allowed && !canonicalReleaseAdmitted/);
 assert.match(worker, /boundary: "sequence_transport",\s*purpose: cr06Purpose,\s*\}\)\.allowed && !canonicalReleaseAdmitted/);
@@ -16,5 +18,5 @@ assert.match(worker, /boundary: "sequence_transport",\s*purpose: cr06Purpose,\s*
 const smsBlock = worker.slice(worker.indexOf("authorizeClaimedSmsDispatch = async"));
 assert.doesNotMatch(smsBlock.slice(0, 600), /canonicalReleaseAdmitted/);
 // Expired releases are reconciled before work is selected.
-assert.match(worker, /await reconcileExpiredCanonicalRelease\(\)/);
+assert.match(worker, /await reconcileCanonicalReleases\(\)/);
 console.log("SFP canonical release boundary source checks passed");

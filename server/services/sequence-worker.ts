@@ -1,4 +1,8 @@
-import { isCanonicalReleaseAdmitted, reconcileExpiredCanonicalRelease } from "./sfp-canonical-release";
+import {
+  evaluateCanonicalAuthority, reconcileCanonicalReleases, settleCanonicalEnrollment, holdCanonicalEnrollment,
+  recordUnsentRetry, recordHeldReservation, MAX_UNSENT_RETRIES,
+} from "./sfp-canonical-release";
+import { reserveSenderCapacity, releaseSenderCapacity, type CapacityReservation } from "./sfp-sender-capacity";
 import { storage } from "../storage";
 import { db as defaultSequenceWorkerDb } from "../db";
 import { sequenceEnrollments as sequenceEnrollmentsTable } from "../../shared/schema";
@@ -102,7 +106,7 @@ import { addNote as ghlAddNote, addTag as ghlAddTag, triggerWorkflow as ghlTrigg
 import { getWorkflowEnvValue } from "./ghl-workflows";
 import { sendSmtpEmail, isSmtpConfigured } from "./smtp-email";
 import { generateUnsubscribeToken } from "./unsubscribe-token";
-import { authorizeSequenceDispatch, buildIdempotencyKey, hasSentStep, openSendAttempt, markSendSent, markSendFailed, type DispatchAuthorization } from "./outbound-send-log";
+import { authorizeSequenceDispatch, buildIdempotencyKey, hasSentStep, getSendLogByKey, reopenUnsentAttempt, openSendAttempt, markSendSent, markSendFailed, type DispatchAuthorization } from "./outbound-send-log";
 import { terminalizeSequenceEnrollment } from "./sequence-terminalization";
 import { sendGmailEmail, isGmailOAuthConnected } from "./gmail-oauth";
 import type { SendChannel } from "./outbound-send-log";
@@ -371,7 +375,7 @@ export async function processSequenceEnrollments(
   }
 
   try {
-    await reconcileExpiredCanonicalRelease().catch((error) => {
+    await reconcileCanonicalReleases().catch((error) => {
       console.error("[SFP_CANONICAL_RELEASE_EXPIRY_RECONCILE_FAILED]", error instanceof Error ? error.name : "UnknownError");
     });
     const dueEnrollments = await storage.getActiveEnrollments();
@@ -391,12 +395,28 @@ export async function processSequenceEnrollments(
 
     for (const enrollment of dueEnrollments) {
       heartbeat.assertOwned();
+      let canonicalJourney = false;
       try {
         const sequence = await storage.getFollowUpSequence(enrollment.sequenceId!);
         if (!sequence || sequence.retiredAt) continue;
         // A canonical SFP sequence stays paused; only an enrollment released by an admin inside the
         // live, unexpired release is admitted. Every other send gate below still applies to it.
-        const canonicalReleaseAdmitted = await isCanonicalReleaseAdmitted(enrollment, sequence);
+        // Fresh decision for every claim: nothing is cached across expiry, revocation or a closed admission window.
+        const canonicalAuthority = await evaluateCanonicalAuthority(enrollment, sequence);
+        const canonicalReleaseAdmitted = canonicalAuthority.admitted;
+        canonicalJourney = canonicalReleaseAdmitted;
+        if (!canonicalAuthority.admitted && canonicalAuthority.settle !== "none") {
+          // Authority ended (revoked, journey deadline, admission window closed on an unsent first touch):
+          // settle the enrollment now so it never lingers active, then move on.
+          const settled = await settleCanonicalEnrollment(enrollment.id, canonicalAuthority.releaseId, canonicalAuthority);
+          if (settled) {
+            await storage.createAuditLog({
+              action: "sfp_canonical_authority_settled", entityType: "contact", entityId: enrollment.contactId ?? 0, actorType: "system",
+              details: { enrollmentId: enrollment.id, reason: canonicalAuthority.reason, settle: canonicalAuthority.settle, endedReason: canonicalAuthority.endedReason },
+            });
+          }
+          continue;
+        }
         if (sequence.status !== "active" && !canonicalReleaseAdmitted) {
           continue;
         }
@@ -1372,7 +1392,9 @@ export async function processSequenceEnrollments(
                   entityType: "contact", entityId: enrollment.contactId ?? 0, actorType: "system",
                   details: { enrollmentId: enrollment.id, sequenceId: sequence.id, channel: "email", reason: "emailChannelPaused" },
                 });
-                await storage.updateSequenceEnrollment(enrollment.id, { status: "paused" });
+                // A released journey is deferred in place (still active, same step); a channel pause must not strand it.
+                await storage.updateSequenceEnrollment(enrollment.id, canonicalReleaseAdmitted
+                  ? { nextActionAt: new Date(Date.now() + 15 * 60 * 1000) } : { status: "paused" });
                 processed++; stepExecuted = false; break;
               }
               if (isColdOutreachSequence(sequence)) {
@@ -1384,7 +1406,8 @@ export async function processSequenceEnrollments(
                     entityType: "contact", entityId: enrollment.contactId ?? 0, actorType: "system",
                     details: { enrollmentId: enrollment.id, sequenceId: sequence.id, channel: "cold_email", reason: "coldEmailChannelPaused" },
                   });
-                  await storage.updateSequenceEnrollment(enrollment.id, { status: "paused" });
+                  await storage.updateSequenceEnrollment(enrollment.id, canonicalReleaseAdmitted
+                    ? { nextActionAt: new Date(Date.now() + 15 * 60 * 1000) } : { status: "paused" });
                   processed++; stepExecuted = false; break;
                 }
               }
@@ -1524,7 +1547,16 @@ export async function processSequenceEnrollments(
               // Reservation happens here — inside isGhlConfigured() — so counters
               // only tick when an actual GHL send is attempted.
               let coldCapReserved = false;
+              // Released SFP launch steps reserve against the ACTUAL selected sender and the global ceiling together.
+              let senderReservation: CapacityReservation | null = null;
+              const canonicalCapacityPath = sfpLaunchStep && canonicalReleaseAdmitted && useSmtpForThisStep;
               const releaseColdCapReservation = async (): Promise<void> => {
+                if (senderReservation) {
+                  const held = senderReservation;
+                  try { await releaseSenderCapacity(held); senderReservation = null; }
+                  catch (decErr) { console.error(`[Sequence Worker] Sender capacity release failed:`, decErr); }
+                  return;
+                }
                 if (!coldCapReserved) return;
                 try {
                   const { db: decDb } = await import("../db");
@@ -1540,7 +1572,25 @@ export async function processSequenceEnrollments(
                   console.error(`[Sequence Worker] Cap reservation release failed:`, decErr);
                 }
               };
-              if (isColdOutreachSequence(sequence)) {
+              if (canonicalCapacityPath) {
+                try {
+                  const reserved = await reserveSenderCapacity();
+                  if (!reserved.ok) {
+                    // Exhausted capacity defers the step; the journey stays active and resumes when capacity returns.
+                    await storage.createAuditLog({
+                      action: "sequence_step_deferred_sender_capacity", entityType: "contact", entityId: enrollment.contactId ?? 0, actorType: "system",
+                      details: { enrollmentId: enrollment.id, sequenceId: sequence.id, stepOrder: step.stepOrder, reason: reserved.reason },
+                    });
+                    await storage.updateSequenceEnrollment(enrollment.id, { nextActionAt: new Date(Date.now() + 60 * 60 * 1000) });
+                    processed++; stepExecuted = false; break;
+                  }
+                  senderReservation = reserved.reservation;
+                } catch (reserveErr) {
+                  console.error(`[Sequence Worker] Sender capacity reservation failed for enrollment ${enrollment.id} (fail-closed):`, reserveErr);
+                  await storage.updateSequenceEnrollment(enrollment.id, { nextActionAt: new Date(Date.now() + 15 * 60 * 1000) });
+                  processed++; stepExecuted = false; break;
+                }
+              } else if (isColdOutreachSequence(sequence)) {
                 try {
                   const { db: rsvDb } = await import("../db");
                   const { sql: rsvSql } = await import("drizzle-orm");
@@ -1643,6 +1693,20 @@ export async function processSequenceEnrollments(
               });
               if (emailSendClaimId === null) {
                 await releaseColdCapReservation();
+                if (canonicalCapacityPath) {
+                  // Do not loop forever on an attempt that can never be reclaimed: classify it.
+                  const prior = await getSendLogByKey(emailIdemKey);
+                  if (prior?.status === "dispatching") {
+                    await holdCanonicalEnrollment(enrollment.id, "UNCERTAIN_DELIVERY", { idempotencyKey: emailIdemKey, observedStatus: prior.status });
+                    await storage.createAuditLog({ action: "sfp_canonical_hold_uncertain_delivery", entityType: "contact", entityId: enrollment.contactId ?? 0, actorType: "system",
+                      details: { enrollmentId: enrollment.id, stepOrder: step.stepOrder, idempotencyKey: emailIdemKey } });
+                    processed++; continue;
+                  }
+                  if (prior?.status === "failed") {
+                    await holdCanonicalEnrollment(enrollment.id, "SEND_ATTEMPT_FAILED", { idempotencyKey: emailIdemKey, failureReason: prior.failureReason ?? null });
+                    processed++; continue;
+                  }
+                }
                 await defaultSequenceWorkerDb.update(sequenceEnrollmentsTable).set({
                   nextActionAt: new Date(Date.now() + 5 * 60 * 1000),
                   metadata: {
@@ -1659,6 +1723,7 @@ export async function processSequenceEnrollments(
                 continue;
               }
               let emailDispatchAuthorized = false;
+              let canonicalSmtpOutcome: "unsent" | "uncertain" | null = null;
               const authorizeClaimedEmailDispatch = async (): Promise<boolean> => {
                 if (!decideCr06PromotionalLifecycle({
                   boundary: "sequence_transport",
@@ -1673,6 +1738,25 @@ export async function processSequenceEnrollments(
                   ));
                   await releaseColdCapReservation();
                   return false;
+                }
+                if (canonicalReleaseAdmitted) {
+                  // Final authorization recomputes authority AND the exact recipient/content binding from live facts;
+                  // the claim-time decision is deliberately not trusted here.
+                  const fresh = await evaluateCanonicalAuthority(enrollment, sequence, { verifyFacts: true });
+                  if (!fresh.admitted) {
+                    await releaseColdCapReservation();
+                    await reopenUnsentAttempt({ idempotencyKey: emailIdemKey, failureReason: `canonical_authority_denied:${fresh.reason}` });
+                    const settled = fresh.settle !== "none"
+                      ? await settleCanonicalEnrollment(enrollment.id, fresh.releaseId, fresh) : false;
+                    if (!settled) {
+                      await storage.updateSequenceEnrollment(enrollment.id, { nextActionAt: new Date(Date.now() + 15 * 60 * 1000) });
+                    }
+                    await storage.createAuditLog({
+                      action: "sfp_canonical_dispatch_denied", entityType: "contact", entityId: enrollment.contactId ?? 0, actorType: "system",
+                      details: { enrollmentId: enrollment.id, stepOrder: step.stepOrder, reason: fresh.reason, endedReason: fresh.endedReason },
+                    });
+                    return false;
+                  }
                 }
                 const authorization = await authorizeSequenceDispatch({
                   attemptId: emailSendClaimId.attemptId,
@@ -1756,7 +1840,10 @@ export async function processSequenceEnrollments(
                     unsubscribeUrl,
                     unsubscribeMailto: "Scott@mail.libertybancard.com",
                   });
-                  if (!result.success) throw new Error(result.error || "SMTP send failed");
+                  if (!result.success) {
+                    if (canonicalCapacityPath) canonicalSmtpOutcome = result.outcome === "unsent" ? "unsent" : "uncertain";
+                    throw new Error(result.error || "SMTP send failed");
+                  }
                   await markSendSent({ idempotencyKey: emailIdemKey, providerMessageId: result.messageId, fromAddress: "Scott@mail.libertybancard.com" });
                 } else {
                   // GHL: cold outreach from Scott@mail.libertybancard.com
@@ -1823,10 +1910,41 @@ export async function processSequenceEnrollments(
                 }).catch(() => {});
               } catch (emailErr) {
                 console.error(`Sequence email failed for enrollment ${enrollment.id}:`, emailErr);
-                if (emailDispatchAuthorized) {
-                  await markSendFailed({ idempotencyKey: emailIdemKey, failureReason: emailErr instanceof Error ? emailErr.message : String(emailErr) });
+                const failureReason = emailErr instanceof Error ? emailErr.message : String(emailErr);
+                if (canonicalCapacityPath) {
+                  // Released launch sends never turn a failure into a permanently stranded step.
+                  if (!emailDispatchAuthorized) {
+                    // Nothing reached the transport: free the allowance, reopen the same step, retry later.
+                    await releaseColdCapReservation();
+                    await reopenUnsentAttempt({ idempotencyKey: emailIdemKey, failureReason });
+                    await storage.updateSequenceEnrollment(enrollment.id, { nextActionAt: new Date(Date.now() + 15 * 60 * 1000) });
+                  } else if (canonicalSmtpOutcome === "unsent") {
+                    // The transport proved the message was not accepted: allowance is returned, same step retried (bounded).
+                    await releaseColdCapReservation();
+                    await reopenUnsentAttempt({ idempotencyKey: emailIdemKey, failureReason });
+                    const tries = await recordUnsentRetry(enrollment.id, step.stepOrder ?? 0);
+                    if (tries >= MAX_UNSENT_RETRIES) {
+                      await holdCanonicalEnrollment(enrollment.id, "REPEATED_UNSENT", { idempotencyKey: emailIdemKey, attempts: tries, failureReason });
+                    } else {
+                      await storage.updateSequenceEnrollment(enrollment.id, { nextActionAt: new Date(Date.now() + 15 * 60 * 1000) });
+                    }
+                  } else {
+                    // Outcome unknown: the message may have been delivered. Keep the allowance consumed, leave the
+                    // attempt un-reclaimable and hold the journey for an explicit operator decision.
+                    if (senderReservation) {
+                      await recordHeldReservation(enrollment.id, senderReservation, emailIdemKey).catch(() => {});
+                      senderReservation = null;
+                    }
+                    await holdCanonicalEnrollment(enrollment.id, "UNCERTAIN_DELIVERY", { idempotencyKey: emailIdemKey, failureReason });
+                    await storage.createAuditLog({ action: "sfp_canonical_hold_uncertain_delivery", entityType: "contact", entityId: enrollment.contactId ?? 0, actorType: "system",
+                      details: { enrollmentId: enrollment.id, stepOrder: step.stepOrder, idempotencyKey: emailIdemKey } });
+                  }
+                } else {
+                  if (emailDispatchAuthorized) {
+                    await markSendFailed({ idempotencyKey: emailIdemKey, failureReason });
+                  }
+                  await releaseColdCapReservation();
                 }
-                await releaseColdCapReservation();
               }
             }
             const emailLog = await storage.createEmailLog({
@@ -2392,9 +2510,9 @@ export async function processSequenceEnrollments(
         console.error(`Error processing enrollment ${enrollment.id}:`, enrollErr);
         errors++;
         try {
-          await storage.updateSequenceEnrollment(enrollment.id, {
-            status: "paused",
-          });
+          // A transient fault must not strand a released journey: defer it in place instead of pausing.
+          await storage.updateSequenceEnrollment(enrollment.id, canonicalJourney
+            ? { nextActionAt: new Date(Date.now() + 15 * 60 * 1000) } : { status: "paused" });
         } catch (_) {}
       }
     }

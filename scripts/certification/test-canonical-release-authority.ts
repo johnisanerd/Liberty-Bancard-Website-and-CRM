@@ -13,6 +13,8 @@ const { prepareCanonicalRecipient,currentCanonicalValidationSelection } =
 const {processValidationIntent,evaluateMarketingEmailEligibility,delegateSelectedAddressValidation} =
   await import("../../server/services/provider-readiness-control");
 const release = await import("../../server/services/sfp-canonical-release");
+const { hashEmailToken } = await import("../../server/services/provider-readiness-control");
+const { COLD_OUTREACH_FROM } = await import("../../server/services/sender-policy");
 const { previewContactBusinessSystemLinks, applyContactBusinessSystemLink } =
   await import("../../server/services/contact-business-system-links");
 const prefix = `cert_canonical_release_${randomUUID().replaceAll("-","")}`;
@@ -50,6 +52,13 @@ async function fixture(businessId?: number) {
     snapshotHash: candidate.snapshotHash,
   });
   check(outcome.status === "applied", "Use the real reviewed native relationship writer");
+  const email = (await pool.query("SELECT email FROM contacts WHERE id=$1",[contact.id])).rows[0].email as string;
+  const opId = randomUUID(); const tokenHash = hashEmailToken(email);
+  await pool.query(`INSERT INTO provider_operations (id,provider,operation_type,purpose,idempotency_key,actor_type,target_fingerprint,state)
+    VALUES($1,'zerobounce','email_validation','certification',$2,'system',$3,'completed')`,[opId,`${prefix}-${opId}`,`business:${business.id}`]);
+  await pool.query(`INSERT INTO provider_observations (provider,operation_id,subject_type,subject_id,email_token_hash,subject_generation,outcome,retryable,observed_at,expires_at)
+    VALUES('zerobounce',$1,'contact',$2,$3,0,'valid',false,NOW()-INTERVAL '1 hour',NOW()+INTERVAL '29 days')`,[opId,contact.id,tokenHash]);
+  await pool.query(`UPDATE contacts SET email_status='valid',email_token_hash=$2,email_validation_updated_at=NOW() WHERE id=$1`,[contact.id,tokenHash]);
   return { contactId: Number(contact.id), businessId: Number(business.id) };
 }
 try {
@@ -72,12 +81,12 @@ try {
     const f = await fixture();
     const prepared = await prepareCanonicalRecipient({ contactId: f.contactId, sequenceId, programId, actor, source: prefix });
     check(prepared.enrollmentId != null, "Preparation creates an owned paused membership");
-    await pool.query("UPDATE cr04_enrollment_intents SET preparation_state='ready_held' WHERE id=$1",[prepared.intentId]);
-    made.push({ ...f, intentId: String(prepared.intentId), enrollmentId: Number(prepared.enrollmentId) });
+        made.push({ ...f, intentId: String(prepared.intentId), enrollmentId: Number(prepared.enrollmentId) });
   }
-  const recipients = made.map(m => ({ intentId: m.intentId, enrollmentId: m.enrollmentId, contactId: m.contactId,
-    businessId: m.businessId, sequenceId, county: "Miami-Dade", vertical: "Automotive" }));
-  const deps = { listQualified: async () => recipients, capacity: async () => 1 };
+  // The real selector and the real capacity definition: a sender that can send exactly one message today.
+  await pool.query(`DELETE FROM sending_identities WHERE lower(email_address)=lower($1)`,[COLD_OUTREACH_FROM]);
+  await pool.query(`INSERT INTO sending_identities (label,domain,email_address,is_active,warmup_status,daily_limit,sent_today)
+    VALUES('cert','mail.libertybancard.com',$1,TRUE,'warm',1,0)`,[COLD_OUTREACH_FROM]);
   const enrollment = async (id: number) => (await pool.query("SELECT * FROM sequence_enrollments WHERE id=$1",[id])).rows[0];
   const view = (row: any) => ({ id: row.id, status: row.status, metadata: row.metadata });
 
@@ -86,20 +95,20 @@ try {
     "With no release, a paused canonical membership is not admitted");
 
   // Capacity bounds the batch size.
-  const preview = await release.previewCanonicalRelease(5, deps);
+  const preview = await release.previewCanonicalRelease(5);
   check(preview.size === 1 && preview.dailyCapacityRemaining === 1, "Release size is capped by remaining sender capacity");
   await assert.rejects(release.executeCanonicalRelease({ requestedLimit: 5, snapshotHash: "wrong", commandKey: "k-1",
-    expiresInHours: 1, actorId: "admin:test", deps }), { code: "RELEASE_SNAPSHOT_DRIFT" }); checks++;
+    expiresInHours: 1, actorId: "admin:test" }), { code: "RELEASE_SNAPSHOT_DRIFT" }); checks++;
   check((await enrollment(made[0].enrollmentId)).status === "paused", "A stale snapshot releases nothing");
   await assert.rejects(release.executeCanonicalRelease({ requestedLimit: 5, snapshotHash: preview.snapshotHash, commandKey: "k-1",
-    expiresInHours: 999, actorId: "admin:test", deps }), { code: "RELEASE_EXPIRY_INVALID" }); checks++;
+    expiresInHours: 999, actorId: "admin:test" }), { code: "RELEASE_EXPIRY_INVALID" }); checks++;
 
   const executed = await release.executeCanonicalRelease({ requestedLimit: 5, snapshotHash: preview.snapshotHash,
-    commandKey: "k-1", expiresInHours: 1, actorId: "admin:test", deps });
-  check(!executed.replayed && executed.control.enrollmentIds.length === 1, "Execute releases exactly the capped selection");
+    commandKey: "k-1", expiresInHours: 1, actorId: "admin:test" });
+  check(!executed.replayed && executed.release.enrollmentIds.length === 1, "Execute releases exactly the capped selection");
   const released = await enrollment(made[0].enrollmentId);
   const heldBack = await enrollment(made[1].enrollmentId);
-  check(released.status === "active" && released.metadata.canonicalRelease.releaseId === executed.control.releaseId,
+  check(released.status === "active" && released.metadata.canonicalRelease.releaseId === executed.release.releaseId,
     "The selected membership is active and marked with the release");
   check(heldBack.status === "paused" && !heldBack.metadata.canonicalRelease, "Everything outside the cap stays paused");
   check((await pool.query("SELECT status FROM follow_up_sequences WHERE id=$1",[sequenceId])).rows[0].status === "paused",
@@ -112,25 +121,26 @@ try {
     canonicalRelease: { releaseId: randomUUID() } } }, sequenceView)), "A marker from a different release is not admitted");
 
   const replay = await release.executeCanonicalRelease({ requestedLimit: 5, snapshotHash: preview.snapshotHash,
-    commandKey: "k-1", expiresInHours: 1, actorId: "admin:test", deps });
-  check(replay.replayed && replay.control.releaseId === executed.control.releaseId, "Replaying the same command is idempotent");
+    commandKey: "k-1", expiresInHours: 1, actorId: "admin:test" });
+  check(replay.replayed && replay.release.releaseId === executed.release.releaseId, "Replaying the same command is idempotent");
   await assert.rejects(release.executeCanonicalRelease({ requestedLimit: 5, snapshotHash: preview.snapshotHash, commandKey: "k-2",
-    expiresInHours: 1, actorId: "admin:test", deps }), (e: any) => e.code === "ACTIVE_RELEASE_EXISTS" || e.code === "RELEASE_SNAPSHOT_DRIFT"); checks++;
+    expiresInHours: 1, actorId: "admin:test" }), (e: any) => e.code === "ACTIVE_RELEASE_EXISTS" || e.code === "RELEASE_SNAPSHOT_DRIFT"); checks++;
 
-  // Expiry stops admission, and reconcile returns the membership to paused.
-  await pool.query(`UPDATE system_settings SET value=jsonb_set(value,'{expiresAt}',to_jsonb((now()-interval '1 minute')::text)) WHERE key=$1`,
-    [release.CANONICAL_RELEASE_CONTROL_KEY]);
-  check(!(await release.isCanonicalReleaseAdmitted(view(released), sequenceView)), "An expired release admits nothing");
-  await release.reconcileExpiredCanonicalRelease();
+  // The admission window closing stops new admissions; reconcile returns the unsent membership to paused.
+  const control = (await pool.query("SELECT value FROM system_settings WHERE key=$1",[release.CANONICAL_RELEASE_CONTROL_KEY])).rows[0].value;
+  control.releases.forEach((r: any) => { r.admissionClosesAt = new Date(Date.now()-60_000).toISOString(); });
+  await pool.query("UPDATE system_settings SET value=$2::jsonb WHERE key=$1",[release.CANONICAL_RELEASE_CONTROL_KEY,JSON.stringify(control)]);
+  check(!(await release.isCanonicalReleaseAdmitted(view(released), sequenceView)), "A closed admission window admits no unsent first touch");
+  await release.reconcileCanonicalReleases();
   const after = await enrollment(made[0].enrollmentId);
   check(after.status === "paused" && !after.metadata.canonicalRelease && after.metadata.outboundAuthorized === false,
-    "Expiry reconciliation returns the membership to its paused state");
+    "Reconciliation returns the unsent membership to its paused state");
 
   // Revoke after a fresh release.
-  const preview2 = await release.previewCanonicalRelease(1, deps);
+  const preview2 = await release.previewCanonicalRelease(1);
   const second = await release.executeCanonicalRelease({ requestedLimit: 1, snapshotHash: preview2.snapshotHash,
-    commandKey: "k-3", expiresInHours: 1, actorId: "admin:test", deps });
-  check(second.control.releaseId !== executed.control.releaseId, "A new release gets a new identity");
+    commandKey: "k-3", expiresInHours: 1, actorId: "admin:test" });
+  check(second.release.releaseId !== executed.release.releaseId, "A new release gets a new identity");
   const revoked = await release.revokeCanonicalRelease("admin:test");
   check(revoked.revoked && revoked.repaused === 1, "Revoke re-pauses every released membership");
   check(!(await release.isCanonicalReleaseAdmitted(view(await enrollment(made[0].enrollmentId)), sequenceView)), "Nothing is admitted after revoke");
