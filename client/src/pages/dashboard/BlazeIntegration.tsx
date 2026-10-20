@@ -2,6 +2,8 @@ import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { ReaderStatus } from "@/components/dashboard/ReaderStatus";
+import { readerState } from "@/lib/reader-state";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -60,9 +62,11 @@ export default function BlazeIntegration() {
   const [workspaceId, setWorkspaceId] = useState("");
   const [testResult, setTestResult] = useState<BlazeTestResult | null>(null);
 
-  const { data: settings, isLoading } = useQuery<BlazeSettings>({
+  const settingsQuery = useQuery<BlazeSettings>({
     queryKey: ["/api/integrations/blaze"],
   });
+  const settings = settingsQuery.data;
+  const settingsState = readerState(settingsQuery);
 
   const saveMutation = useMutation({
     mutationFn: async (data: { webhookUrl: string; workspaceId: string }) => {
@@ -126,9 +130,13 @@ export default function BlazeIntegration() {
           <h1 className="text-2xl font-bold" data-testid="text-blaze-title">
             Blaze.ai Marketing Integration
           </h1>
-          <Badge variant={settings?.enabled ? "default" : "outline"} className="gap-1">
-            {settings?.enabled ? (
-              <><CheckCircle2 className="w-3 h-3" /> Connected</>
+          <Badge variant={settingsState !== "unavailable" && settings?.enabled ? "default" : "outline"} className="gap-1" data-testid="badge-blaze-status">
+            {settingsState === "loading" ? (
+              <><Loader2 className="w-3 h-3 animate-spin" /> Checking…</>
+            ) : settingsState === "unavailable" ? (
+              <><AlertTriangle className="w-3 h-3" /> Status unavailable</>
+            ) : settings?.enabled ? (
+              <><CheckCircle2 className="w-3 h-3" /> {settingsState === "stale" ? "Connected (last known)" : "Connected"}</>
             ) : (
               <><XCircle className="w-3 h-3" /> Not Connected</>
             )}
@@ -139,6 +147,9 @@ export default function BlazeIntegration() {
         </p>
       </div>
 
+      {(settingsState === "unavailable" || settingsState === "stale") && (
+        <ReaderStatus state={settingsState} subject="Blaze settings" onRetry={() => void settingsQuery.refetch()} />
+      )}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card data-testid="card-blaze-settings">
           <CardHeader>
@@ -177,7 +188,7 @@ export default function BlazeIntegration() {
                   readOnly
                   value={inboundWebhookUrl}
                   className="font-mono text-xs"
-                  data-testid="input-inbound-webhook"
+                  aria-label="Blaze inbound webhook URL" data-testid="input-inbound-webhook"
                 />
                 <Button
                   size="icon"

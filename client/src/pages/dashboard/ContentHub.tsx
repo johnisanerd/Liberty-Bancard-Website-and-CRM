@@ -1,6 +1,7 @@
 import { useLocation, useSearch } from "wouter";
 import { useAuth } from "@/hooks/use-auth";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ResourcesNav } from "@/components/dashboard/ResourcesNav";
 import ContentEditor from "./ContentEditor";
 import BlogGenerator from "./BlogGenerator";
 import SocialComposer from "./SocialComposer";
@@ -21,6 +22,8 @@ export default function ContentHub() {
   const goTab = (v: string) => navigate(`/dashboard/content-hub?tab=${v}`);
 
   return (
+    <div className="space-y-4">
+    <ResourcesNav current="/dashboard/content-hub" />
     <Tabs value={tab} onValueChange={goTab} className="space-y-4">
       <TabsList>
         <TabsTrigger value="content" data-testid="tab-content-engine">Content Engine</TabsTrigger>
@@ -33,5 +36,6 @@ export default function ContentHub() {
       <TabsContent value="linkedin"><SocialComposer /></TabsContent>
       <TabsContent value="blaze"><BlazeIntegration /></TabsContent>
     </Tabs>
+    </div>
   );
 }

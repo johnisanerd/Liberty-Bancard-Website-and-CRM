@@ -201,10 +201,10 @@ export default function AiLearningCenter() {
     <div className="space-y-8" data-testid="page-ai-learning-center">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold flex items-center gap-2">
+          <h2 className="text-2xl font-bold flex items-center gap-2">
             <Brain className="w-6 h-6 text-purple-600" />
             AI Learning Center
-          </h1>
+          </h2>
           <p className="text-muted-foreground mt-1 text-sm">
             Monitor AI decision accuracy, correction patterns, and prompt performance
           </p>
@@ -221,7 +221,7 @@ export default function AiLearningCenter() {
               <SelectItem value="90">Last 90 days</SelectItem>
             </SelectContent>
           </Select>
-          <Button variant="outline" size="sm" onClick={() => refetchStats()} data-testid="btn-refresh-stats">
+          <Button variant="outline" size="sm" onClick={() => refetchStats()} aria-label="Refresh learning statistics" data-testid="btn-refresh-stats">
             <RefreshCw className="w-3 h-3" />
           </Button>
         </div>

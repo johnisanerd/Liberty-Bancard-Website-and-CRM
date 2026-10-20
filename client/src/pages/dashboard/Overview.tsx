@@ -328,6 +328,7 @@ export default function Overview() {
   // #380 — Rep activity today (admin/manager only; gracefully returns null for other roles)
   const { data: repActivity } = useQuery<{ date: string; reps: { actorId: string; name: string; callsLogged: number; emailsSent: number; smsSent: number; contactsCreated: number; dealsCreated: number; total: number }[] }>({
     queryKey: ["/api/admin/rep-activity/today"],
+    enabled: user?.role === "admin" || user?.role === "manager",
     refetchInterval: 60000,
     retry: false,
   });
@@ -335,6 +336,7 @@ export default function Overview() {
   // #418 — Inactive reps (7 days, admin/manager only)
   const { data: inactiveRepsData } = useQuery<{ days: number; inactiveReps: { agentId: number; name: string; email: string }[] }>({
     queryKey: ["/api/admin/rep-activity/inactive"],
+    enabled: user?.role === "admin" || user?.role === "manager",
     refetchInterval: 300000,
     retry: false,
   });

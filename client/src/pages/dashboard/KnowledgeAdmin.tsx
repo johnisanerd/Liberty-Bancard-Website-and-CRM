@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useId } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,12 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
+import { decodeJsonResponse, isRecord } from "@/lib/decode-json-response";
+import { readerState } from "@/lib/reader-state";
+import { ResourcesNav } from "@/components/dashboard/ResourcesNav";
+import { CrmDataState } from "@/components/crm/CrmPresentation";
+import { useC4RetainedSelection } from "@/hooks/use-c4-retained-selection";
+import { knowledgeAdminViews } from "@/lib/crm-destination-state";
 import {
   BookOpen, Plus, RefreshCw, Globe, Lock, Users, Archive,
   CheckCircle2, Clock, HelpCircle, ThumbsUp, ThumbsDown, Eye,
@@ -51,8 +57,18 @@ const STATUS_COLORS: Record<string, string> = {
   archived: "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400",
 };
 
+const isReindexReceipt = (v: unknown): v is { ok: true; sources: number; chunks: number } =>
+  isRecord(v) && v.ok === true && Number.isFinite(v.sources) && Number.isFinite(v.chunks);
+const isIndexReceipt = (v: unknown): v is { ok: true; chunksWritten: number } =>
+  isRecord(v) && v.ok === true && Number.isFinite(v.chunksWritten);
+
 export default function KnowledgeAdmin() {
   const { toast } = useToast();
+  const titleId = useId();
+  const audienceId = useId();
+  const contentId = useId();
+  const contentHelpId = useId();
+  const tabSelection = useC4RetainedSelection("/dashboard/knowledge-admin", "tab", knowledgeAdminViews, "sources");
   const queryClient = useQueryClient();
   const [newSourceOpen, setNewSourceOpen] = useState(false);
   const [editSource, setEditSource] = useState<KnowledgeSource | null>(null);
@@ -66,13 +82,18 @@ export default function KnowledgeAdmin() {
     queryKey: ["/api/knowledge/sources"],
   });
 
-  const { data: unansweredData } = useQuery<{ questions: any[] }>({
+  const unansweredQuery = useQuery<{ questions: any[] }>({
     queryKey: ["/api/knowledge/unanswered"],
   });
+  const unansweredData = unansweredQuery.data;
 
-  const { data: feedbackData } = useQuery<{ feedback: any[] }>({
+  const feedbackQuery = useQuery<{ feedback: any[] }>({
     queryKey: ["/api/knowledge/feedback"],
   });
+  const feedbackData = feedbackQuery.data;
+  const unansweredState = readerState(unansweredQuery);
+  const feedbackState = readerState(feedbackQuery);
+  const sourcesState = readerState({ isLoading, isError: sourcesError, data: sourcesData });
 
   const createMutation = useMutation({
     mutationFn: (data: { title: string; audience: string; content: string; status: string }) =>
@@ -104,26 +125,33 @@ export default function KnowledgeAdmin() {
       queryClient.invalidateQueries({ queryKey: ["/api/knowledge/stats"] });
       toast({ title: "Archived" });
     },
+    onError: () => toast({ title: "Archive failed", description: "The source was not archived. It is unchanged; try again.", variant: "destructive" }),
   });
 
   const indexMutation = useMutation({
-    mutationFn: (id: number) => apiRequest("POST", `/api/knowledge/sources/${id}/index`),
-    onSuccess: (_, id) => {
+    mutationFn: async (id: number) => {
+      const res = await apiRequest("POST", `/api/knowledge/sources/${id}/index`);
+      return decodeJsonResponse(res, isIndexReceipt, "Index");
+    },
+    onSuccess: (receipt, id) => {
       queryClient.invalidateQueries({ queryKey: ["/api/knowledge/sources"] });
       queryClient.invalidateQueries({ queryKey: ["/api/knowledge/stats"] });
-      toast({ title: "Indexed", description: `Source ${id} embeddings updated.` });
+      toast({ title: "Indexed", description: `Source ${id}: ${receipt.chunksWritten} chunk${receipt.chunksWritten === 1 ? "" : "s"} written.` });
     },
-    onError: () => toast({ title: "Index failed", description: "OpenAI must be configured to index.", variant: "destructive" }),
+    onError: (e: Error) => toast({ title: "Index failed", description: e.message || "The source was not indexed.", variant: "destructive" }),
   });
 
   const reindexMutation = useMutation({
-    mutationFn: () => apiRequest("POST", "/api/knowledge/reindex"),
-    onSuccess: (data: any) => {
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/knowledge/reindex");
+      return decodeJsonResponse(res, isReindexReceipt, "Re-index");
+    },
+    onSuccess: (receipt) => {
       queryClient.invalidateQueries({ queryKey: ["/api/knowledge/sources"] });
       queryClient.invalidateQueries({ queryKey: ["/api/knowledge/stats"] });
-      toast({ title: "Re-indexed", description: `${data.sources} sources, ${data.chunks} chunks.` });
+      toast({ title: "Re-indexed", description: `${receipt.sources} sources, ${receipt.chunks} chunks.` });
     },
-    onError: () => toast({ title: "Re-index failed", variant: "destructive" }),
+    onError: (e: Error) => toast({ title: "Re-index failed", description: e.message, variant: "destructive" }),
   });
 
   const resolveMutation = useMutation({
@@ -133,6 +161,7 @@ export default function KnowledgeAdmin() {
       queryClient.invalidateQueries({ queryKey: ["/api/knowledge/unanswered"] });
       toast({ title: "Marked resolved" });
     },
+    onError: () => toast({ title: "Could not mark resolved", description: "The question is still open; try again.", variant: "destructive" }),
   });
 
   const sources = sourcesData?.sources ?? [];
@@ -142,6 +171,7 @@ export default function KnowledgeAdmin() {
 
   return (
     <div className="space-y-6" data-testid="knowledge-admin-page">
+      <ResourcesNav current="/dashboard/knowledge-admin" />
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -208,11 +238,11 @@ export default function KnowledgeAdmin() {
         </div>
       )}
 
-      <Tabs defaultValue="sources">
+      <Tabs value={tabSelection.value} onValueChange={(v) => tabSelection.setValue(v as typeof knowledgeAdminViews[number])}>
         <TabsList className="flex-wrap h-auto gap-1">
-          <TabsTrigger value="sources" data-testid="tab-sources">Sources ({sourcesError ? "unavailable" : isLoading ? "loading" : sources.length})</TabsTrigger>
+          <TabsTrigger value="sources" data-testid="tab-sources">Sources ({sourcesState === "unavailable" ? "unavailable" : sourcesState === "loading" ? "loading" : sources.length})</TabsTrigger>
           <TabsTrigger value="unanswered" data-testid="tab-unanswered">
-            Unanswered {unanswered.length > 0 && <Badge variant="destructive" className="ml-1 h-4 text-[10px]">{unanswered.length}</Badge>}
+            Unanswered {unansweredState === "unavailable" ? "(unavailable)" : unanswered.length > 0 && <Badge variant="destructive" className="ml-1 h-4 text-[10px]">{unanswered.length}</Badge>}
           </TabsTrigger>
           <TabsTrigger value="feedback" data-testid="tab-feedback">Feedback</TabsTrigger>
         </TabsList>
@@ -220,12 +250,12 @@ export default function KnowledgeAdmin() {
         {/* Sources tab */}
         <TabsContent value="sources" className="mt-4">
           <p className="text-xs text-muted-foreground">Statistics above cover the whole library. This list shows all sources.</p>
-          {sourcesError ? (
+          {sourcesState === "unavailable" ? (
             <div role="alert" className="py-6 space-y-3">
               <p>Knowledge sources are unavailable. This is not an empty library.</p>
               <Button variant="outline" onClick={() => void retrySources()}>Retry sources</Button>
             </div>
-          ) : isLoading ? (
+          ) : sourcesState === "loading" ? (
             <div className="text-center py-8 text-muted-foreground text-sm">Loading sources…</div>
           ) : sources.length === 0 ? (
             <div className="text-center py-12 text-muted-foreground">
@@ -235,6 +265,12 @@ export default function KnowledgeAdmin() {
             </div>
           ) : (
             <div className="space-y-2">
+              {sourcesState === "stale" && (
+                <div role="alert" className="flex items-center gap-3 text-sm text-amber-800 dark:text-amber-200">
+                  <span>Showing the last loaded sources; refreshing failed.</span>
+                  <Button size="sm" variant="outline" onClick={() => void retrySources()}>Retry sources</Button>
+                </div>
+              )}
               {sources.map(src => (
                 <Card key={src.id} className="hover:shadow-sm transition-shadow" data-testid={`source-card-${src.id}`}>
                   <CardContent className="p-4">
@@ -324,7 +360,11 @@ export default function KnowledgeAdmin() {
 
         {/* Unanswered tab */}
         <TabsContent value="unanswered" className="mt-4">
-          {unanswered.length === 0 ? (
+          {unansweredState === "loading" ? (
+            <CrmDataState state="loading" message="Loading unanswered questions…" />
+          ) : unansweredState === "unavailable" ? (
+            <CrmDataState state="unavailable" message="Unanswered questions are unavailable. This is not an empty review queue." onRetry={() => void unansweredQuery.refetch()} />
+          ) : unanswered.length === 0 ? (
             <div className="text-center py-12 text-muted-foreground">
               <HelpCircle className="w-8 h-8 mx-auto mb-3 opacity-30" />
               <p>No unanswered questions.</p>
@@ -332,6 +372,12 @@ export default function KnowledgeAdmin() {
             </div>
           ) : (
             <div className="space-y-3">
+              {unansweredState === "stale" && (
+                <div role="alert" className="flex items-center gap-3 text-sm text-amber-800 dark:text-amber-200">
+                  <span>Showing the last loaded questions; refreshing failed.</span>
+                  <Button size="sm" variant="outline" onClick={() => void unansweredQuery.refetch()}>Retry</Button>
+                </div>
+              )}
               {unanswered.map((q: any) => (
                 <Card key={q.id} data-testid={`unanswered-${q.id}`}>
                   <CardContent className="p-4 space-y-2">
@@ -376,10 +422,20 @@ export default function KnowledgeAdmin() {
 
         {/* Feedback tab */}
         <TabsContent value="feedback" className="mt-4">
-          {feedback.length === 0 ? (
+          {feedbackState === "loading" ? (
+            <CrmDataState state="loading" message="Loading feedback…" />
+          ) : feedbackState === "unavailable" ? (
+            <CrmDataState state="unavailable" message="Feedback is unavailable. This is not an empty feedback list." onRetry={() => void feedbackQuery.refetch()} />
+          ) : feedback.length === 0 ? (
             <div className="text-center py-12 text-muted-foreground text-sm">No feedback yet.</div>
           ) : (
             <div className="space-y-2">
+              {feedbackState === "stale" && (
+                <div role="alert" className="flex items-center gap-3 text-sm text-amber-800 dark:text-amber-200">
+                  <span>Showing the last loaded feedback; refreshing failed.</span>
+                  <Button size="sm" variant="outline" onClick={() => void feedbackQuery.refetch()}>Retry</Button>
+                </div>
+              )}
               {feedback.map((f: any) => (
                 <Card key={f.id}>
                   <CardContent className="p-3 flex items-start gap-3">
@@ -411,8 +467,11 @@ export default function KnowledgeAdmin() {
           </DialogHeader>
           <div className="space-y-4 py-2">
             <div>
-              <label className="text-sm font-medium">Title</label>
+              <label htmlFor={titleId} className="text-sm font-medium">Title <span aria-hidden="true">*</span></label>
               <Input
+                id={titleId}
+                required
+                aria-required="true"
                 value={form.title}
                 onChange={e => setForm(f => ({ ...f, title: e.target.value }))}
                 placeholder="e.g., FAQ: Chargeback Prevention"
@@ -421,9 +480,9 @@ export default function KnowledgeAdmin() {
               />
             </div>
             <div>
-              <label className="text-sm font-medium">Audience</label>
+              <label htmlFor={audienceId} className="text-sm font-medium">Audience</label>
               <Select value={form.audience} onValueChange={v => setForm(f => ({ ...f, audience: v }))}>
-                <SelectTrigger className="mt-1" data-testid="select-source-audience">
+                <SelectTrigger id={audienceId} className="mt-1" data-testid="select-source-audience">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -435,15 +494,22 @@ export default function KnowledgeAdmin() {
               </Select>
             </div>
             <div>
-              <label className="text-sm font-medium">Content</label>
+              <label htmlFor={contentId} className="text-sm font-medium">Content <span aria-hidden="true">*</span></label>
               <Textarea
+                id={contentId}
+                required
+                aria-required="true"
+                aria-describedby={contentHelpId}
                 value={form.content}
                 onChange={e => setForm(f => ({ ...f, content: e.target.value }))}
                 placeholder="Paste or type the approved Liberty Bancard content here…"
-                className="mt-1 min-h-[200px] font-mono text-xs"
+                className="crm-prose-editor mt-1"
                 data-testid="textarea-source-content"
               />
-              <p className="text-[10px] text-muted-foreground mt-1">{form.content.length.toLocaleString()} characters</p>
+              <p id={contentHelpId} className="text-xs text-muted-foreground mt-1">{form.content.length.toLocaleString()} characters. Saved as a draft; nothing is published until you publish it.</p>
+              {createMutation.isError && (
+                <p role="alert" className="text-sm text-destructive mt-2">The source was not created. Your text is kept; fix the problem and try again.</p>
+              )}
             </div>
           </div>
           <DialogFooter>
@@ -478,7 +544,7 @@ export default function KnowledgeAdmin() {
                   </Badge>
                 )}
               </div>
-              <div className="bg-muted rounded-lg p-3 text-xs font-mono whitespace-pre-wrap max-h-[400px] overflow-y-auto">
+              <div className="bg-muted rounded-lg p-3 text-sm leading-5 whitespace-pre-wrap max-h-[400px] overflow-y-auto">
                 {editSource.content ?? "Content not loaded."}
               </div>
             </div>

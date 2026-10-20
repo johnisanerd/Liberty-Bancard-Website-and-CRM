@@ -1,73 +1,44 @@
-import type { Express, Request, Response, RequestHandler, Router } from "express";
+import type { Express, Request, Response } from "express";
 import { requireRole, isDashboardUser } from "../replit_integrations/auth";
 import { storage } from "../storage";
 import { db } from "../db";
 import { users } from "@shared/schema";
 import { desc } from "drizzle-orm";
 import { serverError } from "../utils/server-error";
-
-interface RoutePermission {
-  method: string;
-  path: string;
-  requiredRoles: string[];
-}
-
-// Express's internal router shape. These properties are stable in Express 4/5
-// but not part of the public typings, so we model them locally rather than
-// reaching for `any`.
-interface ExpressRoute {
-  path?: string;
-  methods?: Record<string, boolean>;
-  stack?: ExpressLayer[];
-}
-
-interface ExpressLayer {
-  route?: ExpressRoute;
-  name?: string;
-  handle?: (RequestHandler & { stack?: ExpressLayer[]; _requiredRoles?: readonly string[] })
-    | (Router & { stack?: ExpressLayer[] });
-}
-
-interface ExpressWithRouter {
-  _router?: { stack?: ExpressLayer[] };
-}
-
-function extractRoutePermissions(app: Express): RoutePermission[] {
-  const out: RoutePermission[] = [];
-  const stack: ExpressLayer[] = (app as Express & ExpressWithRouter)._router?.stack ?? [];
-  function walk(layers: ExpressLayer[], basePath = ""): void {
-    for (const layer of layers) {
-      if (layer.route) {
-        const path = basePath + (layer.route.path ?? "");
-        const methods = Object.keys(layer.route.methods ?? {}).filter(Boolean);
-        let roles: readonly string[] = [];
-        for (const handler of layer.route.stack ?? []) {
-          const r = (handler.handle as { _requiredRoles?: readonly string[] } | undefined)?._requiredRoles;
-          if (Array.isArray(r) && r.length > 0) roles = r;
-        }
-        for (const m of methods) {
-          out.push({
-            method: m.toUpperCase(),
-            path,
-            requiredRoles: roles.length > 0 ? [...roles] : ["public"],
-          });
-        }
-      } else if (layer.name === "router") {
-        const nested = (layer.handle as { stack?: ExpressLayer[] } | undefined)?.stack;
-        if (nested) walk(nested, basePath);
-      }
-    }
-  }
-  walk(stack);
-  return out
-    .filter((r) => r.path.startsWith("/api/"))
-    .sort((a, b) => a.path.localeCompare(b.path) || a.method.localeCompare(b.method));
-}
+import { extractRouteInventory } from "../services/express-route-provenance";
 
 export function registerPermissionsAuditRoutes(app: Express) {
-  // Admin "permissions audit" — lists every registered route + its required role.
-  app.get("/api/admin/route-permissions", requireRole("admin"), (req: Request, res: Response) => {
-    res.json({ routes: extractRoutePermissions(app) });
+  // Admin "permissions audit" — registration-bound inventory of every /api route with full mount
+  // path, all methods and ordered inherited guard provenance. Inventory only: it never enforces.
+  // An empty extraction is reported as unavailable (503), never as a successful empty census.
+  app.get("/api/admin/route-permissions", requireRole("admin"), (_req: Request, res: Response) => {
+    try {
+      const inventory = extractRouteInventory(app);
+      const routes = inventory.routes.filter((r) => r.path.startsWith("/api/"));
+      if (inventory.status !== "ok" || routes.length === 0) {
+        return res.status(503).json({
+          status: "unavailable",
+          message: inventory.reason ?? "No /api routes could be extracted from the registered application",
+          unsupported: inventory.unsupported,
+        });
+      }
+      res.json({
+        status: "ok",
+        routes,
+        summary: {
+          ...inventory.summary,
+          total: routes.length,
+          public: routes.filter((r) => r.access === "public").length,
+          authenticated: routes.filter((r) => r.access === "authenticated").length,
+          role: routes.filter((r) => r.access === "role").length,
+          unknown: routes.filter((r) => r.access === "unknown").length,
+        },
+        unsupported: inventory.unsupported,
+        generatedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      serverError(res, err);
+    }
   });
 
   // === Missing list endpoints surfaced by the API surface audit ===

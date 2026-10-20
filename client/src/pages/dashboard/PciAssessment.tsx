@@ -126,9 +126,9 @@ export default function PciAssessment() {
   if (isError) {
     return (
       <div className="space-y-6 p-4 md:p-6" data-testid="page-pci-assessment">
-        <h1 className="text-2xl font-bold text-foreground" data-testid="text-pci-heading">
+        <h2 className="text-2xl font-bold text-foreground" data-testid="text-pci-heading">
           PCI-DSS Self-Assessment
-        </h1>
+        </h2>
         <Alert variant="destructive" data-testid="alert-pci-load-error">
           <AlertCircle className="h-4 w-4" />
           <AlertDescription>
@@ -142,9 +142,9 @@ export default function PciAssessment() {
   return (
     <div className="space-y-6 p-4 md:p-6" data-testid="page-pci-assessment">
       <div className="flex flex-wrap items-center gap-3">
-        <h1 className="text-2xl font-bold text-foreground" data-testid="text-pci-heading">
+        <h2 className="text-2xl font-bold text-foreground" data-testid="text-pci-heading">
           PCI-DSS Self-Assessment
-        </h1>
+        </h2>
         <Badge className={statusColor} data-testid="badge-pci-status">
           {statusLabel}
         </Badge>

@@ -3569,9 +3569,22 @@ export function registerAdminRoutes(app: Express) {
     try {
       const { outboundQueueCoordinator } = await import("../services/outbound-queue-coordinator");
       const status = await outboundQueueCoordinator.getStatus();
+      // Canonical pause facts are read-only context (a seed lease is a per-message exception, not an unpause).
+      // A failed read is reported as unavailable, never as "unpaused".
+      let pause: Record<string, unknown> | null = null;
+      let pauseUnavailable: string | null = null;
+      try {
+        const { getPauseState } = await import("../services/outbound-pause-authority");
+        const p = await getPauseState();
+        pause = { state: p.state, reason: p.reason, epoch: p.epoch.toString(), source: p.source, committedAt: p.committedAt?.toISOString() ?? null, asOf: new Date().toISOString() };
+      } catch {
+        pauseUnavailable = "Canonical outbound pause state could not be read";
+      }
       // All epoch fields are already decimal strings in the DTO — safe for JSON.stringify.
       res.json({
         ok: true,
+        pause,
+        pauseUnavailable,
         status: status.status,
         ...(status.status === "degraded" ? { errorCode: (status as any).errorCode } : {}),
         desiredLogicalHolds: status.desiredLogicalHolds,
@@ -4474,7 +4487,7 @@ export function registerAdminRoutes(app: Express) {
     }
   });
 
-  // ── Full 25-subsystem Launch Readiness Audit ────────────────────────────────
+  // ── Full Launch Readiness Audit (probe registry) ────────────────────────────────
   app.get("/api/admin/launch-readiness-full", requireRole("admin", "manager"), async (_req, res) => {
     try {
       const { runAllLaunchReadinessChecks } = await import("../services/launch-readiness-full");

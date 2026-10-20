@@ -697,9 +697,13 @@ export function registerActivationRoutes(app: Express, dependencies: {
         },
         {
           id: "ghl_workflows_mapped",
-          label: "At least 5 GHL workflow IDs mapped",
-          ok: mappedWorkflowCount >= 5,
-          detail: `${mappedWorkflowCount} of ${GHL_WORKFLOW_REGISTRY.length} workflow IDs configured — set via env or GHL Workflow ID Manager`,
+          // Reclassified: the generic "at least five IDs" quota is removed because Replit owns sequence
+          // cadence. Handoff workflows (enrollInGhlWorkflow callers) still read their saved ID and skip the
+          // enrollment when it is missing, so the detail says so. The row keeps its id for DTO consumers
+          // and stays informational: it is not a new outbound eligibility policy.
+          label: "GHL workflow IDs recorded (informational)",
+          ok: true,
+          detail: `${mappedWorkflowCount} of ${GHL_WORKFLOW_REGISTRY.length} registry workflow IDs recorded. Sequence IDs are reference-only and not a launch prerequisite; IDs used by supported handoff enrollments (form confirmation, scheduling, merchant application, proposal follow-up, affiliate welcome, unsubscribe) skip that enrollment when missing. Replit owns cadence; incoming GHL sync and the global outbound pause are separate controls.`,
         },
         {
           id: "smtp_fallback",

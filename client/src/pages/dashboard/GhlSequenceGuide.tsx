@@ -1,3 +1,4 @@
+import { GhlOwnershipNotice } from "@/components/dashboard/GhlOwnershipNotice";
 import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -2061,7 +2062,7 @@ export default function GhlSequenceGuide() {
           <h1 className="text-2xl font-bold tracking-tight">GHL Workflow Build Guide</h1>
           <p className="text-muted-foreground mt-1 text-sm">
             The complete customer journey — 9 workflows covering prospecting, qualifying, closing, onboarding, go-live, retention, and win-back.
-            All execution happens natively in GHL — this platform handles enrollment triggers only.
+            This is a reference design for the GHL side. Replit owns cadence and execution; sequence workflow IDs are reference-only (IDs for supported handoff workflows are separate and are used at enrollment).
           </p>
         </div>
         <div className="flex gap-2 flex-wrap">
@@ -2078,13 +2079,15 @@ export default function GhlSequenceGuide() {
         </div>
       </div>
 
+      <GhlOwnershipNotice reference testId="notice-ghl-ownership-guide" />
+
       {/* Architecture callout */}
       <div className="flex gap-3 p-4 rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20">
         <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
         <div className="text-sm">
           <span className="font-semibold text-blue-700 dark:text-blue-300">How it works: </span>
           <span className="text-blue-700 dark:text-blue-400">
-            This platform detects qualifying events (form submission, stage change, tag added), upserts the contact to GHL, and calls the GHL API to enroll the contact in the correct workflow. After enrollment, GHL owns 100% of execution — emails, SMS, AI voice calls, voicemail drops, timing, branching, and appointment booking.
+            This platform detects qualifying events (form submission, stage change, tag added) and decides eligibility through its own sequence engine. Replit owns the cadence, timing, branching, suppression and sender policy; the workflow designs below are reference material, not an execution handoff to GHL.
           </span>
         </div>
       </div>
@@ -2299,7 +2302,7 @@ Eligibility, underwriting, and card brand rules apply. Individual results vary.`
                   <div>
                     <p className="text-xs font-semibold text-blue-700 dark:text-blue-300 mb-0.5">GHL Configuration — Day 90</p>
                     <p className="text-xs text-blue-700 dark:text-blue-400">
-                      In GHL workflow: after Day 60 step completes with no reply, wait 30 days → apply tag RE-ENGAGE-90 → Send Email.
+                      Reference design (cadence is owned by Replit): after the Day 60 step completes with no reply, the Day 90 step follows 30 days later with tag RE-ENGAGE-90.
                       Personalization: use the contact's vertical field for the industry reference. If vertical is blank, use "retail" as the default.
                       Add reply detection → stop sequence → tag RE-ENGAGE-REPLIED → enroll in Workflow 3.
                     </p>
@@ -2365,7 +2368,7 @@ Eligibility, underwriting, and card brand rules apply. Individual results vary.`
               <CardContent>
                 <ol className="space-y-3 text-xs text-muted-foreground list-none">
                   {[
-                    "Go to GHL → Automations → Create New Workflow → Name it: \"Liberty Bancard — Cold Lead Re-engagement\"",
+                    "Reference design only: if you document this journey in GHL, name the workflow \"Liberty Bancard — Cold Lead Re-engagement\". Replit sequences, not this workflow, run the cadence.",
                     "Trigger: Contact Tag Added → Tag = COLD-NO-DEAL. This fires when the platform applies the tag via the Re-engagement dashboard.",
                     "Step 1 (immediate): Send Email → Day 60 template (subject + body from above). Use branded Liberty Bancard email template.",
                     "Step 2 (2 hours later): Send SMS → Day 60 SMS copy from above. Ensure SMS opt-in compliance.",
@@ -2374,7 +2377,7 @@ Eligibility, underwriting, and card brand rules apply. Individual results vary.`
                     "Add Reply Detection on Day 90 email → If reply → stop + RE-ENGAGE-REPLIED → Workflow 3.",
                     "Wait 30 days → Step 4: Send SMS → Day 120 SMS copy. Use seasonal variant if month is Oct/Nov/Dec, otherwise non-seasonal.",
                     "Wait 7 days → If/Else: Tag = RE-ENGAGE-REPLIED? No → Apply RE-ENGAGE-EXHAUSTED → Remove COLD-NO-DEAL tag → Enroll in Long-Term Nurture workflow.",
-                    "Register the GHL Workflow ID in the platform at /dashboard/ghl-workflows under the sequence name \"19. Reactivation — Cold Lead Revival\".",
+                    "Optionally record the GHL Workflow ID at /dashboard/ghl-workflows under \"19. Reactivation — Cold Lead Revival\" as a reference-only ID; it is not required for launch.",
                   ].map((step, i) => (
                     <li key={i} className="flex items-start gap-2.5">
                       <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-muted-foreground/30 text-[10px] font-bold mt-0.5">

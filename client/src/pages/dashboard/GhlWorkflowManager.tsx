@@ -1477,14 +1477,14 @@ const GHL_SETUP_STEPS = [
   },
   {
     step: 3,
-    title: "Copy each workflow ID from GHL",
+    title: "Copy each workflow ID from GHL (optional, reference only)",
     detail: "Open a GHL workflow → click the three-dot menu → Settings. The Workflow ID is a long alphanumeric string (e.g. abc1234def5678...). Copy it.",
     critical: false,
   },
   {
     step: 4,
     title: "Paste the workflow ID into the fields below",
-    detail: "Find the matching sequence below, paste the GHL Workflow ID, and click Save. Once saved, Replit will enroll contacts directly into that GHL workflow — GHL runs ALL execution from there.",
+    detail: "Find the matching sequence below, paste the GHL Workflow ID, and click Save. The ID is stored as a reference only. Replit keeps running cadence and execution; saving an ID does not enroll contacts in GHL or start anything.",
     critical: false,
   },
   {
@@ -1518,13 +1518,13 @@ function GhlSetupGuide({ configuredCount, totalCount }: { configuredCount: numbe
           <div>
             <p className={`font-semibold text-sm ${allDone ? "text-green-800 dark:text-green-300" : "text-amber-800 dark:text-amber-300"}`}>
               {allDone
-                ? "GHL Execution Fully Connected — All sequences wired"
-                : `GHL Execution Not Wired — ${totalCount - configuredCount} of ${totalCount} sequences need a workflow ID`}
+                ? "Reference IDs recorded for all sequences"
+                : `Reference IDs: ${configuredCount} of ${totalCount} recorded (optional — not a launch requirement)`}
             </p>
             <p className="text-xs text-muted-foreground mt-0.5">
               {allDone
-                ? "Replit triggers contacts into GHL. GHL handles all email, SMS, voicemail, and calls."
-                : "Without GHL workflow IDs, sequences fall back to email/SMS only. No voicemail drops or AI calls. Click to see setup steps."}
+                ? "Sequence IDs are reference-only; IDs for supported handoff workflows are used when Replit enrolls those contacts and are skipped when missing. Replit owns cadence and sending; incoming GHL sync is controlled separately and the global outbound pause still applies."
+                : "Missing sequence IDs do not change sequence execution. A missing ID for a supported handoff workflow skips that enrollment. Replit owns cadence. Click to see steps."}
             </p>
           </div>
         </div>
@@ -1541,8 +1541,8 @@ function GhlSetupGuide({ configuredCount, totalCount }: { configuredCount: numbe
           <div className="mt-4 mb-3 p-3 rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 flex items-start gap-2">
             <Info className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
             <p className="text-xs text-blue-800 dark:text-blue-300">
-              <span className="font-semibold">Architecture: Replit is the brain, GHL is the hands.</span>{" "}
-              Replit manages contacts, decides when to enroll, syncs data to GHL, and triggers the GHL workflow. GHL then handles all delivery — timed emails, SMS texts, voicemail drops, and AI-powered calls. You only need to build the workflows once in GHL and paste their IDs here.
+              <span className="font-semibold">Architecture: Replit owns cadence.</span>{" "}
+              Replit manages contacts, decides eligibility and timing, and runs sequence delivery under the global outbound pause. Pasted sequence workflow IDs are reference-only records and are not required to launch sequences; IDs for supported handoff workflows (form confirmation, scheduling, merchant application, proposal follow-up, affiliate welcome) are used when Replit enrolls those contacts.
             </p>
           </div>
 

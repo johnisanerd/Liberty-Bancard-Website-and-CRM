@@ -126,6 +126,11 @@ const specialQueries: Record<string,string[]> = {
   "/dashboard/merchant-success":["tab"],
   "/dashboard/system-health":["tab","view","selectionIssue"],
   "/dashboard/operator":["tab","view","selectionIssue"],
+  // C5 selectors (registered once in crm-destination-state.ts `c5RouteKeys`).
+  "/dashboard/admin-hub":["tab","area","integrationsView"],
+  "/dashboard/training":["tab"],
+  "/dashboard/knowledge-admin":["tab"],
+  "/dashboard/settings/integrations":["integrationsView"],
 };
 const registry=rows.map(row=>{
   const declarations=routeSources.get(row.pattern)!;

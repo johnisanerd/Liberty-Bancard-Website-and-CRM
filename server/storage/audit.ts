@@ -150,6 +150,24 @@ function sanitizeChannelAuditEntry<T extends InsertChannelAuditLog | ChannelAudi
       .offset(filters?.offset ?? 0);
   }
 
+  /**
+   * Bounded history read for specific event families. The action filter runs in SQL before
+   * paging, so older matching events are never hidden behind unrelated newer audit volume.
+   * Stable order (createdAt, id descending); `total` is the exact matching count.
+   */
+  async getAuditLogsByActions(actions: readonly string[], opts?: { limit?: number; offset?: number }) {
+    if (actions.length === 0) return { rows: [] as Array<typeof auditLogs.$inferSelect>, total: 0, hasMore: false };
+    const limit = Math.min(Math.max(opts?.limit ?? 50, 1), 500);
+    const offset = Math.max(opts?.offset ?? 0, 0);
+    const where = inArray(auditLogs.action, [...actions]);
+    const [rows, [countRow]] = await Promise.all([
+      db.select().from(auditLogs).where(where).orderBy(desc(auditLogs.createdAt), desc(auditLogs.id)).limit(limit).offset(offset),
+      db.select({ n: sql<number>`count(*)::int` }).from(auditLogs).where(where),
+    ]);
+    const total = Number(countRow?.n ?? 0);
+    return { rows, total, hasMore: offset + rows.length < total };
+  }
+
   async getAuditLogsByEntity(entityType: string, entityId: number | string, limit: number = 50) {
     const condition = typeof entityId === 'string'
       ? and(eq(auditLogs.entityType, entityType), eq(auditLogs.entityKey, entityId))

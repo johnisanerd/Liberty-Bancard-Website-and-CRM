@@ -417,7 +417,7 @@ export default function UserManagement() {
                             onValueChange={(value) => updateRoleMutation.mutate({ id: u.id, role: value })}
                             disabled={u.id === user?.id || updateRoleMutation.isPending}
                           >
-                            <SelectTrigger className="w-32" data-testid={`select-role-${u.id}`}>
+                            <SelectTrigger className="w-32" aria-label={`Role for ${u.email ?? u.id}`} data-testid={`select-role-${u.id}`}>
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
@@ -425,6 +425,9 @@ export default function UserManagement() {
                               <SelectItem value="manager" data-testid={`option-manager-${u.id}`}>Manager</SelectItem>
                               <SelectItem value="agent" data-testid={`option-agent-${u.id}`}>Agent</SelectItem>
                               <SelectItem value="merchant" data-testid={`option-merchant-${u.id}`}>Merchant</SelectItem>
+                              {u.role && !["admin", "manager", "agent", "merchant"].includes(u.role) && (
+                                <SelectItem value={u.role} disabled data-testid={`option-current-${u.id}`}>{u.role.charAt(0).toUpperCase() + u.role.slice(1)} (not assignable here)</SelectItem>
+                              )}
                             </SelectContent>
                           </Select>
                         </TableCell>

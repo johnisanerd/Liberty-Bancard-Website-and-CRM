@@ -3,6 +3,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/hooks/use-auth";
+import { ResourcesNav } from "@/components/dashboard/ResourcesNav";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -11,6 +12,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
+import { useC4RetainedSelection } from "@/hooks/use-c4-retained-selection";
+import { trainingViews } from "@/lib/crm-destination-state";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   BookOpen,
@@ -995,7 +998,7 @@ function TrainingDocViewer() {
               </div>
               <div>
                 <h2 className="text-base font-semibold text-foreground">{activeModule.name}</h2>
-                <p className="text-xs text-muted-foreground mt-0.5">{activeModule.description}</p>
+                <p className="text-xs text-foreground/80 mt-0.5">{activeModule.description}</p>
               </div>
             </div>
             <div className="flex items-center gap-2 shrink-0">
@@ -2072,6 +2075,10 @@ export default function Training() {
   const isInternalUser = role === "admin" || role === "manager" || role === "agent";
   const canManageHub = role === "admin" || role === "manager";
 
+  // The URL owns the selected tab (?tab=docs|practice|coaching). Coaching is manager/admin only.
+  const trainingSelection = useC4RetainedSelection("/dashboard/training", "tab", trainingViews, "docs");
+  const trainingTab = trainingSelection.value === "coaching" && !canManageHub ? "docs" : trainingSelection.value;
+
   useEffect(() => {
     if (user && !isInternalUser) {
       setLocation("/dashboard");
@@ -2081,7 +2088,8 @@ export default function Training() {
   if (!isInternalUser) return null;
 
   return (
-    <div className="p-6 max-w-7xl mx-auto">
+    <div className="p-6 max-w-7xl mx-auto space-y-4">
+      <ResourcesNav current="/dashboard/training" />
       <div className="mb-6">
         <h1 className="text-2xl font-bold flex items-center gap-2" data-testid="text-training-title">
           <BookOpen className="w-7 h-7 text-primary" />
@@ -2092,7 +2100,12 @@ export default function Training() {
         </p>
       </div>
 
-      <Tabs defaultValue="docs" className="w-full">
+      {(trainingSelection.issues.length > 0 || trainingSelection.value !== trainingTab) && (
+        <p role="status" className="mb-4 text-sm text-muted-foreground" data-testid="text-training-selection-issue">
+          {trainingSelection.issues[0]?.reason ?? "Team Coaching requires a manager or administrator. Showing Training Guides."}
+        </p>
+      )}
+      <Tabs value={trainingTab} onValueChange={(v) => trainingSelection.setValue(v as typeof trainingViews[number])} className="w-full">
         <TabsList className="mb-6 flex-wrap h-auto gap-1" data-testid="tabs-training">
           <TabsTrigger value="docs" data-testid="tab-docs">
             <BookOpen className="w-4 h-4 mr-2" />

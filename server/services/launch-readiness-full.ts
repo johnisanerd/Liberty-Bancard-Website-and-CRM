@@ -1,12 +1,16 @@
 /**
- * Full CRM Launch-Readiness Audit — 25 subsystems
+ * Full CRM Launch-Readiness Audit
  *
- * Each probe runs independently and returns a SubsystemResult.
- * Probes are read-only; none mutate real data.
+ * The probe count is whatever PROBE_REGISTRY holds; no copy anywhere states a fixed number.
+ * Each probe runs independently and returns a SubsystemResult. Probes are read-only; none
+ * mutate real data. A failed evidence query is never a pass: it is reported as fail/warn with
+ * the query error, and the verdict is a bounded diagnostic only (not a Stage 9 or lane verdict).
  */
 import { db } from "../db";
 import { sql, desc, gte } from "drizzle-orm";
 import { storage } from "../storage";
+import { readTaskMetrics } from "./task-read-authority";
+import { getPauseState } from "./outbound-pause-authority";
 
 export type SubsystemStatus = "pass" | "warn" | "fail" | "disabled";
 
@@ -26,10 +30,11 @@ function now(): string {
 // ─── 1. Staff login / roles / admin controls ──────────────────────────────────
 async function checkStaffRoles(): Promise<SubsystemResult> {
   try {
+    // users.account_state ('active' | 'deactivated') is the migrated account-state contract.
     const rows = await db.execute(sql`
       SELECT role, COUNT(*) AS cnt
       FROM users
-      WHERE deleted_at IS NULL OR deleted_at IS NOT DISTINCT FROM NULL
+      WHERE account_state = 'active'
       GROUP BY role
     `);
     const roleCounts: Record<string, number> = {};
@@ -37,14 +42,16 @@ async function checkStaffRoles(): Promise<SubsystemResult> {
       roleCounts[r.role] = Number(r.cnt);
     }
     const hasAdmin = (roleCounts["admin"] ?? 0) > 0;
-    const total = Object.values(roleCounts).reduce((a, b) => a + b, 0);
+    const staffRoles = ["admin", "manager", "agent"];
+    const staffTotal = staffRoles.reduce((a, r) => a + (roleCounts[r] ?? 0), 0);
+    const portalTotal = Object.entries(roleCounts).filter(([r]) => !staffRoles.includes(r)).reduce((a, [, c]) => a + c, 0);
     if (!hasAdmin) {
-      return { id: "staff_roles", name: "Staff Login / Roles / Admin Controls", status: "fail", evidence: "No admin user found — admin routes cannot be accessed", checkedAt: now(), details: { roleCounts } };
+      return { id: "staff_roles", name: "Staff Login / Roles / Admin Controls", status: "fail", evidence: "No active admin account found — admin routes cannot be accessed", checkedAt: now(), details: { roleCounts } };
     }
     return {
       id: "staff_roles", name: "Staff Login / Roles / Admin Controls", status: "pass",
-      evidence: `${total} user(s) across roles: ${Object.entries(roleCounts).map(([r, c]) => `${r}×${c}`).join(", ")}. Admin present ✓`,
-      checkedAt: now(), details: { roleCounts },
+      evidence: `${staffTotal} active staff account(s) (${staffRoles.map(r => `${r}×${roleCounts[r] ?? 0}`).join(", ")}); ${portalTotal} active portal account(s) not counted as staff. Active admin present ✓`,
+      checkedAt: now(), details: { roleCounts, staffTotal, portalTotal },
     };
   } catch (err: any) {
     return { id: "staff_roles", name: "Staff Login / Roles / Admin Controls", status: "fail", evidence: `DB query failed: ${err.message}`, checkedAt: now() };
@@ -208,19 +215,15 @@ async function checkPipeline(): Promise<SubsystemResult> {
 // ─── 7. Tasks ────────────────────────────────────────────────────────────────
 async function checkTasks(): Promise<SubsystemResult> {
   try {
-    const rows = await db.execute(sql`
-      SELECT
-        COUNT(*) AS total,
-        COUNT(*) FILTER (WHERE status = 'open') AS open_tasks,
-        COUNT(*) FILTER (WHERE status = 'overdue') AS overdue,
-        COUNT(*) FILTER (WHERE due_date < NOW() AND status NOT IN ('completed','cancelled')) AS past_due
-      FROM tasks
-    `);
-    const s = rows.rows[0] as any;
-    const total = Number(s?.total ?? 0);
-    const open = Number(s?.open_tasks ?? 0);
-    const overdue = Number(s?.overdue ?? 0);
-    const pastDue = Number(s?.past_due ?? 0);
+    // One task authority: nondeleted tasks in the production class, authority state wins over the legacy
+    // status, overdue = open or in progress and due before asOf. UTC is stated, not assumed.
+    const asOf = new Date();
+    const metrics = await readTaskMetrics({ actor: { role: "admin" }, recordClass: "production", asOf, timezone: "UTC" });
+    const m = metrics.rows[0];
+    if (!m) throw new Error("task metrics returned no row");
+    const total = Number(m.total);
+    const openStates = Number(m.pending) + Number(m.in_progress);
+    const pastDue = Number(m.overdue);
 
     // Check SLA audit logs exist
     const slaRows = await db.execute(sql`
@@ -232,11 +235,11 @@ async function checkTasks(): Promise<SubsystemResult> {
     const lastSlaStr = lastSla ? new Date(lastSla).toLocaleString() : "never";
     return {
       id: "tasks", name: "Tasks", status: total === 0 ? "warn" : "pass",
-      evidence: `${total} tasks; ${open} open, ${pastDue} past-due. Last SLA audit: ${lastSlaStr}`,
-      checkedAt: now(), details: { total, open, overdue, pastDue, lastSla: lastSlaStr },
+      evidence: `${total} production tasks (non-deleted, authority state); ${openStates} open or in progress (${m.pending} open, ${m.in_progress} in progress), ${pastDue} past due as of ${asOf.toISOString()} (UTC). Last SLA audit: ${lastSlaStr}`,
+      checkedAt: now(), details: { total, open: Number(m.pending), inProgress: Number(m.in_progress), completed: Number(m.completed), cancelled: Number(m.cancelled), pastDue, lastSla: lastSlaStr, population: metrics.meta.population, asOf: metrics.meta.asOf, timezone: metrics.meta.timezone },
     };
   } catch (err: any) {
-    return { id: "tasks", name: "Tasks", status: "fail", evidence: `DB error: ${err.message}`, checkedAt: now() };
+    return { id: "tasks", name: "Tasks", status: "fail", evidence: `Task read failed: ${err.message}`, checkedAt: now() };
   }
 }
 
@@ -257,34 +260,37 @@ async function checkCalendar(): Promise<SubsystemResult> {
 async function checkCommunicationsHub(): Promise<SubsystemResult> {
   const webhookSecretSet = !!process.env.GHL_WEBHOOK_SECRET;
   const ghlConfigured = !!(process.env.GHL_PRIVATE_INTEGRATION_TOKEN && process.env.GHL_LOCATION_ID);
+  const configStatus: SubsystemStatus = !ghlConfigured ? "fail" : !webhookSecretSet ? "warn" : "pass";
+  const configText = `GHL: ${ghlConfigured ? "configured ✓" : "NOT configured ✗"}. Webhook secret: ${webhookSecretSet ? "set ✓" : "NOT set ✗"}.`;
   try {
-    // Check recent GHL activity logs
     const actRows = await db.execute(sql`
-      SELECT COUNT(*) AS cnt FROM ghl_activity_logs
+      SELECT COUNT(*) AS cnt FROM ghl_activity_log
       WHERE created_at > NOW() - INTERVAL '24 hours'
     `);
     const recentActivity = Number((actRows.rows[0] as any)?.cnt ?? 0);
-
-    const status: SubsystemStatus = !ghlConfigured ? "fail" : !webhookSecretSet ? "warn" : "pass";
     return {
-      id: "comms_hub", name: "Communications Hub", status,
-      evidence: `GHL: ${ghlConfigured ? "configured ✓" : "NOT configured ✗"}. Webhook secret: ${webhookSecretSet ? "set ✓" : "NOT set ✗"}. GHL activity last 24h: ${recentActivity} events.`,
+      id: "comms_hub", name: "Communications Hub", status: configStatus,
+      evidence: `${configText} GHL activity last 24h: ${recentActivity} events.`,
       checkedAt: now(), details: { ghlConfigured, webhookSecretSet, recentActivity24h: recentActivity },
     };
   } catch (err: any) {
-    const status: SubsystemStatus = !ghlConfigured ? "fail" : !webhookSecretSet ? "warn" : "pass";
-    return { id: "comms_hub", name: "Communications Hub", status, evidence: `GHL: ${ghlConfigured ? "configured ✓" : "NOT configured ✗"}. Webhook: ${webhookSecretSet ? "set ✓" : "NOT set ✗"}. Activity query failed: ${err.message}`, checkedAt: now() };
+    // The evidence query failed, so configuration alone can never produce a pass.
+    const status: SubsystemStatus = configStatus === "fail" ? "fail" : "warn";
+    return { id: "comms_hub", name: "Communications Hub", status, evidence: `${configText} Activity evidence query failed (${err.message}); operational result unknown.`, checkedAt: now(), details: { ghlConfigured, webhookSecretSet, evidenceQueryFailed: true } };
   }
 }
 
 // ─── 10. Support hub ─────────────────────────────────────────────────────────
 async function checkSupportHub(): Promise<SubsystemResult> {
   try {
+    // tickets.authority_state ('open','in_progress','completed','cancelled') is the ticket lifecycle
+    // authority; the display status column is a legacy projection and is not compared here.
     const rows = await db.execute(sql`
       SELECT
         COUNT(*) AS total,
-        COUNT(*) FILTER (WHERE status = 'open') AS open_tickets,
-        COUNT(*) FILTER (WHERE status = 'resolved') AS resolved
+        COUNT(*) FILTER (WHERE authority_state IN ('open','in_progress')) AS open_tickets,
+        COUNT(*) FILTER (WHERE authority_state = 'completed') AS resolved,
+        COUNT(*) FILTER (WHERE authority_state = 'cancelled') AS cancelled
       FROM tickets
     `);
     const s = rows.rows[0] as any;
@@ -292,8 +298,8 @@ async function checkSupportHub(): Promise<SubsystemResult> {
     const open = Number(s?.open_tickets ?? 0);
     return {
       id: "support_hub", name: "Support Hub", status: "pass",
-      evidence: `${total} tickets total; ${open} open. Routing tables present ✓`,
-      checkedAt: now(), details: { total, open, resolved: Number(s?.resolved ?? 0) },
+      evidence: `${total} tickets total by authority state; ${open} open or in progress, ${Number(s?.resolved ?? 0)} completed, ${Number(s?.cancelled ?? 0)} cancelled.`,
+      checkedAt: now(), details: { total, open, resolved: Number(s?.resolved ?? 0), cancelled: Number(s?.cancelled ?? 0) },
     };
   } catch (err: any) {
     return { id: "support_hub", name: "Support Hub", status: "fail", evidence: `DB error: ${err.message}`, checkedAt: now() };
@@ -319,8 +325,8 @@ async function checkAiAdvisor(): Promise<SubsystemResult> {
       evidence: `OpenAI key set ✓. Base URL: ${openaiBaseUrl}. ${recentAi} AI audit events in last 7 days.`,
       checkedAt: now(), details: { openaiConfigured, recentAiEvents: recentAi },
     };
-  } catch {
-    return { id: "ai_advisor", name: "AI Advisor / Customer Chat", status: "pass", evidence: "OpenAI key set ✓", checkedAt: now() };
+  } catch (err: any) {
+    return { id: "ai_advisor", name: "AI Advisor / Customer Chat", status: "warn", evidence: `OpenAI key set ✓, but the AI audit evidence query failed (${err.message}); recent usage unknown.`, checkedAt: now() };
   }
 }
 
@@ -378,7 +384,8 @@ async function checkStatementReview(): Promise<SubsystemResult> {
     const rows = await db.execute(sql`
       SELECT
         COUNT(*) AS total_docs,
-        COUNT(*) FILTER (WHERE document_type = 'statement') AS statements,
+        COUNT(*) FILTER (WHERE type IN ('merchant_statement','rate_review_statement') OR category IN ('Processing Statement','Rate Review Statement')) AS statements,
+        COUNT(*) FILTER (WHERE access_scope IS DISTINCT FROM 'public') AS protected_scope,
         COUNT(*) FILTER (WHERE status = 'approved') AS approved
       FROM documents
     `);
@@ -397,8 +404,8 @@ async function checkStatementReview(): Promise<SubsystemResult> {
 
     return {
       id: "statement_review", name: "Statement Review", status: "pass",
-      evidence: `${total} documents (${statements} statements). Last analysis event: ${lastStr}`,
-      checkedAt: now(), details: { total, statements, lastAnalysis: lastStr },
+      evidence: `${total} documents (${statements} statement documents by documents.type/category; ${Number(s?.protected_scope ?? 0)} outside public scope). Last analysis event: ${lastStr}`,
+      checkedAt: now(), details: { total, statements, protectedScope: Number(s?.protected_scope ?? 0), lastAnalysis: lastStr },
     };
   } catch (err: any) {
     return { id: "statement_review", name: "Statement Review", status: "fail", evidence: `DB error: ${err.message}`, checkedAt: now() };
@@ -455,37 +462,30 @@ async function checkDocumentVault(): Promise<SubsystemResult> {
 // ─── 17. Form submissions from public site ───────────────────────────────────
 async function checkFormSubmissions(): Promise<SubsystemResult> {
   try {
-    // Check contact_source_events for form-sourced contacts
+    // Public-form conversion is proven by inbound request occurrences (inbound_requests,
+    // source_category 'website_form'). Manually entered CRM contacts (manual CRM provenance
+    // events) are not form submissions and are never counted here.
     const rows = await db.execute(sql`
-      SELECT
-        source_category,
-        COUNT(*) AS cnt
-      FROM contact_source_events
-      WHERE source_category IN ('public_form', 'upload_statement', 'free_analysis', 'get_started', 'manual_crm')
-      GROUP BY source_category
+      SELECT source_type, COUNT(*) AS cnt, MAX(source_received_at) AS last_received
+      FROM inbound_requests
+      WHERE source_category = 'website_form'
+      GROUP BY source_type
       ORDER BY cnt DESC
     `);
     const bySource: Record<string, number> = {};
-    for (const r of rows.rows as Array<{ source_category: string; cnt: string }>) {
-      bySource[r.source_category] = Number(r.cnt);
+    let lastReceived: Date | null = null;
+    for (const r of rows.rows as Array<{ source_type: string; cnt: string; last_received: Date | null }>) {
+      bySource[r.source_type] = Number(r.cnt);
+      if (r.last_received && (!lastReceived || new Date(r.last_received) > lastReceived)) lastReceived = new Date(r.last_received);
     }
-    const totalFormLeads = Object.values(bySource).reduce((a, b) => a + b, 0);
-    if (totalFormLeads === 0) {
-      // Also check for any contacts with referralSource = form types
-      const refRows = await db.execute(sql`
-        SELECT COUNT(*) AS cnt FROM contacts
-        WHERE referral_source IN ('upload_statement','free_analysis','get_started','public_form')
-      `);
-      const refCount = Number((refRows.rows[0] as any)?.cnt ?? 0);
-      if (refCount > 0) {
-        return { id: "form_submissions", name: "Form Submissions (Public Site)", status: "pass", evidence: `${refCount} contacts sourced from public forms (via referral_source field)`, checkedAt: now() };
-      }
-      return { id: "form_submissions", name: "Form Submissions (Public Site)", status: "warn", evidence: "No form-sourced contacts found yet — public forms exist but have not received submissions in this DB", checkedAt: now() };
+    const total = Object.values(bySource).reduce((a, b) => a + b, 0);
+    if (total === 0) {
+      return { id: "form_submissions", name: "Form Submissions (Public Site)", status: "warn", evidence: "No public-website-form inbound request occurrences recorded yet; manual CRM entries are not counted as form submissions", checkedAt: now(), details: { bySource, total } };
     }
     return {
       id: "form_submissions", name: "Form Submissions (Public Site)", status: "pass",
-      evidence: `${totalFormLeads} form-sourced contacts: ${Object.entries(bySource).map(([k, v]) => `${k}:${v}`).join(", ")}`,
-      checkedAt: now(), details: { bySource, totalFormLeads },
+      evidence: `${total} public-form inbound request occurrences: ${Object.entries(bySource).map(([k, v]) => `${k}:${v}`).join(", ")}. Last received ${lastReceived ? lastReceived.toLocaleString() : "unknown"}. Manual CRM entries excluded.`,
+      checkedAt: now(), details: { bySource, total, lastReceived: lastReceived?.toISOString() ?? null },
     };
   } catch (err: any) {
     return { id: "form_submissions", name: "Form Submissions (Public Site)", status: "fail", evidence: `DB error: ${err.message}`, checkedAt: now() };
@@ -538,7 +538,7 @@ async function checkGhlEmail(): Promise<SubsystemResult> {
     const configured = isGhlConfigured();
     // Check recent GHL email activity
     const rows = await db.execute(sql`
-      SELECT COUNT(*) AS cnt FROM ghl_activity_logs
+      SELECT COUNT(*) AS cnt FROM ghl_activity_log
       WHERE channel IN ('email','ghl_email') AND direction = 'outbound' AND created_at > NOW() - INTERVAL '7 days'
     `);
     const recentSends = Number((rows.rows[0] as any)?.cnt ?? 0);
@@ -639,33 +639,34 @@ async function checkQueueHealth(): Promise<SubsystemResult> {
 
 // ─── 23. Outbound global pause + per-channel pause ───────────────────────────
 async function checkOutboundPause(): Promise<SubsystemResult> {
+  const name = "Outbound Global Pause + Per-Channel Pause";
   try {
-    const [globalPauseRaw, emailPauseRaw, smsPauseRaw, coldEmailPauseRaw] = await Promise.all([
-      storage.getSystemSetting("outboundGlobalPaused"),
+    // Canonical pause authority (state, source, epoch, reason, committedAt). Unknown fails closed:
+    // a failed read is a fail, never "unpaused". Channel states stay separate settings.
+    const [pause, emailPauseRaw, smsPauseRaw] = await Promise.all([
+      getPauseState(),
       storage.getSystemSetting("emailChannelPaused"),
       storage.getSystemSetting("smsChannelPaused"),
-      storage.getSystemSetting("coldEmailChannelPaused"),
     ]);
-    const globalPaused = globalPauseRaw === true || globalPauseRaw === "true";
     const emailPaused = emailPauseRaw === true || emailPauseRaw === "true";
     const smsPaused = smsPauseRaw === true || smsPauseRaw === "true";
-
+    const facts = { state: pause.state, source: pause.source, epoch: pause.epoch.toString(), reason: pause.reason, committedAt: pause.committedAt?.toISOString() ?? null };
+    const factText = `source ${pause.source}, epoch ${facts.epoch}${pause.reason ? `, reason ${pause.reason}` : ""}${facts.committedAt ? `, committed ${facts.committedAt}` : ""}`;
     // Pre-launch: we WANT outbound paused — so passing means paused
-    if (globalPaused) {
+    if (pause.state === "paused") {
       return {
-        id: "outbound_pause", name: "Outbound Global Pause + Per-Channel Pause", status: "pass",
-        evidence: `Global outbound: PAUSED ✓ (safe for pre-launch). Email channel: ${emailPaused ? "paused" : "live"}. SMS channel: ${smsPaused ? "paused" : "live"}.`,
-        checkedAt: now(), details: { globalPaused, emailPaused, smsPaused },
+        id: "outbound_pause", name, status: pause.source === "database" ? "pass" : "warn",
+        evidence: `Global outbound: PAUSED (${factText}). Email channel setting: ${emailPaused ? "paused" : "live"}. SMS channel setting: ${smsPaused ? "paused" : "live"}.${pause.source === "safe_default" ? " Pause shown is the safe default, not a stored decision." : ""}`,
+        checkedAt: now(), details: { ...facts, emailPaused, smsPaused },
       };
     }
-    // If not paused, show warning — pre-launch should have this paused
     return {
-      id: "outbound_pause", name: "Outbound Global Pause + Per-Channel Pause", status: "warn",
-      evidence: `Global outbound: LIVE (not paused — confirm you are ready for real outbound). Email: ${emailPaused ? "paused" : "live"}. SMS: ${smsPaused ? "paused" : "live"}.`,
-      checkedAt: now(), details: { globalPaused, emailPaused, smsPaused },
+      id: "outbound_pause", name, status: "warn",
+      evidence: `Global outbound: ${pause.state.toUpperCase()} (${factText}) — confirm you are ready for real outbound. Email channel setting: ${emailPaused ? "paused" : "live"}. SMS channel setting: ${smsPaused ? "paused" : "live"}.`,
+      checkedAt: now(), details: { ...facts, emailPaused, smsPaused },
     };
   } catch (err: any) {
-    return { id: "outbound_pause", name: "Outbound Global Pause + Per-Channel Pause", status: "fail", evidence: `Settings query failed: ${err.message}`, checkedAt: now() };
+    return { id: "outbound_pause", name, status: "fail", evidence: `Canonical pause state could not be read (${err.message}); treated as unknown, not unpaused.`, checkedAt: now() };
   }
 }
 
@@ -794,68 +795,71 @@ async function checkSalesRepOps(): Promise<SubsystemResult> {
   }
 }
 
-// ─── Master runner ───────────────────────────────────────────────────────────
-export async function runAllLaunchReadinessChecks(): Promise<{
-  subsystems: SubsystemResult[];
-  summary: { total: number; pass: number; warn: number; fail: number; disabled: number };
-  verdict: "GO" | "WARN" | "NO-GO";
-  checkedAt: string;
-}> {
-  const checkedAt = new Date().toISOString();
+// ─── Probe registry ──────────────────────────────────────────────────────────
+// The single source for probe IDs, names and order. Counts, labels and the
+// unexpected-rejection rows are all derived from it.
+export const PROBE_REGISTRY: ReadonlyArray<{ id: string; name: string; run: () => Promise<SubsystemResult> }> = [
+  { id: "staff_roles", name: "Staff Login / Roles / Admin Controls", run: checkStaffRoles },
+  { id: "contacts", name: "Contacts", run: checkContacts },
+  { id: "lead_database", name: "Master Lead Database", run: checkLeadDatabase },
+  { id: "lead_imports", name: "Lead Imports", run: checkLeadImports },
+  { id: "dedupe_suppression", name: "Dedupe and Suppression", run: checkDedupeAndSuppression },
+  { id: "pipeline_deals", name: "Pipeline / Deals", run: checkPipeline },
+  { id: "tasks", name: "Tasks", run: checkTasks },
+  { id: "calendar", name: "Calendar", run: checkCalendar },
+  { id: "comms_hub", name: "Communications Hub", run: checkCommunicationsHub },
+  { id: "support_hub", name: "Support Hub", run: checkSupportHub },
+  { id: "ai_advisor", name: "AI Advisor / Customer Chat", run: checkAiAdvisor },
+  { id: "merchant_applications", name: "Merchant Applications", run: checkMerchantApplications },
+  { id: "onboarding", name: "Boarding / Onboarding", run: checkOnboarding },
+  { id: "statement_review", name: "Statement Review", run: checkStatementReview },
+  { id: "underwriting", name: "Underwriting", run: checkUnderwriting },
+  { id: "document_vault", name: "Document Vault", run: checkDocumentVault },
+  { id: "form_submissions", name: "Form Submissions (Public Site)", run: checkFormSubmissions },
+  { id: "ghl_sync", name: "GHL Contact/Deal Sync", run: checkGhlSync },
+  { id: "ghl_email", name: "GHL Email Transport", run: checkGhlEmail },
+  { id: "gmail", name: "Gmail / Send-As", run: checkGmail },
+  { id: "webhooks", name: "Webhooks", run: checkWebhooks },
+  { id: "queue_health", name: "Queue / BullMQ / Redis / DB Health", run: checkQueueHealth },
+  { id: "outbound_pause", name: "Outbound Global Pause + Per-Channel Pause", run: checkOutboundPause },
+  { id: "audit_log", name: "Audit Log", run: checkAuditLog },
+  { id: "reporting", name: "Reporting / Acquisition Hub", run: checkReporting },
+  { id: "sales_rep_ops", name: "Sales Rep Operations", run: checkSalesRepOps },
+];
 
-  const results = await Promise.allSettled([
-    checkStaffRoles(),
-    checkContacts(),
-    checkLeadDatabase(),
-    checkLeadImports(),
-    checkDedupeAndSuppression(),
-    checkPipeline(),
-    checkTasks(),
-    checkCalendar(),
-    checkCommunicationsHub(),
-    checkSupportHub(),
-    checkAiAdvisor(),
-    checkMerchantApplications(),
-    checkOnboarding(),
-    checkStatementReview(),
-    checkUnderwriting(),
-    checkDocumentVault(),
-    checkFormSubmissions(),
-    checkGhlSync(),
-    checkGhlEmail(),
-    checkGmail(),
-    checkWebhooks(),
-    checkQueueHealth(),
-    checkOutboundPause(),
-    checkAuditLog(),
-    checkReporting(),
-    checkSalesRepOps(),
-  ]);
+/** Converts one settled probe outcome into a result row; an unexpected rejection is a fail row. */
+export function settleProbe(
+  probe: { id: string; name: string },
+  outcome: PromiseSettledResult<SubsystemResult>,
+  checkedAt: string,
+): SubsystemResult {
+  if (outcome.status === "fulfilled") return outcome.value;
+  return { id: probe.id, name: probe.name, status: "fail", evidence: `Probe threw: ${(outcome.reason as any)?.message ?? outcome.reason}`, checkedAt };
+}
 
-  const subsystems: SubsystemResult[] = results.map((r, i) => {
-    if (r.status === "fulfilled") return r.value;
-    // Fallback if probe itself threw
-    const names = [
-      "Staff Login / Roles / Admin Controls","Contacts","Master Lead Database","Lead Imports",
-      "Dedupe and Suppression","Pipeline / Deals","Tasks","Calendar","Communications Hub",
-      "Support Hub","AI Advisor / Customer Chat","Merchant Applications","Boarding / Onboarding",
-      "Statement Review","Underwriting","Document Vault","Form Submissions (Public Site)",
-      "GHL Contact/Deal Sync","GHL Email Transport","Gmail / Send-As","Webhooks",
-      "Queue / BullMQ / Redis / DB Health","Outbound Global Pause + Per-Channel Pause",
-      "Audit Log","Reporting / Acquisition Hub","Sales Rep Operations",
-    ];
-    return { id: `check_${i}`, name: names[i] ?? `Check ${i + 1}`, status: "fail" as SubsystemStatus, evidence: `Probe threw: ${(r.reason as any)?.message ?? r.reason}`, checkedAt };
-  });
-
-  const summary = {
+export function summarizeProbes(subsystems: SubsystemResult[]) {
+  return {
     total: subsystems.length,
     pass: subsystems.filter(s => s.status === "pass").length,
     warn: subsystems.filter(s => s.status === "warn").length,
     fail: subsystems.filter(s => s.status === "fail").length,
     disabled: subsystems.filter(s => s.status === "disabled").length,
   };
+}
 
+// ─── Master runner ───────────────────────────────────────────────────────────
+export async function runAllLaunchReadinessChecks(): Promise<{
+  subsystems: SubsystemResult[];
+  summary: { total: number; pass: number; warn: number; fail: number; disabled: number };
+  /** Bounded diagnostic verdict for these probes only; not a Stage 9 or lane verdict. */
+  verdict: "GO" | "WARN" | "NO-GO";
+  probeCount: number;
+  checkedAt: string;
+}> {
+  const checkedAt = new Date().toISOString();
+  const results = await Promise.allSettled(PROBE_REGISTRY.map(p => p.run()));
+  const subsystems = results.map((r, i) => settleProbe(PROBE_REGISTRY[i], r, checkedAt));
+  const summary = summarizeProbes(subsystems);
   const verdict: "GO" | "WARN" | "NO-GO" = summary.fail > 0 ? "NO-GO" : summary.warn > 0 ? "WARN" : "GO";
-
-  return { subsystems, summary, verdict, checkedAt };
+  return { subsystems, summary, verdict, probeCount: PROBE_REGISTRY.length, checkedAt };
 }

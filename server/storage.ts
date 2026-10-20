@@ -224,6 +224,7 @@ export interface IStorage {
   createDocumentAccessLog(entry: InsertDocumentAccessLog): Promise<typeof documentAccessLog.$inferSelect>;
 
   getAuditLogs(filters?: { entityType?: string; entityId?: number; actorType?: string; actorId?: string; userId?: string; startDate?: Date; endDate?: Date; limit?: number; offset?: number }): Promise<typeof auditLogs.$inferSelect[]>;
+  getAuditLogsByActions(actions: readonly string[], opts?: { limit?: number; offset?: number }): Promise<{ rows: typeof auditLogs.$inferSelect[]; total: number; hasMore: boolean }>;
   getAuditLogsByEntity(entityType: string, entityId: number | string, limit?: number): Promise<typeof auditLogs.$inferSelect[]>;
   getLastAuditLogByAction(action: string, entityType: string, entityId: number): Promise<typeof auditLogs.$inferSelect | undefined>;
   createAuditLog(log: InsertAuditLog): Promise<typeof auditLogs.$inferSelect>;

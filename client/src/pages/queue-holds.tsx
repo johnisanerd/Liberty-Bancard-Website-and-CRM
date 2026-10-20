@@ -14,7 +14,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { queryClient } from "@/lib/queryClient";
+import { decodeQueueHolds, reconciliationDiverges, type QueueHoldsDecoded } from "@shared/queue-holds-dto";
 import {
   RefreshCw,
   Server,
@@ -100,23 +100,6 @@ interface BacklogPreview {
   postEnrichmentIntents: SourceResult<{ pending: number; eligibleNow: number; processing: number; expiredLease: number; failed: number }>;
 }
 
-interface HoldLedgerStatus {
-  ok: boolean;
-  status: string;
-  desiredLogicalHolds: Array<{
-    logicalJobKey: string;
-    reasonCode: string;
-    sourceType: string;
-    createdAt: string;
-    expiresAt: string | null;
-    correlationId: string | null;
-    metadata?: Record<string, unknown>;
-  }>;
-  physicalQueueStates: Record<string, { paused: boolean; holdCount: number }>;
-  ledgerEpoch: string;
-  reconciledAt: string | null;
-}
-
 // ── Source Status Badge ───────────────────────────────────────────────────────
 
 function SourceBadge({ status }: { status: string }) {
@@ -126,7 +109,7 @@ function SourceBadge({ status }: { status: string }) {
     : status === "schema_missing" ? "schema not found"
     : "unavailable";
   return (
-    <Badge variant="outline" className="text-xs text-amber-600 border-amber-300 bg-amber-50">
+    <Badge variant="outline" className="text-xs text-amber-800 border-amber-300 bg-amber-50 dark:text-amber-300 dark:bg-amber-950 dark:border-amber-700">
       <AlertTriangle className="w-3 h-3 mr-1" />
       {label}
     </Badge>
@@ -139,7 +122,7 @@ function BacklogPreviewCard() {
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const mountedRef = useRef(true);
 
-  const { data, isFetching, refetch } = useQuery<BacklogPreview>({
+  const { data, isFetching, refetch, error: backlogError } = useQuery<BacklogPreview>({
     queryKey: ["/api/admin/queue-holds/backlog-preview"],
     retry: 1,
     refetchOnWindowFocus: false,
@@ -192,7 +175,7 @@ function BacklogPreviewCard() {
             <Layers className="w-4 h-4" />
             Backlog Preview
             {data?.partial && (
-              <Badge variant="outline" className="text-xs text-amber-600 border-amber-300 bg-amber-50 ml-1">
+              <Badge variant="outline" className="text-xs text-amber-800 border-amber-300 bg-amber-50 dark:text-amber-300 dark:bg-amber-950 dark:border-amber-700 ml-1">
                 partial
               </Badge>
             )}
@@ -212,7 +195,7 @@ function BacklogPreviewCard() {
           Risk preview only — sources overlap and{" "}
           <strong>must not be summed</strong>. Updated every 30 s.
           {data?.generatedAt && (
-            <span className="ml-1 opacity-60">
+            <span className="ml-1">
               Last: {new Date(data.generatedAt).toLocaleTimeString()}
             </span>
           )}
@@ -223,6 +206,11 @@ function BacklogPreviewCard() {
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="w-4 h-4 animate-spin" />
             Loading backlog preview…
+          </div>
+        ) : !data && backlogError ? (
+          <div className="space-y-2 text-sm text-destructive" role="alert" data-testid="backlog-unavailable">
+            <p>Backlog preview request failed: {backlogError instanceof Error ? backlogError.message : "unknown error"}. This is not an empty backlog.</p>
+            <Button size="sm" variant="outline" onClick={() => refetch()}>Retry</Button>
           </div>
         ) : !data ? (
           <p className="text-sm text-muted-foreground">No data available.</p>
@@ -270,7 +258,7 @@ function BacklogPreviewCard() {
               detail={
                 data.outboundMessages.status === "ok" &&
                 data.outboundMessages.data!.staleSending > 0 ? (
-                  <p className="text-xs text-amber-600">
+                  <p className="text-xs text-amber-700 dark:text-amber-400">
                     ⚠ {data.outboundMessages.data!.staleSending} stale in &quot;sending&quot; (&gt;30 min)
                   </p>
                 ) : null
@@ -318,7 +306,7 @@ function BacklogPreviewCard() {
                     {data.postEnrichmentIntents.data!.expiredLease > 0 && (
                       <>
                         <span className="text-xs text-muted-foreground">·</span>
-                        <span className="text-xs text-amber-600">
+                        <span className="text-xs text-amber-700 dark:text-amber-400">
                           {data.postEnrichmentIntents.data!.expiredLease} expired lease
                         </span>
                       </>
@@ -367,7 +355,7 @@ function BacklogPreviewCard() {
                       </tbody>
                     </table>
                     {data.bullmq.data!.scanTruncated && (
-                      <p className="text-xs text-amber-600 mt-1">
+                      <p className="text-xs text-amber-700 dark:text-amber-400 mt-1">
                         ⚠ Named-job scan was truncated — results may be incomplete.
                       </p>
                     )}
@@ -417,7 +405,7 @@ function AgeBar({ byAge }: { byAge: { under1h: number; h1to24: number; over24h: 
       <span className="text-green-600">&lt;1h: {byAge.under1h}</span>
       <span>1–24h: {byAge.h1to24}</span>
       {byAge.over24h > 0 && (
-        <span className="text-amber-600">&gt;24h: {byAge.over24h}</span>
+        <span className="text-amber-700 dark:text-amber-400">&gt;24h: {byAge.over24h}</span>
       )}
     </div>
   );
@@ -438,12 +426,12 @@ function EligibilityRow({
         </span>
       )}
       {knownSuppressed > 0 && (
-        <span className="text-amber-600">
+        <span className="text-amber-700 dark:text-amber-400">
           {knownSuppressed} suppressed (DNC)
         </span>
       )}
       {requiresEmailValidation > 0 && (
-        <span className="text-amber-600">
+        <span className="text-amber-700 dark:text-amber-400">
           {requiresEmailValidation} need email validation
         </span>
       )}
@@ -453,92 +441,119 @@ function EligibilityRow({
 
 // ── Hold Ledger Section ───────────────────────────────────────────────────────
 
+function formatWhen(value: string | null): string {
+  if (!value) return "not recorded";
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? value : d.toLocaleString();
+}
+
 function HoldLedgerSection() {
-  const { data, isFetching, refetch, error } = useQuery<HoldLedgerStatus>({
+  const { data, isFetching, isLoading, refetch, error, dataUpdatedAt } = useQuery<QueueHoldsDecoded>({
     queryKey: ["/api/admin/queue-holds"],
+    // Decode in the query so a malformed payload is an explicit state, never an empty ledger.
+    select: (raw) => decodeQueueHolds(raw),
     retry: 1,
     refetchOnWindowFocus: false,
   });
 
+  const decoded = data;
+  const live = decoded && (decoded.kind === "ok" || decoded.kind === "degraded") ? decoded : null;
+
   return (
-    <Card>
+    <Card data-testid="card-hold-ledger">
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
           <CardTitle className="text-base font-semibold flex items-center gap-2">
             <Server className="w-4 h-4" />
             Hold Ledger
           </CardTitle>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => refetch()}
-            disabled={isFetching}
-            className="h-7 px-2 gap-1"
-          >
+          <Button variant="ghost" size="sm" onClick={() => refetch()} disabled={isFetching} className="h-7 px-2 gap-1">
             <RefreshCw className={`w-3 h-3 ${isFetching ? "animate-spin" : ""}`} />
             <span className="text-xs">Refresh</span>
           </Button>
         </div>
+        <p className="text-xs text-muted-foreground">Read-only. Viewing, refreshing or retrying never reconciles, clears, resumes or releases anything.</p>
       </CardHeader>
       <CardContent>
-        {error ? (
-          <div className="flex items-center gap-2 text-sm text-destructive">
-            <AlertTriangle className="w-4 h-4" />
-            Failed to load hold ledger. Check server logs.
-          </div>
-        ) : !data ? (
+        {isLoading ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="w-4 h-4 animate-spin" />
             Loading hold ledger…
           </div>
-        ) : (
-          <div className="space-y-4">
-            {/* Coordinator status */}
+        ) : error && !live ? (
+          <div className="space-y-2 text-sm text-destructive" role="alert" data-testid="hold-ledger-unavailable">
             <div className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4" />
+              Hold ledger unavailable: {error instanceof Error ? error.message : "request failed"}.
+            </div>
+            <Button size="sm" variant="outline" onClick={() => refetch()}>Retry</Button>
+          </div>
+        ) : decoded && decoded.kind === "malformed" ? (
+          <div className="space-y-2 text-sm text-destructive" role="alert" data-testid="hold-ledger-malformed">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4" />
+              The coordinator response could not be read ({decoded.reason}). Hold and queue state is unknown, not empty.
+            </div>
+            <Button size="sm" variant="outline" onClick={() => refetch()}>Retry</Button>
+          </div>
+        ) : live ? (
+          <div className="space-y-4">
+            {error && (
+              <p className="text-xs text-amber-700" role="status" data-testid="hold-ledger-stale">
+                Refresh failed; showing last known data from {formatWhen(new Date(dataUpdatedAt).toISOString())}.
+              </p>
+            )}
+            <div className="flex flex-wrap items-center gap-2">
               <span className="text-sm font-medium">Coordinator status:</span>
-              <Badge
-                variant={data.status === "ok" ? "outline" : "destructive"}
-                className="text-xs"
-              >
-                {data.status === "ok" ? (
-                  <CheckCircle2 className="w-3 h-3 mr-1 text-green-600" />
-                ) : (
-                  <AlertTriangle className="w-3 h-3 mr-1" />
-                )}
-                {data.status}
+              <Badge variant={live.kind === "ok" ? "outline" : "destructive"} className="text-xs">
+                {live.kind === "ok" ? <CheckCircle2 className="w-3 h-3 mr-1 text-green-600" /> : <AlertTriangle className="w-3 h-3 mr-1" />}
+                {live.kind}
               </Badge>
-              {data.ledgerEpoch && (
-                <span className="text-xs text-muted-foreground">
-                  epoch {data.ledgerEpoch}
-                </span>
+              <span className="text-xs text-muted-foreground">ledger epoch {live.ledgerEpoch}</span>
+              {live.errorCode && <span className="text-xs text-destructive">{live.errorCode}</span>}
+            </div>
+            {live.kind === "degraded" && (
+              <p className="text-xs text-amber-700" role="status">
+                Coordinator is degraded. The data below is partial last-known state, not a confirmed result.
+              </p>
+            )}
+
+            <div data-testid="outbound-pause-facts" className="rounded-md border p-2 text-xs space-y-0.5">
+              <p className="font-medium text-sm">Canonical outbound pause</p>
+              {live.pause ? (
+                <p className="text-muted-foreground">
+                  {live.pause.state} · source {live.pause.source} · epoch {live.pause.epoch}
+                  {live.pause.reason ? ` · ${live.pause.reason}` : ""} · committed {formatWhen(live.pause.committedAt)} · as of {formatWhen(live.pause.asOf)}.
+                  A seed lease is a narrow per-message exception, not an unpause.
+                </p>
+              ) : (
+                <p className="text-amber-700">Unavailable: {live.pauseUnavailable}. Treat as unknown, not unpaused.</p>
               )}
             </div>
 
-            {/* Active holds */}
-            {data.desiredLogicalHolds?.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No active holds.</p>
+            {live.holds.length === 0 ? (
+              <p className="text-sm text-muted-foreground" data-testid="hold-ledger-empty">
+                {live.kind === "ok" ? "No active holds recorded." : "No holds were returned, but the coordinator is degraded, so this is not confirmed."}
+              </p>
             ) : (
               <div className="space-y-2">
                 <p className="text-sm font-medium">
-                  Active holds ({data.desiredLogicalHolds?.length ?? 0})
+                  Holds ({live.holds.length}) across {live.logicalKeys.length} logical job{live.logicalKeys.length === 1 ? "" : "s"}
                 </p>
                 <div className="space-y-1 max-h-60 overflow-y-auto">
-                  {(data.desiredLogicalHolds ?? []).map((hold, i) => (
-                    <div
-                      key={i}
-                      className="rounded-md border border-border px-3 py-2 text-xs space-y-0.5"
-                    >
-                      <div className="flex items-center gap-2 font-medium">
+                  {live.holds.map((hold) => (
+                    <div key={hold.holdId} className="rounded-md border border-border px-3 py-2 text-xs space-y-0.5" data-testid={`hold-${hold.holdId}`}>
+                      <div className="flex flex-wrap items-center gap-2 font-medium">
                         <Clock className="w-3 h-3" />
                         {hold.logicalJobKey}
-                        <Badge variant="secondary" className="text-xs">
-                          {hold.reasonCode}
-                        </Badge>
+                        <Badge variant="secondary" className="text-xs">{hold.reasonCode}</Badge>
+                        {!hold.active && <Badge variant="outline" className="text-xs">released</Badge>}
                       </div>
                       <div className="text-muted-foreground">
-                        Source: {hold.sourceType}
-                        {hold.expiresAt && ` · Expires: ${new Date(hold.expiresAt).toLocaleString()}`}
-                        {hold.correlationId && ` · Corr: ${hold.correlationId}`}
+                        Source: {hold.sourceType}{hold.sourceKey ? ` (${hold.sourceKey})` : ""} · ledger epoch {hold.ledgerEpoch || "unknown"}
+                        {hold.sourceEpoch ? ` · source epoch ${hold.sourceEpoch}` : ""}
+                        {hold.expiresAt ? ` · expires ${formatWhen(hold.expiresAt)}` : ""}
+                        {hold.correlationId ? ` · corr ${hold.correlationId}` : ""}
                       </div>
                     </div>
                   ))}
@@ -546,39 +561,35 @@ function HoldLedgerSection() {
               </div>
             )}
 
-            {/* Physical queue states */}
-            {data.physicalQueueStates &&
-              Object.keys(data.physicalQueueStates).length > 0 && (
-                <div>
-                  <p className="text-sm font-medium mb-2">Physical queue states</p>
-                  <div className="grid grid-cols-2 gap-1">
-                    {Object.entries(data.physicalQueueStates).map(([name, state]) => (
-                      <div
-                        key={name}
-                        className="flex items-center justify-between text-xs border rounded px-2 py-1"
-                      >
-                        <span className="truncate max-w-[140px]" title={name}>
-                          {name}
-                        </span>
-                        <Badge
-                          variant={state.paused ? "destructive" : "outline"}
-                          className="text-xs ml-1"
-                        >
-                          {state.paused ? "paused" : "running"}
+            <div>
+              <p className="text-sm font-medium mb-2">Physical queue reconciliation</p>
+              {live.reconciliation.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No physical queue results were returned.</p>
+              ) : (
+                <div className="space-y-1" data-testid="physical-queues">
+                  {live.reconciliation.map((r) => (
+                    <div key={r.physicalQueue} className="rounded border px-2 py-1 text-xs" data-testid={`queue-${r.physicalQueue}`}>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate" title={r.physicalQueue}>{r.physicalQueue}</span>
+                        <Badge variant={reconciliationDiverges(r) ? "destructive" : "outline"} className="text-xs">
+                          {r.outcome}
                         </Badge>
                       </div>
-                    ))}
-                  </div>
+                      <p className="text-muted-foreground">
+                        desired {r.desiredState} (epoch {r.desiredEpoch || "unknown"}) · observed {r.observedState}
+                        {r.observedEpoch ? ` (epoch ${r.observedEpoch})` : ""}
+                        {r.error ? ` · error: ${r.error}` : ""}
+                      </p>
+                      {r.observedState === "unknown" && <p className="text-amber-700">Observed state is unknown; not assumed running.</p>}
+                    </div>
+                  ))}
                 </div>
               )}
+            </div>
 
-            {data.reconciledAt && (
-              <p className="text-xs text-muted-foreground">
-                Last reconciled: {new Date(data.reconciledAt).toLocaleString()}
-              </p>
-            )}
+            <p className="text-xs text-muted-foreground">Last reconciled: {formatWhen(live.reconciledAt)}</p>
           </div>
-        )}
+        ) : null}
       </CardContent>
     </Card>
   );

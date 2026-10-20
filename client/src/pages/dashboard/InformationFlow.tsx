@@ -439,10 +439,10 @@ export default function InformationFlowPage() {
         {/* Header */}
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <div>
-            <h1 className="text-2xl font-bold flex items-center gap-2">
+            <h2 className="text-2xl font-bold flex items-center gap-2">
               <Activity className="h-6 w-6 text-primary" />
               Information Flow
-            </h1>
+            </h2>
             <p className="text-muted-foreground text-sm mt-1">
               Live view of how data moves through the system — from lead capture to CRM to GHL to audit.
               {dataUpdatedAt ? ` Updated ${fmtTime(new Date(dataUpdatedAt).toISOString())}` : ""}

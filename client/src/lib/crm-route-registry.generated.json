@@ -1988,9 +1988,7 @@
         "prospects",
         "analytics"
       ],
-      "queryKeys": [
-        "tab"
-      ],
+      "queryKeys": [],
       "children": [
         {
           "selector": "command",
@@ -2045,7 +2043,6 @@
     "entityParameters": [],
     "queryPolicy": {
       "allowed": [
-        "tab",
         "contactId",
         "companyId",
         "businessId",
@@ -4084,11 +4081,12 @@
         {
           "selector": "unanswered",
           "renderedComponents": [
+            "CrmDataState",
             "HelpCircle",
+            "Button",
             "Card",
             "CardContent",
             "Badge",
-            "Button",
             "Plus"
           ],
           "conditionExpressions": []
@@ -4096,6 +4094,8 @@
         {
           "selector": "feedback",
           "renderedComponents": [
+            "CrmDataState",
+            "Button",
             "Card",
             "CardContent",
             "ThumbsUp",
@@ -4114,6 +4114,7 @@
     "entityParameters": [],
     "queryPolicy": {
       "allowed": [
+        "tab",
         "contactId",
         "companyId",
         "businessId",
@@ -4466,6 +4467,7 @@
     "entityParameters": [],
     "queryPolicy": {
       "allowed": [
+        "integrationsView",
         "contactId",
         "companyId",
         "businessId",
@@ -5624,6 +5626,7 @@
     "entityParameters": [],
     "queryPolicy": {
       "allowed": [
+        "tab",
         "contactId",
         "companyId",
         "businessId",
@@ -7239,24 +7242,13 @@
     "component": "AdminHub",
     "componentPolicy": {
       "source": "client/src/pages/dashboard/AdminHub.tsx",
-      "selectors": [
-        "users",
-        "permissions",
-        "audit-log",
-        "consent",
-        "pci",
-        "agents",
-        "integrations",
-        "ghl",
-        "info-flow",
-        "gate-result",
-        "automations"
-      ],
+      "selectors": [],
       "queryKeys": [],
       "children": [
         {
           "selector": "users",
           "renderedComponents": [
+            "Child",
             "UserManagement"
           ],
           "conditionExpressions": [
@@ -7266,6 +7258,7 @@
         {
           "selector": "permissions",
           "renderedComponents": [
+            "Child",
             "Permissions"
           ],
           "conditionExpressions": [
@@ -7275,6 +7268,7 @@
         {
           "selector": "audit-log",
           "renderedComponents": [
+            "Child",
             "AuditLogs"
           ],
           "conditionExpressions": [
@@ -7284,6 +7278,7 @@
         {
           "selector": "consent",
           "renderedComponents": [
+            "Child",
             "ConsentAudit"
           ],
           "conditionExpressions": []
@@ -7291,6 +7286,7 @@
         {
           "selector": "pci",
           "renderedComponents": [
+            "Child",
             "PciAssessment"
           ],
           "conditionExpressions": []
@@ -7298,37 +7294,39 @@
         {
           "selector": "agents",
           "renderedComponents": [
+            "Child",
             "AgentManagement"
           ],
           "conditionExpressions": [
-            "isPrivileged"
+            "can(\"agents\")"
           ]
         },
         {
           "selector": "integrations",
           "renderedComponents": [
-            "Suspense",
+            "Child",
             "SettingsIntegrations"
           ],
           "conditionExpressions": [
-            "isPrivileged"
+            "can(\"integrations\")"
           ]
         },
         {
           "selector": "ghl",
           "renderedComponents": [
+            "GhlInboundSyncSummary",
             "Link",
             "Button",
             "ExternalLink"
           ],
           "conditionExpressions": [
-            "isPrivileged"
+            "can(\"ghl\")"
           ]
         },
         {
           "selector": "info-flow",
           "renderedComponents": [
-            "Suspense",
+            "Child",
             "InformationFlow"
           ],
           "conditionExpressions": [
@@ -7338,7 +7336,7 @@
         {
           "selector": "gate-result",
           "renderedComponents": [
-            "Suspense",
+            "Child",
             "PreDeployGateResult"
           ],
           "conditionExpressions": [
@@ -7348,7 +7346,7 @@
         {
           "selector": "automations",
           "renderedComponents": [
-            "Suspense",
+            "Child",
             "AutomationRegistry"
           ],
           "conditionExpressions": [
@@ -7366,6 +7364,9 @@
     "entityParameters": [],
     "queryPolicy": {
       "allowed": [
+        "tab",
+        "area",
+        "integrationsView",
         "contactId",
         "companyId",
         "businessId",
@@ -7373,19 +7374,7 @@
         "sourceId",
         "from"
       ],
-      "selectors": [
-        "users",
-        "permissions",
-        "audit-log",
-        "consent",
-        "pci",
-        "agents",
-        "integrations",
-        "ghl",
-        "info-flow",
-        "gate-result",
-        "automations"
-      ],
+      "selectors": [],
       "duplicates": "equal-collapse; conflict explicit safe fallback",
       "unknown": "not authority; adopted codecs strip unregistered keys"
     },
@@ -8341,11 +8330,19 @@
         "provider-results",
         "pilot",
         "health",
+        "canonical",
         "master-leads",
         "promotion-review"
       ],
       "queryKeys": [],
       "children": [
+        {
+          "selector": "canonical",
+          "renderedComponents": [
+            "CanonicalEnrichment"
+          ],
+          "conditionExpressions": []
+        },
         {
           "selector": "prospects",
           "renderedComponents": [
@@ -8363,10 +8360,9 @@
         {
           "selector": "businesses",
           "renderedComponents": [
-            "SystemContactBusinessLinksPanel",
-            "ContactBusinessReconciliationPanel",
-            "ContactLinkCoveragePanel",
-            "BusinessesTab"
+            "BusinessesTab",
+            "BusinessAdminContext",
+            "ContactBusinessReconciliationPanel"
           ],
           "conditionExpressions": []
         },
@@ -8554,6 +8550,7 @@
         "provider-results",
         "pilot",
         "health",
+        "canonical",
         "master-leads",
         "promotion-review"
       ],

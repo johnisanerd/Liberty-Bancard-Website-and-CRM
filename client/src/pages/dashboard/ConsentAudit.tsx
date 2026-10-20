@@ -38,7 +38,7 @@ export default function ConsentAudit() {
   if (isLoading) {
     return (
       <div className="p-6 space-y-6" data-testid="consent-audit-loading">
-        <h1 className="text-2xl font-bold" data-testid="text-page-title">TCPA Consent Audit Trail</h1>
+        <h2 className="text-2xl font-bold" data-testid="text-page-title">TCPA Consent Audit Trail</h2>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           {Array.from({ length: 4 }).map((_, i) => (
             <Card key={i}>
@@ -67,7 +67,7 @@ export default function ConsentAudit() {
 
   return (
     <div className="p-6 space-y-6" data-testid="consent-audit-page">
-      <h1 className="text-2xl font-bold" data-testid="text-page-title">TCPA Consent Audit Trail</h1>
+      <h2 className="text-2xl font-bold" data-testid="text-page-title">TCPA Consent Audit Trail</h2>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <Card data-testid="card-total-opt-ins">

@@ -50,13 +50,81 @@ export function retainedSelection<T extends string>(search:string,key:string,all
   if(legacyKey)for(const value of input.getAll(legacyKey))input.append(key,value);
   return selectValue(input,key,allowed,fallback);
 }
+/** C5 route-owned selectors. Each key is registered once here and in the C1 generator's query policy. */
+export const trainingViews = ["docs", "practice", "coaching"] as const;
+export const knowledgeAdminViews = ["sources", "unanswered", "feedback"] as const;
+export const integrationsViews = ["ghl-workflows", "sending-identities", "processor-adapters", "linkedin", "zerobounce"] as const;
+/** Proposed Administration area key (Section 5). `tab` stays the retained child selector. */
+export const adminAreas = ["users-access", "integrations", "operational-controls", "data-audit", "release-readiness"] as const;
+export const adminTabs = ["users", "permissions", "audit-log", "consent", "pci", "agents", "integrations", "ghl", "info-flow", "gate-result", "automations"] as const;
+export const adminAreaTabs: Record<typeof adminAreas[number], readonly typeof adminTabs[number][]> = {
+  "users-access": ["users", "agents", "permissions"],
+  "integrations": ["integrations", "ghl", "info-flow"],
+  "operational-controls": ["automations"],
+  "data-audit": ["audit-log", "consent"],
+  "release-readiness": ["pci", "gate-result"],
+};
+/** Resources destinations in display order. `managerOnly` mirrors each route's own allowedRoles. */
+export const resourcesDestinations = [
+  { label: "Knowledge Base", href: "/dashboard/knowledge-base", managerOnly: false },
+  { label: "Training", href: "/dashboard/training", managerOnly: false },
+  { label: "Playbooks", href: "/dashboard/playbooks", managerOnly: false },
+  { label: "Collateral", href: "/assets", managerOnly: false },
+  { label: "Content", href: "/dashboard/content-hub", managerOnly: true },
+  { label: "Knowledge Admin", href: "/dashboard/knowledge-admin", managerOnly: true },
+] as const;
+export const c5RouteKeys: Record<string, readonly string[]> = {
+  "/dashboard/training": ["tab"],
+  "/dashboard/knowledge-admin": ["tab"],
+  "/dashboard/settings/integrations": ["integrationsView"],
+  "/dashboard/admin-hub": ["area", "tab", "integrationsView"],
+};
+export type AdminRole = "admin" | "manager" | "other";
+const adminPermittedTabs: Record<AdminRole, readonly typeof adminTabs[number][]> = {
+  admin: adminTabs,
+  manager: ["consent", "pci", "agents", "integrations", "ghl"],
+  other: ["consent", "pci"],
+};
+export function adminPermittedFor(role: string | undefined): readonly typeof adminTabs[number][] {
+  return adminPermittedTabs[role === "admin" ? "admin" : role === "manager" ? "manager" : "other"];
+}
+/** Administration selection: legacy `tab` is the child; `area` is the proposed group key. The child
+ * wins when both are present; an area alone selects its first permitted child; a forbidden, invalid
+ * or conflicting value falls back to the first permitted child and says so. */
+export function adminSelectorState(search: string, role: string | undefined) {
+  const params = new URLSearchParams(search);
+  const permitted = adminPermittedFor(role);
+  const fallback = permitted[0];
+  const tabSel = selectValue(params, "tab", adminTabs, fallback, permitted);
+  const issues = [...tabSel.issues];
+  let tab = tabSel.value;
+  if (params.has("area")) {
+    const areaSel = selectValue(params, "area", adminAreas, adminAreaForTab(fallback));
+    issues.push(...areaSel.issues);
+    if (!areaSel.issues.length) {
+      if (!params.has("tab")) {
+        const first = adminAreaTabs[areaSel.value].find(t => permitted.includes(t));
+        if (first) tab = first;
+        else issues.push({ key: "area", kind: "forbidden", reason: `area: forbidden selection. Showing ${adminAreaForTab(fallback)}.` });
+      } else if (!tabSel.issues.length && adminAreaForTab(tab) !== areaSel.value) {
+        issues.push({ key: "area", kind: "conflict", reason: `area: does not contain ${tab}. Showing ${tab}.` });
+      }
+    }
+  }
+  return { tab, area: adminAreaForTab(tab), issues, permitted };
+}
+export function adminAreaForTab(tab: typeof adminTabs[number]): typeof adminAreas[number] {
+  return adminAreas.find(area => (adminAreaTabs[area] as readonly string[]).includes(tab)) ?? "users-access";
+}
 export function retainedSelectionUrl<T extends string>(path:string,search:string,hash:string,key:string,
   allowed:readonly T[],value:T,legacyKey?:string,resetPaging=true) {
   if(!allowed.includes(value))throw new Error(`Invalid ${key} selection`);
   const routeKeys=path==="/dashboard/reporting"
     ? ["tab","outreachView","financialTab","revenueView",...revenueFilterKeys]
     : path==="/dashboard/leaderboard"?["metric","period"]
-    : ["/dashboard/boarding","/dashboard/merchant-applications"].includes(path)?["status"]:[];
+    : ["/dashboard/boarding","/dashboard/merchant-applications"].includes(path)?["status"]
+    : c5RouteKeys[path] ? [...c5RouteKeys[path]]
+    : [];
   if(!routeKeys.includes(key))throw new Error(`Unregistered route selector: ${key}`);
   const params=safeParams(search,[...safeContextKeys,...routeKeys,...(!resetPaging?["page","offset","cursor"]:[])]);
   if(legacyKey && legacyKey!==key)params.delete(legacyKey);

@@ -12,6 +12,10 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/hooks/use-auth";
+import { decodeJsonResponse, isRecord } from "@/lib/decode-json-response";
+import { useC4RetainedSelection } from "@/hooks/use-c4-retained-selection";
+import { integrationsViews } from "@/lib/crm-destination-state";
 import { CheckCircle2, XCircle, Plus, Trash2, Settings, Workflow, Mail, Edit2, Save, X, Loader2, ShieldCheck, Linkedin, Info, Cpu, RefreshCw, AlertTriangle, Activity, ChevronDown, ChevronRight, ExternalLink, Copy, Tag, Clock, MessageSquare, Lock, Server, ArrowRight, ShieldX } from "lucide-react";
 
 interface WorkflowEnvEntry {
@@ -57,7 +61,13 @@ const CATEGORY_COLORS: Record<string, string> = {
   support: "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300",
 };
 
-function WorkflowEnvRow({ entry, onSaved }: { entry: WorkflowEnvEntry; onSaved: () => void }) {
+const isSeedReceipt = (v: unknown): v is { created: boolean; message?: string } =>
+  isRecord(v) && typeof v.created === "boolean" && (v.message === undefined || typeof v.message === "string");
+
+/** Admin-only writes: the workflow-ID, sending-identity, seed and auto-run endpoints reject managers. */
+const ADMIN_ONLY_REASON = "Only administrators can change this. Managers can view it.";
+
+function WorkflowEnvRow({ entry, onSaved, canEdit }: { entry: WorkflowEnvEntry; onSaved: () => void; canEdit: boolean }) {
   const { toast } = useToast();
   const [editing, setEditing] = useState(false);
   const [inputVal, setInputVal] = useState(entry.value || "");
@@ -123,15 +133,20 @@ function WorkflowEnvRow({ entry, onSaved }: { entry: WorkflowEnvEntry; onSaved: 
             <span className="text-xs font-mono text-muted-foreground truncate max-w-[180px]">
               {entry.value ? entry.value : <span className="italic">Not set</span>}
             </span>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-6 px-2 ml-auto"
-              onClick={() => { setEditing(true); setInputVal(entry.value || ""); }}
-              data-testid={`button-edit-workflow-${entry.envKey}`}
-            >
-              <Edit2 className="w-3 h-3" />
-            </Button>
+            {canEdit ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-6 px-2 ml-auto"
+                aria-label={`Edit ${entry.name} workflow ID`}
+                onClick={() => { setEditing(true); setInputVal(entry.value || ""); }}
+                data-testid={`button-edit-workflow-${entry.envKey}`}
+              >
+                <Edit2 className="w-3 h-3" />
+              </Button>
+            ) : (
+              <span className="ml-auto text-xs text-muted-foreground" data-testid={`text-readonly-workflow-${entry.envKey}`}>Read only</span>
+            )}
           </div>
         )}
       </TableCell>
@@ -253,6 +268,20 @@ function AddIdentityDialog({ onCreated }: { onCreated: () => void }) {
 }
 
 function SendingIdentitiesTab() {
+  const { user } = useAuth();
+  // The sending-identity endpoints are administrator-only. Managers get a read-only
+  // explanation and no request is made.
+  if (user?.role !== "admin") {
+    return (
+      <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground" role="status" data-testid="text-sending-identities-readonly">
+        Sending identities are managed by administrators. {ADMIN_ONLY_REASON}
+      </div>
+    );
+  }
+  return <SendingIdentitiesAdminTab />;
+}
+
+function SendingIdentitiesAdminTab() {
   const { toast } = useToast();
 
   const { data: identities = [], isLoading, refetch } = useQuery<SendingIdentity[]>({
@@ -261,11 +290,12 @@ function SendingIdentitiesTab() {
 
   const seedMutation = useMutation({
     mutationFn: async () => {
-      return apiRequest("POST", "/api/admin/seed-scott-identity", {});
+      const res = await apiRequest("POST", "/api/admin/seed-scott-identity", {});
+      return decodeJsonResponse(res, isSeedReceipt, "Seed");
     },
-    onSuccess: (data: any) => {
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/sdr/sending-identities"] });
-      toast({ title: data?.created ? "Scott's identity seeded" : "Scott's identity already exists", description: data?.message });
+      toast({ title: data.created ? "Scott's identity seeded" : "Scott's identity already exists", description: data.message });
     },
     onError: (err: any) => {
       toast({ title: "Seed failed", description: err.message, variant: "destructive" });
@@ -440,7 +470,7 @@ Eligibility, underwriting, card brand rules, and applicable laws apply.`;
       <CollapsibleContent>
         <div className="mt-2 p-4 rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50/50 dark:bg-blue-900/10 space-y-5">
           <p className="text-xs text-blue-700 dark:text-blue-300">
-            GoHighLevel does not expose a workflow creation API — you must build this workflow manually in the GHL UI. Follow these steps exactly, then paste the resulting Workflow ID into the row below.
+            GoHighLevel does not expose a workflow creation API, so a supported inbound/scheduling handoff workflow has to be built in the GHL UI. Only slots whose own row says they are needed use an ID; every other ID is reference-only. Replit owns sequence cadence, incoming GHL sync is controlled separately, and the global outbound pause still applies.
           </p>
 
           {/* Step 1 */}
@@ -565,6 +595,8 @@ function getArchRole(category: string): "required" | "optional" | "replit_owned"
 }
 
 function GhlWorkflowEnvTab() {
+  const { user } = useAuth();
+  const isAdminUser = user?.role === "admin";
   const { data: registry = [], isLoading, refetch } = useQuery<WorkflowEnvEntry[]>({
     queryKey: ["/api/ghl/workflow-env-ids"],
   });
@@ -629,8 +661,8 @@ function GhlWorkflowEnvTab() {
             <Info className="w-4 h-4 text-slate-500 shrink-0" />
             <p className="text-xs font-semibold text-foreground">Optional Handoffs</p>
           </div>
-          <p className="text-xs text-muted-foreground">Scheduling and support workflows that Replit can optionally hand off to GHL for native execution.</p>
-          <p className="text-xs font-medium">{optionalConfigured}/{optionalEntries.length} configured</p>
+          <p className="text-xs text-slate-600 dark:text-slate-300">Scheduling and support workflows that Replit can optionally hand off to GHL for native execution.</p>
+          <p className="text-xs font-medium text-foreground">{optionalConfigured}/{optionalEntries.length} configured</p>
         </div>
         {/* Replit-Owned */}
         <div className="rounded-lg border border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-900/10 p-3 space-y-1">
@@ -638,8 +670,8 @@ function GhlWorkflowEnvTab() {
             <Lock className="w-4 h-4 text-slate-400 shrink-0" />
             <p className="text-xs font-semibold text-foreground">Replit-Owned</p>
           </div>
-          <p className="text-xs text-muted-foreground">All outbound sequence slots. Replit's sequence engine handles enrollment, timing, and suppression — GHL is not involved.</p>
-          <p className="text-xs font-medium text-slate-500">{replitOwnedEntries.length} slots intentionally unused</p>
+          <p className="text-xs text-slate-600 dark:text-slate-300">All outbound sequence slots. Replit's sequence engine handles enrollment, timing, and suppression — GHL is not involved.</p>
+          <p className="text-xs font-medium text-slate-600 dark:text-slate-300">{replitOwnedEntries.length} slots intentionally unused</p>
         </div>
       </div>
 
@@ -673,7 +705,7 @@ function GhlWorkflowEnvTab() {
                   </TableHeader>
                   <TableBody>
                     {requiredEntries.map((entry) => (
-                      <WorkflowEnvRow key={entry.envKey} entry={entry} onSaved={() => refetch()} />
+                      <WorkflowEnvRow key={entry.envKey} entry={entry} canEdit={isAdminUser} onSaved={() => refetch()} />
                     ))}
                   </TableBody>
                 </Table>
@@ -689,7 +721,7 @@ function GhlWorkflowEnvTab() {
                   {optionalOpen ? <ChevronDown className="w-4 h-4 text-muted-foreground shrink-0" /> : <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />}
                   <Info className="w-4 h-4 text-slate-500 shrink-0" />
                   <span className="text-sm font-medium flex-1">Optional — Scheduling &amp; Support Handoffs</span>
-                  <span className="text-xs text-muted-foreground">{optionalConfigured}/{optionalEntries.length} configured</span>
+                  <span className="text-xs text-slate-600 dark:text-slate-300">{optionalConfigured}/{optionalEntries.length} configured</span>
                 </button>
               </CollapsibleTrigger>
               <CollapsibleContent>
@@ -706,7 +738,7 @@ function GhlWorkflowEnvTab() {
                     </TableHeader>
                     <TableBody>
                       {optionalEntries.map((entry) => (
-                        <WorkflowEnvRow key={entry.envKey} entry={entry} onSaved={() => refetch()} />
+                        <WorkflowEnvRow key={entry.envKey} entry={entry} canEdit={isAdminUser} onSaved={() => refetch()} />
                       ))}
                     </TableBody>
                   </Table>
@@ -989,6 +1021,8 @@ function ProxycurlTab() {
 
 function ZeroBounceSafetyTab() {
   const { toast } = useToast();
+  const { user } = useAuth();
+  const canToggleAutoRun = user?.role === "admin";
   const { data: usage, isLoading } = useQuery<{ usedToday: number }>({
     queryKey: ["/api/admin/settings/zerobounce-usage"],
   });
@@ -1032,12 +1066,13 @@ function ZeroBounceSafetyTab() {
           <Button
             size="sm"
             variant={safetyQuery.data?.autoRunEnabled ? "destructive" : "default"}
-            disabled={autoRunMutation.isPending || !safetyQuery.data}
+            disabled={autoRunMutation.isPending || !safetyQuery.data || !canToggleAutoRun}
             onClick={() => autoRunMutation.mutate(!safetyQuery.data?.autoRunEnabled)}
             data-testid="button-toggle-zerobounce-auto-run"
           >
             {safetyQuery.data?.autoRunEnabled ? "Disable MI-09 auto-run" : "Enable MI-09 auto-run"}
           </Button>
+          {!canToggleAutoRun && <span className="self-center text-xs text-muted-foreground">{ADMIN_ONLY_REASON}</span>}
         </div>
         <div className="text-xs text-muted-foreground">
           Purposes: {(safetyQuery.data?.authorizedPurposes ?? []).join(", ") || "none"} · Callers: {(safetyQuery.data?.authorizedCallers ?? []).join(", ") || "none"}
@@ -1049,19 +1084,26 @@ function ZeroBounceSafetyTab() {
 }
 
 export default function SettingsIntegrations() {
+  const pathname = typeof window !== "undefined" ? window.location.pathname : "";
+  // Mounted standalone (/dashboard/settings/integrations) or inside Administration (admin-hub?tab=integrations).
+  const selectorPath = pathname.startsWith("/dashboard/settings/integrations") ? "/dashboard/settings/integrations" : "/dashboard/admin-hub";
+  const view = useC4RetainedSelection(selectorPath, "integrationsView", integrationsViews, "ghl-workflows");
   return (
     <div className="p-6 space-y-6 max-w-7xl mx-auto" data-testid="page-settings-integrations">
       <div>
-        <h1 className="text-2xl font-bold flex items-center gap-2">
+        <h2 className="text-2xl font-bold flex items-center gap-2">
           <Settings className="w-6 h-6" />
           Settings — Integrations
-        </h1>
+        </h2>
         <p className="text-muted-foreground mt-1 text-sm">
-          Manage GHL workflow IDs, SDR sending identities, and API integrations.
+          Manage reference GHL workflow IDs, SDR sending identities, and API integrations.
         </p>
       </div>
 
-      <Tabs defaultValue="ghl-workflows" data-testid="tabs-integrations">
+      {view.issues.length > 0 && (
+        <p role="status" className="mb-2 text-sm text-muted-foreground" data-testid="text-integrations-selection-issue">{view.issues[0].reason}</p>
+      )}
+      <Tabs value={view.value} onValueChange={(v) => view.setValue(v as typeof integrationsViews[number])} data-testid="tabs-integrations">
         <TabsList>
           <TabsTrigger value="ghl-workflows" data-testid="tab-ghl-workflows">
             <Workflow className="w-4 h-4 mr-1.5" />GHL Workflow IDs

@@ -1,4 +1,5 @@
 import express, { type Request, Response, NextFunction } from "express";
+import { instrumentExpressRouting } from "./services/express-route-provenance";
 import {withTransactionPhase} from "./lib/transaction-observability";
 import cookieParser from "cookie-parser";
 import * as Sentry from "@sentry/node";
@@ -203,6 +204,7 @@ async function gracefulShutdown(signal: string): Promise<void> {
 process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 
+instrumentExpressRouting(); // before any use() registration so mount paths are recorded for the permissions inventory
 const app = express();
 const httpServer = createServer(app);
 

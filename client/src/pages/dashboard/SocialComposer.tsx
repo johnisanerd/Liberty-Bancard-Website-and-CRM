@@ -10,6 +10,8 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { ReaderStatus } from "@/components/dashboard/ReaderStatus";
+import { readerState } from "@/lib/reader-state";
 import { Loader2, Sparkles, Linkedin, Trash2, Copy, Send, Calendar, Edit3, Plus, ArrowLeft, Check } from "lucide-react";
 
 const PILLARS = ["Cost & Pricing", "Programs", "Industry", "Compliance & Security"] as const;
@@ -51,9 +53,11 @@ export default function SocialComposer() {
   const [composePillar, setComposePillar] = useState<string>("Cost & Pricing");
   const [composeScheduledAt, setComposeScheduledAt] = useState("");
 
-  const { data: posts = [], isLoading } = useQuery<SocialPost[]>({
+  const postsQuery = useQuery<SocialPost[]>({
     queryKey: ["/api/social/posts"],
   });
+  const posts = postsQuery.data ?? [];
+  const postsState = readerState(postsQuery);
 
   const editingPost = editingId ? posts.find((p) => p.id === editingId) : null;
 
@@ -177,14 +181,15 @@ export default function SocialComposer() {
 
         <TabsContent value="drafts" className="mt-4">
           <Card>
-            <CardHeader><CardTitle className="text-lg">All posts ({posts.length})</CardTitle></CardHeader>
+            <CardHeader><CardTitle className="text-lg">All posts ({postsState === "ready" || postsState === "stale" ? posts.length : "—"})</CardTitle></CardHeader>
             <CardContent>
-              {isLoading ? (
-                <div className="flex justify-center py-8"><Loader2 className="w-6 h-6 animate-spin" /></div>
+              {postsState === "loading" || postsState === "unavailable" ? (
+                <ReaderStatus state={postsState} subject="Posts" onRetry={() => void postsQuery.refetch()} />
               ) : posts.length === 0 ? (
                 <p className="text-muted-foreground text-center py-6" data-testid="text-no-social">No LinkedIn posts yet.</p>
               ) : (
                 <div className="space-y-3">
+                  <ReaderStatus state={postsState} subject="Posts" onRetry={() => void postsQuery.refetch()} />
                   {posts.map(p => (
                     <div key={p.id} className="p-3 border rounded-lg" data-testid={`row-social-${p.id}`}>
                       <div className="flex items-start justify-between gap-2 mb-2">

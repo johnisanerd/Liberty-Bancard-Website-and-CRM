@@ -10,6 +10,8 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { ReaderStatus } from "@/components/dashboard/ReaderStatus";
+import { readerState } from "@/lib/reader-state";
 import { Loader2, Sparkles, Send, Calendar, Trash2, Eye, FileText, Edit3, ArrowLeft } from "lucide-react";
 
 const PILLARS = ["Cost & Pricing", "Programs", "Industry", "Compliance & Security"] as const;
@@ -59,12 +61,15 @@ export default function ContentEditor() {
   const [category, setCategory] = useState("Education");
   const [audience, setAudience] = useState("");
 
-  const { data: posts = [], isLoading } = useQuery<Post[]>({
+  const postsQuery = useQuery<Post[]>({
     queryKey: ["/api/content/posts"],
   });
-  const { data: authors = [] } = useQuery<Author[]>({
+  const posts = postsQuery.data ?? [];
+  const postsState = readerState(postsQuery);
+  const authorsQuery = useQuery<Author[]>({
     queryKey: ["/api/authors"],
   });
+  const authors = authorsQuery.data ?? [];
 
   const editingPost = editingId ? posts.find((p) => p.id === editingId) || null : null;
 
@@ -151,7 +156,7 @@ export default function ContentEditor() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-foreground" data-testid="text-content-heading">Content Engine</h1>
+        <h2 className="text-2xl font-bold text-foreground" data-testid="text-content-heading">Content Engine</h2>
         <p className="text-muted-foreground mt-1">Editorial workflow for blog posts. Drafts → review → schedule → publish.</p>
       </div>
 
@@ -182,14 +187,15 @@ export default function ContentEditor() {
 
         <TabsContent value="queue" className="mt-4">
           <Card>
-            <CardHeader><CardTitle className="text-lg">All Posts ({posts.length})</CardTitle></CardHeader>
+            <CardHeader><CardTitle className="text-lg">All Posts ({postsState === "ready" || postsState === "stale" ? posts.length : "—"})</CardTitle></CardHeader>
             <CardContent>
-              {isLoading ? (
-                <div className="flex justify-center py-8"><Loader2 className="w-6 h-6 animate-spin" /></div>
+              {postsState === "loading" || postsState === "unavailable" ? (
+                <ReaderStatus state={postsState} subject="Posts" onRetry={() => void postsQuery.refetch()} />
               ) : posts.length === 0 ? (
                 <p className="text-muted-foreground py-6 text-center" data-testid="text-no-posts">No posts yet. Use AI-Assist Draft to generate one.</p>
               ) : (
                 <div className="space-y-2">
+                  <ReaderStatus state={postsState} subject="Posts" onRetry={() => void postsQuery.refetch()} />
                   {posts.map((p) => (
                     <div key={p.id} className="flex items-center justify-between p-3 border rounded-lg hover:bg-muted/30" data-testid={`row-content-${p.id}`}>
                       <div className="flex-1 min-w-0">
@@ -371,7 +377,7 @@ function ContentEditorForm({
 
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold" data-testid="text-edit-title">Edit: {post.title}</h1>
+          <h2 className="text-2xl font-bold" data-testid="text-edit-title">Edit: {post.title}</h2>
           <div className="text-sm text-muted-foreground mt-1 flex gap-2 items-center">
             <StatusBadge status={post.status} />
             {post.pillar && <Badge variant="outline">{post.pillar}</Badge>}

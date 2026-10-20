@@ -479,3 +479,18 @@
   .crm-merchant-ops-mobile select { min-height:44px; width:100%; background:hsl(var(--background));color:hsl(var(--foreground)); }
   .crm-merchant-ops-mobile-crumb { font-size:12px;line-height:16px; }
 }
+
+/* C5: prose editor. The unlayered 44px control minimum above would otherwise beat a Tailwind
+   min-height utility, so the 200px editor floor is owned here. Body type, not mono. */
+.crm-theme textarea.crm-prose-editor,
+.crm-portal textarea.crm-prose-editor {
+  min-height: 200px;
+  padding: 12px;
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 20px;
+}
+@media (max-width: 767px) {
+  .crm-theme textarea.crm-prose-editor,
+  .crm-portal textarea.crm-prose-editor { font-size: 16px; }
+}

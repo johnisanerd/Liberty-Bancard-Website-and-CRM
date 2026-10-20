@@ -1,3 +1,4 @@
+import { GhlOwnershipNotice } from "@/components/dashboard/GhlOwnershipNotice";
 import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -637,7 +638,7 @@ export default function MarketingPlaybook() {
     <div className="space-y-6" data-testid="page-marketing-playbook">
       <div className="flex items-center gap-2">
         <Megaphone className="w-6 h-6 text-primary" />
-        <h1 className="text-2xl font-bold" data-testid="heading-marketing-playbook">Marketing Playbook</h1>
+        <h2 className="text-2xl font-bold" data-testid="heading-marketing-playbook">Marketing Playbook</h2>
       </div>
       <p className="text-sm text-muted-foreground">
         The 6-workflow GHL automation framework drives the entire pipeline — from first touch to closed deal. Daily actions, sequence map, content library, and call scripts all in one place.
@@ -692,8 +693,9 @@ export default function MarketingPlaybook() {
 
         {/* ─── GHL Workflows ─── */}
         <TabsContent value="ghl-workflows" className="mt-4 space-y-4">
+          <GhlOwnershipNotice testId="notice-ghl-ownership-playbook" />
           <p className="text-sm text-muted-foreground">
-            Six automated GHL workflows cover every stage of the pipeline. The system handles timing and sends — reps focus on the actions below.
+            Six sequences cover every stage of the pipeline. Replit owns timing and sends (subject to the global outbound pause and each sequence's own pause state); sequence workflow IDs are reference-only (supported handoff workflows use their saved ID at enrollment). Reps focus on the actions below.
           </p>
 
           {/* Desktop table */}

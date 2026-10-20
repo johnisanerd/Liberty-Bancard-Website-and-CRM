@@ -1,6 +1,7 @@
 import { useLocation, useSearch } from "wouter";
 import { useAuth } from "@/hooks/use-auth";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ResourcesNav } from "@/components/dashboard/ResourcesNav";
 import MarketingPlaybook from "./MarketingPlaybook";
 import GrowthPlaybook from "./GrowthPlaybook";
 
@@ -16,6 +17,8 @@ export default function PlaybooksHub() {
   const goTab = (v: string) => navigate(`/dashboard/playbooks?tab=${v}`);
 
   return (
+    <div className="space-y-4">
+    <ResourcesNav current="/dashboard/playbooks" />
     <Tabs value={tab} onValueChange={goTab} className="space-y-4">
       <TabsList>
         <TabsTrigger value="marketing" data-testid="tab-playbook-marketing">Marketing Playbook</TabsTrigger>
@@ -24,5 +27,6 @@ export default function PlaybooksHub() {
       <TabsContent value="marketing"><MarketingPlaybook /></TabsContent>
       {canSeeGrowth && <TabsContent value="growth"><GrowthPlaybook /></TabsContent>}
     </Tabs>
+    </div>
   );
 }

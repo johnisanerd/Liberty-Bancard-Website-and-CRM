@@ -23,6 +23,9 @@ import {
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useAuth } from "@/hooks/use-auth";
+import { ReaderStatus } from "@/components/dashboard/ReaderStatus";
+import { readerState } from "@/lib/reader-state";
+import { ResourcesNav } from "@/components/dashboard/ResourcesNav";
 import { useToast } from "@/hooks/use-toast";
 import { Search, BookOpen, HelpCircle, Plus, Eye, ThumbsUp, ChevronDown, ChevronUp, Loader2 } from "lucide-react";
 import type { KnowledgeBaseArticle } from "@shared/schema";
@@ -46,9 +49,11 @@ export default function KnowledgeBase() {
   const [formTags, setFormTags] = useState("");
   const [formPublished, setFormPublished] = useState(true);
 
-  const { data: articles, isLoading } = useQuery<KnowledgeBaseArticle[]>({
+  const articlesQuery = useQuery<KnowledgeBaseArticle[]>({
     queryKey: ["/api/knowledge-base"],
   });
+  const articles = articlesQuery.data;
+  const articlesState = readerState(articlesQuery);
 
   const createMutation = useMutation({
     mutationFn: async (data: {
@@ -107,7 +112,7 @@ export default function KnowledgeBase() {
     return true;
   });
 
-  if (isLoading) {
+  if (articlesState === "loading") {
     return (
       <div className="flex items-center justify-center py-20" data-testid="loading-knowledge-base">
         <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
@@ -117,6 +122,7 @@ export default function KnowledgeBase() {
 
   return (
     <div className="space-y-6" data-testid="page-knowledge-base">
+      <ResourcesNav current="/dashboard/knowledge-base" />
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-2">
           <BookOpen className="w-6 h-6 text-primary" />
@@ -219,6 +225,7 @@ export default function KnowledgeBase() {
         </div>
       </div>
 
+      <ReaderStatus state={articlesState === "stale" ? "stale" : "ready"} subject="Knowledge base articles" onRetry={() => void articlesQuery.refetch()} />
       <div className="flex flex-wrap gap-2" data-testid="category-filters">
         {ALL_CATEGORIES.map((cat) => (
           <Button
@@ -233,7 +240,9 @@ export default function KnowledgeBase() {
         ))}
       </div>
 
-      {filtered.length === 0 ? (
+      {articlesState === "unavailable" ? (
+        <ReaderStatus state="unavailable" subject="Knowledge base articles" onRetry={() => void articlesQuery.refetch()} />
+      ) : filtered.length === 0 ? (
         <Card data-testid="empty-state">
           <CardContent className="flex flex-col items-center justify-center py-16 text-center">
             <HelpCircle className="w-12 h-12 text-muted-foreground mb-4" />

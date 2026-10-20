@@ -53,7 +53,7 @@ import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { IntegrationReadiness } from "@/components/dashboard/IntegrationReadiness";
 
-// ─── Types (25-subsystem audit) ───────────────────────────────────────────────
+// ─── Types ───────────────────────────────────────────────
 type SubsystemStatus = "pass" | "warn" | "fail" | "disabled";
 
 interface SubsystemResult {
@@ -68,7 +68,9 @@ interface SubsystemResult {
 interface FullReport {
   subsystems: SubsystemResult[];
   summary: { total: number; pass: number; warn: number; fail: number; disabled: number };
+  /** Bounded diagnostic verdict for these probes only; not a release or Stage 9 verdict. */
   verdict: "GO" | "WARN" | "NO-GO";
+  probeCount?: number;
   checkedAt: string;
 }
 
@@ -158,7 +160,7 @@ interface LaunchData {
   lastQueueFailure?: { timestamp: string; jobType: string; error: string } | null;
 }
 
-// ─── Icons map (25-subsystem) ─────────────────────────────────────────────────
+// ─── Icons map ─────────────────────────────────────────────────
 const SUBSYSTEM_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   staff_roles: Users,
   contacts: Database,
@@ -199,7 +201,7 @@ function SubsystemIcon({ name, className }: { name: string; className?: string }
   return <Icon className={className} />;
 }
 
-// ─── Status helpers (25-subsystem) ───────────────────────────────────────────
+// ─── Status helpers ───────────────────────────────────────────
 function subsystemStatusColor(s: SubsystemStatus): string {
   if (s === "pass") return "text-green-600 dark:text-green-400";
   if (s === "warn") return "text-yellow-600 dark:text-yellow-400";
@@ -244,7 +246,7 @@ function infraStatusIcon(status: string, cls = "h-5 w-5") {
   return <AlertCircle className={`${cls} text-muted-foreground`} />;
 }
 
-// ─── Subsystem Card (25-subsystem, uses SubsystemResult) ─────────────────────
+// ─── Subsystem Card ─────────────────────
 function SubsystemCard({ result }: { result: SubsystemResult }) {
   const [expanded, setExpanded] = useState(false);
   const Icon = SUBSYSTEM_ICONS[result.id] ?? Activity;
@@ -325,12 +327,12 @@ function SubsystemCardView({ s }: { s: SubsystemCardData }) {
   );
 }
 
-// ─── Copy Report (25-subsystem) ───────────────────────────────────────────────
+// ─── Copy Report ───────────────────────────────────────────────
 function buildMarkdownReport(report: FullReport): string {
   const lines: string[] = [
     "# CRM Launch-Readiness Audit Report",
     `**Generated:** ${new Date(report.checkedAt).toLocaleString()}`,
-    `**Verdict:** ${report.verdict}`,
+    `**Diagnostic verdict (these ${report.summary.total} probes only; not a release verdict):** ${report.verdict}`,
     `**Summary:** ${report.summary.pass} Pass · ${report.summary.warn} Warning · ${report.summary.fail} Fail · ${report.summary.total} Total`,
     "",
     "## Subsystem Checks",
@@ -355,8 +357,8 @@ export default function LaunchReadiness() {
   const { toast } = useToast();
   const [activeTab, setActiveTab] = useState<"full" | "infra">("full");
 
-  // Full 25-subsystem report
-  const { data: fullReport, isLoading: fullLoading, refetch: refetchFull, isFetching: fullFetching } = useQuery<FullReport>({
+  // Full readiness report (probe count comes from the server registry)
+  const { data: fullReport, isLoading: fullLoading, isError: fullError, error: fullErrorValue, refetch: refetchFull, isFetching: fullFetching } = useQuery<FullReport>({
     queryKey: ["/api/admin/launch-readiness-full"],
     refetchInterval: 60_000,
     staleTime: 55_000,
@@ -406,7 +408,7 @@ export default function LaunchReadiness() {
     <div className="space-y-6 pb-12">
       <PageHeader
         title="Launch Readiness"
-        subtitle="25-subsystem audit — pass/fail evidence for every major CRM function. Auto-refreshes every 60 seconds."
+        subtitle={`${fullReport ? `${fullReport.summary.total}-probe` : "Readiness"} diagnostic — pass/fail evidence for major CRM functions. A failed evidence query is shown as a failure, never a pass. Auto-refreshes every 60 seconds.`}
         actions={
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={copyReport} disabled={!fullReport} data-testid="button-copy-report">
@@ -432,7 +434,7 @@ export default function LaunchReadiness() {
           onClick={() => setActiveTab("full")}
           className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${activeTab === "full" ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}
         >
-          25-Subsystem Audit
+          {fullReport ? `${fullReport.summary.total}-Probe Audit` : "Readiness Audit"}
         </button>
         <button
           onClick={() => setActiveTab("infra")}
@@ -462,7 +464,7 @@ export default function LaunchReadiness() {
                   : <XCircle className="h-8 w-8 text-red-600 shrink-0" />}
                 <div className="flex-1">
                   <p className="font-bold text-lg">
-                    {verdict === "GO" ? "GO — All 25 subsystems passing" : verdict === "WARN" ? `WARN — ${summary?.warn} subsystem(s) need attention` : `NO-GO — ${summary?.fail} subsystem(s) failing`}
+                    {verdict === "GO" ? `GO — all ${summary?.total} probes passing (diagnostic only)` : verdict === "WARN" ? `WARN — ${summary?.warn} subsystem(s) need attention` : `NO-GO — ${summary?.fail} subsystem(s) failing`}
                   </p>
                   <p className="text-sm text-muted-foreground mt-0.5">
                     {summary?.pass} pass · {summary?.warn} warning · {summary?.fail} fail · checked {new Date(fullReport.checkedAt).toLocaleString()}
@@ -540,15 +542,16 @@ export default function LaunchReadiness() {
                 </CardHeader>
                 <CardContent>
                   <p className="text-xs text-muted-foreground">
-                    Click "Copy Markdown Report" to copy a full audit summary to clipboard. The report includes all 25 subsystem statuses, evidence notes, and timestamps — formatted for Notion, Slack, or email.
+                    Click "Copy Markdown Report" to copy a full audit summary to clipboard. The report includes every probe status, evidence notes, and timestamps — formatted for Notion, Slack, or email.
                   </p>
                 </CardContent>
               </Card>
             </>
           ) : (
-            <Card>
-              <CardContent className="py-12 text-center text-muted-foreground">
-                Failed to load launch readiness data. Check server logs.
+            <Card data-testid="readiness-unavailable">
+              <CardContent className="space-y-3 py-12 text-center text-muted-foreground" role="alert">
+                <p>{fullError ? `Readiness report unavailable: ${fullErrorValue instanceof Error ? fullErrorValue.message : "request failed"}.` : "Readiness report unavailable."} This is not a passing or empty result.</p>
+                <Button variant="outline" size="sm" onClick={() => refetchFull()} disabled={fullFetching}>Retry</Button>
               </CardContent>
             </Card>
           )}

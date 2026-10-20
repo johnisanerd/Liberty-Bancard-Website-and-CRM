@@ -125,7 +125,7 @@ function SyncConflictsPanel() {
               <SelectItem value="all">All</SelectItem>
             </SelectContent>
           </Select>
-          <Button variant="outline" size="sm" onClick={() => refetch()} data-testid="btn-refresh-conflicts">
+          <Button variant="outline" size="sm" onClick={() => refetch()} aria-label="Refresh sync conflicts" data-testid="btn-refresh-conflicts">
             <RefreshCw className="w-4 h-4" />
           </Button>
         </div>
@@ -344,7 +344,7 @@ function SerperControlPanel() {
           </Badge>
           {stateBadge}
         </div>
-        <Button variant="outline" size="sm" onClick={() => refetch()} disabled={anyPending} data-testid="btn-refresh-serper">
+        <Button variant="outline" size="sm" onClick={() => refetch()} disabled={anyPending} aria-label="Refresh Serper control status" data-testid="btn-refresh-serper">
           <RefreshCw className="w-4 h-4" />
         </Button>
       </div>
@@ -561,7 +561,7 @@ function SerperUsageLogPanel() {
               <SelectItem value="90">Last 90 days</SelectItem>
             </SelectContent>
           </Select>
-          <Button variant="outline" size="sm" onClick={() => refetch()} data-testid="btn-refresh-serper-usage-log">
+          <Button variant="outline" size="sm" onClick={() => refetch()} aria-label="Refresh Serper usage log" data-testid="btn-refresh-serper-usage-log">
             <RefreshCw className="w-4 h-4" />
           </Button>
         </div>
@@ -779,7 +779,7 @@ function GhlInvalidContactsPanel() {
               <SelectItem value="all">All</SelectItem>
             </SelectContent>
           </Select>
-          <Button variant="outline" size="sm" onClick={() => refetch()} data-testid="btn-refresh-invalid-contacts">
+          <Button variant="outline" size="sm" onClick={() => refetch()} aria-label="Refresh invalid contacts" data-testid="btn-refresh-invalid-contacts">
             <RefreshCw className="w-4 h-4" />
           </Button>
         </div>
@@ -1943,7 +1943,7 @@ function WorkerIntervalsPanel() {
                 value={ghlMs}
                 onChange={e => setGhlMs(e.target.value)}
                 className="h-8 text-sm"
-                data-testid="input-ghl-sync-interval"
+                aria-label="GHL sync interval in milliseconds" data-testid="input-ghl-sync-interval"
               />
               <p className="text-xs text-muted-foreground">≈ {msToSeconds(ghlMs)}s (floor: {((data?.ghlFloorMs ?? 30000) / 1000).toFixed(0)}s)</p>
             </div>
@@ -1956,7 +1956,7 @@ function WorkerIntervalsPanel() {
                 value={slaMs}
                 onChange={e => setSlaMs(e.target.value)}
                 className="h-8 text-sm"
-                data-testid="input-sla-check-interval"
+                aria-label="SLA check interval in milliseconds" data-testid="input-sla-check-interval"
               />
               <p className="text-xs text-muted-foreground">≈ {msToSeconds(slaMs)}s (floor: {((data?.slaFloorMs ?? 120000) / 1000).toFixed(0)}s)</p>
             </div>
@@ -2482,6 +2482,16 @@ function formatDuration(ms: number | null): string {
   return `${(ms / 60000).toFixed(1)}m`;
 }
 
+/** Stored job status is historical. A "running" row whose last update is old is reported as stale, not live. */
+const JOB_STALE_AFTER_MS = 6 * 60 * 60 * 1000;
+function jobFreshness(job: JobStatus, nowMs: number): "fresh" | "stale" | "unknown" {
+  const stamp = job.updatedAt ?? job.lastFinishedAt ?? job.lastStartedAt;
+  if (!stamp) return "unknown";
+  const t = new Date(stamp).getTime();
+  if (!Number.isFinite(t)) return "unknown";
+  return nowMs - t > JOB_STALE_AFTER_MS ? "stale" : "fresh";
+}
+
 function JobHealthPanel() {
   const { data, isLoading, isError, refetch } = useQuery<{ jobs: JobStatus[] }>({
     queryKey: ["/api/operator/job-status"],
@@ -2538,6 +2548,9 @@ function JobHealthPanel() {
         </div>
       )}
 
+      <p className="text-xs text-muted-foreground" data-testid="text-job-health-note">
+        Status is the last stored value for each job (historical). Rows not updated in the last 6 hours are marked stale; a stored status does not prove the job is running now.
+      </p>
       <div className="rounded-md border overflow-x-auto">
         <table className="w-full text-sm min-w-[600px]" data-testid="table-job-health">
           <thead className="bg-muted/50">
@@ -2586,6 +2599,11 @@ function JobHealthPanel() {
                       {job.status === "failed" && <XCircle className="w-3 h-3 mr-1" />}
                       {job.status}
                     </Badge>
+                    {jobFreshness(job, Date.now()) !== "fresh" && (
+                      <span className="ml-2 text-xs text-amber-700 dark:text-amber-400" data-testid={`text-job-freshness-${job.jobName}`}>
+                        {jobFreshness(job, Date.now()) === "stale" ? `stale · stored status from ${formatRelativeTime(job.updatedAt ?? job.lastFinishedAt ?? job.lastStartedAt)}` : "freshness unknown"}
+                      </span>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-muted-foreground text-xs" data-testid={`text-job-last-run-${job.jobName}`}>
                     {formatRelativeTime(job.lastFinishedAt)}
@@ -2809,7 +2827,7 @@ function QueueMetricsPanel() {
         <CardHeader className="pb-2">
           <div className="flex items-center justify-between">
             <CardTitle className="text-sm">Queue Health</CardTitle>
-            <Button variant="ghost" size="sm" onClick={() => refetchMetrics()} data-testid="btn-refresh-queues">
+            <Button variant="ghost" size="sm" onClick={() => refetchMetrics()} aria-label="Refresh queue metrics" data-testid="btn-refresh-queues">
               <RefreshCw className="w-3.5 h-3.5" />
             </Button>
           </div>
@@ -2930,7 +2948,7 @@ function QueueMetricsPanel() {
                 <Badge variant="destructive" data-testid="badge-dlq-count">{dlqList.length}</Badge>
               )}
             </div>
-            <Button variant="ghost" size="sm" onClick={() => refetchDlq()} data-testid="btn-refresh-dlq">
+            <Button variant="ghost" size="sm" onClick={() => refetchDlq()} aria-label="Refresh dead-letter queue" data-testid="btn-refresh-dlq">
               <RefreshCw className="w-3.5 h-3.5" />
             </Button>
           </div>
@@ -3392,6 +3410,7 @@ function GhlConnectionPanel() {
                   </>
                 );
               })()}
+              <p className="text-xs text-muted-foreground">Provider connectivity probe only. Incoming delivery, optional CRM sync control and circuit state are reported separately.</p>
               {data.error && data.status !== "ok" && <p className="text-xs text-destructive/80 mt-1">{data.error}</p>}
               {data.checkedAt && (
                 <p className="text-xs text-muted-foreground mt-auto">
@@ -3434,7 +3453,7 @@ function GhlConnectionPanel() {
                 {data.failureCount ?? 0}
               </p>
               <p className="text-xs text-muted-foreground">
-                {(data.failureCount ?? 0) === 0 ? "No failures detected" : "Failed GHL sync operations"}
+                {(data.failureCount ?? 0) === 0 ? "None recorded in this 24h window" : "Failed GHL sync operations recorded in the window"}
               </p>
             </CardContent>
           </Card>
@@ -3464,8 +3483,8 @@ function GhlConnectionPanel() {
             <Card data-testid="card-no-ghl-failures">
               <CardContent className="py-8 text-center">
                 <CheckCircle2 className="w-7 h-7 text-green-500 mx-auto mb-2" />
-                <p className="text-sm font-medium">No GHL sync failures in the last 24 hours</p>
-                <p className="text-xs text-muted-foreground mt-1">All GHL operations are succeeding.</p>
+                <p className="text-sm font-medium">No matching GHL sync failures observed in the last 24 hours</p>
+                <p className="text-xs text-muted-foreground mt-1">This shows recorded failures in this window only. It does not show that GHL is connected, delivering events or syncing now; see Last Successful Sync and the connection card.</p>
               </CardContent>
             </Card>
           ) : (
@@ -3547,7 +3566,7 @@ const ACTION_LABELS: Record<string, { label: string; variant: "default" | "destr
 };
 
 function DeletedRecordsPanel() {
-  const { data, isLoading, isError, refetch } = useQuery<{ records: DeletedRecord[]; total: number }>({
+  const { data, isLoading, isError, refetch } = useQuery<{ records: DeletedRecord[]; total: number; hasMore?: boolean; coverage?: string }>({
     queryKey: ["/api/ghl/deleted-records"],
     queryFn: async () => {
       const res = await fetch("/api/ghl/deleted-records?limit=50", { credentials: "include" });
@@ -3587,7 +3606,7 @@ function DeletedRecordsPanel() {
           <CardTitle className="text-base font-semibold flex items-center gap-2">
             <XCircle className="w-4 h-4 text-destructive" />
             Deleted Records
-            <Badge variant="outline" className="ml-1 text-xs">{records.length}</Badge>
+            <Badge variant="outline" className="ml-1 text-xs" data-testid="badge-deleted-records-count">{records.length}{typeof data?.total === "number" && data.total > records.length ? ` of ${data.total}` : ""}</Badge>
           </CardTitle>
           <Button variant="outline" size="sm" onClick={() => refetch()} data-testid="button-refresh-deleted-records" aria-label="Refresh deleted records">
             <RefreshCw className="w-3.5 h-3.5" />
@@ -3596,7 +3615,7 @@ function DeletedRecordsPanel() {
         <CardContent className="p-0">
           {records.length === 0 ? (
             <div className="px-6 py-8 text-center text-muted-foreground text-sm" data-testid="text-no-deleted-records">
-              No deleted records logged yet.
+              No deleted-record events were found in the audit history. This is a read of recorded events, not proof that no record was ever deleted.
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -3654,9 +3673,10 @@ function DeletedRecordsPanel() {
           <CardTitle className="text-sm font-medium text-muted-foreground">How it works</CardTitle>
         </CardHeader>
         <CardContent className="text-xs text-muted-foreground space-y-1">
-          <p><strong>Replit → GHL:</strong> Archiving a contact or deal, or deleting a task, automatically sends a DELETE request to GHL so the record disappears from both systems.</p>
-          <p><strong>GHL → Replit:</strong> When GHL fires a ContactDelete, OpportunityDelete, or TaskDelete webhook, the local record is soft-deleted (archived) instantly.</p>
-          <p><strong>Sync-tick fallback:</strong> Set <code className="bg-muted px-1 rounded">GHL_SYNC_DELETE_DETECTION=true</code> to detect contacts that vanish from GHL between webhooks and soft-delete them automatically.</p>
+          <p><strong>This panel is read-only.</strong> It lists recorded deletion events from the audit history (filtered in the database, newest first). It never deletes or archives anything.</p>
+          <p><strong>Replit → GHL:</strong> The GHL data sync is one-way into Replit. Archiving or deleting a record here does not delete it in GHL. Rows labelled "Sent to GHL" are historical audit events, not current behavior.</p>
+          <p><strong>GHL → Replit:</strong> When incoming GHL delete events are received and incoming sync is enabled, the matching local record is handled as recorded in the event. Incoming sync is controlled separately from the global outbound pause.</p>
+          <p><strong>Sync-tick fallback:</strong> Detection of contacts that vanish between events applies only where <code className="bg-muted px-1 rounded">GHL_SYNC_DELETE_DETECTION=true</code> is configured.</p>
         </CardContent>
       </Card>
     </div>
@@ -4120,11 +4140,11 @@ function StatusTile({
 }) {
   const valueColor =
     status === "error"
-      ? "text-red-600"
+      ? "text-red-700 dark:text-red-400"
       : status === "warn"
-        ? "text-yellow-600"
+        ? "text-yellow-700 dark:text-yellow-400"
         : status === "ok"
-          ? "text-green-600"
+          ? "text-green-700 dark:text-green-400"
           : "text-foreground";
   const dot =
     status === "error"
@@ -4356,8 +4376,8 @@ function CommandCenter({ onNavigate }: { onNavigate: (v: string) => void }) {
         <StatusTile
           title="GHL Sync"
           status={ghlStatus}
-          value={circuit.isError ? "Error" : circuitOpen ? "Circuit OPEN" : "Connected"}
-          detail={circuit.isError ? "Failed to load circuit status" : `${circuit.data?.consecutiveFailures ?? 0}/${circuit.data?.threshold ?? 0} consecutive failures`}
+          value={circuit.isError ? "Error" : circuitOpen ? "Circuit OPEN" : "Circuit closed"}
+          detail={circuit.isError ? "Failed to load circuit status" : `Circuit breaker only (not a connection, incoming-delivery or optional-sync check) · ${circuit.data?.consecutiveFailures ?? 0}/${circuit.data?.threshold ?? 0} consecutive failures`}
           icon={Zap}
           onClick={() => onNavigate("ghl-connection")}
           testId="tile-ghl"
@@ -5112,7 +5132,7 @@ function RegistryImportPanel() {
                 accept=".csv"
                 onChange={(e) => setFile(e.target.files?.[0] || null)}
                 className="max-w-sm"
-                data-testid="input-registry-csv"
+                aria-label="Registry CSV file" data-testid="input-registry-csv"
               />
               {file && (
                 <span className="text-sm text-muted-foreground">{file.name} ({(file.size / 1024).toFixed(1)} KB)</span>
@@ -5840,7 +5860,10 @@ function AiHealthPanel() {
 
   const { data: metrics, isLoading, isError, refetch } = useQuery<AiHealthMetrics>({
     queryKey: ["/api/operator/ai-health", range],
-    queryFn: () => fetch(`/api/operator/ai-health?range=${range}`, { credentials: "include" }).then(r => r.json()),
+    queryFn: () => fetch(`/api/operator/ai-health?range=${range}`, { credentials: "include" }).then(async r => {
+      if (!r.ok) throw new Error(`AI health metrics unavailable (${r.status})`);
+      return r.json();
+    }),
     refetchInterval: 30000,
   });
 
@@ -5874,7 +5897,7 @@ function AiHealthPanel() {
               <SelectItem value="30d">Last 30 Days</SelectItem>
             </SelectContent>
           </Select>
-          <Button variant="outline" size="sm" onClick={() => refetch()} data-testid="btn-refresh-ai-health">
+          <Button variant="outline" size="sm" onClick={() => refetch()} aria-label="Refresh AI health metrics" data-testid="btn-refresh-ai-health">
             <RefreshCw className="w-4 h-4" />
           </Button>
         </div>
@@ -6462,11 +6485,11 @@ function AiActivityPanel() {
         </div>
         <div className="flex flex-col gap-1">
           <label className="text-xs text-muted-foreground">Start Date</label>
-          <Input type="date" value={startDate} onChange={e => { setStartDate(e.target.value); setPage(0); }} className="w-40" data-testid="input-start-date" />
+          <Input type="date" value={startDate} onChange={e => { setStartDate(e.target.value); setPage(0); }} className="w-40" aria-label="Start date" data-testid="input-start-date" />
         </div>
         <div className="flex flex-col gap-1">
           <label className="text-xs text-muted-foreground">End Date</label>
-          <Input type="date" value={endDate} onChange={e => { setEndDate(e.target.value); setPage(0); }} className="w-40" data-testid="input-end-date" />
+          <Input type="date" value={endDate} onChange={e => { setEndDate(e.target.value); setPage(0); }} className="w-40" aria-label="End date" data-testid="input-end-date" />
         </div>
         <div className="flex flex-col gap-1">
           <label className="text-xs text-muted-foreground">Filter</label>
@@ -6693,7 +6716,7 @@ function StatementUploadFailuresPanel() {
           size="sm"
           onClick={() => refetch()}
           disabled={isFetching}
-          data-testid="button-refresh-upload-failures"
+          aria-label="Refresh statement upload failures" data-testid="button-refresh-upload-failures"
         >
           {isFetching ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
         </Button>
@@ -7236,7 +7259,7 @@ function ScoreAllPanel() {
               role="switch"
               aria-checked={rescore}
               onClick={() => setRescore(v => !v)}
-              data-testid="toggle-rescore"
+              aria-label="Rescore already scored contacts" data-testid="toggle-rescore"
               className={cn(
                 "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
                 rescore ? "bg-blue-600" : "bg-muted"
@@ -8462,7 +8485,7 @@ function NewLeadEnrollPanel() {
               aria-checked={autoEnabled}
               onClick={() => toggleAutoEnroll.mutate(!autoEnabled)}
               disabled={toggleAutoEnroll.isPending}
-              data-testid="toggle-auto-enroll"
+              aria-label="Automatically enroll new leads" data-testid="toggle-auto-enroll"
               className={cn(
                 "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
                 autoEnabled ? "bg-blue-600" : "bg-muted"

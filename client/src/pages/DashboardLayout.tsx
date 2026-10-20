@@ -104,6 +104,7 @@ import {
   SidebarTrigger,
 } from "@/components/ui/sidebar";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { activeSidebarId, employeeSidebarFor, type SidebarIconKey } from "@/lib/employee-sidebar";
 import { EmployeeCrmProvider } from "@/components/crm/employee-crm-context";
 import { canShowMerchantOperationsNav, isMerchantOperationsPath, MerchantOperationsLayout } from "@/components/crm/MerchantOperationsNav";
 
@@ -132,6 +133,12 @@ interface MenuItem {
 }
 
 const DEV_MODE_KEY = "sidebar_dev_mode";
+
+const employeeSidebarIcons: Record<SidebarIconKey, any> = {
+  today: LayoutDashboard, records: Users, pipeline: TrendingUp, inbox: Inbox, work: ClipboardList,
+  merchant: Briefcase, prospecting: Target, campaigns: Megaphone, reports: BarChart3,
+  administration: UserCog, resources: BookOpen,
+};
 
 // ─── DAILY WORK ────────────────────────────────────────────────────────────────
 const dailyWorkItems: MenuItem[] = [
@@ -418,7 +425,10 @@ function DashboardLayoutInner({ children }: DashboardLayoutProps) {
       "/dashboard/tasks-appointments","/dashboard/contacts-leads","/dashboard/my-leads","/dashboard/nba",
       "/dashboard/chat","/dashboard/call-outcome","/dashboard/review-complete","/dashboard/bin-lookup","/dashboard/stage-rules",
       "/dashboard/reporting","/dashboard/my-earnings","/dashboard/leaderboard",
-      "/dashboard/lead-ops","/dashboard/canonical-enrichment","/dashboard/outbound-center"].includes(location) ||
+      "/dashboard/lead-ops","/dashboard/canonical-enrichment","/dashboard/outbound-center",
+      // C5 pages render their own page h1 (CrmPageHeader / PageHeader); the layout title must not add a second one.
+      "/dashboard/admin-hub","/dashboard/permissions","/dashboard/queue-holds","/dashboard/knowledge-base",
+      "/dashboard/knowledge-admin","/dashboard/training"].includes(location) ||
     /^\/dashboard\/lead-ops\/business\/[^/]+$/.test(location) ||
     isMerchantOperationsPath(location) ||
     /^\/dashboard\/companies\/[^/]+$/.test(location);
@@ -700,6 +710,42 @@ function DashboardLayoutInner({ children }: DashboardLayoutProps) {
     );
   };
 
+  // Final employee shell: eleven destinations in fixed order, filtered by role.
+  const isEmployeeRole = role === "admin" || role === "manager" || role === "agent";
+  const renderEmployeeNav = () => {
+    const items = employeeSidebarFor(role);
+    const activeId = activeSidebarId(role, location);
+    return (
+      <SidebarGroup>
+        <SidebarGroupContent>
+          <SidebarMenu aria-label="Employee navigation" data-testid="nav-employee-sidebar">
+            {items.map(({ entry, href }) => {
+              const Icon = employeeSidebarIcons[entry.icon];
+              const badgeCount = entry.badgeKey ? (badges[entry.badgeKey] || 0) : 0;
+              const isActive = activeId === entry.id;
+              return (
+                <SidebarMenuItem key={entry.id}>
+                  <SidebarMenuButton asChild isActive={isActive} data-testid={`link-sidebar-${entry.id}`}>
+                    <Link href={href} aria-current={isActive ? "page" : undefined}>
+                      <Icon className="w-4 h-4" />
+                      <span className="flex-1">{entry.label}</span>
+                      {badgeCount > 0 && (
+                        <span className="ml-auto flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-medium text-destructive-foreground"
+                          data-testid={`badge-sidebar-${entry.badgeKey}`} aria-label={`${badgeCount} need attention`}>
+                          {badgeCount > 99 ? "99+" : badgeCount}
+                        </span>
+                      )}
+                    </Link>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              );
+            })}
+          </SidebarMenu>
+        </SidebarGroupContent>
+      </SidebarGroup>
+    );
+  };
+
   // Agent daily work includes their VT if permitted
   const agentDailyWork = useMemo(
     () => [...filterByRole(dailyWorkItems, role), ...filteredAgentTools],
@@ -718,18 +764,22 @@ function DashboardLayoutInner({ children }: DashboardLayoutProps) {
           </SidebarHeader>
 
           <SidebarContent>
-            {role === "agent"
-              ? renderGroup("DAILY WORK", agentDailyWork)
-              : renderGroup("DAILY WORK", dailyWorkItems)}
-            {renderGroup("MERCHANT OPS", merchantOpsItems)}
-            {renderGroup("OUTBOUND", outboundItems)}
-            {renderGroup("REPORTS", reportsSettingsItems)}
-            {renderPartnersGroup()}
-            {renderResourcesGroup()}
+            {isEmployeeRole ? renderEmployeeNav() : (
+              <>
+                {renderGroup("MERCHANT OPS", merchantOpsItems)}
+                {renderResourcesGroup()}
+              </>
+            )}
 
-            {/* Dev-mode extended sections — only visible when toggle is on */}
+            {/* Legacy and advanced entrances stay reachable behind the Dev Mode toggle (nothing is deleted). */}
             {isPrivileged && devMode && (
               <>
+                {renderGroup("LEGACY: DAILY WORK", dailyWorkItems)}
+                {renderGroup("LEGACY: MERCHANT OPS", merchantOpsItems)}
+                {renderGroup("LEGACY: OUTBOUND", outboundItems)}
+                {renderGroup("LEGACY: REPORTS", reportsSettingsItems)}
+                {renderPartnersGroup()}
+                {renderResourcesGroup()}
                 {renderGroup("LEAD ENGINE", devModeLeadEngineItems)}
                 {renderGroup("AUTOMATION", devModeAutomationItems)}
                 {renderGroup("GROWTH & PARTNERS", devModeGrowthItems)}
@@ -774,6 +824,27 @@ function DashboardLayoutInner({ children }: DashboardLayoutProps) {
             )}
 
             <SidebarMenu>
+              {isEmployeeRole && (
+                <>
+                  <SidebarMenuItem>
+                    <SidebarMenuButton asChild data-testid="link-sidebar-ai-advisor">
+                      <Link href="/dashboard/chat"><Brain className="w-4 h-4" /><span>AI Advisor</span></Link>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                  {role === "agent" && (
+                    <SidebarMenuItem>
+                      <SidebarMenuButton asChild data-testid="link-sidebar-my-leads">
+                        <Link href="/dashboard/my-leads"><Target className="w-4 h-4" /><span>My Leads</span></Link>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  )}
+                  <SidebarMenuItem>
+                    <SidebarMenuButton asChild data-testid="link-sidebar-security">
+                      <Link href="/dashboard/security"><ShieldCheck className="w-4 h-4" /><span>Account security</span></Link>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                </>
+              )}
               {["admin", "manager", "agent"].includes(role) && (
                 <SidebarMenuItem>
                   <SidebarMenuButton onClick={openTour} data-testid="button-sidebar-replay-tour">

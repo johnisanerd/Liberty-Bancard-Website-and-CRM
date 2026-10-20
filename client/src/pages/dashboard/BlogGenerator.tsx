@@ -26,6 +26,8 @@ import {
   Mail,
 } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { ReaderStatus } from "@/components/dashboard/ReaderStatus";
+import { readerState } from "@/lib/reader-state";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import type { GeneratedBlogPostResponse } from "@/lib/all-blog-data";
 
@@ -53,13 +55,17 @@ export default function BlogGenerator() {
   const [category, setCategory] = useState("Education");
   const [autoSchedule, setAutoSchedule] = useState(true);
 
-  const { data: articleSignups = [], isLoading: signupsLoading } = useQuery<ArticleSignupRow[]>({
+  const signupsQuery = useQuery<ArticleSignupRow[]>({
     queryKey: ["/api/analytics/newsletter-article-signups"],
   });
+  const articleSignups = signupsQuery.data ?? [];
+  const signupsState = readerState(signupsQuery);
 
-  const { data: savedPosts = [], isLoading: postsLoading } = useQuery<GeneratedBlogPostResponse[]>({
+  const postsQuery = useQuery<GeneratedBlogPostResponse[]>({
     queryKey: ["/api/blog/generated"],
   });
+  const savedPosts = postsQuery.data ?? [];
+  const postsState = readerState(postsQuery);
 
   const generateMutation = useMutation({
     mutationFn: async () => {
@@ -121,9 +127,9 @@ export default function BlogGenerator() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-foreground" data-testid="text-blog-gen-heading">
+        <h2 className="text-2xl font-bold text-foreground" data-testid="text-blog-gen-heading">
           AI Blog Generator
-        </h1>
+        </h2>
         <p className="text-muted-foreground mt-1" data-testid="text-blog-gen-subtitle">
           Generate SEO-optimized blog posts and schedule them for automatic publication. Posts are saved to the database and auto-published on schedule.
         </p>
@@ -294,20 +300,19 @@ export default function BlogGenerator() {
         <CardHeader>
           <CardTitle className="text-lg flex items-center gap-2">
             <Calendar className="w-5 h-5 text-primary" />
-            Generated Posts ({savedPosts.length})
+            Generated Posts ({postsState === "ready" || postsState === "stale" ? savedPosts.length : "—"})
           </CardTitle>
         </CardHeader>
         <CardContent>
-          {postsLoading ? (
-            <div className="flex items-center justify-center py-8">
-              <Loader2 className="w-6 h-6 animate-spin text-primary" />
-            </div>
+          {postsState === "loading" || postsState === "unavailable" ? (
+            <ReaderStatus state={postsState} subject="Generated posts" onRetry={() => void postsQuery.refetch()} />
           ) : savedPosts.length === 0 ? (
             <p className="text-center text-muted-foreground py-8" data-testid="text-no-posts">
               No generated posts yet. Use the form above to generate your first AI blog post.
             </p>
           ) : (
             <div className="space-y-3">
+              <ReaderStatus state={postsState} subject="Generated posts" onRetry={() => void postsQuery.refetch()} />
               {savedPosts.map((post) => (
                 <div
                   key={post.id}
@@ -388,16 +393,15 @@ export default function BlogGenerator() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          {signupsLoading ? (
-            <div className="flex items-center justify-center py-8">
-              <Loader2 className="w-6 h-6 animate-spin text-primary" />
-            </div>
+          {signupsState === "loading" || signupsState === "unavailable" ? (
+            <ReaderStatus state={signupsState} subject="Newsletter signups" onRetry={() => void signupsQuery.refetch()} />
           ) : articleSignups.length === 0 ? (
             <p className="text-center text-muted-foreground py-8" data-testid="text-no-article-signups">
               No article-attributed signups yet. Signups from blog posts will appear here once collected.
             </p>
           ) : (
             <div className="space-y-2">
+              <ReaderStatus state={signupsState} subject="Newsletter signups" onRetry={() => void signupsQuery.refetch()} />
               {articleSignups.map((row) => (
                 <div
                   key={row.articleSlug}

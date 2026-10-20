@@ -1047,9 +1047,13 @@ export function registerIntegrationsRoutes(app: Express) {
     try {
       const { getGhlCircuitStatus } = await import("../services/ghl-sync");
       const circuit = getGhlCircuitStatus();
-      const auditLogs = await storage.getAuditLogs();
-      const lastTrip = auditLogs.find(l => l.action === "GHL_CIRCUIT_OPEN");
-      const lastReset = auditLogs.find(l => l.action === "GHL_CIRCUIT_RESET");
+      // Each event family is filtered in SQL, so an older trip/reset is never hidden behind newer unrelated audit rows.
+      const [tripPage, resetPage] = await Promise.all([
+        storage.getAuditLogsByActions(["GHL_CIRCUIT_OPEN"], { limit: 1 }),
+        storage.getAuditLogsByActions(["GHL_CIRCUIT_RESET"], { limit: 1 }),
+      ]);
+      const lastTrip = tripPage.rows[0];
+      const lastReset = resetPage.rows[0];
       const lastTripDetails = lastTrip?.details as any;
       res.json({
         ...circuit,
@@ -1177,22 +1181,20 @@ export function registerIntegrationsRoutes(app: Express) {
 
   app.get("/api/ghl/deleted-records", isAuthenticated, async (req, res) => {
     try {
-      const { limit } = parsePagination(req.query as Record<string, any>, 200);
-      const auditLogs = await storage.getAuditLogs();
+      const { limit, offset } = parsePagination(req.query as Record<string, any>, 200);
       const deleteActions = ["ghl_delete_received", "ghl_delete_detected", "ghl_delete_propagated", "ghl_delete_failed"];
-      const filtered = auditLogs
-        .filter(l => deleteActions.includes(l.action))
-        .slice(0, limit)
-        .map(l => ({
-          id: l.id,
-          entityType: l.entityType,
-          entityId: l.entityId,
-          entityKey: (l as any).entityKey || null,
-          action: l.action,
-          details: l.details,
-          createdAt: l.createdAt,
-        }));
-      res.json({ records: filtered, total: filtered.length });
+      // Action filter and paging happen in the database; total is the exact matching count, not a sampled length.
+      const page = await storage.getAuditLogsByActions(deleteActions, { limit, offset });
+      const records = page.rows.map(l => ({
+        id: l.id,
+        entityType: l.entityType,
+        entityId: l.entityId,
+        entityKey: (l as any).entityKey || null,
+        action: l.action,
+        details: l.details,
+        createdAt: l.createdAt,
+      }));
+      res.json({ records, total: page.total, hasMore: page.hasMore, limit, offset, coverage: "exact" });
     } catch (err: any) {
       serverError(res, err);
     }

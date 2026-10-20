@@ -608,7 +608,7 @@ const INTERNAL_TOOLS: ToolCard[] = [
   { name: "SEO Health", description: "Monitor keyword rankings, crawl issues, and on-page optimization scores across all public pages.", href: "/dashboard/seo-health", icon: Search, badge: "SEO" },
   { name: "Reporting & Analytics", description: "Lead source performance, conversion funnels, and revenue attribution across all growth channels.", href: "/dashboard/reporting", icon: BarChart2, badge: "Analytics" },
   { name: "Affiliate Dashboard", description: "Track affiliate signups, referral codes, commission payouts, and top performers.", href: "/dashboard/affiliates", icon: Gift, badge: "Referrals" },
-  { name: "GHL Workflows", description: "Map sequence names to GHL workflow IDs. Manage active/inactive sequences from one place.", href: "/dashboard/integrations", icon: Zap, badge: "GHL" },
+  { name: "GHL Workflows", description: "Record reference GHL workflow IDs per sequence name. Replit owns cadence; IDs are not required to launch.", href: "/dashboard/integrations", icon: Zap, badge: "GHL" },
   { name: "Sequences", description: "Build and manage multi-step outreach sequences for cold, warm, and nurture leads.", href: "/dashboard/sequences", icon: Mail, badge: "Outreach" },
   { name: "Contacts", description: "Full contact list with enrichment status, pipeline stage, tags, and last activity.", href: "/dashboard/contacts", icon: Users, badge: "CRM" },
   { name: "Partner Portal", description: "View partner accounts, referred merchant lists, commission tiers, and co-branded assets.", href: "/partners/portal", icon: Handshake, badge: "Partners" },
@@ -1627,9 +1627,9 @@ export default function GrowthPlaybook() {
       {/* Header */}
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
+          <h2 className="text-2xl font-bold tracking-tight flex items-center gap-2">
             <TrendingUp className="h-6 w-6 text-green-500" /> Growth Playbook
-          </h1>
+          </h2>
           <p className="text-muted-foreground mt-1 text-sm">
             End-to-end organic growth plan — from zero to 1,000 signups/week. Every item is free or near-free.
           </p>

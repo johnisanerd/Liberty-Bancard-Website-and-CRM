@@ -1,0 +1,147 @@
+{
+  "status": "passed",
+  "runs": 7,
+  "machine": "disposable local fixture",
+  "baseline": "1422503b pre-C5 client",
+  "verdict": [
+    {
+      "url": "/dashboard",
+      "baselineMedianMs": 575,
+      "candidateMedianMs": 514,
+      "deltaMs": -61,
+      "withinBound": true
+    },
+    {
+      "url": "/dashboard/admin-hub?tab=users",
+      "baselineMedianMs": 500,
+      "candidateMedianMs": 359,
+      "deltaMs": -141,
+      "withinBound": true
+    },
+    {
+      "url": "/dashboard/knowledge-base",
+      "baselineMedianMs": 311,
+      "candidateMedianMs": 311,
+      "deltaMs": 0,
+      "withinBound": true
+    },
+    {
+      "url": "/dashboard/permissions",
+      "baselineMedianMs": 335,
+      "candidateMedianMs": 218,
+      "deltaMs": -117,
+      "withinBound": true
+    }
+  ],
+  "results": {
+    "baseline": {
+      "/dashboard": {
+        "medianMs": 575,
+        "samples": [
+          710,
+          897,
+          487,
+          343,
+          463,
+          726,
+          575
+        ],
+        "jsBytes": 621962
+      },
+      "/dashboard/admin-hub?tab=users": {
+        "medianMs": 500,
+        "samples": [
+          760,
+          500,
+          581,
+          490,
+          619,
+          414,
+          416
+        ],
+        "jsBytes": 810114
+      },
+      "/dashboard/knowledge-base": {
+        "medianMs": 311,
+        "samples": [
+          451,
+          380,
+          279,
+          281,
+          287,
+          311,
+          410
+        ],
+        "jsBytes": 1009330
+      },
+      "/dashboard/permissions": {
+        "medianMs": 335,
+        "samples": [
+          335,
+          421,
+          322,
+          304,
+          279,
+          335,
+          388
+        ],
+        "jsBytes": 810114
+      }
+    },
+    "candidate": {
+      "/dashboard": {
+        "medianMs": 514,
+        "samples": [
+          557,
+          514,
+          382,
+          356,
+          963,
+          649,
+          397
+        ],
+        "jsBytes": 629525
+      },
+      "/dashboard/admin-hub?tab=users": {
+        "medianMs": 359,
+        "samples": [
+          350,
+          326,
+          674,
+          395,
+          411,
+          260,
+          359
+        ],
+        "jsBytes": 613675
+      },
+      "/dashboard/knowledge-base": {
+        "medianMs": 311,
+        "samples": [
+          458,
+          312,
+          282,
+          311,
+          272,
+          445,
+          292
+        ],
+        "jsBytes": 1028790
+      },
+      "/dashboard/permissions": {
+        "medianMs": 218,
+        "samples": [
+          226,
+          228,
+          199,
+          218,
+          263,
+          208,
+          207
+        ],
+        "jsBytes": 601413
+      }
+    }
+  },
+  "scope": "cold navigation to first ready element, cache disabled, same API/DB/machine; client assets only vary; not a production or network measurement"
+}
