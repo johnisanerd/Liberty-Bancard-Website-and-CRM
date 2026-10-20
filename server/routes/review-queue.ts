@@ -46,7 +46,7 @@ export function registerReviewQueueRoutes(app: Express) {
   app.get("/api/review-queue/pending-count", isDashboardUser, requireRole("admin", "manager"), async (_req, res) => {
     try {
       const agg = await storage.getReviewQueueAggregates();
-      res.json({ count: agg.pending, pending: agg.pending, approved: agg.approved, total: agg.total });
+      res.json({ count: agg.pending, pending: agg.pending, approved: agg.approved, total: agg.total, deadLetter: agg.deadLetter });
     } catch (err: any) {
       serverError(res, err);
     }
@@ -57,14 +57,10 @@ export function registerReviewQueueRoutes(app: Express) {
       if(req.query.status!==undefined&&(typeof req.query.status!=="string"||!["pending","approved"].includes(req.query.status)))
         return res.status(400).json({message:"Invalid review status: one pending or approved value is required"});
       const status = req.query.status as string | undefined;
-      const items = await storage.getReviewQueue(status);
-      res.json(items.map((item) => item.sourceType === "dead_letter_job"
-        ? {
-            ...item,
-            notes: "Dead-letter event; operational details remain in canonical BullMQ retention.",
-            metadata: sanitizeDeadLetterEvent(item.metadata),
-          }
-        : item));
+      // Dead-letter history can hold tens of thousands of rows; it is read through the
+      // paged /dead-letter-events route, not mixed into the review list.
+      const items = await storage.getReviewQueue(status, { excludeDeadLetters: true });
+      res.json(items);
     } catch (err: any) {
       serverError(res, err);
     }
@@ -91,6 +87,43 @@ export function registerReviewQueueRoutes(app: Express) {
           : null,
       });
     } catch (err: any) {
+      serverError(res, err);
+    }
+  });
+
+  // Admin-only: move pending dead-letter history for one queue to "archived". Rows are kept,
+  // only their status changes. expectedCount must equal the live match count or nothing changes.
+  app.post("/api/review-queue/dead-letter-events/archive", isDashboardUser, requireRole("admin"), async (req, res) => {
+    try {
+      const body = z.object({
+        queueName: z.string().regex(/^[A-Za-z0-9_.:-]{1,100}$/),
+        jobName: z.string().regex(/^[A-Za-z0-9_.:-]{1,100}$/).optional(),
+        createdBefore: z.string().datetime(),
+        expectedCount: z.number().int().min(0).max(1_000_000),
+        dryRun: z.boolean().default(true),
+      }).strict().parse(req.body);
+      const result = await storage.archiveDeadLetterEvents({
+        queueName: body.queueName,
+        jobName: body.jobName,
+        createdBefore: new Date(body.createdBefore),
+        expectedCount: body.expectedCount,
+        dryRun: body.dryRun,
+      });
+      const user = req.user as any;
+      if (!body.dryRun && result.archived > 0) {
+        await storage.createAuditLog({
+          userId: user?.id ? String(user.id) : undefined,
+          action: "dead_letter_events_archived",
+          entityType: "review_queue",
+          details: { queueName: body.queueName, jobName: body.jobName ?? null, createdBefore: body.createdBefore, archived: result.archived },
+        });
+      }
+      if (!result.countMatches) {
+        return res.status(409).json({ message: "Live match count differs from expectedCount; nothing was archived", matched: result.matched, expectedCount: body.expectedCount });
+      }
+      res.json({ dryRun: body.dryRun, matched: result.matched, archived: result.archived });
+    } catch (err: any) {
+      if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
       serverError(res, err);
     }
   });
@@ -136,6 +169,7 @@ export function registerReviewQueueRoutes(app: Express) {
       const item = await storage.getReviewQueueItem(Number(req.params.id));
       if (!item) return res.status(404).json({ message: "Not found" });
       if (item.status === "approved") return res.status(400).json({ message: "Already approved" });
+      if (item.status !== "pending") return res.status(400).json({ message: `Cannot approve an item in ${item.status} status` });
 
       const totalItems = REVIEW_CHECKLIST_ITEMS.length;
       const checkedItems = REVIEW_CHECKLIST_ITEMS.filter(

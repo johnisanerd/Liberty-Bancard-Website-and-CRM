@@ -6665,7 +6665,7 @@ export const reviewQueue = pgTable("review_queue", {
   id: serial("id").primaryKey(),
   sourceType: text("source_type").notNull().$type<"rfi" | "quiz" | "dead_letter_job" | "ai_output">(),
   sourceId: integer("source_id").notNull(),
-  status: text("status").notNull().default("pending").$type<"pending" | "approved">(),
+  status: text("status").notNull().default("pending").$type<"pending" | "approved" | "archived">(),
   checklistState: jsonb("checklist_state").$type<Record<string, boolean>>().default({}),
   approvedBy: text("approved_by"),
   approvedAt: timestamp("approved_at"),
@@ -6686,7 +6686,7 @@ export const insertReviewQueueSchema = createInsertSchema(reviewQueue).omit({
   updatedAt: true,
 }).extend({
   sourceType: z.enum(["rfi", "quiz", "dead_letter_job", "ai_output"]),
-  status: z.enum(["pending", "approved"]).optional(),
+  status: z.enum(["pending", "approved", "archived"]).optional(),
 });
 
 export type ReviewQueueItem = typeof reviewQueue.$inferSelect;

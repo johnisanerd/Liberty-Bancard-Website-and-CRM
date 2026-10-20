@@ -4,6 +4,7 @@ import {useCrmQuery as useQuery,useCrmActorIdentity} from "@/hooks/use-crm-query
 import {useLocation,useSearch} from "wouter";
 import {c4WorkspaceSelection,reviewQueueViews,reviewQueueUrl} from "@/lib/crm-destination-state";
 import {CrmDataState} from "@/components/crm/CrmPresentation";
+import {DeadLetterHistory} from "@/components/crm/DeadLetterHistory";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -289,7 +290,7 @@ export default function ReviewQueue() {
     staleTime: Infinity,
   });
 
-  const { data: aggregates,isLoading:aggregatesLoading,isError:aggregatesError,refetch:retryAggregates } = useQuery<{ count: number; pending: number; approved: number; total: number }>({
+  const { data: aggregates,isLoading:aggregatesLoading,isError:aggregatesError,refetch:retryAggregates } = useQuery<{ count: number; pending: number; approved: number; total: number; deadLetter?: { pending: number; archived: number; total: number } }>({
     queryKey: ["/api/review-queue/pending-count"],
     queryFn:async({signal})=>{
       const response=await fetch("/api/review-queue/pending-count",{credentials:"include",signal});
@@ -553,6 +554,8 @@ export default function ReviewQueue() {
           </ScrollArea>
         </Card>
       )}
+
+      {aggregatesAvailable && (aggregates!.deadLetter?.total ?? 0) > 0 && <DeadLetterHistory counts={aggregates!.deadLetter} />}
 
       {selectedItem && (
         <Sheet open onOpenChange={open=>{if(!open){setSelectedItem(null);setApproveDialogOpen(false);}}}>

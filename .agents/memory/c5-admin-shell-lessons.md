@@ -21,3 +21,5 @@ description: Durable constraints for the admin diagnostics, Administration areas
 - Hub pages hide inactive tab groups (zero-size tabs); walk by `?tab=` URLs, not clicks.
 - Kernel browser sessions end after ~60s of inactivity; keep calls back-to-back and run one automation call at a time (parallel calls on one tab collide).
 - Review Queue returns ~30k pending dead-letter rows unpaged and hangs the tab; unresolved product decision.
+- Dead-letter history rows live in review_queue (source_type dead_letter_job) and are retained history by design: never delete them; archive by status. Review list/counts exclude them; the paged dead-letter-events route is their reader. Production data writes run only through an admin route after Publish.
+- test-stage3-c4-browser's last step needs a baseline worktree at /home/runner/c4-performance-baseline that does not exist here; that failure is environmental, and the run dirties docs/certification/stage3-c4 images (revert them).

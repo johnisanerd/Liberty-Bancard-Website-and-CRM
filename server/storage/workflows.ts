@@ -222,10 +222,13 @@ import { sanitizeDeadLetterEvent } from "../services/audit-sanitizer";
     return updated;
   }
 
-  async getReviewQueue(status?: string) {
+  async getReviewQueue(status?: string, options?: { excludeDeadLetters?: boolean }) {
     const conditions = [];
     if (status === "pending" || status === "approved") {
       conditions.push(eq(reviewQueue.status, status));
+    }
+    if (options?.excludeDeadLetters) {
+      conditions.push(ne(reviewQueue.sourceType, "dead_letter_job"));
     }
     if (conditions.length > 0) {
       return await db.select().from(reviewQueue).where(and(...conditions)).orderBy(desc(reviewQueue.createdAt));
@@ -238,18 +241,53 @@ import { sanitizeDeadLetterEvent } from "../services/audit-sanitizer";
     return result[0]?.count || 0;
   }
 
-  async getReviewQueueAggregates(): Promise<{ pending: number; approved: number; total: number }> {
+  async getReviewQueueAggregates() {
     const result = await db
-      .select({ status: reviewQueue.status, cnt: count() })
+      .select({ sourceType: reviewQueue.sourceType, status: reviewQueue.status, cnt: count() })
       .from(reviewQueue)
-      .groupBy(reviewQueue.status);
+      .groupBy(reviewQueue.sourceType, reviewQueue.status);
     let pending = 0;
     let approved = 0;
+    const deadLetter = { pending: 0, archived: 0, total: 0 };
     for (const row of result) {
-      if (row.status === "pending") pending = Number(row.cnt);
-      else if (row.status === "approved") approved = Number(row.cnt);
+      const n = Number(row.cnt);
+      if (row.sourceType === "dead_letter_job") {
+        deadLetter.total += n;
+        if (row.status === "pending") deadLetter.pending += n;
+        else if (row.status === "archived") deadLetter.archived += n;
+        continue;
+      }
+      if (row.status === "pending") pending += n;
+      else if (row.status === "approved") approved += n;
     }
-    return { pending, approved, total: pending + approved };
+    return { pending, approved, total: pending + approved, deadLetter };
+  }
+
+  /**
+   * Moves pending dead-letter history rows for one queue (optionally one job) to
+   * "archived" without deleting them. The caller states how many rows it expects;
+   * a different live count changes nothing, so a stale preview cannot archive more.
+   */
+  async archiveDeadLetterEvents(input: { queueName: string; jobName?: string; createdBefore: Date; expectedCount: number; dryRun: boolean }) {
+    return await db.transaction(async (tx) => {
+      const scope = and(
+        eq(reviewQueue.sourceType, "dead_letter_job"),
+        eq(reviewQueue.status, "pending"),
+        sql`${reviewQueue.metadata}->>'queueName' = ${input.queueName}`,
+        input.jobName ? sql`${reviewQueue.metadata}->>'jobName' = ${input.jobName}` : undefined,
+        lt(reviewQueue.createdAt, input.createdBefore),
+      );
+      await tx.execute(sql`SET LOCAL statement_timeout = '60s'`);
+      const [row] = await tx.select({ n: count() }).from(reviewQueue).where(scope);
+      const matched = Number(row?.n ?? 0);
+      const countMatches = matched === input.expectedCount;
+      if (input.dryRun || !countMatches || matched === 0) return { matched, archived: 0, countMatches };
+      const updated = await tx.update(reviewQueue)
+        .set({ status: "archived", updatedAt: new Date() })
+        .where(scope)
+        .returning({ id: reviewQueue.id });
+      return { matched, archived: updated.length, countMatches };
+    });
   }
 
   async getReviewQueueItem(id: number) {

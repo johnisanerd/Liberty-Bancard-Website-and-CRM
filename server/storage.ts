@@ -263,9 +263,10 @@ export interface IStorage {
   createRfi(rfi: InsertRfi): Promise<typeof rfis.$inferSelect>;
   updateRfi(id: number, rfi: UpdateRfiRequest): Promise<typeof rfis.$inferSelect | undefined>;
 
-  getReviewQueue(status?: string): Promise<import("@shared/schema").ReviewQueueItem[]>;
+  getReviewQueue(status?: string, options?: { excludeDeadLetters?: boolean }): Promise<import("@shared/schema").ReviewQueueItem[]>;
   getReviewQueuePendingCount(): Promise<number>;
-  getReviewQueueAggregates(): Promise<{ pending: number; approved: number; total: number }>;
+  getReviewQueueAggregates(): Promise<{ pending: number; approved: number; total: number; deadLetter: { pending: number; archived: number; total: number } }>;
+  archiveDeadLetterEvents(input: { queueName: string; jobName?: string; createdBefore: Date; expectedCount: number; dryRun: boolean }): Promise<{ matched: number; archived: number; countMatches: boolean }>;
   getReviewQueueItem(id: number): Promise<import("@shared/schema").ReviewQueueItem | undefined>;
   createReviewQueueItem(data: import("@shared/schema").InsertReviewQueueItem): Promise<import("@shared/schema").ReviewQueueItem>;
   updateReviewQueueItem(id: number, updates: Partial<import("@shared/schema").InsertReviewQueueItem>): Promise<import("@shared/schema").ReviewQueueItem | undefined>;
