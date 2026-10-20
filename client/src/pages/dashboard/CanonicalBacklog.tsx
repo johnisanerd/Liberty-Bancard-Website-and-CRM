@@ -260,6 +260,9 @@ function ReleasePanel() {
   const [limit, setLimit] = useState(10);
   const [hours, setHours] = useState(24);
   const [preview, setPreview] = useState<ReleasePreview | null>(null);
+  // A repeated request is answered with the release it already created. That is shown as its own persistent
+  // state (not only a toast) so it is never read as a second, new release.
+  const [replayed, setReplayed] = useState(false);
   const { data: status, isLoading, isError, error: statusError, refetch: refetchStatus, isFetching: statusFetching } = useQuery<ReleaseStatus>({
     queryKey: ["/api/canonical-enrichment/release"], staleTime: 60_000, refetchOnWindowFocus: false,
   });
@@ -282,17 +285,17 @@ function ReleasePanel() {
   };
   const previewMutation = useMutation({
     mutationFn: async () => (await apiRequest("POST", "/api/canonical-enrichment/release/preview", { limit })).json() as Promise<ReleasePreview>,
-    onSuccess: p => setPreview({ ...p, commandKey: crypto.randomUUID() }), onError: fail,
+    onSuccess: p => { setReplayed(false); setPreview({ ...p, commandKey: crypto.randomUUID() }); }, onError: fail,
   });
   const executeMutation = useMutation({
     mutationFn: async () => (await apiRequest("POST", "/api/canonical-enrichment/release/execute",
       { limit, snapshotHash: preview!.snapshotHash, expiresInHours: hours }, { "Idempotency-Key": preview!.commandKey! })).json(),
-    onSuccess: (result: any) => { setPreview(null); refresh(); toast({ title: result?.replayed ? "Replayed: this release was already committed" : "Recipients released", description: "They are active inside paused sequences and still need every send check; the outbound pause is unchanged." + auditNote(result) }); },
+    onSuccess: (result: any) => { setPreview(null); setReplayed(result?.replayed === true); refresh(); toast({ title: result?.replayed ? "Replayed: this release was already committed" : "Recipients released", description: "They are active inside paused sequences and still need every send check; the outbound pause is unchanged." + auditNote(result) }); },
     onError: fail,
   });
   const revokeMutation = useMutation({
     mutationFn: async () => (await apiRequest("POST", "/api/canonical-enrichment/release/revoke")).json(),
-    onSuccess: (result: any) => { refresh(); toast({ title: "Release revoked", description: "Unsent recipients returned to held; started journeys stopped where they are." + auditNote(result) }); },
+    onSuccess: (result: any) => { setReplayed(false); refresh(); toast({ title: "Release revoked", description: "Unsent recipients returned to held; started journeys stopped where they are." + auditNote(result) }); },
     onError: fail,
   });
   const resolveMutation = useMutation({
@@ -319,6 +322,11 @@ function ReleasePanel() {
             ? "Your account is not permitted to read or change releases."
             : "The release state could not be read. Nothing is shown as released, and release controls stay off until it loads."}
           {!statusDenied && <Button className="ml-3" variant="outline" size="sm" onClick={() => void refetchStatus()} disabled={statusFetching}>Retry</Button>}
+        </p>
+      )}
+      {replayed && (
+        <p className="mt-3 text-sm" role="status" data-testid="release-replayed">
+          Replayed: this request matched a release that was already committed. No new release was created.
         </p>
       )}
       {status && (() => {

@@ -43,6 +43,8 @@ globalThis.fetch = (async (input: any, init: any = {}) => {
     if (releaseMode === "expired") return json({ ...base, latest: rec("r1"), admissionOpen: false, live: false });
     return json({ ...base, latest: rec("r1", { revokedAt: "2026-10-12T00:00:00Z" }), admissionOpen: false, live: false });
   }
+  if (url.pathname === "/api/canonical-enrichment/release/preview") return json({ snapshotHash: "h1", size: 2, dailyCapacityRemaining: 30, qualifiedPrimaryRecipients: 2, continuations: 0, notes: [] });
+  if (url.pathname === "/api/canonical-enrichment/release/execute") return json({ replayed: true, releaseId: "r1" });
   return json({}, 404);
 }) as any;
 
@@ -95,5 +97,21 @@ assert.ok(!byTest("release-denied")!.textContent!.includes("Retry"), "denied has
 await act(async () => root.unmount());
 
 assert.ok(requests.every(r => r.method === "GET"), "viewing never issues a mutation");
+
+// 4. A repeated release request is answered with the release it already created: the panel names that
+//    persistently and never presents it as a new release.
+requests.length = 0;
+releaseMode = "none";
+root = await mount();
+await waitFor(() => !!byTest("release-state-none"), "none state before preview");
+const buttonByText = (label: string) => [...document.querySelectorAll("button")].find(b => b.textContent?.trim().startsWith(label)) as HTMLButtonElement | undefined;
+await act(async () => { buttonByText("Preview")!.click(); });
+await waitFor(() => !!buttonByText("Release 2 recipients"), "preview enables release");
+assert.ok(!byTest("release-replayed"), "no replay notice before executing");
+await act(async () => { buttonByText("Release 2 recipients")!.click(); });
+await waitFor(() => !!byTest("release-replayed"), "replay state after execute");
+assert.ok(byTest("release-replayed")!.textContent!.includes("No new release was created"), "replay copy");
+assert.ok(requests.some(r => r.method === "POST" && r.path.endsWith("/release/execute")), "execute was requested");
+await act(async () => root.unmount());
 console.log("CANONICAL_BACKLOG_UI_PASS");
 process.exit(0);
