@@ -40,11 +40,11 @@ try {
 
   // Backlog process: no queue manager is initialised in this fixture (starting the worker fleet is out of bounds), so the
   // route reports truthfully that nothing was queued. A failing audit write must not change that outcome or hide the result.
-  const process1=await h.request("admin","POST","/api/canonical-enrichment/backlog/process",{scope:"local_only"});
+  const process1=await h.request("admin","POST","/api/canonical-enrichment/backlog/process",{scope:"local_only",maxRows:500,timeBudgetSeconds:120,commandId:randomUUID()});
   assert.equal(process1.status,503,"an unavailable queue is not reported as accepted");
   assert.equal(process1.body.accepted,false);assert.ok(/nothing was queued/i.test(process1.body.message));
   assert.ok(process1.body.audit==="failed"||process1.body.audit==="recorded");
-  const process2=await h.request("admin","POST","/api/canonical-enrichment/backlog/process",{scope:"local_only"});
+  const process2=await h.request("admin","POST","/api/canonical-enrichment/backlog/process",{scope:"local_only",maxRows:500,timeBudgetSeconds:120,commandId:randomUUID()});
   assert.equal(process2.body.audit,"failed","the injected audit failure is reported beside the real result");
   assert.equal(process2.body.accepted,false,"audit failure does not turn a not-queued request into accepted");
   const badProcess=await h.request("admin","POST","/api/canonical-enrichment/backlog/process",{scope:"local_only",maxRows:-5});

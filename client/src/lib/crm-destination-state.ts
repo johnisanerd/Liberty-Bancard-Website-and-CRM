@@ -212,6 +212,15 @@ export function c4WorkspaceUrl<T extends string>(
   return destinationUrl(path, params, hash);
 }
 
+/** Typed tab/area change inside one destination. Only registered entity context (contact, company, business, deal,
+ * source ID and a valid `from`) and the explicitly named selection keys survive; arbitrary or stale query state does
+ * not. The caller pushes the result so Back/Forward restore the previous selection. */
+export function typedTabUrl(path: string, search: string, hash: string, selection: Record<string, string | null>): string {
+  const params = safeParams(search, safeContextKeys);
+  for (const [key, value] of Object.entries(selection)) if (value !== null) params.set(key, value);
+  return destinationUrl(path, params, hash);
+}
+
 export function financialState(search: string) {
   const params = new URLSearchParams(search);
   // Explicit child wins even when a legacy tab also names another valid child.

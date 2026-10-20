@@ -3,7 +3,7 @@ import { readTaskMetrics, taskReadPredicate } from "../services/task-read-author
 import { isAuthenticated, isDashboardUser, requireRole } from "../replit_integrations/auth";
 import { storage } from "../storage";
 import { pool } from "../db";
-import { contacts, toolClickEvents } from "@shared/schema";
+import { contacts, toolClickEvents, OPEN_SALES_LEAD_STAGES } from "@shared/schema";
 import { isGhlConfigured, sendGhlInternalNotification } from "../services/ghl";
 import { buildWeeklyDigest } from "../services/digest-service";
 import { db } from "../db";
@@ -215,7 +215,9 @@ export function registerAnalyticsRoutes(app: Express, readOptions?: {
       for (const row of dealsAggRow.rows) {
         const cnt = parseInt(row.cnt, 10) || 0;
         stagesCount[row.stage] = (stagesCount[row.stage] ?? 0) + cnt;
-        if (row.pipeline === "sales" && row.stage !== "Closed Won" && row.stage !== "Closed Lost") {
+        // Same open-stage definition as Outreach Command and the conversion deal authority (OPEN_SALES_LEAD_STAGES).
+        // Legacy or unrecognized sales stages are counted in stagesBreakdown but never as "open".
+        if (row.pipeline === "sales" && (OPEN_SALES_LEAD_STAGES as readonly string[]).includes(row.stage)) {
           totalActiveSales += cnt;
         }
         if (row.pipeline === "onboarding") {
@@ -249,6 +251,9 @@ export function registerAnalyticsRoutes(app: Express, readOptions?: {
       res.json({
         pipeline: {
           totalActive: totalActiveSales,
+          // Scope of totalActive: every owner for admin/manager; owned-or-unassigned deals for other roles.
+          // Outreach Command's openSalesProduction counts the same deals for ALL owners regardless of role.
+          totalActiveScope: actor?.role === "admin" || actor?.role === "manager" ? "all_owners" : "owned_or_unassigned",
           closedWon30d,
           closedLost30d,
           conversionRate: recentDealsCount > 0 ? Math.round((closedWon30d / recentDealsCount) * 100) : 0,

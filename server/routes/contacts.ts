@@ -157,6 +157,11 @@ function isUniqueEmailViolation(err: any): boolean {
   return err?.code === "23505" && (err?.constraint?.includes("email") || err?.message?.includes("contacts_email_unique_idx"));
 }
 
+/** GET /api/contacts/<literal> readers registered by modules that load after the contacts module
+ * (campaigns, crm-operations). The contact-detail route must hand these to their own handlers.
+ * scripts/test-stage3-c3-contracts.ts fails if another later-registered literal is added without being listed. */
+export const CONTACT_COLLECTION_READERS_REGISTERED_LATER: ReadonlySet<string> = new Set(["readiness-stats", "verticals", "duplicates"]);
+
 export function registerContactsRoutes(app: Express, creationDependencies: Partial<{
   writeContact: typeof writeContact;
   orchestrateInboundRequest: typeof orchestrateInboundRequest;
@@ -1034,8 +1039,11 @@ export function registerContactsRoutes(app: Express, creationDependencies: Parti
     }
   });
 
-  app.get("/api/contacts/:id", isDashboardUser, async (req, res) => {
+  app.get("/api/contacts/:id", isDashboardUser, async (req, res, next) => {
     try {
+      // Literal collection readers registered by later modules share this one-segment shape. Without this
+      // deferral the dynamic route consumed them as a contact id (production 404 on readiness-stats).
+      if (CONTACT_COLLECTION_READERS_REGISTERED_LATER.has(String(req.params.id))) return next("route");
       const contactId = Number(req.params.id);
       if (!Number.isInteger(contactId) || contactId <= 0) {
         return res.status(404).json({ message: "Not found", code: "NOT_FOUND" });

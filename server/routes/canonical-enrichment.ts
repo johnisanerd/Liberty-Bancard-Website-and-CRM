@@ -8,7 +8,7 @@ import { isDashboardUser, requireRole } from "../replit_integrations/auth";
 import { readCanonicalEnrichmentStatus } from "../services/canonical-enrichment-status";
 import { readCanonicalEnrichmentBacklog } from "../services/canonical-enrichment-backlog";
 import {
-  BacklogProcessInputError, enqueueBacklogProcess, readLastBacklogPriorityRun, validateBacklogProcessRequest,
+  BacklogIntentConflictError, BacklogProcessInputError, enqueueBacklogProcess, readLastBacklogPriorityRun, requireBacklogCommandId, validateBacklogProcessRequest,
 } from "../services/canonical-enrichment-backlog-run";
 import { storage } from "../storage";
 import {
@@ -214,25 +214,28 @@ export function registerCanonicalEnrichmentRoutes(app: Express) {
   // It adds no new send, spend or enrollment path; ordinary scheduled passes continue regardless.
   app.post("/api/canonical-enrichment/backlog/process", isDashboardUser, requireRole("admin"), async (req, res) => {
     let request;
-    try { request = validateBacklogProcessRequest(req.body); }
+    let commandId: string;
+    try { request = validateBacklogProcessRequest(req.body); commandId = requireBacklogCommandId(req.body); }
     catch (error) {
       if (error instanceof BacklogProcessInputError) return res.status(400).json({ message: error.message });
       return res.status(400).json({ message: "Invalid request." });
     }
+    const actorId = String((req.user as any)?.id ?? "");
     let result;
     try {
-      result = await enqueueBacklogProcess(request);
+      result = await enqueueBacklogProcess(request, commandId, actorId);
     } catch (error) {
+      if (error instanceof BacklogIntentConflictError) return res.status(409).json({ code: "INTENT_CONFLICT", message: error.message });
       logReadFailure("backlog process enqueue", error, Date.now());
-      return res.status(503).json({ code: "PROCESS_UNCONFIRMED", message: "The request could not be confirmed as queued. It may have been queued; the same request is deduplicated per ten-minute window, so repeating it cannot queue it twice." });
+      return res.status(503).json({ code: "PROCESS_UNCONFIRMED", message: "The request could not be confirmed as queued. It may have been queued; repeating the same request is recognized and cannot queue it twice." });
     }
     // Queued (or deduplicated) at this point; the audit write can no longer undo that.
     const audit = await auditCommittedEffect({
       action: "canonical_backlog_process_requested", entityType: "canonical_enrichment_backlog",
       entityKey: result.jobId ?? "not_queued", userId: String((req.user as any)?.id ?? ""),
-      details: { ...request, accepted: result.accepted, alreadyQueued: result.alreadyQueued },
+      details: { ...request, commandId, outcome: result.outcome, accepted: result.accepted, alreadyQueued: result.alreadyQueued },
     }, "backlog process request");
-    res.status(result.accepted ? 202 : 503).json({ ...result, audit });
+    res.status(result.accepted ? 202 : 503).json({ ...result, ...(result.accepted ? {} : { code: "QUEUE_UNAVAILABLE" }), audit });
   });
 
   // Read-only, paginated original-coordinate ledger. Bounded: at most 100 rows per page.

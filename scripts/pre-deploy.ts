@@ -125,6 +125,8 @@ export const MANDATORY_SUITES: Suite[] = [
   {name:"Stage 3 C3 Destination Codec and Source Contracts",script:"scripts/test-stage3-c3-contracts.ts",timeoutSecs:60},
   {name:"Stage 3 C3 Sequence DTO and Recovery Handlers",script:"scripts/test-stage3-c3-sequences.ts",timeoutSecs:240,requiresDisposableTestDatabase:true},
   {name:"Stage 3 C3 Role Matrix",script:"scripts/test-stage3-c3-roles.ts",timeoutSecs:240,requiresDisposableTestDatabase:true},
+  {name:"Stage 3 C3 Backlog Command Intent and Queue",script:"scripts/test-stage3-c3-backlog-command.ts",timeoutSecs:240,requiresDisposableTestDatabase:true},
+  {name:"Stage 3 C3 Open Sales Deal Definition",script:"scripts/test-stage3-c3-open-deals.ts",timeoutSecs:240,requiresDisposableTestDatabase:true},
   {name:"Stage 3 C3 Source Prospects Pagination",script:"scripts/test-stage3-c3-prospects.ts",timeoutSecs:240,requiresDisposableTestDatabase:true},
   {name:"Stage 3 C3 Committed Effect Versus Audit Failure",script:"scripts/test-stage3-c3-post-commit.ts",timeoutSecs:240,requiresDisposableTestDatabase:true},
   {name:"Stage 3 C3 Bounded Mounted Browser",script:"scripts/test-stage3-c3-browser.ts",timeoutSecs:480,requiresDisposableTestDatabase:true},

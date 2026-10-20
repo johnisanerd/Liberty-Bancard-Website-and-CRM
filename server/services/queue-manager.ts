@@ -2753,7 +2753,7 @@ export class QueueManager {
           // Optional operator request from the enrichment backlog page. Same workers, same gates:
           // it only enlarges the local staged-email budget, repeats local recipient preparation and,
           // when asked, wakes the already-governed provider ticks. Ordinary scheduled ticks carry none.
-          const { parseBacklogProcessRequest, recordBacklogPriorityRun } = await import("./canonical-enrichment-backlog-run");
+          const { parseBacklogProcessRequest, recordBacklogPriorityRun, backlogValidationWakeJobId, backlogPassBounds } = await import("./canonical-enrichment-backlog-run");
           const priorityRequest = parseBacklogProcessRequest((_job.data as any)?.priorityRequest);
           const priorityRun: Record<string, unknown> = { staged: null, preparationPasses: 0, prepared: 0, providerTicks: "not_requested" };
           const priorityStartedAt = new Date().toISOString();
@@ -2796,7 +2796,8 @@ export class QueueManager {
               // Pages of 100 until the queue is empty, 5 minutes elapse or 2,000 candidates are examined.
               // The old fixed 25 per 30-minute tick left ~25k staged emails waiting for weeks.
               limit:100,actorId:"system:staged-email-materialization",
-              drain:{timeBudgetMs:5*60_000,maxRows:2000},
+              // An operator request carries its own validated bounds; scheduled ticks keep the defaults.
+              drain:backlogPassBounds(priorityRequest).stagedDrain,
             });
             priorityRun.staged={examined:staged.examined,pages:staged.pages,created:staged.created,linkedExisting:staged.linkedExisting,alreadyLinked:staged.alreadyLinked,held:staged.held,failed:staged.failed};
             if (staged.examined>0) console.log(`[StagedEmailMaterialization] ${JSON.stringify({examined:staged.examined,pages:staged.pages,created:staged.created,linkedExisting:staged.linkedExisting,alreadyLinked:staged.alreadyLinked,held:staged.held,failed:staged.failed})}`);
@@ -2816,7 +2817,11 @@ export class QueueManager {
             // time share; an operator request keeps passing while it is still making progress, bounded to 10 minutes.
             const preparationStartedAt=Date.now();
             let lastStaleExamined=0;
-            for (let pass=0;pass<(priorityRequest ? 10 : 1);pass++) {
+            // The requested time budget also bounds starting further recipient-selection passes (a started pass finishes);
+            // at least one pass always runs, and the old 10-minute ceiling can no longer exceed the request.
+            const {preparationDeadlineMs,maxPreparationPasses}=backlogPassBounds(priorityRequest);
+            for (let pass=0;pass<maxPreparationPasses;pass++) {
+              if (priorityRequest && pass>=1 && Date.now()-preparationStartedAt>=preparationDeadlineMs) break;
               if (priorityRequest && pass>=3 && (lastStaleExamined===0 || Date.now()-preparationStartedAt>10*60_000)) break;
               const preparations=await processCanonicalRecipientPreparationTick({staleBudgetMs:priorityRequest ? 90_000 : 60_000});
               lastStaleExamined=Number((preparations as any).stalePackage?.examined ?? 0);
@@ -2840,7 +2845,7 @@ export class QueueManager {
               // Wake the shared validation tick once; its own pause, budget and receipt rules still apply.
               try {
                 const validationQueue = this.queues.get(QUEUE_NAMES.SFP_CONTINUOUS_VALIDATION);
-                await validationQueue?.add("tick", {}, { jobId: `canonical-backlog-validation:${Math.floor(Date.now() / 600_000)}` });
+                await validationQueue?.add("tick", {}, { jobId: backlogValidationWakeJobId() });
               } catch (error: any) {
                 priorityRun.providerTicks = "validation_wake_failed";
                 console.error("[CanonicalBacklog] validation wake failed", safeCanonicalEnrichmentFailureDiagnostics(error));

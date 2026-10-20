@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PauseCircle, RefreshCw } from "lucide-react";
 import {
@@ -14,6 +14,9 @@ import { apiRequest } from "@/lib/queryClient";
 
 const numberFormat = new Intl.NumberFormat("en-US");
 const n = (value: number) => numberFormat.format(value);
+const OLDER_RUN = "Unavailable for this older run";
+/** Finite counts only; anything else is explicitly unavailable, never NaN and never a fabricated zero. */
+const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? n(value) : OLDER_RUN);
 const humanize = (value: string) => value.replace(/[_-]+/g, " ").replace(/\b\w/g, c => c.toUpperCase());
 const when = (value: string) => {
   const d = new Date(value);
@@ -112,7 +115,7 @@ const definitivelyRejected = (error: unknown) => error instanceof Error && /^4\d
 const auditNote = (result: any) => result?.audit === "failed"
   ? " The change is committed, but its audit record could not be written; tell an administrator." : "";
 
-function ProcessPanel({ isAdmin, last, lastUnavailable = false }: { isAdmin: boolean; last: CanonicalEnrichmentBacklog["lastPriorityRun"]; lastUnavailable?: boolean }) {
+export function ProcessPanel({ isAdmin, last, lastUnavailable = false }: { isAdmin: boolean; last: CanonicalEnrichmentBacklog["lastPriorityRun"]; lastUnavailable?: boolean }) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [scope, setScope] = useState<BacklogProcessRequest["scope"]>("local_only");
@@ -122,20 +125,32 @@ function ProcessPanel({ isAdmin, last, lastUnavailable = false }: { isAdmin: boo
   const valid = Number.isInteger(maxRows) && maxRows >= limits.maxRows.min && maxRows <= limits.maxRows.max
     && Number.isInteger(timeBudgetSeconds) && timeBudgetSeconds >= limits.timeBudgetSeconds.min
     && timeBudgetSeconds <= limits.timeBudgetSeconds.max;
+  // One request ID per normalized payload, kept across an unconfirmed outcome so a repeat is recognized by the
+  // server instead of queueing a second pass. A changed payload gets a new ID; a settled outcome clears it.
+  const intent = useRef<{ key: string; id: string } | null>(null);
   const mutation = useMutation({
-    mutationFn: async () => (await apiRequest("POST", "/api/canonical-enrichment/backlog/process",
-      { scope, maxRows, timeBudgetSeconds })).json() as Promise<BacklogProcessResponse>,
+    mutationFn: async () => {
+      const key = JSON.stringify({ scope, maxRows, timeBudgetSeconds });
+      if (intent.current?.key !== key) intent.current = { key, id: crypto.randomUUID() };
+      return (await apiRequest("POST", "/api/canonical-enrichment/backlog/process",
+        { scope, maxRows, timeBudgetSeconds, commandId: intent.current.id })).json() as Promise<BacklogProcessResponse>;
+    },
     onSuccess: (result) => {
+      intent.current = null;
       toast({ title: result.alreadyQueued ? "Already requested" : "Queued", description: result.message + auditNote(result) });
       queryClient.invalidateQueries({ queryKey: ["/api/canonical-enrichment/backlog"] });
     },
     onError: (error: Error) => {
-      if (definitivelyRejected(error)) {
+      if (/QUEUE_UNAVAILABLE/.test(error.message)) {
+        intent.current = null;
+        toast({ title: "Nothing was queued", description: "The background worker queue is not available from this server. Ordinary scheduled passes continue.", variant: "destructive" });
+      } else if (definitivelyRejected(error)) {
+        intent.current = null;
         toast({ title: "Request rejected", description: error.message, variant: "destructive" });
       } else {
-        // Unknown outcome: the pass may have been queued. The request is deduplicated per window.
+        // Unknown outcome: the pass may have been queued. Repeating the same request is recognized, not queued twice.
         toast({ title: "Request not confirmed", variant: "destructive",
-          description: "The pass may have been queued. Check the last requested pass below before repeating; repeating inside the same ten-minute window cannot queue it twice." });
+          description: "The pass may have been queued. Check the last requested pass below, or repeat the same request: it is recognized and cannot be queued twice." });
         queryClient.invalidateQueries({ queryKey: ["/api/canonical-enrichment/backlog"] });
       }
     },
@@ -145,8 +160,9 @@ function ProcessPanel({ isAdmin, last, lastUnavailable = false }: { isAdmin: boo
       <h3 className="font-semibold">Process highest-priority backlog (optional)</h3>
       <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">
         Ordinary scheduled passes already work this backlog automatically; you never need this button. It asks the
-        same background worker for a larger pass now: a bigger staged-email batch, up to three recipient-selection
-        passes, and nothing that sends. Work already stored is reused, and nothing is bought twice.
+        same background worker for a larger pass now: a staged-email batch of up to the row limit below, repeated
+        recipient-selection passes, and nothing that sends. The time budget applies to the staged-email stage and,
+        separately, to starting further recipient-selection passes; a pass already started finishes. Work already stored is reused, and nothing is bought twice.
       </p>
       <div className="mt-4 grid gap-4 md:grid-cols-3">
         <label className="text-sm">
@@ -197,9 +213,12 @@ function ProcessPanel({ isAdmin, last, lastUnavailable = false }: { isAdmin: boo
           <p className="font-medium">Last requested pass · finished {when(last.finishedAt)}</p>
           <p className="mt-1 text-muted-foreground">
             {last.staged
-              ? `Staged emails: ${n(last.staged.examined)} examined, ${n(last.staged.created + last.staged.linkedExisting)} linked to contacts, ${n(last.staged.held)} held, ${n(last.staged.failed)} failed. `
+              ? `Staged emails: ${count(last.staged.examined)} examined, ${
+                  typeof last.staged.created === "number" && typeof last.staged.linkedExisting === "number"
+                    ? n(last.staged.created + last.staged.linkedExisting) : OLDER_RUN} linked to contacts, ${count(last.staged.held)} held, ${count(last.staged.failed)} failed. `
               : "Staged emails were not processed in that pass. "}
-            Recipient selection: {last.preparationPasses} pass{last.preparationPasses === 1 ? "" : "es"}, {n(last.prepared)} recipients prepared.
+            Recipient selection: {typeof last.preparationPasses === "number" && Number.isFinite(last.preparationPasses)
+              ? `${last.preparationPasses} pass${last.preparationPasses === 1 ? "" : "es"}` : OLDER_RUN}, {count(last.prepared)} recipients prepared.
             {" "}Provider passes: {humanize(last.providerTicks)}.
           </p>
         </div>

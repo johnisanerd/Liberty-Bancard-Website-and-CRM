@@ -130,6 +130,124 @@ try{
     check((await h.pool.query(`SELECT 1 FROM follow_up_sequences WHERE name=$1`,[`${seqName}-demoted`])).rowCount===0,"no sequence was created by the demoted session");
   } finally { await h.pool.query(`UPDATE users SET role='manager' WHERE id=$1`,[`${h.prefix}-manager`]); await mb.close(); }
 
+  // ── F. Create recovery in the mounted editor: lost response, double click, close/reload, partial steps, account change ──
+  // The page's fetch is wrapped so the REAL request reaches the server and commits, then the client sees a network failure.
+  const loseNext=`(()=>{if(!window.__origFetch)window.__origFetch=window.fetch.bind(window);window.__lose={post:0,step:0};
+    window.fetch=async(input,init)=>{const url=String(typeof input==="string"?input:input.url);const method=(init&&init.method)||"GET";
+      const response=await window.__origFetch(input,init);
+      if(method==="POST"&&/\\/api\\/sequences$/.test(url)&&window.__lose.post>0){window.__lose.post--;throw new TypeError("Failed to fetch");}
+      if(method==="POST"&&/\\/api\\/sequences\\/\\d+\\/steps$/.test(url)&&window.__lose.step>0){window.__lose.step--;throw new TypeError("Failed to fetch");}
+      return response;};})()`;
+  const fb=await open("manager");
+  const fcount=(sel:string)=>fb.evaluate(`document.querySelectorAll(${JSON.stringify(sel)}).length`) as Promise<number>;
+  const rows=async(name:string)=>(await h.pool.query(`SELECT id,total_steps,status FROM follow_up_sequences WHERE name=$1`,[name])).rows;
+  const addStep=async(index:number,subject:string,body:string)=>{
+    await fb.click('[data-testid="button-add-step"]');
+    await until(async()=>await fcount(`[data-testid="input-step-subject-${index}"]`)>0,`step ${index} editor`);
+    await fb.set(`[data-testid="input-step-subject-${index}"]`,subject);await fb.set(`[data-testid="input-step-body-${index}"]`,body);
+  };
+  try{
+    await fb.call("Emulation.setDeviceMetricsOverride",{width:1280,height:900,deviceScaleFactor:1,mobile:false});
+    await fb.navigate(route);
+    await until(async()=>await fcount('[data-testid="button-create-sequence"]')>0,"create button (F)");
+    // F1. Lost response then retry: one sequence, one audit row, one receipt, recovered ID, step saved once.
+    const lost=`${seqName}-lost`;
+    await fb.click('[data-testid="button-create-sequence"]');
+    await until(async()=>await fcount('[data-testid="input-seq-name"]')>0,"create dialog (F1)");
+    await fb.set('[data-testid="input-seq-name"]',lost);
+    await addStep(0,"Lost response step","Lost response body");
+    await fb.evaluate(loseNext);await fb.evaluate(`window.__lose.post=1`);
+    await fb.click('[data-testid="button-save-sequence"]');
+    await until(async()=>(await rows(lost)).length===1,"create committed server-side despite the lost response");
+    await until(async()=>await fcount('[data-testid="sequence-create-unconfirmed"]')>0,"unconfirmed-create notice");
+    check((await fb.evaluate(`document.querySelector('[data-testid="input-seq-name"]').disabled`))===true,"sequence fields are locked while the create is unconfirmed");
+    check((await fb.evaluate(`sessionStorage.getItem("sequence-create-intent:v1")!==null`))===true,"the create command is retained for recovery");
+    check((await rows(lost))[0].total_steps===0,"the unconfirmed create stored no steps yet");
+    await fb.click('[data-testid="button-save-sequence"]');
+    await until(async()=>(await h.pool.query(`SELECT 1 FROM sequence_steps WHERE sequence_id=$1`,[(await rows(lost))[0].id])).rowCount===1,"retry saved the step");
+    await until(async()=>(await fb.evaluate(`sessionStorage.getItem("sequence-create-intent:v1")===null`))===true,"retained command cleared after success");
+    const lostId=(await rows(lost))[0].id;
+    check((await rows(lost)).length===1,"retry after a lost response recovered the committed ID: still exactly one sequence");
+    check((await h.pool.query(`SELECT count(*)::int n FROM audit_logs WHERE action='sequence_created' AND entity_id=$1`,[lostId])).rows[0].n===1,"exactly one create audit row");
+    check((await h.pool.query(`SELECT count(*)::int n FROM sequence_command_receipts WHERE sequence_id=$1`,[lostId])).rows[0].n===1,"exactly one create receipt");
+    check((await rows(lost))[0].status==="paused","the recovered sequence stays paused");
+    const createRequests=fb.requests.filter(r=>r.method==="POST"&&/\/api\/sequences$/.test(r.url));
+    check(createRequests.length===2,`the retry reused the same command (two POSTs, ${createRequests.length} seen)`);
+
+    // F2. Close and reload while unconfirmed: the retained command is offered and confirmation never duplicates.
+    const reload=`${seqName}-reload`;
+    await fb.navigate(route);
+    await until(async()=>await fcount('[data-testid="button-create-sequence"]')>0,"create button (F2)");
+    await fb.click('[data-testid="button-create-sequence"]');
+    await until(async()=>await fcount('[data-testid="input-seq-name"]')>0,"create dialog (F2)");
+    await fb.set('[data-testid="input-seq-name"]',reload);
+    await addStep(0,"Reload step","Reload body");
+    await fb.evaluate(loseNext);await fb.evaluate(`window.__lose.post=1`);
+    await fb.click('[data-testid="button-save-sequence"]');
+    await until(async()=>(await rows(reload)).length===1,"F2 create committed");
+    await until(async()=>await fcount('[data-testid="sequence-create-unconfirmed"]')>0,"F2 unconfirmed notice");
+    await fb.click('[data-testid="button-cancel-create"]');
+    await until(async()=>await fcount('[data-testid="sequence-create-retained"]')>0,"retained-create banner after closing the dialog");
+    await fb.navigate(route);
+    await until(async()=>await fcount('[data-testid="sequence-create-retained"]')>0,"retained-create banner after reload");
+    await fb.click('[data-testid="button-confirm-create"]');
+    await until(async()=>await fcount('[data-testid="button-open-saved-sequence"]')>0,"confirmation recovered the committed ID and offers the saved sequence");
+    check((await fb.evaluate(`JSON.parse(sessionStorage.getItem("sequence-create-intent:v1")).sequenceId`))===(await rows(reload))[0].id,"the recovered ID equals the committed sequence");
+    await fb.click('[data-testid="button-open-saved-sequence"]');
+    await until(async()=>await fcount('[data-testid="sequence-create-retained"]')===0,"banner cleared after opening the saved sequence");
+    check((await fb.evaluate(`sessionStorage.getItem("sequence-create-intent:v1")===null`))===true,"the retained command is cleared once the saved sequence is opened");
+    check((await rows(reload)).length===1,"confirming after reload replays the command: still one sequence");
+    check((await h.pool.query(`SELECT count(*)::int n FROM audit_logs WHERE action='sequence_created' AND entity_id=$1`,[(await rows(reload))[0].id])).rows[0].n===1,"confirmation wrote no second audit row");
+
+    // F3. Partially saved steps: a differing saved step stops the save and is named; restoring it completes the save.
+    const partial=`${seqName}-partial`;
+    await fb.navigate(route);
+    await until(async()=>await fcount('[data-testid="button-create-sequence"]')>0,"create button (F3)");
+    await fb.click('[data-testid="button-create-sequence"]');
+    await until(async()=>await fcount('[data-testid="input-seq-name"]')>0,"create dialog (F3)");
+    await fb.set('[data-testid="input-seq-name"]',partial);
+    await addStep(0,"First saved","First body");
+    await addStep(1,"Second pending","Second body");
+    await fb.evaluate(loseNext);await fb.evaluate(`window.__lose.step=1`);
+    // The first step POST is the one made to fail after committing, so step 1 is persisted and the client is unconfirmed.
+    await fb.click('[data-testid="button-save-sequence"]');
+    await until(async()=>await fcount('[data-testid="sequence-partial-create"]')>0,"partial-create notice");
+    const partialId=(await rows(partial))[0].id;
+    check((await h.pool.query(`SELECT count(*)::int n FROM sequence_steps WHERE sequence_id=$1`,[partialId])).rows[0].n===1,"only the first step was stored before the failure");
+    await fb.set('[data-testid="input-step-subject-0"]',"Edited after save");
+    await fb.click('[data-testid="button-save-sequence"]');
+    await settle(1500);
+    check((await h.pool.query(`SELECT count(*)::int n FROM sequence_steps WHERE sequence_id=$1`,[partialId])).rows[0].n===1,"a differing saved step blocked further writes");
+    check((await h.pool.query(`SELECT subject FROM sequence_steps WHERE sequence_id=$1`,[partialId])).rows[0].subject==="First saved","the saved step was not overwritten by the retry");
+    await fb.set('[data-testid="input-step-subject-0"]',"First saved");
+    await fb.click('[data-testid="button-save-sequence"]');
+    await until(async()=>(await h.pool.query(`SELECT count(*)::int n FROM sequence_steps WHERE sequence_id=$1`,[partialId])).rows[0].n===2,"restored editor completed the missing step");
+    check((await rows(partial)).length===1,"partial recovery never created a second sequence");
+
+    // F4. Account change: the retained command and draft belong to the previous account version and are discarded.
+    const switched=`${seqName}-switch`;
+    await fb.navigate(route);
+    await until(async()=>await fcount('[data-testid="button-create-sequence"]')>0,"create button (F4)");
+    await fb.click('[data-testid="button-create-sequence"]');
+    await until(async()=>await fcount('[data-testid="input-seq-name"]')>0,"create dialog (F4)");
+    await fb.set('[data-testid="input-seq-name"]',switched);
+    await addStep(0,"Switch step","Switch body");
+    await fb.evaluate(loseNext);await fb.evaluate(`window.__lose.post=1`);
+    await fb.click('[data-testid="button-save-sequence"]');
+    await until(async()=>(await rows(switched)).length===1,"F4 create committed");
+    await fb.click('[data-testid="button-cancel-create"]');
+    await until(async()=>await fcount('[data-testid="sequence-create-retained"]')>0,"F4 retained banner");
+    await h.pool.query(`UPDATE users SET account_version=account_version+1 WHERE id=$1`,[`${h.prefix}-manager`]);
+    try {
+      await fb.navigate(route);
+      await until(async()=>await fcount('[data-testid="button-create-sequence"]')>0,"create button after account change");
+      await settle(500);
+      check(await fcount('[data-testid="sequence-create-retained"]')===0,"another account version is never offered the previous retained create");
+      check((await fb.evaluate(`sessionStorage.getItem("sequence-create-intent:v1")===null`))===true,"the retained command was quarantined (removed) on account change");
+    } finally { await h.pool.query(`UPDATE users SET account_version=account_version-1 WHERE id=$1`,[`${h.prefix}-manager`]); }
+    check(fb.exceptions.length===0,"no uncaught browser exceptions during create recovery");
+  } finally { await fb.close(); }
+
   check(h.externalCalls()===0,"no external provider egress");
   await writeFile(`${dir}/receipt.json`,JSON.stringify({status:"passed",identity,fixture:h.prefix,checks,matrix,
     qualification:"Real-browser Sequence create/edit with DB readback, hydration-failure block, seven-role entrance matrix and a mid-session demotion, on a disposable database with only the campaigns routes registered. Not campaign/signature controls, not published-candidate or production acceptance."},null,2));

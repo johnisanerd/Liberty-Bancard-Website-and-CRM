@@ -79,17 +79,61 @@ export interface BacklogFunnel {
   readyHeld: number;
 }
 
-/** What the last optional "Process highest-priority backlog" request actually did. */
+/** Version written by the current worker. Records without it were stored by an older worker. */
+export const BACKLOG_PRIORITY_RUN_SCHEMA_VERSION = 2;
+
+export const BACKLOG_STAGED_COUNTERS = ["examined", "pages", "created", "linkedExisting", "alreadyLinked", "held", "failed"] as const;
+export type BacklogStagedCounter = typeof BACKLOG_STAGED_COUNTERS[number];
+
+/** What the last optional "Process highest-priority backlog" request actually did.
+ * A counter is null when the stored record did not carry a valid value for it (older runs): never a fabricated zero. */
 export interface BacklogPriorityRunRecord {
+  schemaVersion?: number;
   scope: BacklogProcessRequest["scope"];
   maxRows: number;
   timeBudgetSeconds: number;
   startedAt: string;
   finishedAt: string;
-  staged: { examined: number; pages: number; created: number; linkedExisting: number; alreadyLinked: number; held: number; failed: number } | null;
-  preparationPasses: number;
-  prepared: number;
+  /** Null: the staged-email stage was not processed in that pass. */
+  staged: Record<BacklogStagedCounter, number | null> | null;
+  preparationPasses: number | null;
+  prepared: number | null;
   providerTicks: string;
+}
+
+export class BacklogPriorityRunDecodeError extends Error {}
+
+const finiteCount = (value: unknown): number | null =>
+  typeof value === "number" && Number.isFinite(value) && Number.isInteger(value) && value >= 0 ? value : null;
+
+/** Validated decoder for the stored last-run JSON. Throws for a record that cannot be identified as a run at all
+ * (callers report that as unavailable, not as "no previous run"); tolerates older records by nulling missing counters. */
+export function decodeBacklogPriorityRun(raw: unknown): BacklogPriorityRunRecord {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new BacklogPriorityRunDecodeError("stored run is not an object");
+  const r = raw as Record<string, unknown>;
+  if (r.scope !== "local_only" && r.scope !== "local_and_governed_providers") throw new BacklogPriorityRunDecodeError("stored run scope is invalid");
+  if (typeof r.finishedAt !== "string" || Number.isNaN(new Date(r.finishedAt).getTime())) throw new BacklogPriorityRunDecodeError("stored run finish time is invalid");
+  if (r.schemaVersion !== undefined && (typeof r.schemaVersion !== "number" || r.schemaVersion > BACKLOG_PRIORITY_RUN_SCHEMA_VERSION)) {
+    throw new BacklogPriorityRunDecodeError("stored run version is not understood");
+  }
+  let staged: BacklogPriorityRunRecord["staged"] = null;
+  if (r.staged !== null && r.staged !== undefined) {
+    if (typeof r.staged !== "object" || Array.isArray(r.staged)) throw new BacklogPriorityRunDecodeError("stored staged counters are invalid");
+    const source = r.staged as Record<string, unknown>;
+    staged = Object.fromEntries(BACKLOG_STAGED_COUNTERS.map(key => [key, finiteCount(source[key])])) as Record<BacklogStagedCounter, number | null>;
+  }
+  return {
+    ...(typeof r.schemaVersion === "number" ? { schemaVersion: r.schemaVersion } : {}),
+    scope: r.scope,
+    maxRows: finiteCount(r.maxRows) ?? 0,
+    timeBudgetSeconds: finiteCount(r.timeBudgetSeconds) ?? 0,
+    startedAt: typeof r.startedAt === "string" ? r.startedAt : r.finishedAt,
+    finishedAt: r.finishedAt,
+    staged,
+    preparationPasses: finiteCount(r.preparationPasses),
+    prepared: finiteCount(r.prepared),
+    providerTicks: typeof r.providerTicks === "string" ? r.providerTicks : "not_recorded",
+  };
 }
 
 export interface CanonicalEnrichmentBacklog {
@@ -126,6 +170,8 @@ export interface BacklogProcessResponse {
   alreadyQueued: boolean;
   jobId: string | null;
   request: BacklogProcessRequest;
+  /** queued: added now. already_queued: an earlier add of this same request. unavailable: nothing could be queued. */
+  outcome: "queued" | "already_queued" | "unavailable";
   message: string;
 }
 

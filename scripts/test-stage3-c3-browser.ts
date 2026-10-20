@@ -26,6 +26,8 @@ let b:Awaited<ReturnType<typeof privateStage3Browser>>|undefined;
 const checks:string[]=[];
 const check=(ok:unknown,label:string)=>{assert.ok(ok,label);checks.push(label);};
 const settle=(ms=150)=>new Promise(resolve=>setTimeout(resolve,ms));
+const until=async(fn:()=>Promise<boolean>,label:string,tries=80)=>{for(let i=0;i<tries;i++){if(await fn())return;await settle(250);}throw new Error(`Timed out: ${label}`);};
+const base=()=>h.base;
 try{
   await mkdir(dir,{recursive:true});
   const tag=`c3b${randomUUID().replaceAll("-","").slice(0,8)}`;
@@ -154,6 +156,61 @@ try{
   check(await b.evaluate("document.activeElement&&document.activeElement!==document.body&&document.activeElement.matches('a,button,input,select,[tabindex],[role=button],[role=combobox]')"),"Tab moves focus to an interactive control");
   check(b.exceptions.length===0,"no uncaught browser exceptions");
   check(h.externalCalls()===0,"no external provider egress");
+  // ── 7b. Businesses: inventory is rendered first; privileged matching is collapsed and mounts only on open ──
+  for(const [width,height] of [[1280,900],[768,1024],[390,844]] as const) {
+    await b.call("Emulation.setDeviceMetricsOverride",{width,height,deviceScaleFactor:1,mobile:width<768});
+    await b.navigate("/dashboard/lead-ops?tab=businesses");
+    await until(async()=>await count('input[placeholder^="Search company"]')>0,`inventory search at ${width}px`);
+    await until(async()=>await count('[data-testid="business-admin-context"]')>0,`admin context at ${width}px`);
+    const geometry=await b.evaluate(`(()=>{const s=document.querySelector('input[placeholder^="Search company"]').getBoundingClientRect();
+      const d=document.querySelector('[data-testid="business-admin-context"]');return {searchTop:s.top+scrollY,contextTop:d.getBoundingClientRect().top+scrollY,
+      open:d.open,mounted:d.querySelectorAll(':scope > div').length};})()`) as any;
+    check(geometry.searchTop<geometry.contextTop,`inventory search renders above privileged matching at ${width}px`);
+    check(geometry.open===false&&geometry.mounted===0,`privileged matching is collapsed and unmounted at ${width}px`);
+  }
+  await b.call("Emulation.setDeviceMetricsOverride",{width:1280,height:900,deviceScaleFactor:1,mobile:false});
+  await b.navigate("/dashboard/lead-ops?tab=businesses");
+  await until(async()=>await count('[data-testid="business-admin-context-summary"]')>0,"disclosure summary");
+  await b.click('[data-testid="business-admin-context-summary"]');
+  await until(async()=>await b!.evaluate(`document.querySelector('[data-testid="business-admin-context"]').querySelectorAll(':scope > div').length`) as number>0,"privileged readers mount after the first open");
+  check(true,"opening the disclosure mounts the privileged readers");
+
+  // ── 7c. Typed tab changes: context survives, stale state does not, history is pushed, Back/Forward restore ──
+  const historyPath=()=>b!.evaluate("location.pathname+location.search+location.hash") as Promise<string>;
+  const landed=async(expected:string,label:string)=>{await until(async()=>(await historyPath())===expected,label);return expected;};
+  const lengthBefore=await b.evaluate("history.length") as number;
+  const startLead="/dashboard/lead-ops?tab=staging&businessId=5&from=/dashboard/reporting&bq=stale&boffset=50&junk=1#panel";
+  await b.navigate(startLead);
+  await until(async()=>await count('[data-testid="tab-promotion-review"]')>0,"staging child tabs");
+  const beforeStaging=await historyPath();
+  await b.click('[data-testid="tab-promotion-review"]');
+  await until(async()=>(await historyPath()).includes("stagingTab=promotion-review"),"staging child selected in the address");
+  const afterStaging=new URL(base()+await historyPath());
+  check(afterStaging.searchParams.get("businessId")==="5"&&afterStaging.searchParams.get("from")==="/dashboard/reporting","typed business and origin context survive a staging child change");
+  check(!afterStaging.searchParams.has("bq")&&!afterStaging.searchParams.has("boffset")&&!afterStaging.searchParams.has("junk"),"stale list, paging and arbitrary parameters are dropped");
+  check(afterStaging.hash==="#panel","a safe fragment survives");
+  await b.evaluate("history.back()");
+  await until(async()=>!(await historyPath()).includes("stagingTab=promotion-review"),"Back leaves the child selection");
+  check((await historyPath())===beforeStaging,"Back restores the exact previous address (child choice was pushed, not replaced)");
+  await b.evaluate("history.forward()");
+  await until(async()=>(await historyPath()).includes("stagingTab=promotion-review"),"Forward restores the child selection");
+  check(await count('[data-testid="tab-promotion-review"][data-state="active"]')===1,"Forward shows the Promotion Review child as active");
+
+  await b.navigate("/dashboard/outbound-center?tab=campaigns&contactId=7&dealId=0x&from=https://evil.test&junk=1#panel");
+  await until(async()=>await count('[data-testid="tab-outbound-sequences"]')>0,"outbound tabs");
+  const beforeOutbound=await historyPath();
+  await b.click('[data-testid="tab-outbound-sequences"]');
+  await until(async()=>(await historyPath()).includes("tab=sequences"),"outbound tab selected in the address");
+  const afterOutbound=new URL(base()+await historyPath());
+  check(afterOutbound.searchParams.get("contactId")==="7","typed contact context survives an outbound tab change");
+  check(!afterOutbound.searchParams.has("dealId")&&!afterOutbound.searchParams.has("from")&&!afterOutbound.searchParams.has("junk"),"invalid, external and arbitrary parameters are dropped");
+  check(afterOutbound.hash==="#panel","the fragment survives the outbound tab change");
+  await b.evaluate("history.back()");
+  await until(async()=>(await historyPath())===beforeOutbound,"Back restores the previous outbound address");
+  check(await count('[data-testid="tab-outbound-campaigns"][data-state="active"]')===1,"Back shows the previous outbound tab as active");
+  check(Number(await b.evaluate("history.length"))>=lengthBefore,"history entries were added rather than replaced");
+  check(b.exceptions.length===0,"no uncaught browser exceptions in the Businesses and tab-history checks");
+
   // ── 8. Non-admin roles through real sessions: merchants and partners never see Prospecting aggregates ──
   const deniedRoles:Record<string,string>={};
   for(const role of ["merchant","partner"] as const) {

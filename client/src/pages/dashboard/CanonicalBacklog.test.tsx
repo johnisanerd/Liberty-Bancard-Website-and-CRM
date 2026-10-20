@@ -113,5 +113,30 @@ await waitFor(() => !!byTest("release-replayed"), "replay state after execute");
 assert.ok(byTest("release-replayed")!.textContent!.includes("No new release was created"), "replay copy");
 assert.ok(requests.some(r => r.method === "POST" && r.path.endsWith("/release/execute")), "execute was requested");
 await act(async () => root.unmount());
+
+// 5. Last requested pass: current, older (missing/malformed counters), null staged and finite zero values.
+{
+  const { ProcessPanel } = await import("./CanonicalBacklog");
+  const base = { schemaVersion: 2, scope: "local_only", maxRows: 100, timeBudgetSeconds: 60, startedAt: "2026-10-10T00:00:00Z", finishedAt: "2026-10-10T00:05:00Z",
+    preparationPasses: 1, prepared: 0, providerTicks: "skipped_local_only" };
+  const render = async (last: any) => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const r = createRoot(document.getElementById("root")!);
+    await act(async () => { r.render(<QueryClientProvider client={client}><ProcessPanel isAdmin last={last} /></QueryClientProvider>); });
+    const out = byTest("backlog-last-run")?.textContent ?? "";
+    await act(async () => r.unmount());
+    return out;
+  };
+  const current = await render({ ...base, staged: { examined: 12, pages: 1, created: 3, linkedExisting: 4, alreadyLinked: 0, held: 2, failed: 0 } });
+  assert.ok(current.includes("12 examined") && current.includes("7 linked") && current.includes("2 held") && current.includes("0 failed") && !current.includes("NaN"), `current run: ${current}`);
+  const older = await render({ ...base, schemaVersion: undefined, staged: { examined: 12, created: 3, linkedExisting: 4, failed: 0 }, prepared: null });
+  assert.ok(older.includes("Unavailable for this older run held") && !older.includes("NaN"), `older run: ${older}`);
+  assert.ok(older.includes("12 examined") && older.includes("0 failed"), "valid older counters still shown, including a real zero");
+  const malformed = await render({ ...base, staged: { examined: "x", created: Infinity, linkedExisting: null, held: -1, failed: NaN }, preparationPasses: null });
+  assert.ok(!malformed.includes("NaN") && !malformed.includes("Infinity") && malformed.includes("Unavailable for this older run"), `malformed run: ${malformed}`);
+  assert.ok(!/ 0 held/.test(malformed), "an unreadable counter is never shown as zero");
+  const notStaged = await render({ ...base, staged: null });
+  assert.ok(notStaged.includes("Staged emails were not processed in that pass."), "null staged means not processed");
+}
 console.log("CANONICAL_BACKLOG_UI_PASS");
 process.exit(0);

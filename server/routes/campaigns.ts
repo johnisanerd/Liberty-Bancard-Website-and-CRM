@@ -16,7 +16,7 @@ import { pool, db } from "../db";
 import { eq, and, count, sql } from "drizzle-orm";
 import { campaigns, campaignSteps, campaignApprovals } from "@shared/schema";
 import { serverError } from "../utils/server-error";
-import {commandSequence,sequenceCommandFields,sequenceEditorSteps} from "../services/sequence-command";
+import {commandSequence,createSequenceCommand,sequenceCommandFields,sequenceCreateCommandFields,sequenceEditorSteps} from "../services/sequence-command";
 import {bindWorkActor,WorkCommandError} from "../services/work-item-command";
 import {strictRecordId} from "@shared/work-item-commands";
 import { applyConsentCommand, recordReachabilityObservation } from "../services/consent-authority";
@@ -895,13 +895,14 @@ export function registerCampaignsRoutes(app: Express) {
 
   app.post("/api/sequences", isDashboardUser, requireRole("admin", "manager"), async (req, res) => {
     try {
-      const input = sequenceCreateSchema.parse(req.body);
-      const createdBy = (req as any).user?.email ?? (req as any).user?.id?.toString();
-      const seq = await storage.createFollowUpSequence({ ...input, status: "paused", totalSteps: 0, createdBy });
-      await storage.createAuditLog({ action: "sequence_created", entityType: "sequence", entityId: seq.id, details: { name: seq.name } });
-      res.status(201).json(seq);
+      const {commandId,expectedActorId,expectedAccountVersion,...rest}=req.body ?? {};
+      const fields = sequenceCreateCommandFields.parse({commandId,expectedActorId,expectedAccountVersion});
+      const input = sequenceCreateSchema.parse(rest);
+      const created = await createSequenceCommand(bindWorkActor(req.user,fields.expectedActorId,fields.expectedAccountVersion),fields,input);
+      res.status(created.replayed ? 200 : 201).json(created);
     } catch (err: any) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
+      if (err instanceof WorkCommandError) return res.status(err.status).json({ message: err.message });
       serverError(res, err);
     }
   });

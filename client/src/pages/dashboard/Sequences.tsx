@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/use-auth";
 import {useRetainedLocalIntent} from "@/hooks/use-retained-local-intent";
+import {useRetainedCreateIntent} from "@/hooks/use-retained-create-intent";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -129,6 +130,8 @@ function WiringBadge({ status }: { status: WiringStatus }) {
   );
 }
 
+class SavedStepDiffersError extends Error {}
+
 function stepIcon(actionType: string) {
   const found = STEP_TYPES.find(s => s.value === actionType);
   return found ? found.icon : Clock;
@@ -148,6 +151,7 @@ export default function Sequences() {
   const queryClient = useQueryClient();
   const { user } = useAuth();
   const sequenceIntents=useRetainedLocalIntent();
+  const createIntents=useRetainedCreateIntent();
   const canAccessOutreachHub = user?.role === "admin" || user?.role === "manager";
   const [showCreate, setShowCreate] = useState(false);
   const [editingSeq, setEditingSeq] = useState<any | null>(null);
@@ -216,53 +220,65 @@ export default function Sequences() {
   });
   const contacts = Array.isArray(contactsRes?.data) ? contactsRes.data : [];
 
-  // A sequence row may be committed before every step is. The created ID is
-  // retained so a retry reads the persisted steps back and posts only the
-  // missing ones instead of creating a duplicate sequence.
-  const [partialCreate, setPartialCreate] = useState<{ id: number; name: string } | null>(null);
-  const createdSequenceRef = useRef(false);
+  // A sequence row may be committed before every step is. The create command (ID + normalized fields) is retained, so a
+  // lost response, double click, close or reload replays the same command and recovers the committed ID instead of
+  // creating a duplicate; the recovered ID lets a retry read persisted steps back and save only the missing ones.
+  const createIntent = createIntents.intent;
+  const partialCreate = createIntent?.sequenceId ? { id: createIntent.sequenceId, name: createIntent.fields.name } : null;
+  const createFieldsLocked = !!createIntent;
+
+  const stepSignature = (row: any) => JSON.stringify([
+    row.actionType, row.delayDays, row.delayHours, row.subject || null, row.body || null, row.config ?? null,
+    row.variantBSubject || null, row.variantBBody || null,
+  ]);
+  const stepPayload = (s: SequenceStep, order: number) => ({
+    stepOrder: order,
+    actionType: s.actionType,
+    delayDays: s.delayDays,
+    delayHours: s.delayHours,
+    subject: s.subject || null,
+    body: s.body || null,
+    config: s.config ?? null,
+    variantBSubject: s.variantBEnabled ? (s.variantBSubject || null) : null,
+    variantBBody: s.variantBEnabled ? (s.variantBBody || null) : null,
+    abTestConfig: s.variantBEnabled
+      ? (s.abTestConfig || { splitRatio: 50, minSampleSize: 100, winnerCriteria: "open_rate" })
+      : null,
+  });
 
   const createMutation = useMutation({
     mutationFn: async () => {
-      // The server owns the initial paused status and the step count.
-      let seq: { id: number; name: string } | null = partialCreate;
+      // Server owns the initial paused status and step count. Retained fields win over the (locked) form.
+      const intent = createIntents.begin({ name: form.name, description: form.description, triggerType: form.triggerType });
+      let seq: { id: number; name: string } | null = intent.sequenceId ? { id: intent.sequenceId, name: intent.fields.name } : null;
       if (!seq) {
         const seqRes = await apiRequest("POST", "/api/sequences", {
-          name: form.name,
-          description: form.description,
-          triggerType: form.triggerType,
+          ...intent.fields, commandId: intent.commandId, expectedActorId: intent.actorId, expectedAccountVersion: intent.accountVersion,
         });
-        seq = await seqRes.json();
-        createdSequenceRef.current = true;
-        setPartialCreate({ id: seq!.id, name: seq!.name ?? form.name });
+        const created = await seqRes.json();
+        seq = { id: created.id, name: created.name ?? intent.fields.name };
+        createIntents.recordCreated(seq.id);
       }
-      const persistedRes = await apiRequest("GET", `/api/sequences/${seq!.id}/steps`);
+      const persistedRes = await apiRequest("GET", `/api/sequences/${seq.id}/steps`);
       const persisted: any[] = await persistedRes.json();
+      // Steps already saved are authoritative: a differing editor copy is never silently skipped.
+      for (const row of persisted) {
+        const local = steps[row.stepOrder - 1];
+        const expected = local ? stepSignature(stepPayload(local, row.stepOrder)) : null;
+        if (expected !== stepSignature(row)) {
+          throw new SavedStepDiffersError(`Step ${row.stepOrder} was already saved and differs from the editor. Restore the saved values, or close this dialog and edit the saved sequence; nothing further was saved.`);
+        }
+      }
       const persistedOrders = new Set(persisted.map((row) => row.stepOrder));
       for (let i = 0; i < steps.length; i++) {
         if (persistedOrders.has(i + 1)) continue;
-        const s = steps[i];
-        await apiRequest("POST", `/api/sequences/${seq!.id}/steps`, {
-          stepOrder: i + 1,
-          actionType: s.actionType,
-          delayDays: s.delayDays,
-          delayHours: s.delayHours,
-          subject: s.subject || null,
-          body: s.body || null,
-          config: s.config ?? null,
-          variantBSubject: s.variantBEnabled ? (s.variantBSubject || null) : null,
-          variantBBody: s.variantBEnabled ? (s.variantBBody || null) : null,
-          abTestConfig: s.variantBEnabled
-            ? (s.abTestConfig || { splitRatio: 50, minSampleSize: 100, winnerCriteria: "open_rate" })
-            : null,
-        });
+        await apiRequest("POST", `/api/sequences/${seq.id}/steps`, stepPayload(steps[i], i + 1));
       }
       return seq;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/sequences"] });
-      createdSequenceRef.current = false;
-      setPartialCreate(null);
+      createIntents.clear();
       setShowCreate(false);
       setForm({ name: "", description: "", triggerType: "manual", status: "active" });
       setSteps([]);
@@ -271,14 +287,40 @@ export default function Sequences() {
     onError: (err: Error) => {
       queryClient.invalidateQueries({ queryKey: ["/api/sequences"] });
       toast({
-        title: partialCreate || createdSequenceRef.current
-          ? "Sequence created but not all steps were saved"
-          : "Failed to create sequence",
-        description: `${err.message} Retry to save the remaining steps; no duplicate sequence will be created.`,
+        title: partialCreate ? "Sequence created but not all steps were saved" : "Sequence create not confirmed",
+        description: `${err.message} Retry: the same request is recognized, so no duplicate sequence is created.`,
         variant: "destructive",
       });
     },
   });
+
+  // Confirm a retained create with no editor open (after close or reload): replaying the same command returns the
+  // committed sequence or creates it once; never a second one.
+  const confirmCreateMutation = useMutation({
+    mutationFn: async () => {
+      const intent = createIntent;
+      if (!intent) throw new Error("No retained create request.");
+      if (intent.sequenceId) return { id: intent.sequenceId };
+      const res = await apiRequest("POST", "/api/sequences", {
+        ...intent.fields, commandId: intent.commandId, expectedActorId: intent.actorId, expectedAccountVersion: intent.accountVersion,
+      });
+      const created = await res.json();
+      createIntents.recordCreated(created.id);
+      return created;
+    },
+    onSuccess: async (created: any) => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/sequences"] });
+      toast({ title: created?.replayed ? "Sequence already created" : "Sequence created paused",
+        description: `Sequence ${created.id} exists and is paused. Open it to add or check its steps.` });
+    },
+    onError: (err: Error) => toast({ title: "Create still not confirmed", description: err.message, variant: "destructive" }),
+  });
+  const openSavedSequence = () => {
+    const saved = sequencesRaw?.find((row: any) => row.id === createIntent?.sequenceId);
+    if (!saved) { toast({ title: "Saved sequence not in the list yet", description: "Reload the list, then try again.", variant: "destructive" }); return; }
+    createIntents.clear();
+    void openEditDialog(saved);
+  };
 
   const deleteMutation = useMutation({
     mutationFn: async (id: number) => {
@@ -449,12 +491,27 @@ export default function Sequences() {
 
   const [editHydrationError, setEditHydrationError] = useState<string | null>(null);
 
+  // Each hydration owns a generation and an AbortController. A late response from an earlier open, another sequence
+  // or another account can never write into the current editor.
+  const hydrationGeneration = useRef(0);
+  const hydrationAbort = useRef<AbortController | null>(null);
+  const invalidateHydration = () => {
+    hydrationGeneration.current++;
+    hydrationAbort.current?.abort();
+    hydrationAbort.current = null;
+  };
   const hydrateEditSteps = async (seq: any) => {
+    invalidateHydration();
+    const generation = hydrationGeneration.current;
+    const controller = new AbortController();
+    hydrationAbort.current = controller;
+    const current = () => generation === hydrationGeneration.current && !controller.signal.aborted;
     setEditLoadingSteps(true);
     setEditHydrationError(null);
     try {
-      const res = await apiRequest("GET", `/api/sequences/${seq.id}/steps`);
+      const res = await apiRequest("GET", `/api/sequences/${seq.id}/steps`, undefined, undefined, controller.signal);
       const existingSteps: any[] = await res.json();
+      if (!current()) return;
       setOriginalStepIds(existingSteps.map((s: any) => s.id));
       setSteps(existingSteps.map((s: any) => ({
         id: s.id,
@@ -472,12 +529,13 @@ export default function Sequences() {
         abTestConfig: s.abTestConfig || { splitRatio: 50, minSampleSize: 100, winnerCriteria: "open_rate" },
       })));
     } catch (err) {
+      if (!current()) return;
       // A failed read must not become an empty step list that a save would persist.
       setSteps([]);
       setOriginalStepIds([]);
       setEditHydrationError(err instanceof Error ? err.message : "Existing steps could not be loaded.");
     } finally {
-      setEditLoadingSteps(false);
+      if (current()) setEditLoadingSteps(false);
     }
   };
 
@@ -493,14 +551,43 @@ export default function Sequences() {
   };
 
   const closeDialog = () => {
+    invalidateHydration();
+    setEditLoadingSteps(false);
     setEditHydrationError(null);
-    setPartialCreate(null);
-    createdSequenceRef.current = false;
+    const keepCreateDraft = !isEditMode && !!createIntent;
+    setShowCreate(false);
+    setEditingSeq(null);
+    setOriginalStepIds([]);
+    // A retained (unconfirmed or partial) create keeps its draft; confirm or discard it from the banner.
+    if (!keepCreateDraft) {
+      setForm({ name: "", description: "", triggerType: "manual", status: "active" });
+      setSteps([]);
+    }
+  };
+
+  // Another account (or a changed account version) never sees or edits the previous account's drafts, partial IDs or
+  // in-flight editor reads.
+  const actorIdentity = `${user?.id ?? ""}:${user?.accountVersion ?? ""}`;
+  const previousActor = useRef(actorIdentity);
+  useEffect(() => {
+    if (previousActor.current === actorIdentity) return;
+    previousActor.current = actorIdentity;
+    invalidateHydration();
+    setEditLoadingSteps(false);
+    setEditHydrationError(null);
     setShowCreate(false);
     setEditingSeq(null);
     setOriginalStepIds([]);
     setForm({ name: "", description: "", triggerType: "manual", status: "active" });
     setSteps([]);
+  }, [actorIdentity]);
+  useEffect(() => () => invalidateHydration(), []);
+
+  const openCreateDialog = () => {
+    if (createIntent) {
+      setForm({ ...form, ...createIntent.fields, status: "active" });
+    }
+    setShowCreate(true);
   };
 
   const addStep = () => {
@@ -569,10 +656,33 @@ export default function Sequences() {
           <h2 className="text-xl font-bold" data-testid="text-page-heading">Drip Sequences</h2>
           <p className="text-sm text-muted-foreground">Build multi-step follow-up sequences and drip marketing campaigns</p>
         </div>
-        <Button onClick={() => setShowCreate(true)} className="gap-2" data-testid="button-create-sequence">
+        <Button onClick={openCreateDialog} className="gap-2" data-testid="button-create-sequence">
           <Plus className="w-4 h-4" /> Create Sequence
         </Button>
       </div>
+
+      {createIntent && !showCreate && !isEditMode && (
+        <div role="status" className="rounded-md border border-amber-300 bg-amber-50 p-4 text-sm dark:bg-amber-900/20" data-testid="sequence-create-retained">
+          <p className="font-medium">
+            {createIntent.sequenceId
+              ? `Sequence "${createIntent.fields.name}" was created paused, but its steps were not confirmed saved.`
+              : `Creating "${createIntent.fields.name}" was not confirmed.`}
+          </p>
+          <p className="mt-1 text-muted-foreground">
+            {createIntent.sequenceId
+              ? "Open the saved sequence to check or add its steps. Nothing was activated or sent."
+              : "Confirming replays the same request: the sequence is created once, or the one already created is returned."}
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {createIntent.sequenceId
+              ? <Button size="sm" onClick={openSavedSequence} data-testid="button-open-saved-sequence">Open saved sequence</Button>
+              : <Button size="sm" onClick={() => confirmCreateMutation.mutate()} disabled={confirmCreateMutation.isPending} data-testid="button-confirm-create">
+                  {confirmCreateMutation.isPending ? "Confirming…" : "Confirm create"}
+                </Button>}
+            <Button size="sm" variant="outline" onClick={() => { createIntents.clear(); setForm({ name: "", description: "", triggerType: "manual", status: "active" }); setSteps([]); }} data-testid="button-discard-create">Dismiss</Button>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <Card data-testid="kpi-total-sequences">
@@ -643,7 +753,7 @@ export default function Sequences() {
             <Zap className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
             <p className="text-muted-foreground mb-2">No drip sequences yet</p>
             <p className="text-sm text-muted-foreground mb-4">Create automated multi-step campaigns to nurture leads and follow up with contacts</p>
-            <Button onClick={() => setShowCreate(true)} data-testid="button-empty-create">
+            <Button onClick={openCreateDialog} data-testid="button-empty-create">
               <Plus className="w-4 h-4 mr-2" /> Create Your First Sequence
             </Button>
           </CardContent>
@@ -954,10 +1064,16 @@ export default function Sequences() {
               <Button className="mt-3" variant="outline" onClick={() => editingSeq && hydrateEditSteps(editingSeq)} data-testid="button-retry-hydration">Reload steps</Button>
             </div>
           )}
+          {!isEditMode && createIntent && !partialCreate && (
+            <div role="status" className="rounded-md border p-4 text-sm" data-testid="sequence-create-unconfirmed">
+              A previous create of "{createIntent.fields.name}" was not confirmed. The sequence fields are locked; Create Sequence replays the same request, so it is created once.
+            </div>
+          )}
           {!isEditMode && partialCreate && (
             <div role="status" className="rounded-md border p-4 text-sm" data-testid="sequence-partial-create">
               Sequence "{partialCreate.name}" (ID {partialCreate.id}) was created paused, but some steps were not confirmed saved.
               Create Sequence will read its steps back and save only the missing ones; it will not create a second sequence.
+              Saved steps are checked against the editor; a differing saved step stops the save and is named.
             </div>
           )}
           {(!isEditMode || (!editLoadingSteps && !editHydrationError)) && <div className="space-y-6">
@@ -967,13 +1083,14 @@ export default function Sequences() {
                 <Input
                   value={form.name}
                   onChange={e => setForm({ ...form, name: e.target.value })}
+                  disabled={!isEditMode && createFieldsLocked}
                   placeholder="e.g., New Lead Follow-up"
                   data-testid="input-seq-name"
                 />
               </div>
               <div className="space-y-2">
                 <Label>Trigger</Label>
-                <Select value={form.triggerType} onValueChange={v => setForm({ ...form, triggerType: v })}>
+                <Select value={form.triggerType} onValueChange={v => setForm({ ...form, triggerType: v })} disabled={!isEditMode && createFieldsLocked}>
                   <SelectTrigger data-testid="select-seq-trigger">
                     <SelectValue />
                   </SelectTrigger>
@@ -990,6 +1107,7 @@ export default function Sequences() {
               <Textarea
                 value={form.description}
                 onChange={e => setForm({ ...form, description: e.target.value })}
+                disabled={!isEditMode && createFieldsLocked}
                 placeholder="Describe the purpose of this drip sequence..."
                 data-testid="input-seq-description"
               />

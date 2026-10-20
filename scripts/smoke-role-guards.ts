@@ -98,6 +98,12 @@ const CASES: GuardCase[] = [
   { method: "GET",  path: "/api/stage-rules",                anon: [401], merchant: [403], admin: [200], description: "stage rules" },
   { method: "GET",  path: "/api/pipeline-stages",            anon: [401], merchant: [403], admin: [200], description: "pipeline stages" },
 
+  // Production registration order (full server): these literal readers must never be consumed by GET /api/contacts/:id.
+  // A 404 here is the collision; 503 is the readers' explicit unavailable state and is allowed.
+  { method: "GET",  path: "/api/contacts/readiness-stats",   anon: [401], merchant: [403], admin: [200, 503], manager: [200, 503], agent: [403], description: "readiness statistics literal route is not shadowed by contact detail" },
+  { method: "GET",  path: "/api/contacts/verticals",         anon: [401], merchant: [403], admin: [200], agent: [403], description: "contact verticals literal route is not shadowed by contact detail" },
+  { method: "GET",  path: "/api/contacts/duplicates",        anon: [401], merchant: [403], admin: [410], manager: [410], agent: [403], description: "contact duplicates literal route is not shadowed by contact detail (retired reader answers 410 Gone from its own handler, never the detail 404)" },
+
   // contacts.ts
   { method: "GET",  path: "/api/contacts",                   anon: [401], merchant: [403], admin: [200], description: "contacts list" },
   { method: "GET",  path: "/api/contacts/1",                 anon: [401], merchant: [403], admin: [200, 404], description: "contact by id" },

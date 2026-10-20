@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import {
   leadOpsSections, stagingSections, canonicalSections, prospectingAreas, prospectingAreaTabs, prospectingAreaForTab,
   leadOpsGroupedTabs, outboundSelectors, campaignAreas, campaignAreaTabs, campaignAreaForTab,
-  outboundSelectorState, canonicalViewState, buildCanonicalViewHref,
+  outboundSelectorState, canonicalViewState, buildCanonicalViewHref, typedTabUrl,
 } from "../client/src/lib/crm-destination-state";
 
 let assertions = 0;
@@ -126,4 +126,58 @@ for (const file of ["Prospects", "Campaigns", "LeadImports"]) {
 const imports = read("client/src/pages/dashboard/LeadImports.tsx");
 ok(/button-import-continue/.test(imports) && /import-review-step/.test(imports) && /import-result-step/.test(imports), "Lead Imports has choose, review and result steps");
 ok(/Accepted is not complete/.test(imports) || /Accepted is not completed/.test(imports), "Lead Imports result says accepted is not completed");
+
+// R1: a literal GET /api/contacts/<word> reader registered after the contacts module is shadowed by the dynamic
+// GET /api/contacts/:id route unless that route defers it. Every such literal must be listed in the deferral set
+// (the live registration-order proof is the role-guard smoke against the full server).
+{
+  const { readdirSync } = await import("node:fs");
+  const contactsSource = read("server/routes/contacts.ts");
+  const detailAt = contactsSource.indexOf('app.get("/api/contacts/:id"');
+  ok(detailAt > 0, "contact detail route found");
+  const deferred = new Set([...(/CONTACT_COLLECTION_READERS_REGISTERED_LATER[^=]*=\s*new Set\(\[([^\]]*)\]/.exec(contactsSource)?.[1] ?? "").matchAll(/"([a-z-]+)"/g)].map(m => m[1]));
+  ok(deferred.size >= 3, "deferral set parsed");
+  ok(/CONTACT_COLLECTION_READERS_REGISTERED_LATER\.has\(String\(req\.params\.id\)\)\) return next\("route"\)/.test(contactsSource), "detail route defers listed literals");
+  for (const file of readdirSync("server/routes").filter(f => f.endsWith(".ts"))) {
+    const source = read(`server/routes/${file}`);
+    for (const match of source.matchAll(/app\.get\("\/api\/contacts\/([a-z][a-z-]*)"/g)) {
+      const literal = match[1];
+      if (file === "contacts.ts") ok(match.index! < detailAt || deferred.has(literal), `contacts.ts literal ${literal} precedes the detail route or is deferred`);
+      else ok(deferred.has(literal), `later-module literal /api/contacts/${literal} (${file}) is deferred by the detail route`);
+    }
+  }
+}
+
+// R7: validated decoder for the stored last priority run.
+{
+  const { decodeBacklogPriorityRun, BacklogPriorityRunDecodeError } = await import("../shared/canonical-enrichment-backlog");
+  const run = { schemaVersion: 2, scope: "local_only", maxRows: 100, timeBudgetSeconds: 60, startedAt: "2026-10-10T00:00:00Z", finishedAt: "2026-10-10T00:05:00Z",
+    staged: { examined: 5, pages: 1, created: 1, linkedExisting: 2, alreadyLinked: 0, held: 0, failed: 0 }, preparationPasses: 1, prepared: 0, providerTicks: "skipped_local_only" };
+  eq(decodeBacklogPriorityRun(run).staged!.held, 0, "finite zero is retained as zero");
+  const legacy = decodeBacklogPriorityRun({ ...run, schemaVersion: undefined, staged: { examined: 5, created: 1, linkedExisting: 2 }, prepared: undefined });
+  eq(legacy.staged!.held, null, "missing legacy counter is null, not a fabricated zero");
+  eq(legacy.prepared, null, "missing legacy prepared count is null");
+  eq(decodeBacklogPriorityRun({ ...run, staged: null }).staged, null, "null staged stays null");
+  eq(decodeBacklogPriorityRun({ ...run, staged: { ...run.staged, held: "x", failed: -1, created: 1.5 } }).staged!.held, null, "non-numeric counter is null");
+  eq(decodeBacklogPriorityRun({ ...run, staged: { ...run.staged, failed: -1 } }).staged!.failed, null, "negative counter is null");
+  for (const bad of [null, "text", [], { ...run, finishedAt: "nope" }, { ...run, scope: "x" }, { ...run, schemaVersion: 99 }, { ...run, staged: "x" }]) {
+    assert.throws(() => decodeBacklogPriorityRun(bad), BacklogPriorityRunDecodeError); assertions++;
+  }
+}
+
+// R5: typed tab/area changes keep only registered entity context and the declared selection; hash only when safe.
+{
+  const keep = typedTabUrl("/dashboard/lead-ops", "?tab=businesses&businessId=42&from=/dashboard/reporting&contactId=7&bq=acme&boffset=50&stagingTab=promotion-review&page=3", "#inventory", { tab: "sources" });
+  const params = new URLSearchParams(keep.split("?")[1].split("#")[0]);
+  eq(params.get("tab"), "sources", "new tab selected");
+  eq(params.get("businessId"), "42", "valid business context survives a tab change");
+  eq(params.get("contactId"), "7", "valid contact context survives");
+  eq(params.get("from"), "/dashboard/reporting", "valid origin survives");
+  for (const stale of ["bq", "boffset", "stagingTab", "page"]) eq(params.has(stale), false, `stale ${stale} is not carried across tabs`);
+  eq(keep.endsWith("#inventory"), true, "a safe fragment is preserved");
+  const staging = typedTabUrl("/dashboard/lead-ops", "?tab=sources&businessId=9", "", { tab: "staging", stagingTab: "promotion-review" });
+  eq(new URLSearchParams(staging.split("?")[1]).get("stagingTab"), "promotion-review", "staging child is part of the typed selection");
+  const bad = typedTabUrl("/dashboard/outbound-center", "?tab=command&businessId=abc&contactId=1&contactId=2&from=https://evil.test&dealId=0", "#bad hash!", { tab: "campaigns" });
+  eq(bad, "/dashboard/outbound-center?tab=campaigns", "invalid, duplicated, external and zero IDs and an unsafe fragment are dropped");
+}
 console.log(`Stage 3 C3 contracts: ${assertions} assertions passed`);

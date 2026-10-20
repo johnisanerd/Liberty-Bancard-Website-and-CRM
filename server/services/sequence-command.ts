@@ -54,3 +54,31 @@ export async function commandSequence(actor:WorkActor,id:number,operation:"edit"
     return result;
   });
 }
+
+export const sequenceCreateCommandFields=z.object({commandId:z.string().uuid(),expectedActorId:z.string().min(1),
+  expectedAccountVersion:z.number().int().positive()}).strict();
+/** Idempotent initial create. The sequence row, its audit row and the replay receipt commit in ONE transaction, so a
+ * lost response or a retry can only recover the committed ID (never create a second sequence), and a committed
+ * sequence can never lack its audit row. The server owns the paused status, step count and creator. A retry whose
+ * normalized payload differs from the retained command conflicts (409). */
+export async function createSequenceCommand(actor:WorkActor,fields:z.infer<typeof sequenceCreateCommandFields>,
+  input:Omit<InsertFollowUpSequence,"status"|"totalSteps"|"createdBy">) {
+  const hash=createHash("sha256").update(JSON.stringify([actor,"create",fields,input])).digest("hex");
+  return db.transaction(async tx=>{
+    const [principal]=await tx.select(workPrincipalFields).from(users).where(eq(users.id,actor.id)).for("share");
+    if(!principal || principal.accountState!=="active" || principal.authEpoch!==actor.authEpoch ||
+      principal.accountVersion!==actor.accountVersion || !["admin","manager"].includes(principal.role ?? "")) throw new WorkCommandError("Sequence unavailable",404);
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`sequence-command:${actor.id}:${fields.commandId}`},0))`);
+    const [prior]=await tx.select().from(sequenceCommandReceipts).where(and(eq(sequenceCommandReceipts.actorId,actor.id),eq(sequenceCommandReceipts.commandId,fields.commandId)));
+    if(prior) {
+      if(prior.payloadHash!==hash) throw new WorkCommandError("Sequence create retry differs from the retained command",409);
+      return {...prior.result as any,replayed:true};
+    }
+    const [created]=await tx.insert(followUpSequences).values({...input,status:"paused",totalSteps:0,createdBy:principal.email ?? principal.id}).returning();
+    await auditChange({userId:actor.id,actorType:"user",action:"sequence_created",entityType:"sequence",entityId:created.id,
+      after:created as any,details:{name:created.name,commandId:fields.commandId}},tx);
+    const result={...created,replayed:false};
+    await tx.insert(sequenceCommandReceipts).values({actorId:actor.id,commandId:fields.commandId,sequenceId:created.id,payloadHash:hash,result});
+    return result;
+  });
+}

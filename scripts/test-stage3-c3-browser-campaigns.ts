@@ -61,6 +61,47 @@ try{
   await until(async()=>(await b!.evaluate("document.body.innerText") as string).includes(campaignName),"campaign listed after refresh");
   check(true,"the created campaign is still listed after a full reload");
 
+  // ── A2. Campaign step edit on the draft: cancel, failed save, state conflict, then a durable save ──
+  const stepRow=(await h.pool.query(`INSERT INTO campaign_steps(campaign_id,step_order,step_type,subject,body_template,delay_days,channel)
+    VALUES($1,1,'email','Original subject','Original body',2,'email') RETURNING id`,[camp.id])).rows[0];
+  const stepState=async()=>(await h.pool.query(`SELECT subject,body_template,delay_days FROM campaign_steps WHERE id=$1`,[stepRow.id])).rows[0];
+  const campaignState=async()=>(await h.pool.query(`SELECT status FROM campaigns WHERE id=$1`,[camp.id])).rows[0].status;
+  await b.navigate("/dashboard/outbound-center?tab=campaigns");
+  await until(async()=>await count(`[data-testid="button-expand-campaign-${camp.id}"]`)>0,"expand campaign");
+  await b.click(`[data-testid="button-expand-campaign-${camp.id}"]`);
+  await until(async()=>await count(`[data-testid="button-edit-step-${stepRow.id}"]`)>0,"step edit control");
+  await b.click(`[data-testid="button-edit-step-${stepRow.id}"]`);
+  await until(async()=>await count(`[data-testid="input-edit-subject-${stepRow.id}"]`)>0,"step edit form");
+  await b.set(`[data-testid="input-edit-subject-${stepRow.id}"]`,"Changed but cancelled");
+  await b.click(`[data-testid="button-cancel-edit-step-${stepRow.id}"]`);
+  check(await count(`[data-testid="input-edit-subject-${stepRow.id}"]`)===0,"Cancel closes the step editor");
+  check((await stepState()).subject==="Original subject","Cancel stored nothing");
+  const putsBefore=b.requests.filter(r=>r.method==="PUT"&&r.url.startsWith("/api/campaign-steps/")).length;
+  check(putsBefore===0,"Cancel sent no request (no-op)");
+  await b.click(`[data-testid="button-edit-step-${stepRow.id}"]`);
+  await until(async()=>await count(`[data-testid="input-edit-subject-${stepRow.id}"]`)>0,"step edit form (failed save)");
+  await b.set(`[data-testid="input-edit-subject-${stepRow.id}"]`,"Saved by C3");
+  b.failRead(`/api/campaign-steps/${stepRow.id}`,{exact:true});
+  await b.click(`[data-testid="button-save-edit-step-${stepRow.id}"]`);
+  await until(async()=>(await b!.evaluate("document.body.innerText") as string).includes("Failed to update step"),"failed-save message");
+  b.failRead(null);
+  check(await count(`[data-testid="input-edit-subject-${stepRow.id}"]`)===1,"a failed save leaves the editor open with the edit");
+  check((await stepState()).subject==="Original subject","a failed save stored nothing");
+  // State conflict: the campaign leaves draft before the retry; the server refuses and nothing changes.
+  await h.pool.query(`UPDATE campaigns SET status='paused' WHERE id=$1`,[camp.id]);
+  await b.click(`[data-testid="button-save-edit-step-${stepRow.id}"]`);
+  await until(async()=>b!.requests.some(r=>r.method==="PUT"&&r.url===`/api/campaign-steps/${stepRow.id}`&&r.status===409),"409 for a non-draft campaign");
+  check((await stepState()).subject==="Original subject","a refused save (campaign no longer draft) stored nothing");
+  await h.pool.query(`UPDATE campaigns SET status='draft' WHERE id=$1`,[camp.id]);
+  await b.click(`[data-testid="button-save-edit-step-${stepRow.id}"]`);
+  await until(async()=>(await stepState()).subject==="Saved by C3","retried save stored");
+  check((await campaignState())==="draft","editing a step never activates or launches the campaign");
+  await b.navigate("/dashboard/outbound-center?tab=campaigns");
+  await until(async()=>await count(`[data-testid="button-expand-campaign-${camp.id}"]`)>0,"expand after reload");
+  await b.click(`[data-testid="button-expand-campaign-${camp.id}"]`);
+  await until(async()=>(await b!.evaluate("document.body.innerText") as string).includes("Saved by C3"),"saved step shown after reload");
+  check(true,"the saved step is shown after a full reload");
+
   // ── B. Signatures: read failure is explicit, edit saves with readback, failed save keeps the dialog ──
   b.failRead("/api/email-signatures",{exact:true});
   await b.navigate("/dashboard/outbound-center?tab=command");

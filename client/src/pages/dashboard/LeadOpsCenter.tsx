@@ -2,7 +2,7 @@ import { useState, useCallback, useRef, useEffect } from "react";
 import { useCrmQuery } from "@/hooks/use-crm-query";
 import { CrmAreaNav } from "@/components/crm/CrmPresentation";
 import CanonicalEnrichment from "./CanonicalEnrichment";
-import { prospectingAreas, prospectingAreaTabs, prospectingAreaForTab } from "@/lib/crm-destination-state";
+import { prospectingAreas, prospectingAreaTabs, prospectingAreaForTab, typedTabUrl } from "@/lib/crm-destination-state";
 import { useLocation, useSearch, Link } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient, parseApiRequestError } from "@/lib/queryClient";
@@ -39,8 +39,7 @@ import { SouthFloridaProspectingPanel } from "@/components/lead-ops/SouthFlorida
 import { SourceRegistryPanel } from "@/pages/dashboard/SourceRegistryPanel";
 import { ProgramHealthPanel } from "@/pages/dashboard/LeadOps/ProgramHealthPanel";
 import { BusinessDetailPanel } from "@/pages/dashboard/LeadOps/BusinessDetailPanel";
-import { SystemContactBusinessLinksPanel } from "@/pages/dashboard/LeadOps/SystemContactBusinessLinksPanel";
-import { ContactLinkCoveragePanel } from "@/pages/dashboard/LeadOps/ContactLinkCoveragePanel";
+import { BusinessAdminContext } from "@/pages/dashboard/LeadOps/BusinessAdminContext";
 import { MobileBusinessCard, type BusinessListItem } from "@/pages/dashboard/LeadOps/MobileBusinessCard";
 import MasterLeadDatabase, { PipelineReviewTab } from "@/pages/dashboard/MasterLeadDatabase";
 import Prospects from "@/pages/dashboard/Prospects";
@@ -2223,20 +2222,16 @@ export default function LeadOpsCenter() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [urlSearch]);
 
+  // Typed context (contact/business/deal/source IDs, `from`) survives a tab change; stale list or paging state does not.
+  // Each user choice is a pushed entry so Back/Forward restore the previous tab.
   const setActiveTab = (value: string) => {
     setActiveTabState(value);
-    const params = new URLSearchParams(urlSearch);
-    params.set("tab", value);
-    if (value !== "staging") params.delete("stagingTab");
-    navigate(`/dashboard/lead-ops?${params.toString()}`, { replace: true });
+    navigate(typedTabUrl("/dashboard/lead-ops", urlSearch, window.location.hash, { tab: value }));
   };
 
   const handleStagingTabChange = (value: string) => {
     setStagingTab(value);
-    const params = new URLSearchParams(urlSearch);
-    params.set("tab", "staging");
-    params.set("stagingTab", value);
-    navigate(`/dashboard/lead-ops?${params.toString()}`, { replace: true });
+    navigate(typedTabUrl("/dashboard/lead-ops", urlSearch, window.location.hash, { tab: "staging", stagingTab: value }));
   };
 
   // ── Filter / pagination state ──────────────────────────────────────────────
@@ -2603,13 +2598,8 @@ export default function LeadOpsCenter() {
 
         {/* ── Businesses tab ─────────────────────────────────────────────── */}
         <TabsContent value="businesses" className="space-y-4">
-          {user?.role === "admin" && <SystemContactBusinessLinksPanel renderReview={(contactId) => <ContactBusinessReconciliationPanel contactId={contactId} />} />}
-          {user?.role === "admin" && <details className="rounded border p-3">
-            <summary className="cursor-pointer text-sm font-medium">Advanced review of conflicting or existing associations</summary>
-            <div className="mt-3"><ContactBusinessReconciliationPanel /></div>
-          </details>}
-          {user?.role === "admin" && <ContactLinkCoveragePanel />}
           <BusinessesTab userRole={user?.role ?? "agent"} />
+          {user?.role === "admin" && <BusinessAdminContext renderReconciliation={(contactId) => <ContactBusinessReconciliationPanel contactId={contactId} />} />}
         </TabsContent>
 
         {/* ── Staging & Promotion tab: Master Leads (all-origin inventory) vs

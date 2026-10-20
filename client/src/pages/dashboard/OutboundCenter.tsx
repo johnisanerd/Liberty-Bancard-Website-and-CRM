@@ -1,7 +1,7 @@
 import { useLocation, useSearch } from "wouter";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { CrmAreaNav, CrmPage } from "@/components/crm/CrmPresentation";
-import { campaignAreas, campaignAreaForTab, campaignAreaTabs, outboundSelectorState } from "@/lib/crm-destination-state";
+import { campaignAreas, campaignAreaForTab, campaignAreaTabs, outboundSelectorState, typedTabUrl } from "@/lib/crm-destination-state";
 import { Zap, Megaphone, ListOrdered, LineChart, Users, ShieldCheck } from "lucide-react";
 import OutreachCommandPage from "./OutreachCommand";
 import CampaignsPage from "./Campaigns";
@@ -43,7 +43,7 @@ export default function OutboundCenter() {
   const inArea = (value: string) => (campaignAreaTabs[area] as readonly string[]).includes(value);
 
   // A user choice is a new history entry so Back restores the previous selection.
-  const handleTabChange = (value: string) => navigate(`/dashboard/outbound-center?tab=${value}`);
+  const handleTabChange = (value: string) => navigate(typedTabUrl("/dashboard/outbound-center", search, window.location.hash, { tab: value }));
   const AREA_LABEL = { manage: "Manage", audience: "Audience", delivery: "Delivery", results: "Results" } as const;
   const AREA_HREF = {
     manage: "/dashboard/outbound-center?tab=campaigns", audience: "/dashboard/outbound-center?tab=prospects",

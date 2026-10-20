@@ -289,7 +289,7 @@ export default function Overview() {
   });
 
   const { data: kpi, isLoading: kpiLoading, isError } = useQuery<{
-    pipeline: { totalActive: number; closedWon30d: number; closedLost30d: number; conversionRate: number; stagesBreakdown: Record<string, number>; newLeads7d: number };
+    pipeline: { totalActive: number; totalActiveScope?: "all_owners" | "owned_or_unassigned"; closedWon30d: number; closedLost30d: number; conversionRate: number; stagesBreakdown: Record<string, number>; newLeads7d: number };
     onboarding: { active: number; live: number };
     support: { openTickets: number; breachedSla: number; avgResolutionHours: number | null };
     tasks: { pending: number; overdue: number; meta?:{asOf?:string;timezone?:string} };
@@ -433,7 +433,7 @@ export default function Overview() {
         {[
           { label: "Pending tasks", value: kpi?.tasks?.pending },
           { label: "Overdue tasks", value: kpi?.tasks?.overdue },
-          { label: "Open sales deals", value: kpi?.pipeline?.totalActive },
+          { label: kpi?.pipeline?.totalActiveScope === "owned_or_unassigned" ? "Open sales deals · yours and unassigned" : "Open sales deals", value: kpi?.pipeline?.totalActive },
           { label: "New leads · 7 days", value: kpi?.pipeline?.newLeads7d },
           { label: "Open tickets", value: kpi?.support?.openTickets },
         ].map(metric => <div key={metric.label} className="rounded-lg border bg-card p-4 shadow-[var(--shadow-card)]">
