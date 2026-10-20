@@ -139,6 +139,8 @@ export const MANDATORY_SUITES: Suite[] = [
   {name:"Stage 3 C5 Final Sidebar",script:"scripts/test-stage3-c5-sidebar.ts",timeoutSecs:60},
   {name:"Stage 3 C5 Mounted GHL Settings",script:"scripts/test-stage3-c5-mounted.ts",timeoutSecs:420},
   {name:"Stage 3 C5 Data-Bearing Panels And GHL Settings",script:"scripts/test-stage3-c5-panels.ts",timeoutSecs:600,requiresDisposableTestDatabase:true},
+  {name:"Stage 3 C5 Role Negative Requests",script:"scripts/test-stage3-c5-role-negative-requests.ts",timeoutSecs:600,requiresDisposableTestDatabase:true},
+  {name:"Stage 3 C5 GHL Settings Stored Run Profile",script:"scripts/test-stage3-c5-ghl-stored-run.ts",timeoutSecs:900,requiresDisposableTestDatabase:true},
   {name:"Stage 3 C5 Remaining Panels, Roles, Theme, Contrast, Zoom",script:"scripts/test-stage3-c5-walk.ts",timeoutSecs:900,requiresDisposableTestDatabase:true},
   {name:"Stage 3 C5 Matched Client Performance",script:"scripts/test-stage3-c5-performance.ts",timeoutSecs:600,requiresDisposableTestDatabase:true,explicitDisposableOptIn:true},
   {name:"Stage 3 C5 Cutover Browser Smoke",script:"scripts/test-stage3-c5-browser.ts",timeoutSecs:480,requiresDisposableTestDatabase:true},

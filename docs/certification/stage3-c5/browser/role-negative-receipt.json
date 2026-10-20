@@ -1,0 +1,3727 @@
+{
+  "status": "passed",
+  "fixture": "stage3b-f9b88a02-33f5-41db-b935-04b76799e3a0",
+  "checks": [
+    "admin reads the registered route inventory (200)",
+    "inventory exposes admin-only routes to exercise (135)",
+    "every admin-only route denies manager (403 from the role guard), agent (403) and unauthenticated (401/403): ",
+    "manager received 403 on all 135 admin-only routes",
+    "agent received 403 on all 135 admin-only routes",
+    "admin+manager reads admit manager and deny agent (89 routes): ",
+    "admin is admitted to /api/admin/route-permissions (200)",
+    "manager and agent are denied /api/admin/route-permissions (403/403)",
+    "admin is admitted to /api/admin/queue-holds (200)",
+    "manager and agent are denied /api/admin/queue-holds (403/403)",
+    "admin is admitted to /api/admin/queue-holds/backlog-preview (200)",
+    "manager and agent are denied /api/admin/queue-holds/backlog-preview (403/403)",
+    "admin is admitted to /api/admin/ghl/inbound-contact-sync (200)",
+    "manager and agent are denied /api/admin/ghl/inbound-contact-sync (403/403)",
+    "admin is admitted to /api/admin/processor-activation-snapshots (200)",
+    "manager and agent are denied /api/admin/processor-activation-snapshots (403/403)",
+    "admin is admitted to /api/sdr/sending-identities (200)",
+    "manager and agent are denied /api/sdr/sending-identities (403/403)",
+    "manager PATCH /api/admin/ghl/inbound-contact-sync/control -> 403 (403)",
+    "agent PATCH /api/admin/ghl/inbound-contact-sync/control -> 403 (403)",
+    "manager POST /api/admin/ghl/inbound-contact-sync/preview -> 403 (403)",
+    "agent POST /api/admin/ghl/inbound-contact-sync/preview -> 403 (403)",
+    "manager POST /api/admin/ghl/inbound-contact-sync/:runId/step -> 403 (403)",
+    "agent POST /api/admin/ghl/inbound-contact-sync/:runId/step -> 403 (403)",
+    "manager POST /api/admin/ghl/inbound-contact-sync/:runId/execute -> 403 (403)",
+    "agent POST /api/admin/ghl/inbound-contact-sync/:runId/execute -> 403 (403)",
+    "no external provider egress"
+  ],
+  "adminOnlyRoutes": 135,
+  "adminManagerReads": 89,
+  "adminReadStatuses": {
+    "/api/admin/route-permissions": 200,
+    "/api/admin/queue-holds": 200,
+    "/api/admin/queue-holds/backlog-preview": 200,
+    "/api/admin/ghl/inbound-contact-sync": 200,
+    "/api/admin/processor-activation-snapshots": 200,
+    "/api/sdr/sending-identities": 200
+  },
+  "summary": {
+    "managerDenied": 135,
+    "agentDenied": 135,
+    "unauthenticated": 135
+  },
+  "results": [
+    {
+      "role": "manager",
+      "method": "PATCH",
+      "path": "/api/admin/arbitration-windows",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "PATCH",
+      "path": "/api/admin/arbitration-windows",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "PATCH",
+      "path": "/api/admin/arbitration-windows",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/automations",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/automations",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/admin/automations",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "PATCH",
+      "path": "/api/admin/automations/:key",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "PATCH",
+      "path": "/api/admin/automations/:key",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "PATCH",
+      "path": "/api/admin/automations/:key",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/backfill-ghl-contacts",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/backfill-ghl-contacts",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/backfill-ghl-contacts",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/backfill-ghl-contacts/:runId/step",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/backfill-ghl-contacts/:runId/step",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/backfill-ghl-contacts/:runId/step",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/backups",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/backups",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/admin/backups",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/backups/run",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/backups/run",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/backups/run",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/commercial-classification/:commandId/approve",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/commercial-classification/:commandId/approve",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/commercial-classification/:commandId/approve",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/commercial-classification/:commandId/execute",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/commercial-classification/:commandId/execute",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/commercial-classification/:commandId/execute",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/commercial-links/decisions",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/commercial-links/decisions",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/commercial-links/decisions",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/contact-business-matches/confirm",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/contact-business-matches/confirm",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/contact-business-matches/confirm",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/contact-business-matches/preview",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/contact-business-matches/preview",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/admin/contact-business-matches/preview",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/contact-business-reconciliation/pause",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/contact-business-reconciliation/pause",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/contact-business-reconciliation/pause",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/contact-business-reconciliation/preview",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/contact-business-reconciliation/preview",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/admin/contact-business-reconciliation/preview",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/contact-business-reconciliation/progress",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/contact-business-reconciliation/progress",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/admin/contact-business-reconciliation/progress",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/contact-business-reconciliation/resume",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/contact-business-reconciliation/resume",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/contact-business-reconciliation/resume",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/contact-business-reconciliation/start",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/contact-business-reconciliation/start",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/contact-business-reconciliation/start",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/contact-business-suggestions",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/contact-business-suggestions",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/admin/contact-business-suggestions",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/contact-business-suggestions/review-batch",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/contact-business-suggestions/review-batch",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/contact-business-suggestions/review-batch",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/contact-business-system-links/apply",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/contact-business-system-links/apply",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/contact-business-system-links/apply",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/contact-business-system-links/preview",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/contact-business-system-links/preview",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/admin/contact-business-system-links/preview",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/contact-link-coverage/automation",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/contact-link-coverage/automation",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/admin/contact-link-coverage/automation",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/contact-link-coverage/automation",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/contact-link-coverage/automation",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/contact-link-coverage/automation",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/contact-link-coverage/candidates",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/contact-link-coverage/candidates",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/admin/contact-link-coverage/candidates",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/contact-link-coverage/pause",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/contact-link-coverage/pause",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/contact-link-coverage/pause",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/contact-link-coverage/resume",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/contact-link-coverage/resume",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/contact-link-coverage/resume",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/contact-link-coverage/review-batch",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/contact-link-coverage/review-batch",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/contact-link-coverage/review-batch",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/contact-link-coverage/source-recovery/apply",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/contact-link-coverage/source-recovery/apply",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/contact-link-coverage/source-recovery/apply",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/contact-link-coverage/source-recovery/preview",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/contact-link-coverage/source-recovery/preview",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/contact-link-coverage/source-recovery/preview",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/contact-link-coverage/start",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/contact-link-coverage/start",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/contact-link-coverage/start",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/contact-link-coverage/status",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/contact-link-coverage/status",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/admin/contact-link-coverage/status",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/contact-link-coverage/step",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/contact-link-coverage/step",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/contact-link-coverage/step",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/cro08a/schedule-definitions",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/cro08a/schedule-definitions",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/admin/cro08a/schedule-definitions",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/cro08a/schedule-definitions",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/cro08a/schedule-definitions",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/cro08a/schedule-definitions",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/cro08a/schedule-definitions/:id/activate",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/cro08a/schedule-definitions/:id/activate",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/cro08a/schedule-definitions/:id/activate",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/cro08a/schedule-definitions/:id/deactivate",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/cro08a/schedule-definitions/:id/deactivate",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/cro08a/schedule-definitions/:id/deactivate",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/data-health/reconcile",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/data-health/reconcile",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/data-health/reconcile",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "PATCH",
+      "path": "/api/admin/deliverability-settings",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "PATCH",
+      "path": "/api/admin/deliverability-settings",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "PATCH",
+      "path": "/api/admin/deliverability-settings",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/enrichment/activation-status",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/enrichment/activation-status",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/admin/enrichment/activation-status",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/enrichment/canary",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/enrichment/canary",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/enrichment/canary",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/ghl/bootstrap-fields",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/ghl/bootstrap-fields",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/ghl/bootstrap-fields",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/ghl/inbound-contact-sync",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/ghl/inbound-contact-sync",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/admin/ghl/inbound-contact-sync",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/ghl/inbound-contact-sync/:runId",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/ghl/inbound-contact-sync/:runId",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/admin/ghl/inbound-contact-sync/:runId",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/ghl/inbound-contact-sync/:runId/execute",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/ghl/inbound-contact-sync/:runId/execute",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/ghl/inbound-contact-sync/:runId/execute",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/ghl/inbound-contact-sync/:runId/step",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/ghl/inbound-contact-sync/:runId/step",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/ghl/inbound-contact-sync/:runId/step",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "PATCH",
+      "path": "/api/admin/ghl/inbound-contact-sync/control",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "PATCH",
+      "path": "/api/admin/ghl/inbound-contact-sync/control",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "PATCH",
+      "path": "/api/admin/ghl/inbound-contact-sync/control",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/ghl/inbound-contact-sync/preview",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/ghl/inbound-contact-sync/preview",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/ghl/inbound-contact-sync/preview",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/ghl/invalid-contacts",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/ghl/invalid-contacts",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/admin/ghl/invalid-contacts",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/ghl/shadow-log/:id/review",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/ghl/shadow-log/:id/review",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/ghl/shadow-log/:id/review",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "PATCH",
+      "path": "/api/admin/ghl/stage-map",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "PATCH",
+      "path": "/api/admin/ghl/stage-map",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "PATCH",
+      "path": "/api/admin/ghl/stage-map",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/ghl/stage-map",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/ghl/stage-map",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/ghl/stage-map",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/ghl/sync-stages",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/ghl/sync-stages",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/ghl/sync-stages",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/import-recovery/lock-capture",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/import-recovery/lock-capture",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/admin/import-recovery/lock-capture",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/import-recovery/lock-capture",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/import-recovery/lock-capture",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/import-recovery/lock-capture",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/integration-readiness/test-email",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/integration-readiness/test-email",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/integration-readiness/test-email",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/master-leads/validate-emails",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/master-leads/validate-emails",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/master-leads/validate-emails",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/mfa-settings",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/mfa-settings",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/admin/mfa-settings",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "PUT",
+      "path": "/api/admin/mfa-settings",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "PUT",
+      "path": "/api/admin/mfa-settings",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "PUT",
+      "path": "/api/admin/mfa-settings",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/outbound/cohort-launch",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/outbound/cohort-launch",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/outbound/cohort-launch",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/pool-status",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/pool-status",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/admin/pool-status",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/pre-deploy-result",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/pre-deploy-result",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/admin/pre-deploy-result",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/processor-activation-snapshots",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/processor-activation-snapshots",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/admin/processor-activation-snapshots",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/processor-activation-snapshots",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/processor-activation-snapshots",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/processor-activation-snapshots",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "PATCH",
+      "path": "/api/admin/processor-activation-snapshots/:id/expire",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "PATCH",
+      "path": "/api/admin/processor-activation-snapshots/:id/expire",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "PATCH",
+      "path": "/api/admin/processor-activation-snapshots/:id/expire",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "PUT",
+      "path": "/api/admin/provider-controls/:provider",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "PUT",
+      "path": "/api/admin/provider-controls/:provider",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "PUT",
+      "path": "/api/admin/provider-controls/:provider",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "PUT",
+      "path": "/api/admin/provider-controls/zerobounce",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "PUT",
+      "path": "/api/admin/provider-controls/zerobounce",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "PUT",
+      "path": "/api/admin/provider-controls/zerobounce",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/purge-test-contacts",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/purge-test-contacts",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/purge-test-contacts",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "DELETE",
+      "path": "/api/admin/queue-holds",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "DELETE",
+      "path": "/api/admin/queue-holds",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "DELETE",
+      "path": "/api/admin/queue-holds",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/queue-holds",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/queue-holds",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/admin/queue-holds",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/queue-holds",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/queue-holds",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/queue-holds",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/queue-holds/backlog-preview",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/queue-holds/backlog-preview",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/admin/queue-holds/backlog-preview",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/queue-holds/release-approval",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/queue-holds/release-approval",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/queue-holds/release-approval",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/queue-metrics",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/queue-metrics",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/admin/queue-metrics",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/route-permissions",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/route-permissions",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/admin/route-permissions",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/seed-scott-identity",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/seed-scott-identity",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/seed-scott-identity",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/serper/control",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/serper/control",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/admin/serper/control",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "PUT",
+      "path": "/api/admin/serper/control",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "PUT",
+      "path": "/api/admin/serper/control",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "PUT",
+      "path": "/api/admin/serper/control",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "PATCH",
+      "path": "/api/admin/serper/enabled",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "PATCH",
+      "path": "/api/admin/serper/enabled",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "PATCH",
+      "path": "/api/admin/serper/enabled",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/serper/recovery",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/serper/recovery",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/serper/recovery",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/serper/reset-window",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/serper/reset-window",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/serper/reset-window",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/serper/resync-budget-mirror",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/serper/resync-budget-mirror",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/serper/resync-budget-mirror",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/serper/unlabeled-discovery-gate",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/serper/unlabeled-discovery-gate",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/admin/serper/unlabeled-discovery-gate",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "PUT",
+      "path": "/api/admin/serper/unlabeled-discovery-gate",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "PUT",
+      "path": "/api/admin/serper/unlabeled-discovery-gate",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "PUT",
+      "path": "/api/admin/serper/unlabeled-discovery-gate",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/serper/usage-log",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/serper/usage-log",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/admin/serper/usage-log",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "DELETE",
+      "path": "/api/admin/sessions/:sessionRecordId",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "DELETE",
+      "path": "/api/admin/sessions/:sessionRecordId",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "DELETE",
+      "path": "/api/admin/sessions/:sessionRecordId",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "PUT",
+      "path": "/api/admin/settings/attrition-thresholds",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "PUT",
+      "path": "/api/admin/settings/attrition-thresholds",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "PUT",
+      "path": "/api/admin/settings/attrition-thresholds",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "PUT",
+      "path": "/api/admin/settings/auto-create-deals-for-warm-contacts",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "PUT",
+      "path": "/api/admin/settings/auto-create-deals-for-warm-contacts",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "PUT",
+      "path": "/api/admin/settings/auto-create-deals-for-warm-contacts",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "PUT",
+      "path": "/api/admin/settings/pipeline-silence-thresholds",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "PUT",
+      "path": "/api/admin/settings/pipeline-silence-thresholds",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "PUT",
+      "path": "/api/admin/settings/pipeline-silence-thresholds",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "PUT",
+      "path": "/api/admin/settings/statement-acquisition-config",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "PUT",
+      "path": "/api/admin/settings/statement-acquisition-config",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "PUT",
+      "path": "/api/admin/settings/statement-acquisition-config",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "PUT",
+      "path": "/api/admin/settings/worker-intervals",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "PUT",
+      "path": "/api/admin/settings/worker-intervals",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "PUT",
+      "path": "/api/admin/settings/worker-intervals",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "PUT",
+      "path": "/api/admin/settings/zerobounce-auto-run",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "PUT",
+      "path": "/api/admin/settings/zerobounce-auto-run",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "PUT",
+      "path": "/api/admin/settings/zerobounce-auto-run",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/system-health/incidents",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/system-health/incidents",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/admin/system-health/incidents",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "DELETE",
+      "path": "/api/admin/system-health/jobs/:compositeId",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "DELETE",
+      "path": "/api/admin/system-health/jobs/:compositeId",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "DELETE",
+      "path": "/api/admin/system-health/jobs/:compositeId",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/system-health/jobs/:compositeId/retry",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/system-health/jobs/:compositeId/retry",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/system-health/jobs/:compositeId/retry",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "DELETE",
+      "path": "/api/admin/system-health/jobs/dlq/purge",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "DELETE",
+      "path": "/api/admin/system-health/jobs/dlq/purge",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "DELETE",
+      "path": "/api/admin/system-health/jobs/dlq/purge",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/users",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/users",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/admin/users",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/users/:id/lifecycle",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/users/:id/lifecycle",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/users/:id/lifecycle",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/admin/users/:id/reset-2fa",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/admin/users/:id/reset-2fa",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/admin/users/:id/reset-2fa",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "PUT",
+      "path": "/api/admin/users/:id/role",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "PUT",
+      "path": "/api/admin/users/:id/role",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "PUT",
+      "path": "/api/admin/users/:id/role",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "DELETE",
+      "path": "/api/admin/users/:id/sessions",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "DELETE",
+      "path": "/api/admin/users/:id/sessions",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "DELETE",
+      "path": "/api/admin/users/:id/sessions",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/users/:id/sessions",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/users/:id/sessions",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/admin/users/:id/sessions",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/agents/residual-calculator",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/agents/residual-calculator",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/agents/residual-calculator",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/data-requests",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/data-requests",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/data-requests",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "PUT",
+      "path": "/api/data-requests/:id",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "PUT",
+      "path": "/api/data-requests/:id",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "PUT",
+      "path": "/api/data-requests/:id",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/ghl/sync-all-from-ghl",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/ghl/sync-all-from-ghl",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/ghl/sync-all-from-ghl",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/ghl/sync-all-to-ghl",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/ghl/sync-all-to-ghl",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/ghl/sync-all-to-ghl",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/ghl/sync-contact",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/ghl/sync-contact",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/ghl/sync-contact",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/ghl/sync-permissions/:runId/step",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/ghl/sync-permissions/:runId/step",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/ghl/sync-permissions/:runId/step",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "PUT",
+      "path": "/api/ghl/workflow-env-ids/:envKey",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "PUT",
+      "path": "/api/ghl/workflow-env-ids/:envKey",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "PUT",
+      "path": "/api/ghl/workflow-env-ids/:envKey",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "PUT",
+      "path": "/api/ghl/workflow-mappings/:sequenceName",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "PUT",
+      "path": "/api/ghl/workflow-mappings/:sequenceName",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "PUT",
+      "path": "/api/ghl/workflow-mappings/:sequenceName",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/operator/bounce-stats",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/operator/bounce-stats",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/operator/bounce-stats",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/operator/enrollment-subject-audit",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/operator/enrollment-subject-audit",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/operator/enrollment-subject-audit",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/operator/enrollment-subject-audit/retrigger",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/operator/enrollment-subject-audit/retrigger",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/operator/enrollment-subject-audit/retrigger",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/operator/job-status",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/operator/job-status",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/operator/job-status",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/operator/sync-conflicts",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/operator/sync-conflicts",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/operator/sync-conflicts",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "PATCH",
+      "path": "/api/operator/sync-conflicts/:id/resolve",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "PATCH",
+      "path": "/api/operator/sync-conflicts/:id/resolve",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "PATCH",
+      "path": "/api/operator/sync-conflicts/:id/resolve",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/sdr/activation/recent-attempts",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/sdr/activation/recent-attempts",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/sdr/activation/recent-attempts",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/sdr/activation/recent-events",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/sdr/activation/recent-events",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/sdr/activation/recent-events",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/sdr/activation/stuck-leads",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/sdr/activation/stuck-leads",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/sdr/activation/stuck-leads",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/sdr/inbox-health",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/sdr/inbox-health",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/sdr/inbox-health",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/sdr/inbox-health-scores",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/sdr/inbox-health-scores",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/sdr/inbox-health-scores",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/sdr/inbox-maintenance",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/sdr/inbox-maintenance",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/sdr/inbox-maintenance",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/sdr/operator/bounce-feedback-summary",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/sdr/operator/bounce-feedback-summary",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/sdr/operator/bounce-feedback-summary",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/sdr/operator/kpis",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/sdr/operator/kpis",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/sdr/operator/kpis",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/sdr/operator/low-confidence",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/sdr/operator/low-confidence",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/sdr/operator/low-confidence",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/sdr/operator/send-monitoring",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/sdr/operator/send-monitoring",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/sdr/operator/send-monitoring",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/sdr/operator/webhook-events",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/sdr/operator/webhook-events",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/sdr/operator/webhook-events",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/sdr/pause-all",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/sdr/pause-all",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/sdr/pause-all",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/sdr/resume-all",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/sdr/resume-all",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/sdr/resume-all",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/sdr/sending-identities",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/sdr/sending-identities",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/sdr/sending-identities",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "POST",
+      "path": "/api/sdr/sending-identities",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "POST",
+      "path": "/api/sdr/sending-identities",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "POST",
+      "path": "/api/sdr/sending-identities",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "DELETE",
+      "path": "/api/sdr/sending-identities/:id",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "DELETE",
+      "path": "/api/sdr/sending-identities/:id",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "DELETE",
+      "path": "/api/sdr/sending-identities/:id",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/sdr/sending-identities/:id",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/sdr/sending-identities/:id",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/sdr/sending-identities/:id",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "PUT",
+      "path": "/api/sdr/sending-identities/:id",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "PUT",
+      "path": "/api/sdr/sending-identities/:id",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "PUT",
+      "path": "/api/sdr/sending-identities/:id",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/users",
+      "status": 403
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/users",
+      "status": 403
+    },
+    {
+      "role": "unauthenticated",
+      "method": "GET",
+      "path": "/api/users",
+      "status": 401
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/alerts",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/alerts",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/arbitration-suppressions",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/arbitration-suppressions",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/arbitration-windows",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/arbitration-windows",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/backfill-ghl-contacts/status",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/backfill-ghl-contacts/status",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/channel-safety-summary",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/channel-safety-summary",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/cold-email-health",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/cold-email-health",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/commercial-classification/counts",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/commercial-classification/counts",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/commercial-classification/reconciliation/:aggregateType/:aggregateKey",
+      "status": 404,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/commercial-classification/reconciliation/:aggregateType/:aggregateKey",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/comms-readiness",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/comms-readiness",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/contacts/backfill-deals/status",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/contacts/backfill-deals/status",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/contacts/bulk-enroll/status",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/contacts/bulk-enroll/status",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/contacts/score-all/status",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/contacts/score-all/status",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/data-health",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/data-health",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/deliverability-settings",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/deliverability-settings",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/email-health/ghl-status",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/email-health/ghl-status",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/email-health/smtp-status",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/email-health/smtp-status",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/field-sales-pilot",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/field-sales-pilot",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/ghl-failures",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/ghl-failures",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/ghl-health",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/ghl-health",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/ghl/identity-conflicts",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/ghl/identity-conflicts",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/ghl/pipeline-stages",
+      "status": 500,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/ghl/pipeline-stages",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/ghl/shadow-log",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/ghl/shadow-log",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/ghl/stage-map",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/ghl/stage-map",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/integration-readiness",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/integration-readiness",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/launch-readiness",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/launch-readiness",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/launch-readiness-full",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/launch-readiness-full",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/lead-queue-stats",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/lead-queue-stats",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/lifecycle-conflicts",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/lifecycle-conflicts",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/live-health",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/live-health",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/mids",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/mids",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/mids/unactivated",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/mids/unactivated",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/outbound-preflight",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/outbound-preflight",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/outbound/cohort-metrics",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/outbound/cohort-metrics",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/pause-state",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/pause-state",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/pipeline/new-leads/enroll-status",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/pipeline/new-leads/enroll-status",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/pipeline/stage-health",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/pipeline/stage-health",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/pipeline/stage-health/vertical-detail",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/pipeline/stage-health/vertical-detail",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/processor-adapters",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/processor-adapters",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/provider-controls/:provider",
+      "status": 404,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/provider-controls/:provider",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/provider-controls/zerobounce",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/provider-controls/zerobounce",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/rep-activity/inactive",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/rep-activity/inactive",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/rep-activity/today",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/rep-activity/today",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/sender-profiles",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/sender-profiles",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/sending-identities",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/sending-identities",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/settings/attrition-thresholds",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/settings/attrition-thresholds",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/settings/auto-create-deals-for-warm-contacts",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/settings/auto-create-deals-for-warm-contacts",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/settings/pipeline-silence-thresholds",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/settings/pipeline-silence-thresholds",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/settings/statement-acquisition-config",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/settings/statement-acquisition-config",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/settings/worker-intervals",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/settings/worker-intervals",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/settings/zerobounce-auto-run",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/settings/zerobounce-auto-run",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/settings/zerobounce-safety",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/settings/zerobounce-safety",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/settings/zerobounce-usage",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/settings/zerobounce-usage",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/system-readiness",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/system-readiness",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/underwriting/pending-conditions",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/underwriting/pending-conditions",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/admin/worker-heartbeats",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/admin/worker-heartbeats",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/agent-merchants",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/agent-merchants",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/agent-merchants/deal/:dealId",
+      "status": 500,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/agent-merchants/deal/:dealId",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/agent-quotas",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/agent-quotas",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/agents",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/agents",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/agents/:id",
+      "status": 500,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/agents/:id",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/agents/:id/binding-status",
+      "status": 400,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/agents/:id/binding-status",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/agents/readiness",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/agents/readiness",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/agents/rep-metrics",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/agents/rep-metrics",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/businesses",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/businesses",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/businesses/dedupe/stats",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/businesses/dedupe/stats",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/consent-audit",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/consent-audit",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/consent-audit/contact/:contactId",
+      "status": 500,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/consent-audit/contact/:contactId",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/documents",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/documents",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/documents/contact/:contactId",
+      "status": 404,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/documents/contact/:contactId",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/documents/download/:id",
+      "status": 404,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/documents/download/:id",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/health-alerts",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/health-alerts",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/health-alerts/deal/:dealId",
+      "status": 500,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/health-alerts/deal/:dealId",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/integrations/ghl-workflow-registry",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/integrations/ghl-workflow-registry",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/knowledge/feedback",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/knowledge/feedback",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/knowledge/sources",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/knowledge/sources",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/knowledge/sources/:id",
+      "status": 500,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/knowledge/sources/:id",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/knowledge/sources/:id/chunks",
+      "status": 500,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/knowledge/sources/:id/chunks",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/knowledge/stats",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/knowledge/stats",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/knowledge/unanswered",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/knowledge/unanswered",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/merchant-residuals",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/merchant-residuals",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/merchants",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/merchants",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/operator/sdr-stats",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/operator/sdr-stats",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/residual-reports",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/residual-reports",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/residual-reports/:id",
+      "status": 500,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/residual-reports/:id",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/sdr/a-lead-queue",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/sdr/a-lead-queue",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/sdr/merchant-contacts",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/sdr/merchant-contacts",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/sdr/merchants/:id/contacts",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/sdr/merchants/:id/contacts",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/testimonial-submissions",
+      "status": 200,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/testimonial-submissions",
+      "status": 403,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "manager",
+      "method": "GET",
+      "path": "/api/testimonial-submissions/:id",
+      "status": 400,
+      "tier": "admin+manager"
+    },
+    {
+      "role": "agent",
+      "method": "GET",
+      "path": "/api/testimonial-submissions/:id",
+      "status": 403,
+      "tier": "admin+manager"
+    }
+  ],
+  "scope": "real route modules and guards on a disposable migrated database over HTTP with persisted sessions; routes in modules not registered in this fixture are not covered"
+}

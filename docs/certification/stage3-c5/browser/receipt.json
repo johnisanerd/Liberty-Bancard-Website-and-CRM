@@ -10135,8 +10135,8 @@
       },
       {
         "file": "scripts/ci-suite-manifest.ts",
-        "bytes": 70376,
-        "sha256": "de71d4860300b6bc8cc5775335df393983d43d98616103833edacb048b379703"
+        "bytes": 71227,
+        "sha256": "805ff9450e02ec59bd345638e97f75ff781acfe35bad4b12457c2f613916add1"
       },
       {
         "file": "scripts/cleanup-demo-data.ts",
@@ -10435,8 +10435,8 @@
       },
       {
         "file": "scripts/pre-deploy.ts",
-        "bytes": 100245,
-        "sha256": "7cd80527555fdea22fa8065e5fe41cc978e1f123ce2e665840142e9006a9a384"
+        "bytes": 100558,
+        "sha256": "975e0b4cd53736db355b60961bbb8c0fa2dd8b125b358f30e9955433291e814c"
       },
       {
         "file": "scripts/preflight-mi09-pricing.ts",
@@ -12630,13 +12630,18 @@
       },
       {
         "file": "scripts/test-stage3-c5-browser.ts",
-        "bytes": 5506,
-        "sha256": "5c05878ca7a4f7a14dd23ba44d74db95408285cadd9ce06caafd0b5f1459e6b1"
+        "bytes": 6850,
+        "sha256": "6cf108c8fd6610432f710712985dd808184315e64ade8de2e4dfea477fd84a91"
       },
       {
         "file": "scripts/test-stage3-c5-diagnostics.ts",
         "bytes": 9140,
         "sha256": "66cbf1ab9765a8caeda03c1af73df56066f0f46a551fea0154bc67f3efcc6920"
+      },
+      {
+        "file": "scripts/test-stage3-c5-ghl-stored-run.ts",
+        "bytes": 15898,
+        "sha256": "b5c31625d55c4066fae32c7b62e60e2604c6064d89d8b425066a19beedca69d8"
       },
       {
         "file": "scripts/test-stage3-c5-mounted.ts",
@@ -12657,6 +12662,11 @@
         "file": "scripts/test-stage3-c5-resources.ts",
         "bytes": 9077,
         "sha256": "e67e484052cad649985058a0edf05816ec6ad6807ddcb6131d21f930ff650180"
+      },
+      {
+        "file": "scripts/test-stage3-c5-role-negative-requests.ts",
+        "bytes": 6940,
+        "sha256": "0e7cfe27b0f760be87d44228ebaf254c289a52716367afa41207300b208edb49"
       },
       {
         "file": "scripts/test-stage3-c5-route-inventory.ts",
@@ -16984,14 +16994,14 @@
         "sha256": "00e8f3f1ffe171ca648cbadf003880ea475ce36007c2cbd25894f9926229dfba"
       }
     ],
-    "inputHash": "6fe136bf24992838c494ced9ab1842dd6dbec5efa535aaac465401bf2db26ff6",
-    "sourceHead": "96c036f313ca0280cc466d95d804b9b12d4614b3",
-    "sourceInputHash": "13ef628d03fe2ca743da3cbe6ff99e99c289c93d9e4582e1c6ab782ebd6831d4",
+    "inputHash": "0dcc772f1d281135cfe275f3908f12b240e219834d48b5757f4eb5e2f3d88160",
+    "sourceHead": "98f0639b66771e11ff5d75a7194f973718f85662",
+    "sourceInputHash": "3b0cd4e13b4529d695307601d9772d64d42068ff097e92c83e753bcb8a1a625a",
     "outputs": [
       {
         "file": "dist/RELEASE_SHA",
         "bytes": 41,
-        "sha256": "f3471a97345a98c31e7b01360c2a344faa6cdb714cef9ee57c2aac9ba2a067ad"
+        "sha256": "162d20cda6a0034a6dabe995f2e8134db0270d6e122dc9051e66a99d69c6d458"
       },
       {
         "file": "dist/build-recipe.json",
@@ -17001,7 +17011,7 @@
       {
         "file": "dist/index.cjs",
         "bytes": 11184464,
-        "sha256": "88e161c2309d538a5bab3e78eac30e71048125c030e931383f6a24b5bcde3cd3"
+        "sha256": "dd91bcd1260cdb219c8fb6c6916ad3823aed18a649a97e3c00aa8e682e25a157"
       },
       {
         "file": "dist/public/assets/ADACompliance-BTW6X_xE.js",
@@ -19386,10 +19396,10 @@
       {
         "file": "dist/sfp-publish-build.json",
         "bytes": 231,
-        "sha256": "8fa4a479833bfd1a594c722b6d58864578162fedbaa96e3857637427a0bef0ff"
+        "sha256": "101e3c284dc93d7a0c5eec6d96ca29ecfa295171df4f28dbb40d1d2de89f73a6"
       }
     ],
-    "outputHash": "98efef529a5d8841e2fbaa90c80799a3fece96b276be6295864941c722407bdc",
+    "outputHash": "a4885329702183d73ba32c33ae108f6730cb8e5354c31f001974886656349d61",
     "buildRecipe": {
       "version": 1,
       "mode": "production",
@@ -19403,7 +19413,7 @@
     "recipe": "Node22.22/npm10.9.4 locked install; script/build.ts; Vite client and bundled server",
     "qualification": "Compiled client plus registered source handlers in isolated preview; NOT deployed bundled-server parity"
   },
-  "fixture": "stage3b-160f757d-bfdc-4b52-b247-f923199f2c44",
+  "fixture": "stage3b-dbcc9730-bf7d-42c7-8085-4c7d5326fabf",
   "checks": [
     "admin: sidebar lists 11 entries in exact order with role hrefs",
     "admin: all eleven labels in order",
@@ -19429,7 +19439,11 @@
     "admin: administration is the highlighted destination (got link-sidebar-administration)",
     "admin: resources stays on /dashboard/knowledge-base (no redirect to login or forbidden) — now /dashboard/knowledge-base",
     "admin: resources is the highlighted destination (got link-sidebar-resources)",
-    "admin: Administration renders children for its area",
+    "admin: Administration area users-access mounts exactly its permitted children [agents,permissions,users] (got [agents,permissions,users], issue false)",
+    "admin: Administration area integrations mounts exactly its permitted children [ghl,info-flow,integrations] (got [ghl,info-flow,integrations], issue false)",
+    "admin: Administration area operational-controls mounts exactly its permitted children [automations] (got [automations], issue false)",
+    "admin: Administration area data-audit mounts exactly its permitted children [audit-log,consent] (got [audit-log,consent], issue false)",
+    "admin: Administration area release-readiness mounts exactly its permitted children [gate-result,pci] (got [gate-result,pci], issue false)",
     "admin: no uncaught browser exceptions ()",
     "manager: sidebar lists 11 entries in exact order with role hrefs",
     "manager: all eleven labels in order",
@@ -19455,8 +19469,12 @@
     "manager: administration is the highlighted destination (got link-sidebar-administration)",
     "manager: resources stays on /dashboard/knowledge-base (no redirect to login or forbidden) — now /dashboard/knowledge-base",
     "manager: resources is the highlighted destination (got link-sidebar-resources)",
-    "manager: Administration renders children for its area",
-    "manager: forbidden area explains the fallback",
+    "manager: Administration area users-access mounts exactly its permitted children [agents] (got [agents], issue false)",
+    "manager: Administration area integrations mounts exactly its permitted children [ghl,integrations] (got [ghl,integrations], issue false)",
+    "manager: Administration area operational-controls has no permitted child, explains the fallback",
+    "manager: Administration area operational-controls fallback mounts only permitted children (got [consent])",
+    "manager: Administration area data-audit mounts exactly its permitted children [consent] (got [consent], issue false)",
+    "manager: Administration area release-readiness mounts exactly its permitted children [pci] (got [pci], issue false)",
     "manager: admin-only automations child is not mounted",
     "manager: no uncaught browser exceptions ()",
     "agent: sidebar lists 9 entries in exact order with role hrefs",
@@ -19479,6 +19497,7 @@
     "agent: reports is the highlighted destination (got link-sidebar-reports)",
     "agent: resources stays on /dashboard/knowledge-base (no redirect to login or forbidden) — now /dashboard/knowledge-base",
     "agent: resources is the highlighted destination (got link-sidebar-resources)",
+    "agent: Administration is not mounted on /dashboard/admin-hub (landed on /dashboard/my-day)",
     "agent: no uncaught browser exceptions ()",
     "no external provider egress"
   ],
@@ -19551,10 +19570,75 @@
     },
     {
       "role": "admin",
-      "administrationTabsInArea": [
-        "tab-admin-pci",
-        "tab-admin-gate-result"
-      ]
+      "administrationArea": "users-access",
+      "tabs": [
+        "agents",
+        "permissions",
+        "users"
+      ],
+      "selectionIssue": false,
+      "expectedChildren": [
+        "agents",
+        "permissions",
+        "users"
+      ],
+      "path": "/dashboard/admin-hub?area=users-access"
+    },
+    {
+      "role": "admin",
+      "administrationArea": "integrations",
+      "tabs": [
+        "ghl",
+        "info-flow",
+        "integrations"
+      ],
+      "selectionIssue": false,
+      "expectedChildren": [
+        "ghl",
+        "info-flow",
+        "integrations"
+      ],
+      "path": "/dashboard/admin-hub?area=integrations"
+    },
+    {
+      "role": "admin",
+      "administrationArea": "operational-controls",
+      "tabs": [
+        "automations"
+      ],
+      "selectionIssue": false,
+      "expectedChildren": [
+        "automations"
+      ],
+      "path": "/dashboard/admin-hub?area=operational-controls"
+    },
+    {
+      "role": "admin",
+      "administrationArea": "data-audit",
+      "tabs": [
+        "audit-log",
+        "consent"
+      ],
+      "selectionIssue": false,
+      "expectedChildren": [
+        "audit-log",
+        "consent"
+      ],
+      "path": "/dashboard/admin-hub?area=data-audit"
+    },
+    {
+      "role": "admin",
+      "administrationArea": "release-readiness",
+      "tabs": [
+        "gate-result",
+        "pci"
+      ],
+      "selectionIssue": false,
+      "expectedChildren": [
+        "gate-result",
+        "pci"
+      ],
+      "path": "/dashboard/admin-hub?area=release-readiness"
     },
     {
       "role": "manager",
@@ -19624,9 +19708,63 @@
     },
     {
       "role": "manager",
-      "administrationTabsInArea": [
-        "tab-admin-pci"
-      ]
+      "administrationArea": "users-access",
+      "tabs": [
+        "agents"
+      ],
+      "selectionIssue": false,
+      "expectedChildren": [
+        "agents"
+      ],
+      "path": "/dashboard/admin-hub?area=users-access"
+    },
+    {
+      "role": "manager",
+      "administrationArea": "integrations",
+      "tabs": [
+        "ghl",
+        "integrations"
+      ],
+      "selectionIssue": false,
+      "expectedChildren": [
+        "ghl",
+        "integrations"
+      ],
+      "path": "/dashboard/admin-hub?area=integrations"
+    },
+    {
+      "role": "manager",
+      "administrationArea": "operational-controls",
+      "tabs": [
+        "consent"
+      ],
+      "selectionIssue": true,
+      "expectedChildren": [],
+      "path": "/dashboard/admin-hub?area=operational-controls"
+    },
+    {
+      "role": "manager",
+      "administrationArea": "data-audit",
+      "tabs": [
+        "consent"
+      ],
+      "selectionIssue": false,
+      "expectedChildren": [
+        "consent"
+      ],
+      "path": "/dashboard/admin-hub?area=data-audit"
+    },
+    {
+      "role": "manager",
+      "administrationArea": "release-readiness",
+      "tabs": [
+        "pci"
+      ],
+      "selectionIssue": false,
+      "expectedChildren": [
+        "pci"
+      ],
+      "path": "/dashboard/admin-hub?area=release-readiness"
     },
     {
       "role": "agent",
@@ -19681,6 +19819,13 @@
       "target": "/dashboard/knowledge-base",
       "path": "/dashboard/knowledge-base",
       "activeAria": "link-sidebar-resources"
+    },
+    {
+      "role": "agent",
+      "administrationDirect": {
+        "path": "/dashboard/my-day",
+        "administrationMounted": 0
+      }
     }
   ],
   "scope": "navigation/role/shell only; /api answered 501; no data-bearing panel proof"

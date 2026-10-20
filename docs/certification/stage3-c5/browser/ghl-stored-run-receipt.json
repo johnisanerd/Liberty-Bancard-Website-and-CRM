@@ -1,0 +1,287 @@
+{
+  "status": "passed",
+  "identity": {
+    "sourceHead": "98f0639b66771e11ff5d75a7194f973718f85662"
+  },
+  "fixture": "stage3b-a2e04969-110d-448d-a218-af4c7aa2750f",
+  "checks": [
+    "real status handler returns the seeded ready run (3994)",
+    "real status handler returns the seeded ready run (20000)",
+    "ready (3994): GHL Settings mounts the incoming-sync card (1017ms)",
+    "ready: the card shows the persisted preview and its 3,994 counts",
+    "ready: page main thread stays responsive (worst frame gap 20ms)",
+    "ready: server event loop never blocked 1000ms (max 17.4ms)",
+    "ready: an unrelated fast endpoint answers within 1500ms while the page is open (max 5ms)",
+    "ready: no uncaught page exceptions",
+    "preview: card mounts with no stored run",
+    "preview: real preview reaches ready (state ready, 45657ms, error null)",
+    "preview: scanned 3994 of 3994",
+    "preview: fake GHL served 40 pages",
+    "previewing: page main thread stays responsive (worst frame gap 119ms)",
+    "previewing: server event loop never blocked 1000ms (max 105.4ms)",
+    "previewing: an unrelated fast endpoint answers within 1500ms while the page is open (max 30ms)",
+    "previewing: no uncaught page exceptions",
+    "apply: execute button is offered for the ready preview",
+    "apply: real apply advanced (0 -> 440 of 3994)",
+    "running: page main thread stays responsive (worst frame gap 35ms)",
+    "running: server event loop never blocked 1000ms (max 33.5ms)",
+    "running: an unrelated fast endpoint answers within 1500ms while the page is open (max 18ms)",
+    "running: no uncaught page exceptions",
+    "no external provider egress"
+  ],
+  "failures": [],
+  "measurements": {
+    "statusReadBySize": {
+      "3994": {
+        "runId": "c6d5acaa-4c3b-43c8-a3ad-16e480f38320",
+        "stored": 182718,
+        "jsonChars": 1675210,
+        "statusMs": {
+          "p50": 32,
+          "max": 50
+        },
+        "eventLoopMs": {
+          "max": 26.5,
+          "p99": 26.5
+        },
+        "responseRunState": "ready",
+        "responseBytes": 845
+      },
+      "20000": {
+        "runId": "60d6f66f-2b26-47b0-9623-ae3c2dc421c8",
+        "stored": 919236,
+        "jsonChars": 8529747,
+        "statusMs": {
+          "p50": 156,
+          "max": 380
+        },
+        "eventLoopMs": {
+          "max": 119.7,
+          "p99": 105.1
+        },
+        "responseRunState": "ready",
+        "responseBytes": 849
+      }
+    },
+    "readyMountMs": 1017,
+    "readyProfile": {
+      "sampledMs": 8162,
+      "idleMs": 8128,
+      "busyMs": 34,
+      "topSelf": [
+        {
+          "fn": "requestAnimationFrame :-1",
+          "selfMs": 18
+        },
+        {
+          "fn": "t :0",
+          "selfMs": 3
+        },
+        {
+          "fn": "ae index-BG_L_95C.js:1",
+          "selfMs": 2
+        },
+        {
+          "fn": "Ap GhlIntegrationHub-CS7mLBPV.js:1",
+          "selfMs": 1
+        },
+        {
+          "fn": "He index-BG_L_95C.js:6",
+          "selfMs": 1
+        },
+        {
+          "fn": "(anonymous) index-BG_L_95C.js:8",
+          "selfMs": 1
+        },
+        {
+          "fn": "Nr GhlIntegrationHub-CS7mLBPV.js:1",
+          "selfMs": 1
+        },
+        {
+          "fn": "ZE index-BG_L_95C.js:8",
+          "selfMs": 1
+        }
+      ]
+    },
+    "ready": {
+      "windowMs": 8000,
+      "frames": 488,
+      "worstFrameGapMs": 20,
+      "longTasks": 0,
+      "longTaskMaxMs": 0,
+      "longTaskTotalMs": 0,
+      "serverEventLoopMs": {
+        "max": 17.4,
+        "p99": 11.1,
+        "mean": 10.2
+      },
+      "probeMs": {
+        "n": 40,
+        "p50": 2,
+        "max": 5
+      },
+      "apiRequests": 3,
+      "stepCalls": 0,
+      "statusReads": 2,
+      "pageExceptions": 0
+    },
+    "previewingProfile": {
+      "sampledMs": 25202,
+      "idleMs": 24901,
+      "busyMs": 301,
+      "topSelf": [
+        {
+          "fn": "requestAnimationFrame :-1",
+          "selfMs": 56
+        },
+        {
+          "fn": "fetch :-1",
+          "selfMs": 39
+        },
+        {
+          "fn": "Ap GhlIntegrationHub-CS7mLBPV.js:1",
+          "selfMs": 22
+        },
+        {
+          "fn": "(anonymous) index-BG_L_95C.js:8",
+          "selfMs": 17
+        },
+        {
+          "fn": "Nr GhlIntegrationHub-CS7mLBPV.js:1",
+          "selfMs": 16
+        },
+        {
+          "fn": "t :0",
+          "selfMs": 8
+        },
+        {
+          "fn": "Fc index-BG_L_95C.js:6",
+          "selfMs": 7
+        },
+        {
+          "fn": "N1 index-BG_L_95C.js:8",
+          "selfMs": 7
+        }
+      ]
+    },
+    "previewing": {
+      "windowMs": 25000,
+      "frames": 1503,
+      "worstFrameGapMs": 119,
+      "longTasks": 0,
+      "longTaskMaxMs": 0,
+      "longTaskTotalMs": 0,
+      "serverEventLoopMs": {
+        "max": 105.4,
+        "p99": 13.9,
+        "mean": 10.3
+      },
+      "probeMs": {
+        "n": 124,
+        "p50": 2,
+        "max": 30
+      },
+      "apiRequests": 110,
+      "stepCalls": 52,
+      "statusReads": 53,
+      "pageExceptions": 0
+    },
+    "previewToReadyMs": 45657,
+    "previewFinal": {
+      "state": "ready",
+      "counts": {
+        "created": 0,
+        "matched": 0,
+        "scanned": 3994,
+        "skipped": 0,
+        "updated": 0,
+        "conflicts": 0,
+        "unchanged": 0,
+        "wouldCreate": 3994,
+        "wouldUpdate": 0
+      },
+      "lastError": null
+    },
+    "runningProfile": {
+      "sampledMs": 45144,
+      "idleMs": 44892,
+      "busyMs": 252,
+      "topSelf": [
+        {
+          "fn": "requestAnimationFrame :-1",
+          "selfMs": 69
+        },
+        {
+          "fn": "fetch :-1",
+          "selfMs": 32
+        },
+        {
+          "fn": "(garbage collector) :-1",
+          "selfMs": 30
+        },
+        {
+          "fn": "t :0",
+          "selfMs": 24
+        },
+        {
+          "fn": "Nr GhlIntegrationHub-CS7mLBPV.js:1",
+          "selfMs": 12
+        },
+        {
+          "fn": "(anonymous) index-BG_L_95C.js:8",
+          "selfMs": 11
+        },
+        {
+          "fn": "setAttribute :-1",
+          "selfMs": 6
+        },
+        {
+          "fn": "z1 index-BG_L_95C.js:8",
+          "selfMs": 5
+        }
+      ]
+    },
+    "running": {
+      "windowMs": 45000,
+      "frames": 2706,
+      "worstFrameGapMs": 35,
+      "longTasks": 0,
+      "longTaskMaxMs": 0,
+      "longTaskTotalMs": 0,
+      "serverEventLoopMs": {
+        "max": 33.5,
+        "p99": 20.6,
+        "mean": 11.2
+      },
+      "probeMs": {
+        "n": 222,
+        "p50": 2,
+        "max": 18
+      },
+      "apiRequests": 58,
+      "stepCalls": 23,
+      "statusReads": 23,
+      "pageExceptions": 0
+    },
+    "applyProgress": {
+      "cursorBefore": 0,
+      "cursorAfter": 440,
+      "state": "running",
+      "counts": {
+        "created": 440,
+        "matched": 0,
+        "scanned": 3994,
+        "skipped": 0,
+        "updated": 0,
+        "conflicts": 0,
+        "unchanged": 0,
+        "wouldCreate": 3994,
+        "wouldUpdate": 0
+      },
+      "lastError": null,
+      "contactsPerSecond": 9.8,
+      "projectedFullApplySeconds": 408
+    }
+  },
+  "scope": "candidate build, disposable migrated DB, real incoming-sync handlers and service, persisted production-sized runs, GHL pages from an in-process fake; loopback timings, not production or network measurements"
+}

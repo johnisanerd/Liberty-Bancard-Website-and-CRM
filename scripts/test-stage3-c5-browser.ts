@@ -5,6 +5,7 @@ import {stage3BHttpFixture} from "./fixtures/stage3-b-http";
 import {privateStage3Browser} from "./fixtures/private-stage3-browser";
 import {verifyCandidateIdentity} from "./fixtures/candidate-build-identity";
 import {employeeSidebarFor, EMPLOYEE_SIDEBAR_ORDER} from "../client/src/lib/employee-sidebar";
+import {adminAreas,adminAreaTabs,adminPermittedFor} from "../client/src/lib/crm-destination-state";
 
 // C5 real-browser cutover smoke: real sessions for admin, manager and agent, compiled client, disposable database.
 // Navigation and read-only observation only. Every /api route except the session/CSRF fixture answers 501, so
@@ -48,17 +49,31 @@ try{
         results.push({role,target:item.href,path:here,activeAria:active});
       }
       if(role!=="agent"){
-        await b.navigate("/dashboard/admin-hub?area=release-readiness");
-        await until(async()=>await count('[data-testid="page-administration"]')>0,"administration page");
-        const tabs=await b.evaluate(`[...document.querySelectorAll('[data-testid^="tab-admin-"]')].map(e=>e.getAttribute('data-testid'))`) as string[];
-        results.push({role,administrationTabsInArea:tabs});
-        check(tabs.length>0,`${role}: Administration renders children for its area`);
-        if(role==="manager"){
-          await b.navigate("/dashboard/admin-hub?area=operational-controls");
-          await until(async()=>await count('[data-testid="page-administration"]')>0,"manager forbidden area");
-          check(await count('[data-testid="admin-selection-issue"]')>0,"manager: forbidden area explains the fallback");
-          check(await count('[data-testid="tab-admin-automations"]')===0,"manager: admin-only automations child is not mounted");
+        // All five Administration areas, per role: children mounted must equal the role's permitted children for
+        // that area; an area with no permitted child must say so and fall back instead of mounting admin-only children.
+        const permitted=adminPermittedFor(role) as readonly string[];
+        for(const area of adminAreas){
+          await b.navigate(`/dashboard/admin-hub?area=${area}`);
+          await until(async()=>await count('[data-testid="page-administration"]')>0,`${role}: administration page for ${area}`);
+          const tabs=(await b.evaluate(`[...document.querySelectorAll('[data-testid^="tab-admin-"]')].map(e=>e.getAttribute('data-testid').replace('tab-admin-',''))`) as string[]).sort();
+          const issue=await count('[data-testid="admin-selection-issue"]')>0;
+          const expected=(adminAreaTabs[area] as readonly string[]).filter(t=>permitted.includes(t)).sort();
+          results.push({role,administrationArea:area,tabs,selectionIssue:issue,expectedChildren:expected,path:await b.evaluate("location.pathname+location.search")});
+          if(expected.length){
+            check(!issue&&JSON.stringify(tabs)===JSON.stringify(expected),`${role}: Administration area ${area} mounts exactly its permitted children [${expected}] (got [${tabs}], issue ${issue})`);
+          } else {
+            check(issue,`${role}: Administration area ${area} has no permitted child, explains the fallback`);
+            check(tabs.every(t=>permitted.includes(t)),`${role}: Administration area ${area} fallback mounts only permitted children (got [${tabs}])`);
+          }
         }
+        if(role==="manager")check(await count('[data-testid="tab-admin-automations"]')===0,"manager: admin-only automations child is not mounted");
+      } else {
+        await b.navigate("/dashboard/admin-hub");
+        await settle(1500);
+        const here=await b.evaluate("location.pathname") as string;
+        const mounted=await count('[data-testid="page-administration"]');
+        results.push({role,administrationDirect:{path:here,administrationMounted:mounted}});
+        check(mounted===0,`agent: Administration is not mounted on /dashboard/admin-hub (landed on ${here})`);
       }
       await b.navigate("/dashboard/knowledge-base");
       await until(async()=>await count('[data-testid="nav-employee-sidebar"]')>0,"resources sidebar");
