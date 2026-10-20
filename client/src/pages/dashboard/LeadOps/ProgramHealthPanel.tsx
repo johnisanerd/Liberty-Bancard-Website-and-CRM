@@ -500,7 +500,7 @@ export function ProgramHealthPanel() {
         <CardContent>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
             {[
-              { label: "Enriched Today", cell: h?.enrichedToday },
+              { label: "Source entities enriched today (raw Sunbiz)", cell: h?.enrichedToday },
               { label: "Emails Found", cell: h?.emailsToday },
               { label: "Phones Found", cell: h?.phonesToday },
               { label: "Total Enriched", cell: h?.totalEnriched },

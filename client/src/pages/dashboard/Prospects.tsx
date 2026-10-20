@@ -1,6 +1,7 @@
-import { useState, useCallback } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useState, useCallback, useEffect } from "react";
+import { useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useCrmQuery, useCrmActorIdentity } from "@/hooks/use-crm-query";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -57,39 +58,74 @@ function formatDate(date: string | Date | null | undefined) {
   return new Date(date).toLocaleDateString();
 }
 
+const PAGE_SIZE = 50;
+
 export default function Prospects() {
+  const [searchInput, setSearchInput]     = useState("");
   const [searchTerm, setSearchTerm]       = useState("");
   const [selectedListId, setSelectedListId] = useState<string>("all");
   const [scoreSort, setScoreSort]         = useState<"none" | "asc" | "desc">("none");
   const [filterVertical, setFilterVertical] = useState<string>("all");
   const [filterScore, setFilterScore]     = useState<string>("all");
+  const [page, setPage]                   = useState(0);
 
   // ── Bulk selection ─────────────────────────────────────────────────────────
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
 
   const { toast } = useToast();
+  const actorIdentity = useCrmActorIdentity();
 
-  const prospectsUrl = selectedListId !== "all"
-    ? `/api/prospects?listId=${selectedListId}`
-    : "/api/prospects";
+  // Search is debounced and executed on the server across the whole table.
+  useEffect(() => {
+    const timer = setTimeout(() => setSearchTerm(searchInput.trim()), 250);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
+
+  // A filter, search, list or actor change resets the page and drops any
+  // selection so a stale selection can never act on rows no longer in view.
+  useEffect(() => {
+    setPage(0);
+    setSelectedIds(new Set());
+  }, [searchTerm, selectedListId, filterVertical, filterScore, scoreSort, actorIdentity]);
+
+  const prospectParams = new URLSearchParams();
+  if (selectedListId !== "all") prospectParams.set("listId", selectedListId);
+  if (searchTerm) prospectParams.set("search", searchTerm);
+  if (filterVertical !== "all") prospectParams.set("vertical", filterVertical);
+  if (filterScore !== "all") prospectParams.set("score", filterScore);
+  if (scoreSort !== "none") prospectParams.set("scoreSort", scoreSort);
+  prospectParams.set("limit", String(PAGE_SIZE));
+  prospectParams.set("offset", String(page * PAGE_SIZE));
 
   const { data: prospectsResult, isLoading: prospectsLoading, isError: prospectsError, refetch: refetchProspects } =
-    useQuery<{ data: Prospect[]; total: number }>({
-      queryKey: ["/api/prospects", selectedListId],
-      queryFn: async () => {
-        const res = await fetch(`${prospectsUrl}${prospectsUrl.includes("?") ? "&" : "?"}limit=500`, { credentials: "include" });
-        if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+    useCrmQuery<{ data: Prospect[]; total: number; limit: number; offset: number }>({
+      queryKey: ["/api/prospects", prospectParams.toString()],
+      queryFn: async ({ signal }) => {
+        const res = await apiRequest("GET", `/api/prospects?${prospectParams.toString()}`, undefined, undefined, signal);
         return res.json();
       },
     });
   const prospects = prospectsResult?.data;
+  const serverTotal = prospectsResult?.total ?? 0;
+  const lastPage = Math.max(0, Math.ceil(serverTotal / PAGE_SIZE) - 1);
+  useEffect(() => {
+    // The filtered total can shrink between reads; never sit on an empty page past the end.
+    if (prospectsResult && page > lastPage) setPage(lastPage);
+  }, [prospectsResult, page, lastPage]);
 
-  const { data: prospectLists } = useQuery<ProspectList[]>({ queryKey: ["/api/prospect-lists"] });
-  const { data: sequences = [] } = useQuery<any[]>({ queryKey: ["/api/sequences"] });
-  const { data: workflows = [] } = useQuery<any[]>({ queryKey: ["/api/workflows"] });
+  const { data: prospectLists } = useCrmQuery<ProspectList[]>({ queryKey: ["/api/prospect-lists"] });
+  const { data: sequences = [] } = useCrmQuery<any[]>({ queryKey: ["/api/sequences"] });
+  const { data: workflows = [] } = useCrmQuery<any[]>({ queryKey: ["/api/workflows"] });
 
-  // Collect unique verticals for filter dropdown
-  const verticals = [...new Set((prospects || []).map(p => p.vertical).filter(Boolean))].sort() as string[];
+  // Verticals come from the whole table, not only the loaded page.
+  const { data: verticalsResult } = useCrmQuery<{ verticals: string[] }>({
+    queryKey: ["/api/prospects/verticals", selectedListId],
+    queryFn: async ({ signal }) => {
+      const res = await apiRequest("GET", `/api/prospects/verticals${selectedListId !== "all" ? `?listId=${selectedListId}` : ""}`, undefined, undefined, signal);
+      return res.json();
+    },
+  });
+  const verticals = verticalsResult?.verticals ?? [];
 
   // ── Mutations ──────────────────────────────────────────────────────────────
   const enrichMutation = useMutation({
@@ -179,34 +215,18 @@ export default function Prospects() {
     },
   });
 
-  // ── Filtering / sorting ────────────────────────────────────────────────────
-  const scoreOrder: Record<string, number> = { hot: 3, warm: 2, cold: 1 };
-  const filteredProspects = prospects
-    ?.filter((p) => {
-      if (filterVertical !== "all" && p.vertical !== filterVertical) return false;
-      if (filterScore !== "all" && p.score !== filterScore) return false;
-      if (!searchTerm) return true;
-      const term = searchTerm.toLowerCase();
-      return (
-        p.companyName?.toLowerCase().includes(term) ||
-        p.email?.toLowerCase().includes(term) ||
-        p.ownerFirstName?.toLowerCase().includes(term) ||
-        p.ownerLastName?.toLowerCase().includes(term) ||
-        `${p.ownerFirstName || ""} ${p.ownerLastName || ""}`.toLowerCase().includes(term)
-      );
-    })
-    .sort((a, b) => {
-      if (scoreSort === "none") return 0;
-      const aScore = scoreOrder[a.score ?? ""] ?? 0;
-      const bScore = scoreOrder[b.score ?? ""] ?? 0;
-      return scoreSort === "desc" ? bScore - aScore : aScore - bScore;
-    });
-
-  const totalCount   = filteredProspects?.length || 0;
+  // ── Page-loaded counts ─────────────────────────────────────────────────────
+  // Search, filters and sort are applied by the server; these tallies describe
+  // only the rows currently loaded on this page and are labeled as such.
+  const filteredProspects = prospects;
+  const totalCount   = serverTotal;
+  const pageCount    = prospects?.length || 0;
   const enrichedCount = filteredProspects?.filter((p) => p.status === "enriched").length || 0;
   const hotCount     = filteredProspects?.filter((p) => p.score === "hot").length || 0;
   const warmCount    = filteredProspects?.filter((p) => p.score === "warm").length || 0;
   const coldCount    = filteredProspects?.filter((p) => p.score === "cold").length || 0;
+  const pageStart    = serverTotal === 0 ? 0 : page * PAGE_SIZE + 1;
+  const pageEnd      = page * PAGE_SIZE + pageCount;
 
   const selectedProspectsWithContact = (prospects || []).filter(p => selectedIds.has(p.id) && p.contactId);
 
@@ -276,26 +296,31 @@ export default function Prospects() {
       {/* ── Stats ─────────────────────────────────────────────────────────── */}
       <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
         <Card><CardContent className="p-4">
-          <div className="text-sm text-muted-foreground" data-testid="label-total-prospects">Total</div>
+          <div className="text-sm text-muted-foreground" data-testid="label-total-prospects">Total matching (all pages)</div>
           <div className="text-2xl font-bold" data-testid="count-total-prospects">{totalCount}</div>
         </CardContent></Card>
         <Card><CardContent className="p-4">
-          <div className="text-sm text-muted-foreground" data-testid="label-enriched-count">Enriched</div>
+          <div className="text-sm text-muted-foreground" data-testid="label-enriched-count">Enriched (this page)</div>
           <div className="text-2xl font-bold" data-testid="count-enriched">{enrichedCount}</div>
         </CardContent></Card>
         <Card><CardContent className="p-4">
-          <div className="text-sm text-muted-foreground" data-testid="label-hot-count">Hot</div>
+          <div className="text-sm text-muted-foreground" data-testid="label-hot-count">Hot (this page)</div>
           <div className="text-2xl font-bold text-red-600 dark:text-red-400" data-testid="count-hot">{hotCount}</div>
         </CardContent></Card>
         <Card><CardContent className="p-4">
-          <div className="text-sm text-muted-foreground" data-testid="label-warm-count">Warm</div>
+          <div className="text-sm text-muted-foreground" data-testid="label-warm-count">Warm (this page)</div>
           <div className="text-2xl font-bold text-amber-600 dark:text-amber-400" data-testid="count-warm">{warmCount}</div>
         </CardContent></Card>
         <Card><CardContent className="p-4">
-          <div className="text-sm text-muted-foreground" data-testid="label-cold-count">Cold</div>
+          <div className="text-sm text-muted-foreground" data-testid="label-cold-count">Cold (this page)</div>
           <div className="text-2xl font-bold text-blue-600 dark:text-blue-400" data-testid="count-cold">{coldCount}</div>
         </CardContent></Card>
       </div>
+
+      <p className="text-xs text-muted-foreground" data-testid="text-prospects-scope" role="note">
+        Source Prospects (staging records from imports and discovery), read from the server with its filtered total.
+        Totals count every matching row; Enriched/Hot/Warm/Cold count only the {pageCount} rows on this page.
+      </p>
 
       {/* ── Toolbar ───────────────────────────────────────────────────────── */}
       <div className="flex flex-col sm:flex-row gap-3 flex-wrap items-end">
@@ -304,8 +329,9 @@ export default function Prospects() {
           <Input
             placeholder="Search by company, email, or owner…"
             className="pl-9"
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
+            value={searchInput}
+            aria-label="Search source prospects"
+            onChange={(e) => setSearchInput(e.target.value)}
             data-testid="input-search-prospects"
           />
         </div>
@@ -365,7 +391,7 @@ export default function Prospects() {
           disabled={routeProspectsMutation.isPending}
         >
           {routeProspectsMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-          AI Route
+          AI Route (this page)
         </Button>
 
         <Button
@@ -375,7 +401,7 @@ export default function Prospects() {
           disabled={batchConvertMutation.isPending}
         >
           {batchConvertMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Users className="w-4 h-4" />}
-          Convert Hot Leads
+          Convert Hot Leads (this page)
         </Button>
       </div>
 
@@ -601,6 +627,16 @@ export default function Prospects() {
           </Table>
         </CardContent>
       </Card>
+      <nav className="flex flex-wrap items-center justify-between gap-3" aria-label="Source prospect pages" data-testid="prospects-pagination">
+        <span className="text-sm text-muted-foreground" data-testid="text-prospects-range">
+          {serverTotal === 0 ? "No matching prospects" : `Showing ${pageStart}–${pageEnd} of ${serverTotal} matching`}
+        </span>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" disabled={page <= 0 || prospectsLoading} onClick={() => { setPage(page - 1); setSelectedIds(new Set()); }} data-testid="button-prospects-prev">Previous</Button>
+          <span className="text-sm">Page {page + 1} of {lastPage + 1}</span>
+          <Button variant="outline" disabled={page >= lastPage || prospectsLoading} onClick={() => { setPage(page + 1); setSelectedIds(new Set()); }} data-testid="button-prospects-next">Next</Button>
+        </div>
+      </nav>
     </div>
   );
 }

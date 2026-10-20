@@ -35,6 +35,7 @@ globalThis.fetch = (async (input: any) => {
   const url = new URL(String(input), "http://localhost");
   requests.push(url.pathname + url.search);
   const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+  if (url.pathname === "/api/auth/user") return json({ id: "u1", role: "admin", email: "a@example.test" });
   if (url.pathname === "/api/canonical-enrichment/uploads") return json({ uploads: [{ executionId, importType: "csv_contact", fileName: null, status: "completed", startedAt: "2026-09-30T00:00:00Z", totalRows: 3, accountedRows: 3 }] });
   if (url.pathname.endsWith("/summary")) return json({ executionId, rows: 3, byDisposition: { created: 3 }, distinctContacts: 5, verifiedLinks: 4,
     receiptsCurrent: 2, receiptsStale: 1, receiptsInconsistent: 0, qualificationVersion: "mailbox_business_identity_v2", observedAt: "2026-10-15T00:00:00Z" });
@@ -73,6 +74,15 @@ await waitFor(() => text().includes("Row 3"), "second keyset page");
 assert.ok(requests.some(r => r.includes("after=2")), "next page is requested by keyset cursor");
 assert.ok(text().includes("Stale receipt") || text().includes("Stale receipt".toLowerCase()) || text().includes("Stale Receipt"));
 assert.ok(text().includes("end of upload"));
+// Selection is URL state: changing the filter pushes a typed parameter and re-reads with that filter.
+const showSelect = [...document.querySelectorAll("select")].find(el => el.textContent?.includes("Rows without a fulfilled item")) as HTMLSelectElement;
+await act(async () => {
+  showSelect.value = "unfulfilled";
+  showSelect.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+});
+await waitFor(() => requests.some(r => r.includes("filter=unfulfilled")), "filtered re-read");
+assert.ok(window.location.search.includes("ledgerFilter=unfulfilled"), "filter is addressable in the URL");
+assert.ok(window.location.search.includes(`ledgerExecution=${executionId}`), "execution is addressable in the URL");
 console.log("UPLOAD_LEDGER_UI_PASS");
 await act(async () => root.unmount());
 process.exit(0);

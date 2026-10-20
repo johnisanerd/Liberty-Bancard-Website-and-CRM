@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
+import { useCrmQuery } from "@/hooks/use-crm-query";
 import { queryClient, getCsrfToken } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -279,6 +280,40 @@ function statusColor(status: string) {
   }
 }
 
+type WizardStep = "choose" | "review" | "result";
+const HEADER_TARGETS: Array<{ label: string; match: RegExp }> = [
+  { label: "Business name", match: /^(company|company name|business|business name|name|organization)$/ },
+  { label: "Email", match: /^(email|e-mail|email address|owner email)$/ },
+  { label: "Phone", match: /^(phone|telephone|phone number|mobile)$/ },
+  { label: "Category / vertical", match: /^(category|type|industry|vertical|subtypes)$/ },
+  { label: "Address", match: /^(address|full address|street|city|state|zip|postal code)$/ },
+  { label: "Website", match: /^(website|site|domain|url)$/ },
+  { label: "First / last name", match: /^(first name|last name|owner name|full name)$/ },
+];
+/** Header-only preview of a CSV (first 64 KB). Returns null when the file cannot be read as text. */
+export function parseCsvHeader(text: string): string[] | null {
+  const line = text.split(/\r?\n/, 1)[0] ?? "";
+  if (!line.trim()) return null;
+  const cells: string[] = [];
+  let cell = ""; let quoted = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quoted) {
+      if (ch === '"' && line[i + 1] === '"') { cell += '"'; i++; }
+      else if (ch === '"') quoted = false;
+      else cell += ch;
+    } else if (ch === '"') quoted = true;
+    else if (ch === ",") { cells.push(cell.trim()); cell = ""; }
+    else cell += ch;
+  }
+  cells.push(cell.trim());
+  return cells.filter(Boolean);
+}
+export function describeHeader(header: string): string {
+  const key = header.toLowerCase().trim();
+  return HEADER_TARGETS.find(t => t.match.test(key))?.label ?? "Kept only in the original row";
+}
+
 function MasterLeadImportSection() {
   const { toast } = useToast();
   const [sheetId, setSheetId] = useState("");
@@ -296,11 +331,11 @@ function MasterLeadImportSection() {
   const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
 
   // Poll active batch
-  const { data: activeBatch } = useQuery<MasterLeadBatch>({
+  const { data: activeBatch } = useCrmQuery<MasterLeadBatch>({
     queryKey: ["/api/master-leads/batches", activeBatchId],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       if (!activeBatchId) throw new Error("no batch");
-      const r = await fetch(`/api/master-leads/batches/${activeBatchId}`, { credentials: "include" });
+      const r = await fetch(`/api/master-leads/batches/${activeBatchId}`, { credentials: "include", signal });
       if (!r.ok) throw new Error("failed");
       return r.json();
     },
@@ -312,7 +347,7 @@ function MasterLeadImportSection() {
   });
 
   // All batches list
-  const { data: batches = [], refetch: refetchBatches } = useQuery<MasterLeadBatch[]>({
+  const { data: batches = [], refetch: refetchBatches } = useCrmQuery<MasterLeadBatch[]>({
     queryKey: ["/api/master-leads/batches"],
   });
 
@@ -666,11 +701,17 @@ function MasterLeadImportSection() {
 
 // ─── Main LeadImports Page ───────────────────────────────────────────────────
 
+/** An unavailable statistic is shown as a dash, never as zero. */
+const fmtStat = (v: number | undefined) => (typeof v === "number" ? v.toLocaleString() : "—");
+
 export default function LeadImports() {
   const { toast } = useToast();
   const [isDragging, setIsDragging] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [selectedLeadSource, setSelectedLeadSource] = useState<string>("");
+  const [wizardStep, setWizardStep] = useState<WizardStep>("choose");
+  const [headerPreview, setHeaderPreview] = useState<{ state: "none" | "reading" | "xlsx" | "unreadable" | "ready"; columns: string[] }>({ state: "none", columns: [] });
+  const [lastResult, setLastResult] = useState<{ fileName: string; source: string; status: string | null; totalRows: number | null; summary: string } | null>(null);
   const [expandedImport, setExpandedImport] = useState<number | null>(null);
   const [showArchivedLists, setShowArchivedLists] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -681,13 +722,13 @@ export default function LeadImports() {
     isError: importsError,
     error: importsErrorObj,
     refetch: refetchImports,
-  } = useQuery<CsvImport[]>({
+  } = useCrmQuery<CsvImport[]>({
     queryKey: ["/api/csv-imports"],
     refetchInterval: (query) => query.state.data?.some(imp => imp.status === "processing") ? 15_000 : false,
   });
   const imports = Array.isArray(importsRaw) ? importsRaw : [];
 
-  const { data: importStats } = useQuery<{
+  const { data: importStats, isError: statsError, refetch: refetchStats, isFetching: statsFetching } = useCrmQuery<{
     totalImports: number;
     totalRowsProcessed: number;
     totalRecordsImported: number;
@@ -704,11 +745,11 @@ export default function LeadImports() {
     queryKey: ["/api/csv-imports/stats"],
   });
 
-  const { data: prospectListsRaw, isLoading: prospectListsLoading } = useQuery<ProspectList[]>({
+  const { data: prospectListsRaw, isLoading: prospectListsLoading } = useCrmQuery<ProspectList[]>({
     queryKey: ["/api/prospect-lists", showArchivedLists ? "archived" : "active"],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const url = showArchivedLists ? "/api/prospect-lists?includeArchived=true" : "/api/prospect-lists";
-      const res = await fetch(url, { credentials: "include" });
+      const res = await fetch(url, { credentials: "include", signal });
       if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
       return res.json();
     },
@@ -810,11 +851,23 @@ export default function LeadImports() {
       }
       return res.json();
     },
-    onSuccess: (data) => {
+    onSuccess: (data, formData) => {
       queryClient.invalidateQueries({ queryKey: ["/api/csv-imports"] });
       queryClient.invalidateQueries({ queryKey: ["/api/csv-imports/stats"] });
       queryClient.invalidateQueries({ queryKey: ["/api/contacts"] });
       queryClient.invalidateQueries({ queryKey: ["/api/deals"] });
+      const accepted = formData.get("file");
+      setLastResult({
+        fileName: accepted instanceof File ? accepted.name : "uploaded file",
+        source: String(formData.get("leadSource") ?? ""),
+        status: typeof data.status === "string" ? data.status : null,
+        totalRows: Number.isFinite(Number(data.totalRows)) ? Number(data.totalRows) : null,
+        summary: data.status === "processing"
+          ? "Original rows accepted; processing continues in the background. Accepted is not completed."
+          : "The server returned a final summary; the per-import record below is the authority.",
+      });
+      setWizardStep("result");
+      setHeaderPreview({ state: "none", columns: [] });
       setSelectedFile(null);
       setSelectedLeadSource("");
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -874,6 +927,14 @@ export default function LeadImports() {
       return;
     }
     setSelectedFile(file);
+    setWizardStep("choose");
+    setLastResult(null);
+    if (/\.xlsx$/i.test(file.name)) { setHeaderPreview({ state: "xlsx", columns: [] }); return; }
+    setHeaderPreview({ state: "reading", columns: [] });
+    file.slice(0, 65536).text().then(text => {
+      const columns = parseCsvHeader(text);
+      setHeaderPreview(columns ? { state: "ready", columns } : { state: "unreadable", columns: [] });
+    }).catch(() => setHeaderPreview({ state: "unreadable", columns: [] }));
   };
 
   const handleUpload = () => {
@@ -909,106 +970,30 @@ export default function LeadImports() {
   }, []);
 
   return (
-    <div className="space-y-6 p-6">
+    <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold" data-testid="text-page-title">Lead Imports</h1>
+        <h2 className="text-2xl font-bold">Lead Imports</h2>
         <p className="text-muted-foreground mt-1" data-testid="text-page-description">
           Import CSV or XLSX files from Outscraper, Apollo, or other sources. Original rows are retained for recovery. Provider evidence is not email validation, enrollment, or outreach.
         </p>
       </div>
 
-      {/* Priority Lead Sheet Import — staged, no outbound */}
-      <MasterLeadImportSection />
-
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        <Card data-testid="card-stat-total-imports">
-          <CardContent className="pt-6">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-blue-100 dark:bg-blue-900/30 rounded-lg">
-                <Database className="h-5 w-5 text-blue-600 dark:text-blue-400" />
-              </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Total Imports</p>
-                <p className="text-2xl font-bold" data-testid="text-total-imports">{importStats?.totalImports ?? 0}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card data-testid="card-stat-rows-processed">
-          <CardContent className="pt-6">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-slate-100 dark:bg-slate-900/30 rounded-lg">
-                <ListChecks className="h-5 w-5 text-slate-600 dark:text-slate-400" />
-              </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Total Rows Processed</p>
-                <p className="text-2xl font-bold" data-testid="text-total-rows-processed">{(importStats?.totalRowsProcessed ?? 0).toLocaleString()}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card data-testid="card-stat-records-imported">
-          <CardContent className="pt-6">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-green-100 dark:bg-green-900/30 rounded-lg">
-                <Users className="h-5 w-5 text-green-600 dark:text-green-400" />
-              </div>
-              <div>
-                <p className="text-sm text-muted-foreground">New Contacts Added</p>
-                <p className="text-2xl font-bold" data-testid="text-total-records">{(importStats?.totalRecordsImported ?? 0).toLocaleString()}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card data-testid="card-stat-already-exists">
-          <CardContent className="pt-6">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-blue-100 dark:bg-blue-900/30 rounded-lg">
-                <RefreshCw className="h-5 w-5 text-blue-600 dark:text-blue-400" />
-              </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Already Exists</p>
-                <p className="text-2xl font-bold" data-testid="text-total-already-exists">{(importStats?.totalAlreadyExists ?? 0).toLocaleString()}</p>
-                <p className="text-xs text-muted-foreground">Duplicates + DB matches — not new, not a failure</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card data-testid="card-stat-invalid">
-          <CardContent className="pt-6">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-amber-100 dark:bg-amber-900/30 rounded-lg">
-                <AlertCircle className="h-5 w-5 text-amber-600 dark:text-amber-400" />
-              </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Invalid / Error Rows</p>
-                <p className="text-2xl font-bold" data-testid="text-total-invalid">{((importStats?.totalInvalidRows ?? 0) + (importStats?.totalErrors ?? 0)).toLocaleString()}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card data-testid="card-stat-deals-created">
-          <CardContent className="pt-6">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-orange-100 dark:bg-orange-900/30 rounded-lg">
-                <TrendingUp className="h-5 w-5 text-orange-600 dark:text-orange-400" />
-              </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Deals Created</p>
-                <p className="text-2xl font-bold" data-testid="text-total-deals">{(importStats?.totalDealsCreated ?? 0).toLocaleString()}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-      <p className="text-xs text-muted-foreground" data-testid="text-stats-reconciliation">
-        Total Rows Processed ({(importStats?.totalRowsProcessed ?? 0).toLocaleString()}) = New Contacts Added ({(importStats?.totalRecordsImported ?? 0).toLocaleString()}) + Already Exists ({(importStats?.totalAlreadyExists ?? 0).toLocaleString()}) + Invalid / Error Rows ({((importStats?.totalInvalidRows ?? 0) + (importStats?.totalErrors ?? 0)).toLocaleString()})
-      </p>
+      <ol className="grid gap-2 sm:grid-cols-3" aria-label="Import steps" data-testid="import-steps">
+        {[
+          { id: "choose" as const, n: 1, title: "Choose source and file", detail: "CSV or XLSX with a named lead source. Choosing a file sends nothing." },
+          { id: "review" as const, n: 2, title: "Review and upload", detail: "Check the detected columns, then upload. Original bytes and rows are retained first." },
+          { id: "result" as const, n: 3, title: "Read the result", detail: "Accepted is not complete. Completion, row errors and recovery are per import below; none of it is a deal or a delivered email." },
+        ].map(step => {
+          const order = ["choose", "review", "result"];
+          const state = order.indexOf(step.id) < order.indexOf(wizardStep) ? "done" : step.id === wizardStep ? "current" : "upcoming";
+          return (
+            <li key={step.id} className="rounded-lg border p-3 text-sm" aria-current={state === "current" ? "step" : undefined} data-testid={`import-step-${step.id}`} data-state={state}>
+              <p className="font-medium">{step.n}. {step.title}{state === "done" ? " (done)" : state === "current" ? (step.id === "review" && uploadMutation.isPending ? " (uploading)" : " (current)") : ""}</p>
+              <p className="mt-1 text-xs text-muted-foreground">{step.detail}</p>
+            </li>
+          );
+        })}
+      </ol>
 
       <Card data-testid="card-upload-section">
         <CardHeader>
@@ -1018,6 +1003,8 @@ export default function LeadImports() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          {wizardStep === "choose" && (
+            <>
           {/* Required: lead source selection */}
           <div>
             <label className="text-sm font-medium mb-1.5 block" htmlFor="lead-source-select">
@@ -1081,37 +1068,86 @@ export default function LeadImports() {
             </div>
           </div>
 
-          <div className="flex items-center gap-3 flex-wrap">
-            <Button
-              onClick={handleUpload}
-              disabled={!selectedFile || !selectedLeadSource || uploadMutation.isPending}
-              data-testid="button-import-csv"
-            >
-              {uploadMutation.isPending ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                  Importing...
-                </>
-              ) : (
-                <>
-                  <Upload className="h-4 w-4 mr-2" />
-                  Import File
-                </>
-              )}
-            </Button>
-            {selectedFile && (
+            </>
+          )}
+
+          {wizardStep === "choose" && (
+            <div className="flex items-center gap-3 flex-wrap">
               <Button
-                variant="outline"
-                onClick={() => {
-                  setSelectedFile(null);
-                  if (fileInputRef.current) fileInputRef.current.value = "";
-                }}
-                data-testid="button-clear-file"
+                onClick={() => setWizardStep("review")}
+                disabled={!selectedFile || !selectedLeadSource}
+                data-testid="button-import-continue"
               >
-                Clear
+                <ArrowRight className="h-4 w-4 mr-2" />
+                Continue to review
               </Button>
-            )}
-          </div>
+              {selectedFile && (
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setSelectedFile(null);
+                    setHeaderPreview({ state: "none", columns: [] });
+                    if (fileInputRef.current) fileInputRef.current.value = "";
+                  }}
+                  data-testid="button-clear-file"
+                >
+                  Clear
+                </Button>
+              )}
+              {selectedFile && !selectedLeadSource && (
+                <span className="text-xs text-muted-foreground" data-testid="text-continue-blocked">Select the lead source to continue.</span>
+              )}
+            </div>
+          )}
+
+          {wizardStep === "review" && selectedFile && (
+            <div className="space-y-4" data-testid="import-review-step">
+              <dl className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                <div><dt className="text-xs text-muted-foreground">File</dt><dd className="font-medium break-all" data-testid="review-filename">{selectedFile.name}</dd></div>
+                <div><dt className="text-xs text-muted-foreground">Size</dt><dd className="font-medium">{(selectedFile.size / 1024 / 1024).toFixed(2)} MB</dd></div>
+                <div><dt className="text-xs text-muted-foreground">Lead source</dt><dd className="font-medium" data-testid="review-source">{LEAD_SOURCES.find(x => x.value === selectedLeadSource)?.label ?? selectedLeadSource}</dd></div>
+                <div><dt className="text-xs text-muted-foreground">Format</dt><dd className="font-medium">{/\.xlsx$/i.test(selectedFile.name) ? "XLSX workbook" : "CSV"}</dd></div>
+              </dl>
+              <div data-testid="import-column-preview">
+                <p className="text-sm font-medium">Detected columns</p>
+                {headerPreview.state === "reading" && <p className="text-xs text-muted-foreground">Reading the header row…</p>}
+                {headerPreview.state === "xlsx" && (
+                  <p className="text-xs text-muted-foreground">Workbook columns are read by the server after upload; there is no browser preview for XLSX. Every original row is retained.</p>
+                )}
+                {headerPreview.state === "unreadable" && (
+                  <p role="alert" className="text-xs text-destructive">The header row could not be read as text. You can still upload; the server validates the file and reports row errors per import.</p>
+                )}
+                {headerPreview.state === "ready" && (
+                  <ul className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-1 text-xs">
+                    {headerPreview.columns.map((column, index) => (
+                      <li key={`${column}-${index}`} className="flex justify-between gap-3 rounded border px-2 py-1">
+                        <span className="font-mono break-all">{column}</span>
+                        <span className="text-muted-foreground shrink-0">{describeHeader(column)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <p className="mt-2 text-xs text-muted-foreground">This is a header-only preview. The server decides the final mapping and reports invalid rows per import. Provider evidence is not email validation, enrollment, or outreach.</p>
+              </div>
+              <div className="flex items-center gap-3 flex-wrap">
+                <Button variant="outline" onClick={() => setWizardStep("choose")} disabled={uploadMutation.isPending} data-testid="button-import-back">Back</Button>
+                <Button onClick={handleUpload} disabled={!selectedFile || !selectedLeadSource || uploadMutation.isPending} data-testid="button-import-csv">
+                  {uploadMutation.isPending ? (<><Loader2 className="h-4 w-4 animate-spin mr-2" />Uploading…</>) : (<><Upload className="h-4 w-4 mr-2" />Upload original file</>)}
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {wizardStep === "result" && lastResult && (
+            <div className="space-y-3" role="status" data-testid="import-result-step">
+              <p className="text-sm font-medium">
+                {lastResult.fileName} was {lastResult.status === "processing" ? "accepted" : "processed"}
+                {lastResult.totalRows !== null ? ` (${lastResult.totalRows.toLocaleString()} original rows)` : ""}.
+              </p>
+              <p className="text-sm text-muted-foreground">{lastResult.summary} Find this import in Import History below for row counts, errors and recovery.</p>
+              <Button variant="outline" onClick={() => { setWizardStep("choose"); setLastResult(null); }} data-testid="button-import-another">Start another import</Button>
+            </div>
+          )}
 
           <div className="text-xs text-muted-foreground space-y-1 border-t pt-3 mt-3">
             <p className="font-medium">Supported CSV Formats (auto-detected):</p>
@@ -1132,6 +1168,114 @@ export default function LeadImports() {
           </div>
         </CardContent>
       </Card>
+
+      <section aria-labelledby="intake-accounting-title" className="space-y-3" data-testid="section-intake-accounting">
+        <div>
+          <h3 id="intake-accounting-title" className="text-lg font-semibold">Intake accounting (all imports)</h3>
+          <p className="text-sm text-muted-foreground">
+            Immutable counts of what each import accepted and how every original row was dispositioned. Later business linking,
+            recipient selection, preparation and native fulfillment are separate measures, shown in the Canonical Enrichment imports view and upload ledger.
+          </p>
+        </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <Card data-testid="card-stat-total-imports">
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-blue-100 dark:bg-blue-900/30 rounded-lg">
+                <Database className="h-5 w-5 text-blue-600 dark:text-blue-400" />
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">Total Imports</p>
+                <p className="text-2xl font-bold" data-testid="text-total-imports">{fmtStat(importStats?.totalImports)}</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card data-testid="card-stat-rows-processed">
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-slate-100 dark:bg-slate-900/30 rounded-lg">
+                <ListChecks className="h-5 w-5 text-slate-600 dark:text-slate-400" />
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">Total Rows Processed</p>
+                <p className="text-2xl font-bold" data-testid="text-total-rows-processed">{fmtStat(importStats?.totalRowsProcessed)}</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card data-testid="card-stat-records-imported">
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-green-100 dark:bg-green-900/30 rounded-lg">
+                <Users className="h-5 w-5 text-green-600 dark:text-green-400" />
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">New Contacts Added</p>
+                <p className="text-2xl font-bold" data-testid="text-total-records">{fmtStat(importStats?.totalRecordsImported)}</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card data-testid="card-stat-already-exists">
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-blue-100 dark:bg-blue-900/30 rounded-lg">
+                <RefreshCw className="h-5 w-5 text-blue-600 dark:text-blue-400" />
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">Already Exists</p>
+                <p className="text-2xl font-bold" data-testid="text-total-already-exists">{fmtStat(importStats?.totalAlreadyExists)}</p>
+                <p className="text-xs text-muted-foreground">Duplicates + DB matches — not new, not a failure</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card data-testid="card-stat-invalid">
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-amber-100 dark:bg-amber-900/30 rounded-lg">
+                <AlertCircle className="h-5 w-5 text-amber-600 dark:text-amber-400" />
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">Invalid / Error Rows</p>
+                <p className="text-2xl font-bold" data-testid="text-total-invalid">{importStats ? (importStats.totalInvalidRows + importStats.totalErrors).toLocaleString() : "—"}</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card data-testid="card-stat-deals-created">
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-orange-100 dark:bg-orange-900/30 rounded-lg">
+                <TrendingUp className="h-5 w-5 text-orange-600 dark:text-orange-400" />
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">Deals Created</p>
+                <p className="text-2xl font-bold" data-testid="text-total-deals">{fmtStat(importStats?.totalDealsCreated)}</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+      {statsError && (
+        <div role="alert" className="flex items-center gap-3 text-sm text-destructive" data-testid="import-stats-unavailable">
+          Import totals could not be loaded; the cards show a dash, not zero.
+          <Button variant="outline" size="sm" onClick={() => refetchStats()} disabled={statsFetching}>Retry totals</Button>
+        </div>
+      )}
+      {importStats && (
+      <p className="text-xs text-muted-foreground" data-testid="text-stats-reconciliation">
+        Across all imports in this scope: rows processed ({fmtStat(importStats.totalRowsProcessed)}) = new contacts added ({fmtStat(importStats.totalRecordsImported)}) + already exists ({fmtStat(importStats.totalAlreadyExists)}) + invalid or error rows ({(importStats.totalInvalidRows + importStats.totalErrors).toLocaleString()}). These are intake row counts; they do not show later enrichment, deals or delivery.
+      </p>
+      )}
+
+      </section>
 
       {importStats?.verticalBreakdown && Object.keys(importStats.verticalBreakdown).length > 0 && (
         <Card data-testid="card-overall-vertical-breakdown">
@@ -1676,6 +1820,12 @@ export default function LeadImports() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Historical privileged operation. Staged, no outbound; collapsed so ordinary upload and history come first. */}
+      <details className="rounded-lg border p-3" data-testid="section-historical-priority-import">
+        <summary className="cursor-pointer text-sm font-medium">Historical priority lead sheet import (privileged, staged only)</summary>
+        <div className="mt-4"><MasterLeadImportSection /></div>
+      </details>
     </div>
   );
 }

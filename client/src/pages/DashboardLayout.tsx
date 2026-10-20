@@ -417,7 +417,9 @@ function DashboardLayoutInner({ children }: DashboardLayoutProps) {
     ["/dashboard","/dashboard/my-day","/dashboard/pipeline","/dashboard/comms-hub",
       "/dashboard/tasks-appointments","/dashboard/contacts-leads","/dashboard/my-leads","/dashboard/nba",
       "/dashboard/chat","/dashboard/call-outcome","/dashboard/review-complete","/dashboard/bin-lookup","/dashboard/stage-rules",
-      "/dashboard/reporting","/dashboard/my-earnings","/dashboard/leaderboard"].includes(location) ||
+      "/dashboard/reporting","/dashboard/my-earnings","/dashboard/leaderboard",
+      "/dashboard/lead-ops","/dashboard/canonical-enrichment","/dashboard/outbound-center"].includes(location) ||
+    /^\/dashboard\/lead-ops\/business\/[^/]+$/.test(location) ||
     isMerchantOperationsPath(location) ||
     /^\/dashboard\/companies\/[^/]+$/.test(location);
 

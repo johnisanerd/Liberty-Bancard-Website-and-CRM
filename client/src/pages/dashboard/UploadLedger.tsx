@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
-import { Link } from "wouter";
+import { Link, useLocation, useSearch } from "wouter";
+import { useCrmQuery } from "@/hooks/use-crm-query";
+import { useCrmInfiniteQuery } from "@/hooks/use-crm-infinite-query";
 import type {
   UploadLedgerPage, UploadLedgerRow, UploadLedgerRun, UploadLedgerSummary,
 } from "@shared/canonical-upload-ledger";
@@ -9,10 +9,23 @@ import { Button } from "@/components/ui/button";
 const numberFormat = new Intl.NumberFormat("en-US");
 const label = (value: string) => value.replace(/[_-]+/g, " ").replace(/\b\w/g, letter => letter.toUpperCase());
 
-async function getJson<T>(url: string): Promise<T> {
-  const response = await fetch(url, { credentials: "include" });
+/** Reads carry the query's AbortSignal so a superseded selection or actor change cancels the request. */
+async function getJson<T>(url: string, signal?: AbortSignal): Promise<T> {
+  const response = await fetch(url, { credentials: "include", signal });
   if (!response.ok) throw new Error(`${response.status}`);
   return response.json() as Promise<T>;
+}
+const isDenied = (error: unknown) => error instanceof Error && /^40[13]$/.test(error.message);
+const EXECUTION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const FILTERS = ["all", "unfulfilled"] as const;
+type LedgerFilter = typeof FILTERS[number];
+
+function ReadFailure({ what, error, onRetry, busy }: { what: string; error: unknown; onRetry: () => void; busy?: boolean }) {
+  const denied = isDenied(error);
+  return <div role="alert" className="flex flex-wrap items-center gap-3 rounded-xl border border-destructive/40 p-3 text-sm text-destructive">
+    <span>{denied ? `Your account is not permitted to read ${what}.` : `${what[0].toUpperCase()}${what.slice(1)} could not be loaded. This is not an empty result.`}</span>
+    {!denied && <Button variant="outline" size="sm" onClick={onRetry} disabled={busy}>Retry</Button>}
+  </div>;
 }
 
 const receiptCopy = {
@@ -63,12 +76,13 @@ function LedgerRow({ row }: { row: UploadLedgerRow }) {
 }
 
 function Summary({ executionId }: { executionId: string }) {
-  const { data, isError, isLoading } = useQuery<UploadLedgerSummary>({
+  const { data, isError, error, isLoading, refetch, isFetching } = useCrmQuery<UploadLedgerSummary>({
     queryKey: ["/api/canonical-enrichment/uploads", executionId, "summary"],
-    queryFn: () => getJson(`/api/canonical-enrichment/uploads/${executionId}/summary`),
+    queryFn: ({ signal }) => getJson(`/api/canonical-enrichment/uploads/${executionId}/summary`, signal),
+    staleTime: 60_000, refetchOnWindowFocus: false,
   });
   if (isLoading) return <p className="text-sm text-muted-foreground">Loading upload totals…</p>;
-  if (isError || !data) return <p className="text-sm text-destructive">Upload totals are unavailable. Nothing was calculated.</p>;
+  if (isError || !data) return <ReadFailure what="upload totals" error={error} onRetry={() => void refetch()} busy={isFetching} />;
   return <div className="space-y-2">
     <dl className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
       <Fact name="Original rows" value={data.rows} note="Immutable accounting; not contacts" />
@@ -85,40 +99,63 @@ function Summary({ executionId }: { executionId: string }) {
   </div>;
 }
 
-export function UploadLedger({ initialFilter = "all" }: { initialFilter?: "all" | "unfulfilled" }) {
-  const [selected, setSelected] = useState<string | null>(null);
-  const [filter, setFilter] = useState(initialFilter);
-  const uploads = useQuery<{ uploads: UploadLedgerRun[] }>({
+export function UploadLedger({ initialFilter = "all" }: { initialFilter?: LedgerFilter }) {
+  // Selection lives in the URL (typed, validated) so reload and Back restore it; other parameters are preserved.
+  const search = useSearch();
+  const [location, navigate] = useLocation();
+  const params = new URLSearchParams(search);
+  const urlExecution = params.getAll("ledgerExecution");
+  const urlFilter = params.getAll("ledgerFilter");
+  const executionParam = urlExecution.length === 1 && EXECUTION_ID.test(urlExecution[0]) ? urlExecution[0].toLowerCase() : null;
+  const filter: LedgerFilter = urlFilter.length === 1 && (FILTERS as readonly string[]).includes(urlFilter[0]) ? urlFilter[0] as LedgerFilter : initialFilter;
+  const selectionIssue = (urlExecution.length > 1 || (urlExecution.length === 1 && !executionParam)
+    || urlFilter.length > 1 || (urlFilter.length === 1 && !(FILTERS as readonly string[]).includes(urlFilter[0])))
+    ? "The upload or filter in the address was not valid; showing the default selection." : null;
+  const write = (next: { execution?: string; filter?: LedgerFilter }) => {
+    const out = new URLSearchParams(search);
+    out.delete("ledgerExecution"); out.delete("ledgerFilter");
+    out.set("ledgerExecution", next.execution ?? selected ?? "");
+    out.set("ledgerFilter", next.filter ?? filter);
+    if (!out.get("ledgerExecution")) out.delete("ledgerExecution");
+    navigate(`${location}?${out.toString()}${window.location.hash}`);
+  };
+  const uploads = useCrmQuery<{ uploads: UploadLedgerRun[] }>({
     queryKey: ["/api/canonical-enrichment/uploads"],
-    queryFn: () => getJson("/api/canonical-enrichment/uploads"),
+    queryFn: ({ signal }) => getJson("/api/canonical-enrichment/uploads", signal),
+    staleTime: 60_000, refetchOnWindowFocus: false,
   });
-  useEffect(() => {
-    if (!selected && uploads.data?.uploads.length) setSelected(uploads.data.uploads[0].executionId);
-  }, [selected, uploads.data]);
-  const rows = useInfiniteQuery<UploadLedgerPage>({
+  const known = uploads.data?.uploads ?? [];
+  const requestedMissing = !!executionParam && !!uploads.data && !known.some(u => u.executionId.toLowerCase() === executionParam);
+  const selected: string | null = executionParam && !requestedMissing ? executionParam : known[0]?.executionId ?? null;
+  const rows = useCrmInfiniteQuery<UploadLedgerPage, Error, any, any, number>({
     queryKey: ["/api/canonical-enrichment/uploads", selected, "rows", filter],
     enabled: !!selected,
     initialPageParam: 0,
-    queryFn: ({ pageParam }) => getJson(
-      `/api/canonical-enrichment/uploads/${selected}/rows?limit=25&after=${pageParam}&filter=${filter}`),
+    queryFn: ({ pageParam, signal }) => getJson(
+      `/api/canonical-enrichment/uploads/${selected}/rows?limit=25&after=${pageParam}&filter=${filter}`, signal),
     getNextPageParam: last => last.nextAfter,
+    staleTime: 60_000, refetchOnWindowFocus: false,
   });
-  const list = rows.data?.pages.flatMap(page => page.rows) ?? [];
+  const list: UploadLedgerRow[] = rows.data?.pages.flatMap((page: UploadLedgerPage) => page.rows) ?? [];
   return <section className="my-5 space-y-4" aria-labelledby="upload-ledger-title">
     <div>
       <h3 id="upload-ledger-title" className="font-semibold">Upload ledger by original row</h3>
       <p className="text-sm text-muted-foreground">
         Every original row of the selected upload, in coordinate order, including business-only rows and every mailbox.
-        Original accounting, provenance, current links and fulfillment receipts are separate facts.
+        Original accounting, provenance, current links and fulfillment receipts are separate facts. This is intake accounting only:
+        a listed row is not enrichment, a deal or a delivered email, and one page of one upload does not show that all uploads are complete.
       </p>
     </div>
-    {uploads.isError && <p className="text-sm text-destructive">The upload list is unavailable.</p>}
+    {(selectionIssue || requestedMissing) && <p role="status" className="rounded-md border bg-muted/40 px-3 py-2 text-sm" data-testid="ledger-selection-issue">
+      {requestedMissing ? "The upload in the address is not in the ledger list; showing the most recent upload." : selectionIssue}</p>}
+    {uploads.isLoading && <p className="text-sm text-muted-foreground">Loading uploads…</p>}
+    {uploads.isError && <ReadFailure what="the upload list" error={uploads.error} onRetry={() => void uploads.refetch()} busy={uploads.isFetching} />}
     {uploads.data && !uploads.data.uploads.length && <p className="rounded-xl border p-4 text-sm text-muted-foreground">No uploads have original-row accounting yet.</p>}
     {uploads.data && uploads.data.uploads.length > 0 && <div className="flex flex-wrap items-end gap-3">
       <label className="text-sm">
         <span className="mb-1 block text-muted-foreground">Upload</span>
-        <select className="rounded-md border bg-background px-2 py-1.5 text-sm" value={selected ?? ""}
-          onChange={event => setSelected(event.target.value)} data-testid="ledger-upload-select">
+        <select className="min-h-11 rounded-md border bg-background px-2 py-1.5 text-sm" value={selected ?? ""}
+          onChange={event => write({ execution: event.target.value })} data-testid="ledger-upload-select">
           {uploads.data.uploads.map(upload => <option key={upload.executionId} value={upload.executionId}>
             {(upload.fileName ?? label(upload.importType))} · {upload.startedAt ? new Date(upload.startedAt).toLocaleDateString("en-US") : "undated"} · {numberFormat.format(upload.accountedRows)} rows
           </option>)}
@@ -126,15 +163,16 @@ export function UploadLedger({ initialFilter = "all" }: { initialFilter?: "all" 
       </label>
       <label className="text-sm">
         <span className="mb-1 block text-muted-foreground">Show</span>
-        <select className="rounded-md border bg-background px-2 py-1.5 text-sm" value={filter}
-          onChange={event => setFilter(event.target.value as "all" | "unfulfilled")}>
+        <select className="min-h-11 rounded-md border bg-background px-2 py-1.5 text-sm" value={filter}
+          onChange={event => write({ filter: event.target.value as LedgerFilter })}>
           <option value="all">All original rows</option>
           <option value="unfulfilled">Rows without a fulfilled item</option>
         </select>
       </label>
     </div>}
     {selected && <Summary executionId={selected} />}
-    {rows.isError && <p className="text-sm text-destructive">This page of rows is unavailable.</p>}
+    {rows.isError && <ReadFailure what="this page of rows" error={rows.error} onRetry={() => void rows.refetch()} busy={rows.isFetching} />}
+    {rows.isLoading && !!selected && <p className="text-sm text-muted-foreground">Loading rows…</p>}
     <div className="space-y-3">{list.map(row => <LedgerRow key={row.sourceRowNumber} row={row} />)}</div>
     {selected && rows.isSuccess && !list.length && <p className="rounded-xl border p-4 text-sm text-muted-foreground">No rows match this view.</p>}
     {rows.hasNextPage && <Button variant="outline" onClick={() => rows.fetchNextPage()} disabled={rows.isFetchingNextPage}>

@@ -1,5 +1,7 @@
+import { ScopedMetricStrip } from "@/components/crm/CrmPresentation";
 import { useState } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
+import { useCrmQuery } from "@/hooks/use-crm-query";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -45,19 +47,21 @@ export default function OutreachCommand() {
   const [editingSig, setEditingSig] = useState<string | null>(null);
   const [sigForm, setSigForm] = useState({ name: "", title: "", phone: "", email: "", calendlyLink: "" });
 
-  const { data: status, isLoading } = useQuery<OutreachStatus>({
+  // Loaded on entry and on explicit refresh; no background recount.
+  const { data: status, isLoading, isError, error, refetch, isFetching } = useCrmQuery<OutreachStatus>({
     queryKey: ["/api/outreach/status"],
-    refetchInterval: 10000,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
   });
 
-  const { data: signatures } = useQuery<Record<string, SignatureData>>({
+  const { data: signatures, isLoading: signaturesLoading, isError: signaturesError, refetch: refetchSignatures } = useCrmQuery<Record<string, SignatureData>>({
     queryKey: ["/api/email-signatures"],
   });
 
   const saveSignatureMutation = useMutation({
     mutationFn: ({ type, data }: { type: string; data: any }) => apiRequest("PUT", `/api/email-signatures/${type}`, data),
     onSuccess: () => { toast({ title: "Signature saved" }); queryClient.invalidateQueries({ queryKey: ["/api/email-signatures"] }); setEditingSig(null); },
-    onError: () => toast({ title: "Error", variant: "destructive" }),
+    onError: (err: Error) => toast({ title: "Signature not saved", description: `${err.message || "The server did not accept the change."} The form is still open with your edits.`, variant: "destructive" }),
   });
 
   if (isLoading) {
@@ -71,13 +75,16 @@ export default function OutreachCommand() {
     );
   }
 
-  if (!status) {
+  if (isError || !status) {
+    const denied = error instanceof Error && /^40[13]:/.test(error.message);
     return (
-      <div className="space-y-4">
-        <Skeleton className="h-8 w-64" />
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          {[1, 2, 3, 4].map(i => <Skeleton key={i} className="h-28" />)}
-        </div>
+      <div className="space-y-3 rounded-lg border border-destructive/30 p-4" role="alert" data-testid="outreach-status-unavailable">
+        <h2 className="font-semibold">{denied ? "Pipeline counts are not available for your role" : "Pipeline counts could not be loaded"}</h2>
+        <p className="text-sm text-muted-foreground">
+          {denied ? "Your account is not permitted to read these aggregate counts." : "Nothing is shown as zero. The counts are unknown until the read succeeds."}
+          {error instanceof Error ? ` (${error.message})` : ""}
+        </p>
+        {!denied && <Button variant="outline" onClick={() => refetch()} disabled={isFetching}>Retry</Button>}
       </div>
     );
   }
@@ -87,7 +94,7 @@ export default function OutreachCommand() {
   return (
     <div className="space-y-6" data-testid="outreach-command-center">
       <div>
-        <h1 className="text-2xl font-bold" data-testid="text-page-title">Outreach Command</h1>
+        <h2 className="text-2xl font-bold">Outreach Command</h2>
         <p className="text-muted-foreground text-sm">Read-only pipeline visibility. Import, enrichment, promotion, and GHL sync are managed on their owning pages.</p>
       </div>
 
@@ -119,13 +126,25 @@ export default function OutreachCommand() {
         </CardContent>
       </Card>
 
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-        <StatCard icon={Building2} color="blue" value={s.entities.total.toLocaleString()} label="FL Entities" testId="card-total-entities" />
+      <p className="text-xs text-muted-foreground" role="note" data-testid="outreach-status-scope">
+        Counts come from the aggregate pipeline reader{s.asOf ? `, as of ${new Date(s.asOf).toLocaleString()}` : ""}. They use different scopes and units
+        and will not equal production-contact or open-deal totals on other pages. Nothing here refreshes in the background.{" "}
+        <button type="button" className="underline" onClick={() => refetch()} disabled={isFetching}>Refresh</button>
+      </p>
+      <ScopedMetricStrip scopeId="sunbiz-source-entities" sourceLabel="Source: Sunbiz entity table, raw entities (not CRM contacts)"
+        asOf={s.asOf ? new Date(s.asOf).toLocaleString() : undefined}>
+        <StatCard icon={Building2} color="blue" value={s.entities.total.toLocaleString()} label="Sunbiz source entities (raw)" testId="card-total-entities" />
         <StatCard icon={Target} color="green" value={s.entities.classified} label="Classified" testId="card-classified" />
         <StatCard icon={Mail} color="purple" value={s.entities.withEmail} label="With Email" testId="card-with-email" />
-        <StatCard icon={Users} color="amber" value={s.contacts.total} label="CRM Contacts" testId="card-contacts" />
-        <StatCard icon={Briefcase} color="indigo" value={s.deals.total} label="Active Deals" testId="card-deals" />
-      </div>
+      </ScopedMetricStrip>
+      <ScopedMetricStrip scopeId="crm-contacts-and-deals" sourceLabel="Source: CRM contacts and deals, scopes labelled on each card"
+        asOf={s.asOf ? new Date(s.asOf).toLocaleString() : undefined}
+        availability={s.commEventsUnavailable ? "partial" : "available"}>
+        <StatCard icon={Users} color="amber" value={s.contacts.total} label="All stored contacts (no archive or record-class filter)" testId="card-contacts" />
+        <StatCard icon={Briefcase} color="indigo" value={typeof s.deals.openSalesProduction === "number" ? s.deals.openSalesProduction.toLocaleString() : "—"}
+          label="Open production sales deals (unarchived, open stage)" testId="card-open-deals" />
+        <StatCard icon={Briefcase} color="indigo" value={s.deals.total} label="All unarchived deals (every pipeline and class)" testId="card-deals" />
+      </ScopedMetricStrip>
 
       <div className="grid grid-cols-2 md:grid-cols-6 gap-2">
         <ScoreCard value={s.entities.hot} label="Hot" emoji="🔥" color="red" />
@@ -273,7 +292,11 @@ export default function OutreachCommand() {
               </p>
             </CardHeader>
             <CardContent>
-              {(!s.commEventSourceBreakdown || s.commEventSourceBreakdown.length === 0) ? (
+              {s.commEventsUnavailable ? (
+                <p className="text-sm text-destructive" role="alert" data-testid="comm-events-unavailable">
+                  The outbound event breakdown could not be read. That is unknown, not zero events.
+                </p>
+              ) : (!s.commEventSourceBreakdown || s.commEventSourceBreakdown.length === 0) ? (
                 <p className="text-sm text-muted-foreground italic">No outbound events recorded in the last 90 days.</p>
               ) : (
                 <div className="overflow-x-auto">
@@ -314,6 +337,14 @@ export default function OutreachCommand() {
               These signatures are appended to live campaign emails sent via the "sales" sender profile — edits take effect on the next send.
             </AlertDescription>
           </Alert>
+          {signaturesLoading && <p className="text-sm text-muted-foreground" data-testid="signatures-loading">Loading signatures…</p>}
+          {signaturesError && (
+            <div role="alert" className="rounded-md border border-destructive/40 p-3 text-sm" data-testid="signatures-unavailable">
+              <p className="font-medium">Signatures could not be loaded.</p>
+              <p className="text-muted-foreground">This is a failed read, not an empty list; the stored signatures are unchanged.</p>
+              <Button variant="outline" size="sm" className="mt-2" onClick={() => refetchSignatures()} data-testid="button-retry-signatures">Retry</Button>
+            </div>
+          )}
           {signatures && Object.entries(signatures).map(([type, data]) => (
             <Card key={type}>
               <CardHeader className="pb-2">

@@ -157,7 +157,9 @@ export function registerImportsRoutes(app: Express) {
     res.json({ message: "Outreach worker stopped", stopped: true });
   });
 
-  app.get("/api/outreach/status", isAuthenticated, async (req, res) => {
+  // Aggregate counts are not actor-scoped. Dashboard roles only; merchants and partners are denied before any query.
+  app.get("/api/outreach/status", isAuthenticated, requireRole("admin", "manager", "agent"), async (req, res) => {
+    let commEventsUnavailable = false;
     const [entityStats, verticalBreakdown, prospectStats, contactStats, dealStats, ghlStatus, importProgress, cordataProgress, enrichmentProgress, lastOutreachRun, workerStatus, sourceBreakdown, commEventRows] = await Promise.all([
       storage.getSunbizAggregateStats(),
       storage.getSunbizVerticalBreakdown(),
@@ -182,7 +184,12 @@ export function registerImportsRoutes(app: Express) {
           AND created_at >= NOW() - INTERVAL '90 days'
         GROUP BY COALESCE(sent_by, 'automation'), channel
         ORDER BY source, channel
-      `).catch(() => ({ rows: [] })),
+      `).catch((error) => {
+        // A failed query is unavailable, never zero events.
+        console.error("[outreach/status] communication event breakdown failed:", error?.code ?? "", error?.message ?? error);
+        commEventsUnavailable = true;
+        return { rows: [] as Array<{ source: string; channel: string; cnt: string }> };
+      }),
     ]);
 
     const campaigns = await storage.getCampaigns();
@@ -214,6 +221,8 @@ export function registerImportsRoutes(app: Express) {
       verticalBreakdown,
       sourceBreakdown,
       commEventSourceBreakdown,
+      commEventsUnavailable,
+      asOf: new Date().toISOString(),
       ghlSync: ghlStatus,
       importProgress: importProgress || { status: "idle" },
       cordataProgress: cordataProgress || { status: "idle" },

@@ -260,20 +260,25 @@ interface ZbHistoryEntry {
   source: string | null;
 }
 
-function ZeroBounceHistorySection({ contactId }: { contactId: number }) {
+const ZB_FRESHNESS_DAYS = 180; // display only; the server owns the actual freshness decision
+
+function ZeroBounceHistorySection({ contactId, currentEmail, legacyStatus }: { contactId: number; currentEmail?: string | null; legacyStatus?: string | null }) {
   const [open, setOpen] = useState(false);
 
-  const { data: history = [], isLoading } = useQuery<ZbHistoryEntry[]>({
+  const { data: history = [], isLoading, isError, refetch, isFetching } = useQuery<ZbHistoryEntry[]>({
     queryKey: ["/api/contacts", contactId, "zerobounce-history"],
     queryFn: async ({ signal }) => {
       const r = await fetch(`/api/contacts/${contactId}/zerobounce-history`, { signal, credentials: "include" });
-      if (!r.ok) throw new Error("Failed to load validation history");
+      if (!r.ok) throw new Error(`Failed to load validation history (${r.status})`);
       return r.json();
     },
     staleTime: 60_000,
   });
 
   const latest = history[0] ?? null;
+  const olderEmail = !!latest?.email && !!currentEmail && latest.email.trim().toLowerCase() !== currentEmail.trim().toLowerCase();
+  const ageDays = latest ? Math.floor((Date.now() - new Date(latest.validatedAt).getTime()) / 86_400_000) : null;
+  const pastWindow = ageDays !== null && ageDays > ZB_FRESHNESS_DAYS;
   const older = history.slice(1);
 
   const statusLabel = (s: string | null) => {
@@ -303,8 +308,15 @@ function ZeroBounceHistorySection({ contactId }: { contactId: number }) {
 
             {isLoading ? (
               <span className="text-xs text-muted-foreground">Loading…</span>
+            ) : isError ? (
+              <span className="flex items-center gap-2 text-xs text-destructive" role="alert" data-testid="zb-history-unavailable">
+                Validation history unavailable (not the same as “not validated”).
+                <button type="button" className="min-h-11 px-3 underline" onClick={() => void refetch()} disabled={isFetching}>Retry</button>
+              </span>
             ) : !latest ? (
-              <Badge variant="secondary" data-testid="badge-zb-not-validated">Not yet validated</Badge>
+              <Badge variant="secondary" data-testid="badge-zb-not-validated">
+                No validation receipt on record{legacyStatus ? ` · stored status “${legacyStatus}” is a legacy value, not a receipt` : ""}
+              </Badge>
             ) : (
               <TooltipProvider>
                 <Tooltip>
@@ -330,6 +342,11 @@ function ZeroBounceHistorySection({ contactId }: { contactId: number }) {
               </TooltipProvider>
             )}
 
+            {latest && (olderEmail || pastWindow) && (
+              <span className="text-xs text-amber-700 dark:text-amber-400" data-testid="zb-receipt-not-current">
+                {olderEmail ? "This receipt is for an earlier email address, not the current one." : `Last receipt is ${ageDays} days old, past the ${ZB_FRESHNESS_DAYS}-day window.`} It is not a current validation.
+              </span>
+            )}
             {older.length > 0 && (
               <button
                 type="button"
@@ -2659,7 +2676,7 @@ function ContactDetailRecord() {
       )}
 
       {/* ZeroBounce Validation History */}
-      {contact.email && <ZeroBounceHistorySection contactId={contactId} />}
+      {contact.email && <ZeroBounceHistorySection contactId={contactId} currentEmail={contact.email} legacyStatus={(contact as any).emailStatus ?? null} />}
       <SfpReadinessSection contactId={contactId} />
 
       {/* Lifecycle Stage Transition History */}

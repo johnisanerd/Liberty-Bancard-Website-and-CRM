@@ -51,20 +51,38 @@ type BackfillRun = {
   lastProcessedContactId: number | null;
 };
 
+// Each reader is independent: a section the server could not read is null and
+// named in `unavailable`; it is never a zero.
 type ReadinessStats = {
-  total: number;
-  nullScore: number;
-  staleModel: number;
-  mutationStale: number;
-  grades: GradeDistribution;
+  total: number | null;
+  nullScore: number | null;
+  staleModel: number | null;
+  mutationStale: number | null;
+  grades: GradeDistribution | null;
   avgScore: number | null;
   minScore: number | null;
   maxScore: number | null;
-  histogram: Array<{ bucketStart: number; bucketEnd: number; count: number }>;
-  topMissingReasons: Array<{ reason: string; cnt: number }>;
+  histogram: Array<{ bucketStart: number; bucketEnd: number; count: number }> | null;
+  topMissingReasons: Array<{ reason: string; cnt: number }> | null;
   modelVersion: number;
   backfillRun: BackfillRun | null;
+  unavailable?: Partial<Record<"summary" | "histogram" | "missingReasons" | "backfillRun", { code: string | null; message: string }>>;
+  asOf?: string;
 };
+
+type ReadinessStatsReady = ReadinessStats & {
+  total: number; nullScore: number; staleModel: number; mutationStale: number; grades: GradeDistribution;
+};
+
+function SectionUnavailable({ what, onRetry }: { what: string; onRetry: () => void }) {
+  return (
+    <div role="alert" className="flex items-center gap-3 text-sm" data-testid="readiness-section-unavailable">
+      <AlertCircle className="w-4 h-4 text-destructive shrink-0" />
+      <span>{what} could not be read. This is not zero; other sections are unaffected.</span>
+      <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button>
+    </div>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Grade bar colours
@@ -93,9 +111,8 @@ const GRADE_TEXT_COLORS: Record<string, string> = {
 function useReadinessStats() {
   return useQuery<ReadinessStats>({
     queryKey: ["/api/contacts/readiness-stats"],
-    queryFn: async () => {
-      const res = await fetch("/api/contacts/readiness-stats", { credentials: "include" });
-      if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+    queryFn: async ({ signal }) => {
+      const res = await apiRequest("GET", "/api/contacts/readiness-stats", undefined, undefined, signal);
       return res.json();
     },
     refetchInterval: (query) => {
@@ -341,7 +358,7 @@ function BackfillStatusWidget({
   onStart,
   isStarting,
 }: {
-  stats: ReadinessStats;
+  stats: ReadinessStatsReady;
   canMutate: boolean;
   onStart: (force: boolean) => void;
   isStarting: boolean;
@@ -527,6 +544,11 @@ export default function ReadinessIntelligencePanel() {
   }
 
   const runStatus = stats.backfillRun?.status ?? "idle";
+  const summary: ReadinessStatsReady | null =
+    stats.grades && stats.total !== null && stats.nullScore !== null && stats.staleModel !== null && stats.mutationStale !== null
+      ? (stats as ReadinessStatsReady)
+      : null;
+  const backfillUnavailable = !!stats.unavailable?.backfillRun;
 
   return (
     <div className="space-y-6" data-testid="panel-readiness-intelligence">
@@ -537,7 +559,7 @@ export default function ReadinessIntelligencePanel() {
             <CardTitle className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
               Grade Distribution
             </CardTitle>
-            {stats.backfillRun && (
+            {!backfillUnavailable && stats.backfillRun && (
               <Badge
                 variant="outline"
                 className={`text-xs ${
@@ -558,8 +580,14 @@ export default function ReadinessIntelligencePanel() {
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
-          <GradeBar grades={stats.grades} />
-          <ThresholdEstimator grades={stats.grades} />
+          {stats.grades ? (
+            <>
+              <GradeBar grades={stats.grades} />
+              <ThresholdEstimator grades={stats.grades} />
+            </>
+          ) : (
+            <SectionUnavailable what="Grade distribution" onRetry={() => refetch()} />
+          )}
         </CardContent>
       </Card>
 
@@ -571,11 +599,12 @@ export default function ReadinessIntelligencePanel() {
           </CardTitle>
         </CardHeader>
         <CardContent>
+          {summary ? (
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
             <StatTile
               label="Total Scored"
-              value={stats.grades.A + stats.grades.B + stats.grades.C + stats.grades.D + stats.grades.F}
-              subtext={`of ${stats.total.toLocaleString()} contacts`}
+              value={summary.grades.A + summary.grades.B + summary.grades.C + summary.grades.D + summary.grades.F}
+              subtext={`of ${summary.total.toLocaleString()} contacts`}
               testId="stat-tile-total-scored"
             />
             <StatTile
@@ -586,26 +615,29 @@ export default function ReadinessIntelligencePanel() {
             />
             <StatTile
               label="Null Score"
-              value={stats.nullScore}
+              value={summary.nullScore}
               subtext="Not yet scored"
-              highlight={stats.nullScore > 0}
+              highlight={summary.nullScore > 0}
               testId="stat-tile-null-score"
             />
             <StatTile
               label="Stale Model"
-              value={stats.staleModel}
+              value={summary.staleModel}
               subtext={`Model v${stats.modelVersion} needed`}
-              highlight={stats.staleModel > 0}
+              highlight={summary.staleModel > 0}
               testId="stat-tile-stale-model"
             />
             <StatTile
               label="Mutation Stale"
-              value={stats.mutationStale}
+              value={summary.mutationStale}
               subtext="Data changed since score"
-              highlight={stats.mutationStale > 0}
+              highlight={summary.mutationStale > 0}
               testId="stat-tile-mutation-stale"
             />
           </div>
+          ) : (
+            <SectionUnavailable what="Contact readiness summary" onRetry={() => refetch()} />
+          )}
         </CardContent>
       </Card>
 
@@ -619,7 +651,9 @@ export default function ReadinessIntelligencePanel() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <MissingReasonsList reasons={stats.topMissingReasons} />
+            {stats.topMissingReasons
+              ? <MissingReasonsList reasons={stats.topMissingReasons} />
+              : <SectionUnavailable what="Missing-data reasons" onRetry={() => refetch()} />}
           </CardContent>
         </Card>
 
@@ -631,9 +665,11 @@ export default function ReadinessIntelligencePanel() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            {canMutate ? (
+            {backfillUnavailable || !summary ? (
+              <SectionUnavailable what="Backfill status" onRetry={() => refetch()} />
+            ) : canMutate ? (
               <BackfillStatusWidget
-                stats={stats}
+                stats={summary}
                 canMutate={canMutate}
                 onStart={(force) => startMutation.mutate(force)}
                 isStarting={startMutation.isPending}

@@ -1,4 +1,8 @@
 import { useState, useCallback, useRef, useEffect } from "react";
+import { useCrmQuery } from "@/hooks/use-crm-query";
+import { CrmAreaNav } from "@/components/crm/CrmPresentation";
+import CanonicalEnrichment from "./CanonicalEnrichment";
+import { prospectingAreas, prospectingAreaTabs, prospectingAreaForTab } from "@/lib/crm-destination-state";
 import { useLocation, useSearch, Link } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient, parseApiRequestError } from "@/lib/queryClient";
@@ -1535,10 +1539,23 @@ function EnrichmentQueuePanel() {
 // ─── Main component ───────────────────────────────────────────────────────────
 // ─── MI-08: Businesses Tab ────────────────────────────────────────────────────
 function BusinessesTab({ userRole }: { userRole: string }) {
-  const [search, setSearch] = useState("");
-  const [verticalFilter, setVerticalFilter] = useState("");
-  const [emailStatusFilter, setEmailStatusFilter] = useState("");
-  const [offset, setOffset] = useState(0);
+  // List context lives in the address (replace, not push) so Back from a business restores the same page.
+  const initialList = new URLSearchParams(window.location.search);
+  const listParam = (key: string) => { const all = initialList.getAll(key); return all.length === 1 ? all[0] : ""; };
+  const [search, setSearch] = useState(() => listParam("bq").slice(0, 200));
+  const [verticalFilter, setVerticalFilter] = useState(() => listParam("bvertical").slice(0, 120));
+  const [emailStatusFilter, setEmailStatusFilter] = useState(() => listParam("bemail").slice(0, 60));
+  const [offset, setOffset] = useState(() => { const v = Number(listParam("boffset")); return Number.isInteger(v) && v >= 0 && v % 50 === 0 ? v : 0; });
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const write = (key: string, value: string) => value ? url.searchParams.set(key, value) : url.searchParams.delete(key);
+    write("bq", search); write("bvertical", verticalFilter); write("bemail", emailStatusFilter);
+    write("boffset", offset ? String(offset) : "");
+    const next = `${url.pathname}${url.search}${url.hash}`;
+    if (next !== `${window.location.pathname}${window.location.search}${window.location.hash}`) {
+      window.history.replaceState(window.history.state, "", next);
+    }
+  }, [search, verticalFilter, emailStatusFilter, offset]);
   const [selectedBusiness, setSelectedBusiness] = useState<BusinessListItem | null>(null);
   const [, navigateTo] = useLocation();
   const [bootstrapConfirmation, setBootstrapConfirmation] = useState("");
@@ -1736,6 +1753,241 @@ function BusinessesTab({ userRole }: { userRole: string }) {
 
   return (
     <div className="space-y-4">
+      {/* Detail panel removed — clicking a row navigates to /dashboard/lead-ops/business/:id */}
+
+      {/* Filters */}
+      <div className="flex flex-wrap gap-2 items-center">
+        <div className="relative flex-1 min-w-[180px] max-w-sm">
+          <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" aria-hidden />
+          <Input
+            placeholder="Search company or domain…"
+            className="pl-9 h-9"
+            value={search}
+            onChange={(e) => { setSearch(e.target.value); setOffset(0); }}
+            aria-label="Search businesses"
+          />
+        </div>
+        <Select value={verticalFilter || "all"} onValueChange={(v) => { setVerticalFilter(v === "all" ? "" : v); setOffset(0); }}>
+          <SelectTrigger className="w-44 h-9" aria-label="Filter by vertical">
+            <SelectValue placeholder="All verticals" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All verticals</SelectItem>
+            {verticals.map((v) => (
+              <SelectItem key={v.vertical} value={v.vertical}>{v.vertical} ({v.count})</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={emailStatusFilter} onValueChange={(v) => { setEmailStatusFilter(v === "all" ? "" : v); setOffset(0); }}>
+          <SelectTrigger className="w-48 h-9" aria-label="Filter by email status">
+            <SelectValue placeholder="All email statuses" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All email statuses</SelectItem>
+            <SelectItem value="provider_valid">Valid</SelectItem>
+            <SelectItem value="provider_catch_all">Catch-all</SelectItem>
+            <SelectItem value="provider_invalid">Invalid</SelectItem>
+            <SelectItem value="discovered">Discovered</SelectItem>
+            <SelectItem value="no_valid_candidate">No candidate</SelectItem>
+          </SelectContent>
+        </Select>
+        <div className="text-sm text-muted-foreground ml-auto">
+          {total.toLocaleString()} canonical businesses
+        </div>
+      </div>
+
+      {/* Error */}
+      {isError && (
+        <div className="text-sm text-destructive flex items-center gap-2">
+          <XCircle className="h-4 w-4" />
+          {error instanceof Error ? error.message : "Failed to load businesses"}
+        </div>
+      )}
+
+      {/* Mobile card list (≤768px) */}
+      <div className="md:hidden space-y-3">
+        {isLoading
+          ? Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-32 w-full rounded-lg" />)
+          : businesses.length === 0
+            ? <p className="text-sm text-muted-foreground py-8 text-center">No businesses match your filters.</p>
+            : businesses.map((b) => (
+                <MobileBusinessCard key={b.id} business={b} onTap={(biz) => navigateTo(`/dashboard/lead-ops/business/${biz.id}`)} />
+              ))
+        }
+      </div>
+
+      {/* Desktop table (>768px) */}
+      <Card className="hidden md:block shadow-sm">
+        <CardContent className="p-0">
+          <div className="overflow-x-auto">
+            <Table className="min-w-[800px]">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Company</TableHead>
+                  <TableHead>Location</TableHead>
+                  <TableHead>Legacy vertical / SFP v2</TableHead>
+                  <TableHead>Email Status</TableHead>
+                  <TableHead>Enrichment</TableHead>
+                  <TableHead>Fit Tier</TableHead>
+                  <TableHead>Field</TableHead>
+                  <TableHead className="w-20">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {isLoading
+                  ? Array.from({ length: 8 }).map((_, i) => (
+                      <TableRow key={i}>
+                        {Array.from({ length: 8 }).map((_, j) => (
+                          <TableCell key={j}><Skeleton className="h-4 w-full" /></TableCell>
+                        ))}
+                      </TableRow>
+                    ))
+                  : businesses.length === 0
+                    ? (
+                      <TableRow>
+                        <TableCell colSpan={8} className="h-24 text-center text-muted-foreground">
+                          No businesses match your current filters.
+                        </TableCell>
+                      </TableRow>
+                    )
+                    : businesses.map((b) => (
+                        <TableRow key={b.id} className="cursor-pointer hover:bg-muted/30" onClick={() => navigateTo(`/dashboard/lead-ops/business/${b.id}`)}>
+                          <TableCell className="font-medium max-w-[200px]">
+                            <Link href={`/dashboard/lead-ops/business/${b.id}`} onClick={(e) => e.stopPropagation()}
+                              className="block truncate underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+                              aria-label={`Open business ${b.canonical_name ?? b.id}`}>{b.canonical_name ?? `Business #${b.id}`}</Link>
+                            {b.website_domain && (
+                              <a
+                                href={b.website_domain.startsWith("http") ? b.website_domain : `https://${b.website_domain}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="flex items-center gap-0.5 text-[10px] text-blue-500 hover:text-blue-700 truncate"
+                                onClick={(e) => e.stopPropagation()}
+                                aria-label={`Open ${b.website_domain}`}
+                              >
+                                {b.website_domain}
+                                <ExternalLink className="h-2.5 w-2.5 shrink-0" />
+                              </a>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
+                            {[b.city, b.state].filter(Boolean).join(", ") || "—"}
+                          </TableCell>
+                          <TableCell>
+                            {b.vertical
+                              ? <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-5">{b.vertical}</Badge>
+                              : <span className="text-muted-foreground text-xs">—</span>
+                            }
+                            <div className="text-[10px] mt-1 max-w-[220px]" title={b.sfpClassification?.reasons?.join(", ")}>
+                              {b.sfpClassification
+                                ? <>SFP v2: {b.sfpClassification.vertical ?? b.sfpClassification.outcome} · {b.sfpClassification.state}</>
+                                : <span className="text-muted-foreground">No current active-v2 evidence</span>}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <div className="space-y-1">
+                              <Badge
+                                variant="outline"
+                                className={`text-[10px] px-1.5 py-0 h-auto whitespace-normal ${
+                                  b.email_discovery_status === "provider_valid" ? "bg-green-100 text-green-800" :
+                                  b.email_discovery_status === "provider_catch_all" ? "bg-amber-100 text-amber-800" :
+                                  b.email_discovery_status === "provider_invalid" ? "bg-red-100 text-red-800" :
+                                  "bg-blue-100 text-blue-800"
+                                }`}
+                                aria-label={`Email: ${b.emailEvidenceDisplay?.statusLabel ?? "not started"}`}
+                              >
+                                {b.emailEvidenceDisplay?.statusLabel ?? "not started"}
+                              </Badge>
+                              {b.emailEvidenceDisplay && (
+                                <div className="text-[10px] text-muted-foreground">
+                                  {b.emailEvidenceDisplay.candidateCount} unvalidated email candidate(s)
+                                  {b.emailEvidenceDisplay.maskedCandidateEmailPreview && (
+                                    <span className="block font-mono">{b.emailEvidenceDisplay.maskedCandidateEmailPreview}</span>
+                                  )}
+                                  {b.emailEvidenceDisplay.selectedWinner && (
+                                    <span className="block">Winner: {b.emailEvidenceDisplay.selectedWinner.state ?? "unknown"}</span>
+                                  )}
+                                  {b.emailEvidenceDisplay.validationIntent && (
+                                    <span className="block">Validation: {b.emailEvidenceDisplay.validationIntent.state ?? "unknown"}</span>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            {b.free_enrichment_status ? (
+                              <Badge
+                                variant="outline"
+                                className={`text-[10px] px-1.5 py-0 h-5 ${
+                                  b.free_enrichment_status === "enriched" ? "bg-green-100 text-green-800" :
+                                  b.free_enrichment_status === "processing" ? "bg-blue-100 text-blue-800" :
+                                  b.free_enrichment_status === "failed" ? "bg-red-100 text-red-800" :
+                                  "bg-gray-100 text-gray-600"
+                                }`}
+                                aria-label={`Enrichment: ${b.free_enrichment_status}`}
+                              >
+                                {b.free_enrichment_status}
+                              </Badge>
+                            ) : <span className="text-muted-foreground text-xs">—</span>}
+                          </TableCell>
+                          <TableCell>
+                            {b.fit_tier ? (
+                              <Badge
+                                variant="outline"
+                                className={`text-[10px] px-1.5 py-0 h-5 font-bold ${
+                                  b.fit_tier === "A" ? "bg-emerald-100 text-emerald-800" :
+                                  b.fit_tier === "B" ? "bg-blue-100 text-blue-800" :
+                                  "bg-amber-100 text-amber-700"
+                                }`}
+                                aria-label={`Fit tier ${b.fit_tier}`}
+                              >
+                                {b.fit_tier}
+                              </Badge>
+                            ) : <span className="text-muted-foreground text-xs">—</span>}
+                          </TableCell>
+                          <TableCell>
+                            {b.field_claim_status === "claimed" ? (
+                              <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-5 bg-amber-50 text-amber-700" aria-label="Field claim active">
+                                claimed
+                              </Badge>
+                            ) : <span className="text-muted-foreground text-xs">—</span>}
+                          </TableCell>
+                          <TableCell>
+                            <Button
+                              variant="ghost" size="sm" className="h-7 text-xs"
+                              onClick={(e) => { e.stopPropagation(); navigateTo(`/dashboard/lead-ops/business/${b.id}`); }}
+                              aria-label={`View details for ${b.canonical_name}`}
+                            >
+                              View
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))
+                }
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between">
+          <Button variant="outline" size="sm" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - LIMIT))} className="gap-1.5">
+            <ChevronLeft className="h-4 w-4" /> Previous
+          </Button>
+          <span className="text-sm text-muted-foreground">Page {page + 1} / {totalPages}</span>
+          <Button variant="outline" size="sm" disabled={offset + LIMIT >= total} onClick={() => setOffset(offset + LIMIT)} className="gap-1.5">
+            Next <ChevronRight className="h-4 w-4" />
+          </Button>
+        </div>
+      )}
+      {userRole === "admin" && (
+        <section aria-labelledby="business-tools-heading" className="space-y-4 border-t pt-6" data-testid="business-privileged-tools">
+          <div>
+            <h2 id="business-tools-heading" className="text-lg font-semibold">Privileged reconciliation and repair tools</h2>
+            <p className="text-sm text-muted-foreground">Administrator-only. Opening this page runs none of them; each action needs its own confirmation.</p>
+          </div>
       {userRole === "admin" && (
         <Card className="border-amber-200 dark:border-amber-900">
           <CardHeader className="pb-2">
@@ -1927,236 +2179,21 @@ function BusinessesTab({ userRole }: { userRole: string }) {
           </CardContent>
         </Card>
       )}
-      {/* Detail panel removed — clicking a row navigates to /dashboard/lead-ops/business/:id */}
-
-      {/* Filters */}
-      <div className="flex flex-wrap gap-2 items-center">
-        <div className="relative flex-1 min-w-[180px] max-w-sm">
-          <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" aria-hidden />
-          <Input
-            placeholder="Search company or domain…"
-            className="pl-9 h-9"
-            value={search}
-            onChange={(e) => { setSearch(e.target.value); setOffset(0); }}
-            aria-label="Search businesses"
-          />
-        </div>
-        <Select value={verticalFilter || "all"} onValueChange={(v) => { setVerticalFilter(v === "all" ? "" : v); setOffset(0); }}>
-          <SelectTrigger className="w-44 h-9" aria-label="Filter by vertical">
-            <SelectValue placeholder="All verticals" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All verticals</SelectItem>
-            {verticals.map((v) => (
-              <SelectItem key={v.vertical} value={v.vertical}>{v.vertical} ({v.count})</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Select value={emailStatusFilter} onValueChange={(v) => { setEmailStatusFilter(v === "all" ? "" : v); setOffset(0); }}>
-          <SelectTrigger className="w-48 h-9" aria-label="Filter by email status">
-            <SelectValue placeholder="All email statuses" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All email statuses</SelectItem>
-            <SelectItem value="provider_valid">Valid</SelectItem>
-            <SelectItem value="provider_catch_all">Catch-all</SelectItem>
-            <SelectItem value="provider_invalid">Invalid</SelectItem>
-            <SelectItem value="discovered">Discovered</SelectItem>
-            <SelectItem value="no_valid_candidate">No candidate</SelectItem>
-          </SelectContent>
-        </Select>
-        <div className="text-sm text-muted-foreground ml-auto">
-          {total.toLocaleString()} canonical businesses
-        </div>
-      </div>
-
-      {/* Error */}
-      {isError && (
-        <div className="text-sm text-destructive flex items-center gap-2">
-          <XCircle className="h-4 w-4" />
-          {error instanceof Error ? error.message : "Failed to load businesses"}
-        </div>
-      )}
-
-      {/* Mobile card list (≤768px) */}
-      <div className="md:hidden space-y-3">
-        {isLoading
-          ? Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-32 w-full rounded-lg" />)
-          : businesses.length === 0
-            ? <p className="text-sm text-muted-foreground py-8 text-center">No businesses match your filters.</p>
-            : businesses.map((b) => (
-                <MobileBusinessCard key={b.id} business={b} onTap={(biz) => navigateTo(`/dashboard/lead-ops/business/${biz.id}`)} />
-              ))
-        }
-      </div>
-
-      {/* Desktop table (>768px) */}
-      <Card className="hidden md:block shadow-sm">
-        <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <Table className="min-w-[800px]">
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Company</TableHead>
-                  <TableHead>Location</TableHead>
-                  <TableHead>Legacy vertical / SFP v2</TableHead>
-                  <TableHead>Email Status</TableHead>
-                  <TableHead>Enrichment</TableHead>
-                  <TableHead>Fit Tier</TableHead>
-                  <TableHead>Field</TableHead>
-                  <TableHead className="w-20">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {isLoading
-                  ? Array.from({ length: 8 }).map((_, i) => (
-                      <TableRow key={i}>
-                        {Array.from({ length: 8 }).map((_, j) => (
-                          <TableCell key={j}><Skeleton className="h-4 w-full" /></TableCell>
-                        ))}
-                      </TableRow>
-                    ))
-                  : businesses.length === 0
-                    ? (
-                      <TableRow>
-                        <TableCell colSpan={8} className="h-24 text-center text-muted-foreground">
-                          No businesses match your current filters.
-                        </TableCell>
-                      </TableRow>
-                    )
-                    : businesses.map((b) => (
-                        <TableRow key={b.id} className="cursor-pointer hover:bg-muted/30" onClick={() => navigateTo(`/dashboard/lead-ops/business/${b.id}`)}>
-                          <TableCell className="font-medium max-w-[200px]">
-                            <div className="truncate">{b.canonical_name}</div>
-                            {b.website_domain && (
-                              <a
-                                href={b.website_domain.startsWith("http") ? b.website_domain : `https://${b.website_domain}`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="flex items-center gap-0.5 text-[10px] text-blue-500 hover:text-blue-700 truncate"
-                                onClick={(e) => e.stopPropagation()}
-                                aria-label={`Open ${b.website_domain}`}
-                              >
-                                {b.website_domain}
-                                <ExternalLink className="h-2.5 w-2.5 shrink-0" />
-                              </a>
-                            )}
-                          </TableCell>
-                          <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
-                            {[b.city, b.state].filter(Boolean).join(", ") || "—"}
-                          </TableCell>
-                          <TableCell>
-                            {b.vertical
-                              ? <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-5">{b.vertical}</Badge>
-                              : <span className="text-muted-foreground text-xs">—</span>
-                            }
-                            <div className="text-[10px] mt-1 max-w-[220px]" title={b.sfpClassification?.reasons?.join(", ")}>
-                              {b.sfpClassification
-                                ? <>SFP v2: {b.sfpClassification.vertical ?? b.sfpClassification.outcome} · {b.sfpClassification.state}</>
-                                : <span className="text-muted-foreground">No current active-v2 evidence</span>}
-                            </div>
-                          </TableCell>
-                          <TableCell>
-                            <div className="space-y-1">
-                              <Badge
-                                variant="outline"
-                                className={`text-[10px] px-1.5 py-0 h-auto whitespace-normal ${
-                                  b.email_discovery_status === "provider_valid" ? "bg-green-100 text-green-800" :
-                                  b.email_discovery_status === "provider_catch_all" ? "bg-amber-100 text-amber-800" :
-                                  b.email_discovery_status === "provider_invalid" ? "bg-red-100 text-red-800" :
-                                  "bg-blue-100 text-blue-800"
-                                }`}
-                                aria-label={`Email: ${b.emailEvidenceDisplay?.statusLabel ?? "not started"}`}
-                              >
-                                {b.emailEvidenceDisplay?.statusLabel ?? "not started"}
-                              </Badge>
-                              {b.emailEvidenceDisplay && (
-                                <div className="text-[10px] text-muted-foreground">
-                                  {b.emailEvidenceDisplay.candidateCount} unvalidated email candidate(s)
-                                  {b.emailEvidenceDisplay.maskedCandidateEmailPreview && (
-                                    <span className="block font-mono">{b.emailEvidenceDisplay.maskedCandidateEmailPreview}</span>
-                                  )}
-                                  {b.emailEvidenceDisplay.selectedWinner && (
-                                    <span className="block">Winner: {b.emailEvidenceDisplay.selectedWinner.state ?? "unknown"}</span>
-                                  )}
-                                  {b.emailEvidenceDisplay.validationIntent && (
-                                    <span className="block">Validation: {b.emailEvidenceDisplay.validationIntent.state ?? "unknown"}</span>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-                          </TableCell>
-                          <TableCell>
-                            {b.free_enrichment_status ? (
-                              <Badge
-                                variant="outline"
-                                className={`text-[10px] px-1.5 py-0 h-5 ${
-                                  b.free_enrichment_status === "enriched" ? "bg-green-100 text-green-800" :
-                                  b.free_enrichment_status === "processing" ? "bg-blue-100 text-blue-800" :
-                                  b.free_enrichment_status === "failed" ? "bg-red-100 text-red-800" :
-                                  "bg-gray-100 text-gray-600"
-                                }`}
-                                aria-label={`Enrichment: ${b.free_enrichment_status}`}
-                              >
-                                {b.free_enrichment_status}
-                              </Badge>
-                            ) : <span className="text-muted-foreground text-xs">—</span>}
-                          </TableCell>
-                          <TableCell>
-                            {b.fit_tier ? (
-                              <Badge
-                                variant="outline"
-                                className={`text-[10px] px-1.5 py-0 h-5 font-bold ${
-                                  b.fit_tier === "A" ? "bg-emerald-100 text-emerald-800" :
-                                  b.fit_tier === "B" ? "bg-blue-100 text-blue-800" :
-                                  "bg-amber-100 text-amber-700"
-                                }`}
-                                aria-label={`Fit tier ${b.fit_tier}`}
-                              >
-                                {b.fit_tier}
-                              </Badge>
-                            ) : <span className="text-muted-foreground text-xs">—</span>}
-                          </TableCell>
-                          <TableCell>
-                            {b.field_claim_status === "claimed" ? (
-                              <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-5 bg-amber-50 text-amber-700" aria-label="Field claim active">
-                                claimed
-                              </Badge>
-                            ) : <span className="text-muted-foreground text-xs">—</span>}
-                          </TableCell>
-                          <TableCell>
-                            <Button
-                              variant="ghost" size="sm" className="h-7 text-xs"
-                              onClick={(e) => { e.stopPropagation(); navigateTo(`/dashboard/lead-ops/business/${b.id}`); }}
-                              aria-label={`View details for ${b.canonical_name}`}
-                            >
-                              View
-                            </Button>
-                          </TableCell>
-                        </TableRow>
-                      ))
-                }
-              </TableBody>
-            </Table>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Pagination */}
-      {totalPages > 1 && (
-        <div className="flex items-center justify-between">
-          <Button variant="outline" size="sm" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - LIMIT))} className="gap-1.5">
-            <ChevronLeft className="h-4 w-4" /> Previous
-          </Button>
-          <span className="text-sm text-muted-foreground">Page {page + 1} / {totalPages}</span>
-          <Button variant="outline" size="sm" disabled={offset + LIMIT >= total} onClick={() => setOffset(offset + LIMIT)} className="gap-1.5">
-            Next <ChevronRight className="h-4 w-4" />
-          </Button>
-        </div>
+        </section>
       )}
     </div>
   );
 }
+
+const AREA_LABEL = {
+  inventory: "Inventory", "sources-imports": "Sources & Imports", enrichment: "Enrichment",
+  "qualification-staging": "Qualification & Staging", "program-health": "Program Health",
+} as const;
+/** First leaf opened by an area link. Canonical keeps its own view parameter. */
+const AREA_ENTRY = {
+  inventory: "businesses", "sources-imports": "prospects", enrichment: "canonical&canonicalView=pipeline",
+  "qualification-staging": "staging", "program-health": "health",
+} as const;
 
 export default function LeadOpsCenter() {
   const { user } = useAuth();
@@ -2165,13 +2202,15 @@ export default function LeadOpsCenter() {
   // ── Tab state (MI-08 + #1957 consolidation) ─────────────────────────────────
   const urlSearch = useSearch();
   const [, navigate] = useLocation();
-  const VALID_TABS = ["businesses", "prospects", "imports", "staging", "sources", "census", "intelligence", "quality", "pipeline", "pilot", "health", "sfp", "provider-results"] as const;
+  const VALID_TABS = ["businesses", "prospects", "imports", "staging", "sources", "census", "intelligence", "quality", "pipeline", "pilot", "health", "sfp", "provider-results", "canonical"] as const;
   const STAGING_SUBTABS = ["master-leads", "promotion-review"] as const;
   const tabFromUrl = (() => {
     const t = new URLSearchParams(urlSearch).get("tab");
     return t && (VALID_TABS as readonly string[]).includes(t) ? t : "businesses";
   })();
   const [activeTab, setActiveTabState] = useState(tabFromUrl);
+  const areaTabs = prospectingAreaTabs[prospectingAreaForTab(activeTab)] as readonly string[];
+  const inArea = (tab: string) => areaTabs.includes(tab);
   const stagingTabFromUrl = (() => {
     const t = new URLSearchParams(urlSearch).get("stagingTab");
     return t && (STAGING_SUBTABS as readonly string[]).includes(t) ? t : "master-leads";
@@ -2226,34 +2265,36 @@ export default function LeadOpsCenter() {
   const [serperBannerDismissed, setSerperBannerDismissed] = useState(false);
 
   // ── Queries ────────────────────────────────────────────────────────────────
-  const statsQuery = useQuery<LeadOpsStats>({
+  // Heavy readers belong to the selected child only: they load on entry, refresh on explicit action,
+  // carry the cancellation signal and are keyed by actor. No background polling.
+  const onPipeline = activeTab === "pipeline";
+  const crmFetch = async (url: string, signal?: AbortSignal) => {
+    const r = await fetch(url, { credentials: "include", signal });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  };
+  const statsQuery = useCrmQuery<LeadOpsStats>({
     queryKey: ["/api/lead-ops/stats"],
-    queryFn: async () => {
-      const r = await fetch("/api/lead-ops/stats", { credentials: "include" });
-      if (!r.ok) throw new Error(await r.text());
-      return r.json();
-    },
-    refetchInterval: 30000,
+    queryFn: ({ signal }) => crmFetch("/api/lead-ops/stats", signal),
+    enabled: onPipeline,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
   });
 
-  const healthQuery = useQuery<LeadOpsHealth>({
+  const healthQuery = useCrmQuery<LeadOpsHealth>({
     queryKey: ["/api/lead-ops/health"],
-    queryFn: async () => {
-      const r = await fetch("/api/lead-ops/health", { credentials: "include" });
-      if (!r.ok) throw new Error(await r.text());
-      return r.json();
-    },
-    refetchInterval: 120000,
+    queryFn: ({ signal }) => crmFetch("/api/lead-ops/health", signal),
+    enabled: onPipeline,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
   });
 
-  const freeLaneHealthQuery = useQuery<any>({
+  const freeLaneHealthQuery = useCrmQuery<any>({
     queryKey: ["/api/lead-ops/enrichment-program-health"],
-    queryFn: async () => {
-      const r = await fetch("/api/lead-ops/enrichment-program-health", { credentials: "include" });
-      if (!r.ok) throw new Error(await r.text());
-      return r.json();
-    },
-    refetchInterval: 30_000,
+    queryFn: ({ signal }) => crmFetch("/api/lead-ops/enrichment-program-health", signal),
+    enabled: onPipeline,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
   });
 
   const configQuery = useQuery<LeadOpsConfig>({
@@ -2277,14 +2318,10 @@ export default function LeadOpsCenter() {
     ...(search ? { search } : {}),
   });
 
-  const entitiesQuery = useQuery<{ data: LeadEntity[]; total: number; page: number; limit: number }>({
+  const entitiesQuery = useCrmQuery<{ data: LeadEntity[]; total: number; page: number; limit: number }>({
     queryKey: ["/api/lead-ops/entities", page, filterStatus, filterScore, filterVertical, filterContactable, filterNoContact, filterTag, search],
-    queryFn: async () => {
-      const r = await fetch(`/api/lead-ops/entities?${entitiesParams}`, { credentials: "include" });
-      if (!r.ok) throw new Error(await r.text());
-      return r.json();
-    },
-    placeholderData: (prev) => prev,
+    queryFn: ({ signal }) => crmFetch(`/api/lead-ops/entities?${entitiesParams}`, signal),
+    enabled: onPipeline,
   });
 
   const entities = entitiesQuery.data?.data || [];
@@ -2297,25 +2334,19 @@ export default function LeadOpsCenter() {
     ...(inboundSourceClass !== "all" ? { sourceClass: inboundSourceClass } : {}),
     ...(inboundLifecycle !== "all" ? { lifecycleState: inboundLifecycle } : {}),
   });
-  const inboundRequestsQuery = useQuery<InboundRequest[]>({
+  const inboundRequestsQuery = useCrmQuery<InboundRequest[]>({
     queryKey: ["/api/lead-ops/inbound-requests", inboundPage, inboundSourceClass, inboundLifecycle],
-    queryFn: async () => {
-      const response = await fetch(`/api/lead-ops/inbound-requests?${inboundParams}`, { credentials: "include" });
-      if (!response.ok) throw new Error(await response.text());
-      return response.json();
-    },
-    placeholderData: (previous) => previous,
+    queryFn: ({ signal }) => crmFetch(`/api/lead-ops/inbound-requests?${inboundParams}`, signal),
+    enabled: onPipeline,
   });
   const inboundRequests = inboundRequestsQuery.data || [];
 
-  const stagingCountsQuery = useQuery<Record<string, number>>({
+  const stagingCountsQuery = useCrmQuery<Record<string, number>>({
     queryKey: ["/api/lead-ops/staging-counts"],
-    queryFn: async () => {
-      const r = await fetch("/api/lead-ops/staging-counts", { credentials: "include" });
-      if (!r.ok) throw new Error(await r.text());
-      return r.json();
-    },
-    refetchInterval: 30000,
+    queryFn: ({ signal }) => crmFetch("/api/lead-ops/staging-counts", signal),
+    enabled: activeTab === "staging",
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
   });
 
   // ── Mutations ──────────────────────────────────────────────────────────────
@@ -2500,49 +2531,67 @@ export default function LeadOpsCenter() {
         </div>
       </div>
 
+      {/* ── Five Prospecting areas; the leaf tabs below are the secondary selector for the current area ── */}
+      <CrmAreaNav
+        current={`/dashboard/lead-ops?tab=${AREA_ENTRY[prospectingAreaForTab(activeTab)]}`}
+        entries={prospectingAreas.map(area => ({
+          label: AREA_LABEL[area],
+          href: `/dashboard/lead-ops?tab=${AREA_ENTRY[area]}`,
+          allowed: true,
+        }))}
+      />
+
       {/* ── MI-08: Unified Lead Ops Workspace Tabs ───────────────────────────── */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
+        {/* inArea: leaf tabs shown for the active area. Hidden tabs stay valid compatibility URLs. */}
         <TabsList className="flex-wrap h-auto gap-1" aria-label="Lead Ops workspace tabs">
-          <TabsTrigger value="businesses" className="gap-1.5 min-h-[44px] text-sm">
+          <TabsTrigger value="businesses" className={inArea("businesses") ? "gap-1.5 min-h-[44px] text-sm" : "hidden"}>
             <Building2 className="h-4 w-4" aria-hidden /> Businesses
           </TabsTrigger>
-          <TabsTrigger value="prospects" className="gap-1.5 min-h-[44px] text-sm">
+          <TabsTrigger value="prospects" className={inArea("prospects") ? "gap-1.5 min-h-[44px] text-sm" : "hidden"}>
             <Layers className="h-4 w-4" aria-hidden /> Source Prospects
           </TabsTrigger>
-          <TabsTrigger value="imports" className="gap-1.5 min-h-[44px] text-sm">
+          <TabsTrigger value="imports" className={inArea("imports") ? "gap-1.5 min-h-[44px] text-sm" : "hidden"}>
             <GitBranch className="h-4 w-4" aria-hidden /> Imports
           </TabsTrigger>
-          <TabsTrigger value="staging" className="gap-1.5 min-h-[44px] text-sm">
+          <TabsTrigger value="staging" className={inArea("staging") ? "gap-1.5 min-h-[44px] text-sm" : "hidden"}>
             <GitBranch className="h-4 w-4" aria-hidden /> Staging &amp; Promotion
           </TabsTrigger>
-          <TabsTrigger value="sources" className="gap-1.5 min-h-[44px] text-sm">
+          <TabsTrigger value="sources" className={inArea("sources") ? "gap-1.5 min-h-[44px] text-sm" : "hidden"}>
             <Layers className="h-4 w-4" aria-hidden /> Sources
           </TabsTrigger>
-          <TabsTrigger value="census" className="gap-1.5 min-h-[44px] text-sm">
+          <TabsTrigger value="census" className={inArea("census") ? "gap-1.5 min-h-[44px] text-sm" : "hidden"}>
             <BarChart3 className="h-4 w-4" aria-hidden /> Census
           </TabsTrigger>
-          <TabsTrigger value="intelligence" className="gap-1.5 min-h-[44px] text-sm">
+          <TabsTrigger value="intelligence" className={inArea("intelligence") ? "gap-1.5 min-h-[44px] text-sm" : "hidden"}>
             <BarChart3 className="h-4 w-4" aria-hidden /> Intelligence
           </TabsTrigger>
-          <TabsTrigger value="quality" className="gap-1.5 min-h-[44px] text-sm">
+          <TabsTrigger value="quality" className={inArea("quality") ? "gap-1.5 min-h-[44px] text-sm" : "hidden"}>
             <HeartPulse className="h-4 w-4" aria-hidden /> Data Quality
           </TabsTrigger>
-          <TabsTrigger value="pipeline" className="gap-1.5 min-h-[44px] text-sm">
+          <TabsTrigger value="pipeline" className={inArea("pipeline") ? "gap-1.5 min-h-[44px] text-sm" : "hidden"}>
             <TrendingUp className="h-4 w-4" aria-hidden /> Inbound Operations
           </TabsTrigger>
-          <TabsTrigger value="sfp" className="gap-1.5 min-h-[44px] text-sm">
+          <TabsTrigger value="sfp" className={inArea("sfp") ? "gap-1.5 min-h-[44px] text-sm" : "hidden"}>
             <MapPin className="h-4 w-4" aria-hidden /> South Florida Prospecting
           </TabsTrigger>
-          <TabsTrigger value="provider-results" className="gap-1.5 min-h-[44px] text-sm">
+          <TabsTrigger value="provider-results" className={inArea("provider-results") ? "gap-1.5 min-h-[44px] text-sm" : "hidden"}>
             <Activity className="h-4 w-4" aria-hidden /> Provider Results
           </TabsTrigger>
-          <TabsTrigger value="pilot" className="gap-1.5 min-h-[44px] text-sm">
-            🧪 Paid Pilot (Legacy)
+          <TabsTrigger value="pilot" className={inArea("pilot") ? "gap-1.5 min-h-[44px] text-sm" : "hidden"}>
+            Pilot history (read-only)
           </TabsTrigger>
-          <TabsTrigger value="health" className="gap-1.5 min-h-[44px] text-sm">
+          <TabsTrigger value="health" className={inArea("health") ? "gap-1.5 min-h-[44px] text-sm" : "hidden"}>
             <HeartPulse className="h-4 w-4" aria-hidden /> Enrichment Program Health
           </TabsTrigger>
+          <TabsTrigger value="canonical" className={inArea("canonical") ? "gap-1.5 min-h-[44px] text-sm" : "hidden"}>
+            <GitBranch className="h-4 w-4" aria-hidden /> Canonical Enrichment
+          </TabsTrigger>
         </TabsList>
+
+        <TabsContent value="canonical" className="space-y-4">
+          <CanonicalEnrichment embedded />
+        </TabsContent>
 
         <TabsContent value="prospects" className="space-y-4">
           <Prospects />
@@ -2897,9 +2946,9 @@ export default function LeadOpsCenter() {
           ) : health ? (
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
               {[
-                { label: "Enriched Today",    metric: health.enrichedToday,    icon: CheckCircle, color: "text-green-600 dark:text-green-400" },
-                { label: "Emails Found Today", metric: health.emailsToday,     icon: Mail,        color: "text-blue-600 dark:text-blue-400" },
-                { label: "Phones Found Today", metric: health.phonesToday,     icon: Phone,       color: "text-indigo-600 dark:text-indigo-400" },
+                { label: "Source entities enriched today (raw Sunbiz)",    metric: health.enrichedToday,    icon: CheckCircle, color: "text-green-600 dark:text-green-400" },
+                { label: "Email results today (raw attempts/results)", metric: health.emailsToday,     icon: Mail,        color: "text-blue-600 dark:text-blue-400" },
+                { label: "Phone results today (raw attempts/results)", metric: health.phonesToday,     icon: Phone,       color: "text-indigo-600 dark:text-indigo-400" },
                 { label: "Queue Depth",        metric: health.queueDepth,      icon: Clock,       color: "text-yellow-600 dark:text-yellow-400" },
                 { label: "Success Rate",       metric: health.successRate,      icon: TrendingUp,  color: "text-emerald-600 dark:text-emerald-400" },
               ].map((s) => (
@@ -2917,7 +2966,7 @@ export default function LeadOpsCenter() {
               ))}
             </div>
           ) : (
-            <p className="text-sm text-muted-foreground">Could not load health data.</p>
+            <p className="text-sm text-destructive" role="alert">Health data could not be loaded. Counters are unknown, not zero.</p>
           )}
           {/* ── Worker-authority truth fields (MI-01) ───────────────────── */}
           {health && (
@@ -3504,6 +3553,10 @@ export default function LeadOpsCenter() {
 
         {/* ── MI-09: Pilot Status tab (legacy) ────────────────────────── */}
         <TabsContent value="pilot" className="space-y-4">
+          <p role="note" className="rounded-md border bg-muted/40 px-3 py-2 text-sm" data-testid="pilot-history-notice">
+            Retired paid-pilot ceremony, kept as read-only history under Program Health. Current reviewed processing and release operations are on the Enrichment area (Canonical Backlog).
+            A stale legacy heartbeat here does not show that incoming GHL sync is off.
+          </p>
           <PilotStatusPanel />
         </TabsContent>
 

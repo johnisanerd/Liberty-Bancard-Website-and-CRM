@@ -1,4 +1,4 @@
-import type { ReactNode, HTMLAttributes } from "react";
+import { useId, type ReactNode, type HTMLAttributes } from "react";
 import { Link } from "wouter";
 import DashboardErrorState from "@/components/DashboardErrorState";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -146,10 +146,11 @@ export function WorklistToolbar({ query, onQueryChange, onReset, filters, primar
   primaryAction?: ReactNode;
   className?: string;
 }) {
+  const searchId = useId();
   return (
     <div className={cn("flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-2", className)}>
-      <label className="sr-only" htmlFor="crm-worklist-search">Search records</label>
-      <input id="crm-worklist-search" type="search" value={query} onChange={(event) => onQueryChange(event.currentTarget.value)}
+      <label className="sr-only" htmlFor={searchId}>Search records</label>
+      <input id={searchId} type="search" value={query} onChange={(event) => onQueryChange(event.currentTarget.value)}
         placeholder="Search records" className="min-h-11 w-full rounded-md border bg-background px-3 text-sm sm:min-w-[240px] sm:flex-1" />
       {filters}
       <button type="button" onClick={onReset} className="min-h-11 rounded-md border px-3 text-sm">Reset filters</button>

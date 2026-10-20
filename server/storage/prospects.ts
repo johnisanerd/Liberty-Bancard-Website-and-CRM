@@ -98,6 +98,12 @@ import {
   leaderboardSettings, type LeaderboardSettings,
 } from "@shared/schema";
 import { eq, desc, and, lt, isNull, ne, sql, asc, gte, lte, inArray, or, ilike, count } from "drizzle-orm";
+export interface ProspectListFilters {
+  search?: string;
+  vertical?: string;
+  score?: string;
+  scoreSort?: "asc" | "desc";
+}
 import { coerceDateFields } from "../utils/date-coerce";
   import { type PaginationParams, type PaginatedResult, normalizePagination } from "./_shared";
 
@@ -164,12 +170,41 @@ import { coerceDateFields } from "../utils/date-coerce";
   }
 
 
-  async getProspects(listId?: number, params?: PaginationParams) {
+  async getProspects(listId?: number, params?: PaginationParams, filters?: ProspectListFilters) {
     const { limit, offset } = normalizePagination(params);
-    const condition = listId ? eq(prospects.listId, listId) : undefined;
+    const clauses = [] as ReturnType<typeof eq>[];
+    if (listId) clauses.push(eq(prospects.listId, listId));
+    if (filters?.vertical) clauses.push(eq(prospects.vertical, filters.vertical));
+    if (filters?.score) clauses.push(eq(prospects.score, filters.score));
+    if (filters?.search) {
+      // Escape LIKE wildcards so a typed % or _ is matched literally.
+      const term = `%${filters.search.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+      clauses.push(or(
+        ilike(prospects.companyName, term),
+        ilike(prospects.email, term),
+        ilike(prospects.ownerFirstName, term),
+        ilike(prospects.ownerLastName, term),
+        sql`(coalesce(${prospects.ownerFirstName}, '') || ' ' || coalesce(${prospects.ownerLastName}, '')) ilike ${term}`,
+      )!);
+    }
+    const condition = clauses.length ? and(...clauses) : undefined;
     const [totalResult] = await db.select({ count: count() }).from(prospects).where(condition);
-    const data = await db.select().from(prospects).where(condition).orderBy(desc(prospects.createdAt)).limit(limit).offset(offset);
+    const scoreRank = sql`(case ${prospects.score} when 'hot' then 3 when 'warm' then 2 when 'cold' then 1 else 0 end)`;
+    // The id tiebreaker keeps offset pages stable: no duplicate or skipped rows.
+    const order = filters?.scoreSort === "asc"
+      ? [asc(scoreRank), desc(prospects.createdAt), desc(prospects.id)]
+      : filters?.scoreSort === "desc"
+        ? [desc(scoreRank), desc(prospects.createdAt), desc(prospects.id)]
+        : [desc(prospects.createdAt), desc(prospects.id)];
+    const data = await db.select().from(prospects).where(condition).orderBy(...order).limit(limit).offset(offset);
     return { data, total: totalResult.count, limit, offset };
+  }
+
+  /** Distinct verticals over the whole table so the filter is not limited to the loaded page. */
+  async getProspectVerticals(listId?: number): Promise<string[]> {
+    const rows = await db.selectDistinct({ vertical: prospects.vertical }).from(prospects)
+      .where(listId ? eq(prospects.listId, listId) : undefined).orderBy(asc(prospects.vertical));
+    return rows.map((r) => r.vertical).filter((v): v is string => !!v);
   }
 
 

@@ -107,7 +107,12 @@ function FamilyCard({ family }: { family: BacklogFamily }) {
   );
 }
 
-function ProcessPanel({ isAdmin, last }: { isAdmin: boolean; last: CanonicalEnrichmentBacklog["lastPriorityRun"] }) {
+/** HTTP 4xx means the server rejected the request; anything else leaves the effect unconfirmed. */
+const definitivelyRejected = (error: unknown) => error instanceof Error && /^4\d\d:/.test(error.message);
+const auditNote = (result: any) => result?.audit === "failed"
+  ? " The change is committed, but its audit record could not be written; tell an administrator." : "";
+
+function ProcessPanel({ isAdmin, last, lastUnavailable = false }: { isAdmin: boolean; last: CanonicalEnrichmentBacklog["lastPriorityRun"]; lastUnavailable?: boolean }) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [scope, setScope] = useState<BacklogProcessRequest["scope"]>("local_only");
@@ -121,10 +126,19 @@ function ProcessPanel({ isAdmin, last }: { isAdmin: boolean; last: CanonicalEnri
     mutationFn: async () => (await apiRequest("POST", "/api/canonical-enrichment/backlog/process",
       { scope, maxRows, timeBudgetSeconds })).json() as Promise<BacklogProcessResponse>,
     onSuccess: (result) => {
-      toast({ title: result.alreadyQueued ? "Already requested" : "Queued", description: result.message });
+      toast({ title: result.alreadyQueued ? "Already requested" : "Queued", description: result.message + auditNote(result) });
       queryClient.invalidateQueries({ queryKey: ["/api/canonical-enrichment/backlog"] });
     },
-    onError: (error: Error) => toast({ title: "Nothing was started", description: error.message, variant: "destructive" }),
+    onError: (error: Error) => {
+      if (definitivelyRejected(error)) {
+        toast({ title: "Request rejected", description: error.message, variant: "destructive" });
+      } else {
+        // Unknown outcome: the pass may have been queued. The request is deduplicated per window.
+        toast({ title: "Request not confirmed", variant: "destructive",
+          description: "The pass may have been queued. Check the last requested pass below before repeating; repeating inside the same ten-minute window cannot queue it twice." });
+        queryClient.invalidateQueries({ queryKey: ["/api/canonical-enrichment/backlog"] });
+      }
+    },
   });
   return (
     <section className="rounded-xl border border-border/70 bg-card p-5" data-testid="backlog-process-panel">
@@ -173,6 +187,11 @@ function ProcessPanel({ isAdmin, last }: { isAdmin: boolean; last: CanonicalEnri
         {!isAdmin && <span className="text-sm text-muted-foreground">Only administrators can request a pass.</span>}
         {isAdmin && !valid && <span className="text-sm text-destructive">Enter whole numbers within the ranges shown.</span>}
       </div>
+      {lastUnavailable && (
+        <p role="alert" className="mt-4 text-sm text-destructive" data-testid="backlog-last-run-unavailable">
+          The last requested pass could not be read. That is unknown, not "no previous run".
+        </p>
+      )}
       {last && (
         <div className="mt-4 rounded-lg border border-border/60 bg-muted/30 p-3 text-sm" data-testid="backlog-last-run">
           <p className="font-medium">Last requested pass · finished {when(last.finishedAt)}</p>
@@ -241,13 +260,26 @@ function ReleasePanel() {
   const [limit, setLimit] = useState(10);
   const [hours, setHours] = useState(24);
   const [preview, setPreview] = useState<ReleasePreview | null>(null);
-  const { data: status, isLoading, isError } = useQuery<ReleaseStatus>({ queryKey: ["/api/canonical-enrichment/release"] });
+  const { data: status, isLoading, isError, error: statusError, refetch: refetchStatus, isFetching: statusFetching } = useQuery<ReleaseStatus>({
+    queryKey: ["/api/canonical-enrichment/release"], staleTime: 60_000, refetchOnWindowFocus: false,
+  });
+  const statusDenied = isError && statusError instanceof Error && /^40[13]\b/.test(statusError.message);
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ["/api/canonical-enrichment/release"] });
     queryClient.invalidateQueries({ queryKey: ["/api/canonical-enrichment/launch-inventory"] });
   };
-  const fail = (error: unknown) => toast({ title: "Release request failed", variant: "destructive",
-    description: error instanceof Error ? error.message : "Nothing was released." });
+  const fail = (error: unknown) => {
+    if (definitivelyRejected(error)) {
+      toast({ title: "Release request rejected", variant: "destructive",
+        description: error instanceof Error ? error.message : "The server rejected the request." });
+      return;
+    }
+    // Outcome unknown: it may have committed. Re-read the state; the preview and its request key are kept so a
+    // repeat replays the same release instead of starting another.
+    refresh();
+    toast({ title: "Release not confirmed", variant: "destructive",
+      description: "The request may have committed. Check the release status above. Repeating the same request is safe; it replays the same release." });
+  };
   const previewMutation = useMutation({
     mutationFn: async () => (await apiRequest("POST", "/api/canonical-enrichment/release/preview", { limit })).json() as Promise<ReleasePreview>,
     onSuccess: p => setPreview({ ...p, commandKey: crypto.randomUUID() }), onError: fail,
@@ -255,18 +287,18 @@ function ReleasePanel() {
   const executeMutation = useMutation({
     mutationFn: async () => (await apiRequest("POST", "/api/canonical-enrichment/release/execute",
       { limit, snapshotHash: preview!.snapshotHash, expiresInHours: hours }, { "Idempotency-Key": preview!.commandKey! })).json(),
-    onSuccess: () => { setPreview(null); refresh(); toast({ title: "Recipients released", description: "They are active but still need every send check, and the outbound pause is unchanged." }); },
+    onSuccess: (result: any) => { setPreview(null); refresh(); toast({ title: result?.replayed ? "Replayed: this release was already committed" : "Recipients released", description: "They are active inside paused sequences and still need every send check; the outbound pause is unchanged." + auditNote(result) }); },
     onError: fail,
   });
   const revokeMutation = useMutation({
     mutationFn: async () => (await apiRequest("POST", "/api/canonical-enrichment/release/revoke")).json(),
-    onSuccess: () => { refresh(); toast({ title: "Release revoked", description: "Unsent recipients returned to held; started journeys stopped where they are." }); },
+    onSuccess: (result: any) => { refresh(); toast({ title: "Release revoked", description: "Unsent recipients returned to held; started journeys stopped where they are." + auditNote(result) }); },
     onError: fail,
   });
   const resolveMutation = useMutation({
     mutationFn: async (v: { id: number; resolution: string }) =>
       (await apiRequest("POST", `/api/canonical-enrichment/release/enrollments/${v.id}/resolve`, { resolution: v.resolution })).json(),
-    onSuccess: () => { refresh(); toast({ title: "Hold resolved" }); }, onError: fail,
+    onSuccess: (result: any) => { refresh(); toast({ title: "Hold resolved", description: auditNote(result).trim() || undefined }); }, onError: fail,
   });
   const maxSize = status?.policy.maxRecipientsPerRelease ?? 1;
   const maxHours = status?.policy.maxAdmissionWindowHours ?? 72;
@@ -281,7 +313,27 @@ function ReleasePanel() {
         pause is lifted separately and each recipient passes the ordinary send checks.
       </p>
       {isLoading && <p className="mt-3 text-sm text-muted-foreground" data-testid="release-loading">Reading release state…</p>}
-      {isError && <p className="mt-3 text-sm text-destructive" data-testid="release-error">The release state could not be read. Nothing is shown as released.</p>}
+      {isError && (
+        <p role="alert" className="mt-3 text-sm text-destructive" data-testid={statusDenied ? "release-denied" : "release-error"}>
+          {statusDenied
+            ? "Your account is not permitted to read or change releases."
+            : "The release state could not be read. Nothing is shown as released, and release controls stay off until it loads."}
+          {!statusDenied && <Button className="ml-3" variant="outline" size="sm" onClick={() => void refetchStatus()} disabled={statusFetching}>Retry</Button>}
+        </p>
+      )}
+      {status && (() => {
+        // Exactly one authoritative state is named so expired, revoked and open are never confused.
+        const state = !latest ? "none" : latest.revokedAt ? "revoked" : status.admissionOpen ? "open"
+          : status.live ? "admission_closed" : "expired";
+        const copy = {
+          none: "No release has been made.",
+          open: `Release open: admission closes ${(latest?.admissionClosesAt ? when(latest?.admissionClosesAt) : "an unknown time")}.`,
+          admission_closed: `Admission window closed; journeys run until ${(latest?.journeyExpiresAt ? when(latest?.journeyExpiresAt) : "an unknown time")}. A new release is allowed.`,
+          expired: `Release expired: the journey period ended ${(latest?.journeyExpiresAt ? when(latest?.journeyExpiresAt) : "an unknown time")}. A new release is allowed.`,
+          revoked: `Release revoked ${(latest?.revokedAt ? when(latest?.revokedAt) : "an unknown time")}. Unsent recipients returned to held.`,
+        }[state];
+        return <p className="mt-3 text-sm font-medium" role="status" data-testid={`release-state-${state}`}>{copy}</p>;
+      })()}
       {status && (
         <>
           <dl className="mt-3 grid gap-x-6 gap-y-1 text-sm sm:grid-cols-2" data-testid="release-status">
@@ -342,14 +394,20 @@ function ReleasePanel() {
 }
 
 function LaunchInventory({ isAdmin }: { isAdmin: boolean }) {
-  const { data, isLoading, isError } = useQuery<SfpLaunchInventory>({
+  const { data, isLoading, isError, refetch, isFetching } = useQuery<SfpLaunchInventory>({
     queryKey: ["/api/canonical-enrichment/launch-inventory"],
-    refetchInterval: 10 * 60 * 1000,
+    // No background recount: the aggregate refreshes only on entry or an explicit refresh.
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
   });
   if (isLoading) return <div className="h-40 animate-pulse rounded-xl border border-border/60 bg-card" aria-busy="true" />;
   if (isError || !data) {
-    return <p className="rounded-xl border border-destructive/25 bg-card p-4 text-sm text-muted-foreground">
-      The launch inventory could not be read, so nothing is shown. Nothing has been inferred.</p>;
+    return <div>
+      <div role="alert" className="rounded-xl border border-destructive/25 bg-card p-4 text-sm text-muted-foreground" data-testid="launch-inventory-unavailable">
+        The launch inventory could not be read, so nothing is shown. Nothing has been inferred. Release state below is a separate read.
+        <Button className="ml-3" variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching}>Retry</Button></div>
+      {isAdmin && <ReleasePanel />}
+    </div>;
   }
   return (
     <section data-testid="launch-inventory">
@@ -357,6 +415,9 @@ function LaunchInventory({ isAdmin }: { isAdmin: boolean }) {
       <p className="mb-4 mt-1 max-w-3xl text-sm text-muted-foreground">
         Prepared recipients re-checked now against every launch requirement. A recipient that passes is not authorized to send;
         sending stays held until an operator releases it. Observed {when(data.observedAt)}.
+        <Button className="ml-3" variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching} data-testid="button-refresh-launch-inventory">
+          Refresh inventory
+        </Button>
       </p>
       <div className="grid gap-3 lg:grid-cols-2">
         <PopulationCard title="Ready, held" pop={data.readyHeld}
@@ -402,7 +463,9 @@ function LaunchInventory({ isAdmin }: { isAdmin: boolean }) {
 export function CanonicalBacklog({ isAdmin }: { isAdmin: boolean }) {
   const { data, isLoading, isError, error, refetch, isFetching } = useQuery<CanonicalEnrichmentBacklog>({
     queryKey: ["/api/canonical-enrichment/backlog"],
-    refetchInterval: 5 * 60 * 1000,
+    // No background recount: the aggregate refreshes only on entry or an explicit refresh.
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
   });
   if (isLoading) {
     return <div className="space-y-4" aria-busy="true" aria-label="Loading enrichment backlog">
@@ -411,21 +474,27 @@ export function CanonicalBacklog({ isAdmin }: { isAdmin: boolean }) {
     </div>;
   }
   if (isError || !data) {
-    return <section className="rounded-2xl border border-destructive/25 bg-card p-6">
-      <h2 className="font-semibold">The backlog could not be counted</h2>
-      <p className="mt-2 text-sm text-muted-foreground">
-        {error instanceof Error ? error.message : "The backlog service returned an error."} Nothing has been inferred.
-      </p>
-      <Button className="mt-4" onClick={() => refetch()} disabled={isFetching}>Retry</Button>
-    </section>;
+    // The backlog aggregate failed. Launch inventory, release and process are separate readers and stay visible.
+    return <div className="space-y-8" data-testid="canonical-backlog">
+      <section className="rounded-2xl border border-destructive/25 bg-card p-6" role="alert" data-testid="backlog-unavailable">
+        <h2 className="font-semibold">The backlog could not be counted</h2>
+        <p className="mt-2 text-sm text-muted-foreground">
+          {error instanceof Error ? error.message : "The backlog service returned an error."} Nothing has been inferred; the funnel and
+          family counts below are unavailable, not zero. The launch inventory, release and process controls are separate reads.
+        </p>
+        <Button className="mt-4" onClick={() => refetch()} disabled={isFetching}>Retry backlog</Button>
+      </section>
+      <LaunchInventory isAdmin={isAdmin} />
+      <ProcessPanel isAdmin={isAdmin} last={null} lastUnavailable />
+    </div>;
   }
   return (
     <div className="space-y-8" data-testid="canonical-backlog">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="max-w-3xl text-sm leading-6 text-muted-foreground">
-          Every record waits on exactly one next step. Counts are live record counts from the last {Math.round(data.maxAgeSeconds / 60)} minutes,
-          not guaranteed results, forecasts or provider charges.
-          {" "}Observed {when(data.observedAt)}.
+          Every record waits on exactly one next step. Counts are record counts read when the page opened or was last refreshed
+          (the server may serve a result up to {Math.round(data.maxAgeSeconds / 60)} minutes old); they are not guaranteed results,
+          forecasts or provider charges. Observed {when(data.observedAt)}. Nothing refreshes in the background.
         </p>
         <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching}>
           <RefreshCw className={`mr-2 h-3.5 w-3.5 ${isFetching ? "animate-spin" : ""}`} />Refresh
@@ -478,7 +547,7 @@ export function CanonicalBacklog({ isAdmin }: { isAdmin: boolean }) {
         </ol>
       </section>
 
-      <ProcessPanel isAdmin={isAdmin} last={data.lastPriorityRun ?? null} />
+      <ProcessPanel isAdmin={isAdmin} last={data.lastPriorityRun ?? null} lastUnavailable={!!data.lastPriorityRunUnavailable} />
 
       <section>
         <h2 className="text-xl font-semibold tracking-tight">By intake family</h2>

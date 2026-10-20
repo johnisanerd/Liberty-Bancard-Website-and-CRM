@@ -188,15 +188,36 @@ export function registerProspectsRoutes(app: Express) {
 
 
   // === PROSPECTS ===
+  // Server pagination: total is the filtered total across the whole table, and
+  // search/vertical/score/sort run in SQL so rows beyond one page are reachable.
+  const prospectListQuery = z.object({
+    listId: z.coerce.number().int().positive().optional(),
+    limit: z.coerce.number().int().min(1).max(100).optional(),
+    offset: z.coerce.number().int().min(0).max(10_000_000).optional(),
+    search: z.string().trim().max(200).optional(),
+    vertical: z.string().trim().min(1).max(200).optional(),
+    score: z.enum(["hot", "warm", "cold"]).optional(),
+    scoreSort: z.enum(["asc", "desc"]).optional(),
+  }).strict();
   app.get("/api/prospects", isDashboardUser, requireRole("admin", "manager"), async (req, res) => {
     try {
-      const listId = req.query.listId ? Number(req.query.listId) : undefined;
-      const limit = req.query.limit ? Number(req.query.limit) : undefined;
-      const offset = req.query.offset ? Number(req.query.offset) : undefined;
-      const result = await storage.getProspects(listId, { limit, offset });
+      const parsed = prospectListQuery.safeParse(req.query);
+      if (!parsed.success) return res.status(400).json({ message: `Invalid prospect query: ${parsed.error.errors[0].path.join(".")}` });
+      const { listId, limit, offset, search, vertical, score, scoreSort } = parsed.data;
+      const result = await storage.getProspects(listId, { limit, offset }, { search: search || undefined, vertical, score, scoreSort });
       res.json(result);
     } catch (err: any) {
       console.error("Get prospects error:", err.message);
+      serverError(res, err);
+    }
+  });
+
+  app.get("/api/prospects/verticals", isDashboardUser, requireRole("admin", "manager"), async (req, res) => {
+    try {
+      const listId = req.query.listId ? Number(req.query.listId) : undefined;
+      if (listId !== undefined && !Number.isSafeInteger(listId)) return res.status(400).json({ message: "Invalid listId" });
+      res.json({ verticals: await storage.getProspectVerticals(listId) });
+    } catch (err: any) {
       serverError(res, err);
     }
   });

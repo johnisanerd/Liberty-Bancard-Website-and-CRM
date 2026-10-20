@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Link } from "wouter";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link, useLocation, useSearch } from "wouter";
+import { buildCanonicalViewHref, canonicalViewState } from "@/lib/crm-destination-state";
 import { Helmet } from "react-helmet-async";
 import {
   Activity,
@@ -215,13 +216,25 @@ function CurrentSignal({
   );
 }
 
-export default function CanonicalEnrichment() {
-  const [activeView, setActiveView] = useState<ViewKey>("pipeline");
+/** `embedded` is presentation only: no second main landmark, H1 or page gutters, and the view is read from
+ * `canonicalView` (grouped host) instead of the standalone `view` compatibility parameter. The reader,
+ * permissions and commands are identical either way. */
+export default function CanonicalEnrichment({ embedded = false }: { embedded?: boolean }) {
+  const search = useSearch();
+  const [location, navigate] = useLocation();
+  const viewState = canonicalViewState(search, embedded);
+  const activeView: ViewKey = viewState.view;
+  const setActiveView = (next: ViewKey) => navigate(buildCanonicalViewHref(`${location}${search ? `?${search}` : ""}`, next, embedded));
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
+  const queryClient = useQueryClient();
   const { data, isLoading, isError, error, refetch, isFetching } =
     useQuery<CanonicalEnrichmentStatus>({
       queryKey: ["/api/canonical-enrichment/status"],
+      // The global status read belongs to the status views; Backlog has its own reader.
+      enabled: activeView !== "backlog",
+      staleTime: Infinity,
+      refetchOnWindowFocus: false,
     });
 
   const content = data ? (
@@ -285,7 +298,7 @@ export default function CanonicalEnrichment() {
             />
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               <StatTile label="Contacts" value={formatCount(data.contacts.total)} note={`${formatCount(data.contacts.valid)} valid · ${formatCount(data.contacts.unvalidated)} unvalidated · ${formatCount(data.contacts.blocked)} blocked`} icon={Users} />
-              <StatTile label="Businesses" value={formatCount(data.businesses.total)} note={`${formatCount(data.businesses.mapped)} mapped · ${formatCount(data.businesses.unresolved)} unresolved · ${formatCount(data.businesses.excluded)} excluded`} icon={Building2} />
+              <StatTile label="Businesses" value={formatCount(data.businesses.total)} note={`Vertical classification: ${formatCount(data.businesses.mapped)} classified · ${formatCount(data.businesses.unresolved)} unresolved · ${formatCount(data.businesses.excluded)} excluded from vertical scope. Not business-to-contact affiliation.`} icon={Building2} />
               <StatTile label={data.preparations.currentAvailable ? "Preparation history" : "Legacy preparation history"} value={formatCount(data.preparations.total)} note={data.preparations.currentAvailable ? "Historical preparation states; not enrollment or send success." : "Canonical preparation counts are unavailable until native fields install; only legacy history is shown."} icon={GitBranch} />
               <StatTile label="Import / provider history" value={`${formatCount(data.imports.total)} / ${formatCount(data.providers.total)}`} note="Historical import and provider state totals." icon={FileInput} />
             </div>
@@ -489,13 +502,13 @@ export default function CanonicalEnrichment() {
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <StatTile label="Blocked contacts" value={formatCount(data.contacts.blocked)} note="Observed blocked contact count." icon={XCircle} />
             <StatTile label="Unvalidated contacts" value={formatCount(data.contacts.unvalidated)} note="Validation state is not a send decision." icon={Clock3} />
-            <StatTile label="Unresolved businesses" value={formatCount(data.businesses.unresolved)} note="Canonical relationship still needs evidence review." icon={AlertTriangle} />
-            <StatTile label="Excluded businesses" value={formatCount(data.businesses.excluded)} note="Retained as a distinct reported status." icon={CircleHelp} />
+            <StatTile label="Vertical unresolved" value={formatCount(data.businesses.unresolved)} note="Businesses whose vertical is not yet classified. This is not a relationship or affiliation count." icon={AlertTriangle} />
+            <StatTile label="Excluded from vertical scope" value={formatCount(data.businesses.excluded)} note="Classified outside the target verticals; retained as a distinct status." icon={CircleHelp} />
           </div>
           <div className="mt-5 grid gap-3 md:grid-cols-2">
             <NavCard href="/dashboard/blocked-contacts" title="Blocked Contacts" description="Open the existing blocked-contact investigation view." label="Contact exceptions" icon={XCircle} />
-            <NavCard href="/dashboard/lead-ops?tab=quality" title="Lead Ops · Quality" description="Review unresolved, conflicting, or incomplete business evidence." label="Business exceptions" icon={AlertTriangle} />
-            <NavCard href="/dashboard/lead-ops?tab=businesses" title="Business identity" description="Trace business mapping and inspect recorded source evidence." label="Association evidence" icon={Building2} />
+            <NavCard href="/dashboard/lead-ops?tab=quality" title="Lead Ops · Quality" description="Review unresolved vertical classification and conflicting or incomplete business evidence." label="Business exceptions" icon={AlertTriangle} />
+            <NavCard href="/dashboard/lead-ops?tab=businesses" title="Business inventory" description="Open canonical businesses; verified business-to-contact links are shown on each business." label="Business identity" icon={Building2} />
             <NavCard href="/dashboard/data-health" title="Data Health" description="Open existing data health checks and their supporting details." label="Record health" icon={HeartPulse} />
           </div>
         </div>
@@ -565,34 +578,52 @@ export default function CanonicalEnrichment() {
     </>
   ) : null;
 
+  const Shell = embedded ? "div" : "main";
+  const Title = embedded ? "h2" : "h1";
   return (
-    <main className="min-h-[100dvh] bg-background px-4 py-6 text-foreground sm:px-6 lg:px-8">
-      <Helmet>
-        <title>Canonical Enrichment | Liberty Bancard</title>
-        <meta name="description" content="Review canonical record, import, exception, and system evidence." />
-      </Helmet>
-      <div className="mx-auto max-w-7xl">
+    <Shell className={embedded ? "text-foreground" : "min-h-[100dvh] bg-background px-4 py-6 text-foreground sm:px-6 lg:px-8"} data-testid="canonical-enrichment">
+      {!embedded && (
+        <Helmet>
+          <title>Canonical Enrichment | Liberty Bancard</title>
+          <meta name="description" content="Review canonical record, import, exception, and system evidence." />
+        </Helmet>
+      )}
+      <div className={embedded ? "" : "mx-auto max-w-7xl"}>
+        {viewState.issues.length > 0 && (
+          <p role="status" className="mb-3 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm" data-testid="canonical-view-issue">
+            {viewState.issues[0].reason}
+          </p>
+        )}
         <header className="mb-6 overflow-hidden rounded-2xl border border-border/70 bg-card">
-          <div className="border-b border-border/70 bg-gradient-to-r from-primary/[0.09] via-transparent to-primary/[0.035] px-5 py-6 sm:px-7">
+          <div className="border-b border-border/70 px-5 py-6 sm:px-7">
             <div className="flex flex-wrap items-start justify-between gap-5">
               <div className="max-w-3xl">
                 <div className="mb-3 flex items-center gap-2">
                   <span className="rounded-md bg-primary/10 p-1.5 text-primary"><GitBranch className="h-4 w-4" /></span>
                   <span className="text-xs font-bold uppercase tracking-[0.17em] text-primary">Liberty Bancard · Record intelligence</span>
                 </div>
-                <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Canonical Enrichment</h1>
+                <Title className="text-2xl font-semibold tracking-tight">Canonical Enrichment</Title>
                 <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground sm:text-base">
                   One place to orient across merchant records, source evidence, and exceptions—without blending discovery, validation, enrollment, or sending.
                 </p>
               </div>
               <div className="flex flex-col items-start gap-2 sm:items-end">
-                <Badge variant="outline" className="border-primary/25 bg-background/70 px-2.5 py-1 text-primary">Read-only status view</Badge>
+                <Badge variant="outline" className="border-primary/25 bg-background/70 px-2.5 py-1 text-primary">{activeView === "backlog" ? "Backlog: status plus privileged commands" : "Read-only status view"}</Badge>
                 <span className="text-xs text-muted-foreground">
-                  {data ? `Observed ${formatDate(data.observedAt)}` : "Awaiting current status"}
+                  {activeView === "backlog"
+                    ? "Backlog shows its own observation time"
+                    : data ? `Observed ${formatDate(data.observedAt)}` : "Awaiting current status"}
                 </span>
-                <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching}>
+                <Button variant="outline" size="sm" disabled={isFetching}
+                  onClick={() => {
+                    // Refresh the reader that is visible.
+                    if (activeView === "backlog") {
+                      void queryClient.invalidateQueries({ queryKey: ["/api/canonical-enrichment/backlog"] });
+                      void queryClient.invalidateQueries({ queryKey: ["/api/canonical-enrichment/launch-inventory"] });
+                    } else refetch();
+                  }}>
                   <RefreshCw className={`mr-2 h-3.5 w-3.5 ${isFetching ? "animate-spin" : ""}`} />
-                  Refresh status
+                  {activeView === "backlog" ? "Refresh backlog" : "Refresh status"}
                 </Button>
               </div>
             </div>
@@ -680,6 +711,6 @@ export default function CanonicalEnrichment() {
           </footer>
         )}
       </div>
-    </main>
+    </Shell>
   );
 }

@@ -5,7 +5,7 @@ import {
   liveChats, liveChatMessages,
   type LiveChat, type InsertLiveChat, type LiveChatMessage, type InsertLiveChatMessage,
   contacts, companies, deals, tickets, tasks, documents, auditLogs, notifications, workflowRuns, workflows, rfis, users,
-  chargebacks,
+  chargebacks, OPEN_SALES_LEAD_STAGES,
   type Chargeback, type InsertChargeback, type UpdateChargebackRequest,
   messageTemplates, collateralPackets, ghlActivityLog, slaConfigs,
   prospects, prospectLists, enrichmentJobs, campaigns, campaignSteps, outboundMessages, notes,
@@ -569,10 +569,13 @@ import { eq, desc, and, lt, isNull, ne, sql, asc, gte, lte, inArray, or, ilike, 
   }
 
 
-  async getDealAggregateStats(): Promise<{ total: number; fromSunbiz: number; newLead: number; contacted: number; qualified: number; won: number }> {
+  async getDealAggregateStats(): Promise<{ total: number; openSalesProduction: number; fromSunbiz: number; newLead: number; contacted: number; qualified: number; won: number }> {
+    const openStages = sql.join(OPEN_SALES_LEAD_STAGES.map((stage) => sql`${stage}`), sql`, `);
     const result = await db.execute(sql`
       SELECT
         COUNT(*)::int as total,
+        -- Same definition as the conversion deal authority: unarchived production sales deals in an open stage.
+        COUNT(*) FILTER (WHERE pipeline = 'sales' AND record_class = 'production' AND stage IN (${openStages}))::int as open_sales_production,
         COUNT(*) FILTER (WHERE lead_source = 'sunbiz_enrichment' OR notes LIKE '%Sunbiz%')::int as from_sunbiz,
         COUNT(*) FILTER (WHERE stage = 'New Lead')::int as new_lead,
         COUNT(*) FILTER (WHERE stage = 'Contacted')::int as contacted,
@@ -581,7 +584,7 @@ import { eq, desc, and, lt, isNull, ne, sql, asc, gte, lte, inArray, or, ilike, 
       FROM deals WHERE archived_at IS NULL
     `);
     const row = ((result as any).rows || [])[0] || {};
-    return { total: Number(row.total) || 0, fromSunbiz: Number(row.from_sunbiz) || 0, newLead: Number(row.new_lead) || 0, contacted: Number(row.contacted) || 0, qualified: Number(row.qualified) || 0, won: Number(row.won) || 0 };
+    return { total: Number(row.total) || 0, openSalesProduction: Number(row.open_sales_production) || 0, fromSunbiz: Number(row.from_sunbiz) || 0, newLead: Number(row.new_lead) || 0, contacted: Number(row.contacted) || 0, qualified: Number(row.qualified) || 0, won: Number(row.won) || 0 };
   }
 
 

@@ -168,3 +168,5 @@
 - [Release-only runner & launch content](release-only-runner-and-launch-content.md) — SMTP-only deferral, empty-sequence guard, fake-SMTP disposable cert fixture requirements.
 - [SFP canonical release authority](sfp-canonical-release-authority.md) — capped admin release of held recipients; sender identity has no status column; county_fips empty in prod.
 - [Stale-package refresh & seed boundary](sfp-stale-package-refresh-and-seed-boundary.md) — cursors miss stale packages; lazy policy bounds preview; real-path seed send needs a design decision.
+- [Disposable runner roster](disposable-runner-roster.md) — register certs in CERTIFICATION_FIXTURE_SUITES to run them on a disposable DB; restarts kill background runs.
+- [Private browser suite pitfalls](private-browser-suite-pitfalls.md) — rebuild before browser suites (identity covers scripts/); narrow viewports need prefer_desktop; wait on test IDs.

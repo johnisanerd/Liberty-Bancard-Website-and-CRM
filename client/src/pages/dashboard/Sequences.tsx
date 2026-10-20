@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/use-auth";
 import {useRetainedLocalIntent} from "@/hooks/use-retained-local-intent";
@@ -68,7 +68,8 @@ type SequenceBucket =
   | "nurture_followup"
   | "vertical_specific"
   | "transactional_operational"
-  | "uncategorized";
+  | "uncategorized"
+  | "unknown";
 
 const BUCKET_ORDER: SequenceBucket[] = [
   "cold_outreach",
@@ -77,6 +78,7 @@ const BUCKET_ORDER: SequenceBucket[] = [
   "vertical_specific",
   "transactional_operational",
   "uncategorized",
+  "unknown",
 ];
 
 const BUCKET_LABELS: Record<SequenceBucket, string> = {
@@ -86,6 +88,7 @@ const BUCKET_LABELS: Record<SequenceBucket, string> = {
   vertical_specific: "Vertical-Specific",
   transactional_operational: "Transactional / Operational",
   uncategorized: "Uncategorized",
+  unknown: "Grouping unavailable",
 };
 
 type WiringStatus = "connected" | "missing" | "invalid_stale" | "not_applicable";
@@ -189,9 +192,12 @@ export default function Sequences() {
   });
   const sequences = Array.isArray(sequencesRaw) ? sequencesRaw : [];
 
-  const { data: groupingMetaRaw } = useQuery<any[]>({
+  // Admin-only endpoint: a denied or failed read means the grouping is unknown,
+  // not that every sequence is uncategorized.
+  const { data: groupingMetaRaw, isError: groupingMetaError, error: groupingMetaErrorObj } = useQuery<any[]>({
     queryKey: ["/api/sequences/grouping-meta"],
   });
+  const groupingMetaDenied = groupingMetaError && /^(401|403):/.test(String((groupingMetaErrorObj as Error)?.message ?? ""));
   const groupingMetaById = new Map<number, { bucket: SequenceBucket; wiring: { status: WiringStatus; workflowId: string | null } }>(
     (Array.isArray(groupingMetaRaw) ? groupingMetaRaw : []).map((m: any) => [m.id, { bucket: m.bucket, wiring: m.wiring }])
   );
@@ -210,26 +216,40 @@ export default function Sequences() {
   });
   const contacts = Array.isArray(contactsRes?.data) ? contactsRes.data : [];
 
+  // A sequence row may be committed before every step is. The created ID is
+  // retained so a retry reads the persisted steps back and posts only the
+  // missing ones instead of creating a duplicate sequence.
+  const [partialCreate, setPartialCreate] = useState<{ id: number; name: string } | null>(null);
+  const createdSequenceRef = useRef(false);
+
   const createMutation = useMutation({
     mutationFn: async () => {
-      const seqRes = await apiRequest("POST", "/api/sequences", {
-        name: form.name,
-        description: form.description,
-        triggerType: form.triggerType,
-        status: form.status,
-        totalSteps: steps.length,
-      });
-      const seq = await seqRes.json();
+      // The server owns the initial paused status and the step count.
+      let seq: { id: number; name: string } | null = partialCreate;
+      if (!seq) {
+        const seqRes = await apiRequest("POST", "/api/sequences", {
+          name: form.name,
+          description: form.description,
+          triggerType: form.triggerType,
+        });
+        seq = await seqRes.json();
+        createdSequenceRef.current = true;
+        setPartialCreate({ id: seq!.id, name: seq!.name ?? form.name });
+      }
+      const persistedRes = await apiRequest("GET", `/api/sequences/${seq!.id}/steps`);
+      const persisted: any[] = await persistedRes.json();
+      const persistedOrders = new Set(persisted.map((row) => row.stepOrder));
       for (let i = 0; i < steps.length; i++) {
+        if (persistedOrders.has(i + 1)) continue;
         const s = steps[i];
-        await apiRequest("POST", `/api/sequences/${seq.id}/steps`, {
+        await apiRequest("POST", `/api/sequences/${seq!.id}/steps`, {
           stepOrder: i + 1,
           actionType: s.actionType,
           delayDays: s.delayDays,
           delayHours: s.delayHours,
           subject: s.subject || null,
           body: s.body || null,
-          config: s.config || null,
+          config: s.config ?? null,
           variantBSubject: s.variantBEnabled ? (s.variantBSubject || null) : null,
           variantBBody: s.variantBEnabled ? (s.variantBBody || null) : null,
           abTestConfig: s.variantBEnabled
@@ -241,13 +261,22 @@ export default function Sequences() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/sequences"] });
+      createdSequenceRef.current = false;
+      setPartialCreate(null);
       setShowCreate(false);
       setForm({ name: "", description: "", triggerType: "manual", status: "active" });
       setSteps([]);
-      toast({ title: "Drip sequence created" });
+      toast({ title: "Drip sequence created", description: "It starts paused. Activation is a separate step." });
     },
     onError: (err: Error) => {
-      toast({ title: "Failed to create sequence", description: err.message, variant: "destructive" });
+      queryClient.invalidateQueries({ queryKey: ["/api/sequences"] });
+      toast({
+        title: partialCreate || createdSequenceRef.current
+          ? "Sequence created but not all steps were saved"
+          : "Failed to create sequence",
+        description: `${err.message} Retry to save the remaining steps; no duplicate sequence will be created.`,
+        variant: "destructive",
+      });
     },
   });
 
@@ -387,8 +416,9 @@ export default function Sequences() {
   const editMutation = useMutation({
     mutationFn: async () => {
       if (!editingSeq) return;
+      if (editHydrationError) throw new Error("Existing steps did not load. Reload them before saving.");
       const editorSteps=steps.map((s,index)=>({
-        id:originalStepIds[index],stepOrder:index+1,actionType:s.actionType,delayDays:s.delayDays,delayHours:s.delayHours,
+        ...(s.id?{id:s.id}:{}),stepOrder:index+1,actionType:s.actionType,delayDays:s.delayDays,delayHours:s.delayHours,
         subject:s.subject || null,body:s.body || null,config:s.config || null,
         variantBSubject:s.variantBEnabled?(s.variantBSubject || null):null,
         variantBBody:s.variantBEnabled?(s.variantBBody || null):null,
@@ -399,7 +429,6 @@ export default function Sequences() {
         name: form.name,
         description: form.description,
         triggerType: form.triggerType,
-        totalSteps: steps.length,
         steps:editorSteps,
       }));
       sequenceIntents.accepted(`edit:${editingSeq.id}`);
@@ -418,18 +447,14 @@ export default function Sequences() {
     },
   });
 
-  const openEditDialog = async (seq: any) => {
+  const [editHydrationError, setEditHydrationError] = useState<string | null>(null);
+
+  const hydrateEditSteps = async (seq: any) => {
     setEditLoadingSteps(true);
-    setEditingSeq(seq);
-    setForm({
-      name: seq.name,
-      description: seq.description || "",
-      triggerType: seq.triggerType || "manual",
-      status: seq.status,
-    });
+    setEditHydrationError(null);
     try {
-      const res = await fetch(`/api/sequences/${seq.id}/steps`, { credentials: "include" });
-      const existingSteps: any[] = res.ok ? await res.json() : [];
+      const res = await apiRequest("GET", `/api/sequences/${seq.id}/steps`);
+      const existingSteps: any[] = await res.json();
       setOriginalStepIds(existingSteps.map((s: any) => s.id));
       setSteps(existingSteps.map((s: any) => ({
         id: s.id,
@@ -439,17 +464,38 @@ export default function Sequences() {
         delayHours: s.delayHours,
         subject: s.subject || "",
         body: s.body || "",
+        // Advanced step configuration is retained so a later save cannot clear it.
+        config: s.config ?? null,
         variantBEnabled: !!(s.variantBBody || s.variantBSubject),
         variantBSubject: s.variantBSubject || "",
         variantBBody: s.variantBBody || "",
         abTestConfig: s.abTestConfig || { splitRatio: 50, minSampleSize: 100, winnerCriteria: "open_rate" },
       })));
+    } catch (err) {
+      // A failed read must not become an empty step list that a save would persist.
+      setSteps([]);
+      setOriginalStepIds([]);
+      setEditHydrationError(err instanceof Error ? err.message : "Existing steps could not be loaded.");
     } finally {
       setEditLoadingSteps(false);
     }
   };
 
+  const openEditDialog = async (seq: any) => {
+    setEditingSeq(seq);
+    setForm({
+      name: seq.name,
+      description: seq.description || "",
+      triggerType: seq.triggerType || "manual",
+      status: seq.status,
+    });
+    await hydrateEditSteps(seq);
+  };
+
   const closeDialog = () => {
+    setEditHydrationError(null);
+    setPartialCreate(null);
+    createdSequenceRef.current = false;
     setShowCreate(false);
     setEditingSeq(null);
     setOriginalStepIds([]);
@@ -604,6 +650,13 @@ export default function Sequences() {
         </Card>
       ) : (
         <>
+          {groupingMetaError && (
+            <p role="status" className="text-sm text-muted-foreground" data-testid="grouping-meta-unavailable">
+              {groupingMetaDenied
+                ? "Grouping and wiring metadata is administrator-only for your role; groups and wiring are unknown, not uncategorized."
+                : "Grouping and wiring metadata could not be loaded; groups and wiring are unknown, not uncategorized."}
+            </p>
+          )}
           <Card data-testid="card-sequence-filters">
             <CardContent className="pt-4 pb-4">
               <div className="flex items-center gap-2 mb-3 text-sm font-medium text-muted-foreground">
@@ -656,8 +709,8 @@ export default function Sequences() {
           {(() => {
             const enriched = sequences.map((seq: any) => {
               const meta = groupingMetaById.get(seq.id);
-              const bucket: SequenceBucket = meta?.bucket || "uncategorized";
-              const wiring = meta?.wiring || { status: "missing" as WiringStatus, workflowId: null };
+              const bucket: SequenceBucket = meta?.bucket || (groupingMetaError ? "unknown" : "uncategorized");
+              const wiring = meta?.wiring || { status: (groupingMetaError ? "not_applicable" : "missing") as WiringStatus, workflowId: null };
               return { seq, bucket, wiring };
             });
             const filtered = enriched.filter(({ seq, bucket, wiring }) => {
@@ -894,7 +947,20 @@ export default function Sequences() {
               <span className="ml-2 text-sm text-muted-foreground">Loading steps…</span>
             </div>
           )}
-          {(!isEditMode || !editLoadingSteps) && <div className="space-y-6">
+          {isEditMode && !editLoadingSteps && editHydrationError && (
+            <div role="alert" className="rounded-md border border-destructive p-4 text-sm" data-testid="sequence-hydration-error">
+              <p className="font-medium">Existing steps could not be loaded.</p>
+              <p className="text-muted-foreground">{editHydrationError} Saving is blocked so the sequence is not overwritten with an empty step list.</p>
+              <Button className="mt-3" variant="outline" onClick={() => editingSeq && hydrateEditSteps(editingSeq)} data-testid="button-retry-hydration">Reload steps</Button>
+            </div>
+          )}
+          {!isEditMode && partialCreate && (
+            <div role="status" className="rounded-md border p-4 text-sm" data-testid="sequence-partial-create">
+              Sequence "{partialCreate.name}" (ID {partialCreate.id}) was created paused, but some steps were not confirmed saved.
+              Create Sequence will read its steps back and save only the missing ones; it will not create a second sequence.
+            </div>
+          )}
+          {(!isEditMode || (!editLoadingSteps && !editHydrationError)) && <div className="space-y-6">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>Sequence Name</Label>
@@ -978,7 +1044,9 @@ export default function Sequences() {
                           <Button
                             size="icon"
                             variant="ghost"
-                            aria-label="Remove step"
+                            aria-label={step.id ? "Saved steps cannot be removed" : "Remove step"}
+                            disabled={!!step.id}
+                            title={step.id ? "Saved steps cannot be removed: step history is retained. Edit the step or retire the sequence." : undefined}
                             onClick={() => removeStep(index)}
                             data-testid={`button-remove-step-${index}`}
                           >
@@ -1542,11 +1610,10 @@ export default function Sequences() {
 }
 
 function TierBreakdown({ seqId, eligibleTiers }: { seqId: number; eligibleTiers: string[] }) {
-  const { data, isLoading } = useQuery<{ consentTier: string; count: number }[]>({
+  const { data, isLoading, isError, refetch } = useQuery<{ consentTier: string; count: number }[]>({
     queryKey: ["/api/sequences", seqId, "enrollments", "by-tier"],
-    queryFn: async () => {
-      const res = await fetch(`/api/sequences/${seqId}/enrollments/by-tier`, { credentials: "include" });
-      if (!res.ok) return [];
+    queryFn: async ({ signal }) => {
+      const res = await apiRequest("GET", `/api/sequences/${seqId}/enrollments/by-tier`, undefined, undefined, signal);
       return res.json();
     },
   });
@@ -1556,6 +1623,15 @@ function TierBreakdown({ seqId, eligibleTiers }: { seqId: number; eligibleTiers:
       <div className="mt-2 space-y-1.5" data-testid={`tier-breakdown-loading-${seqId}`}>
         <Skeleton className="h-4 w-32" />
         <Skeleton className="h-4 w-32" />
+      </div>
+    );
+  }
+
+  if (isError) {
+    return (
+      <div role="alert" className="mt-2 border rounded-md px-3 py-2 text-xs" data-testid={`tier-breakdown-error-${seqId}`}>
+        Tier breakdown unavailable. This is not a zero count.
+        <Button size="sm" variant="outline" className="ml-2" onClick={() => refetch()}>Retry</Button>
       </div>
     );
   }
@@ -1593,11 +1669,10 @@ function TierBreakdown({ seqId, eligibleTiers }: { seqId: number; eligibleTiers:
 }
 
 function SequenceStepsView({ sequenceId, enrollments }: { sequenceId: number; enrollments: any[] }) {
-  const { data: steps, isLoading } = useQuery<any[]>({
+  const { data: steps, isLoading, isError: stepsError, refetch: refetchSteps } = useQuery<any[]>({
     queryKey: ["/api/sequences", sequenceId, "steps"],
-    queryFn: async () => {
-      const res = await fetch(`/api/sequences/${sequenceId}/steps`, { credentials: "include" });
-      if (!res.ok) return [];
+    queryFn: async ({ signal }) => {
+      const res = await apiRequest("GET", `/api/sequences/${sequenceId}/steps`, undefined, undefined, signal);
       return res.json();
     },
   });
@@ -1627,7 +1702,12 @@ function SequenceStepsView({ sequenceId, enrollments }: { sequenceId: number; en
 
       <div>
         <h4 className="text-sm font-semibold mb-2">Steps Timeline</h4>
-        {(!steps || steps.length === 0) ? (
+        {stepsError ? (
+          <div role="alert" className="text-sm" data-testid={`steps-error-${sequenceId}`}>
+            Steps could not be loaded. This is not an empty sequence.
+            <Button size="sm" variant="outline" className="ml-2" onClick={() => refetchSteps()}>Retry</Button>
+          </div>
+        ) : (!steps || steps.length === 0) ? (
           <p className="text-sm text-muted-foreground">No steps configured</p>
         ) : (
           <div className="space-y-1">

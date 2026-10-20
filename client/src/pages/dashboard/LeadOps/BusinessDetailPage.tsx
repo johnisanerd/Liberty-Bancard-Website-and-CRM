@@ -180,7 +180,7 @@ export function BusinessDetailPage() {
     mutationFn: () =>
       apiRequest("POST", `/api/lead-ops/businesses/${businessId}/enrich-free`),
     onSuccess: () => {
-      toast({ title: "Enrichment triggered", description: "Free enrichment queued for this business." });
+      toast({ title: "Generic free enrichment requested", description: "The request was accepted for the shared free-enrichment queue. It does not run the specific provider operations listed in the plan, and acceptance is not completion." });
       queryClient.invalidateQueries({ queryKey: [`/api/lead-ops/businesses/${businessId}`] });
     },
     onError: (e: any) => {
@@ -192,7 +192,7 @@ export function BusinessDetailPage() {
     mutationFn: () =>
       apiRequest("POST", `/api/lead-ops/businesses/${businessId}/approve-catch-all`),
     onSuccess: () => {
-      toast({ title: "Catch-all approved", description: "Outreach approved for catch-all email." });
+      toast({ title: "Catch-all email approved", description: "This records an approval only. It does not dispatch anything; sending still needs every send check and the outbound pause applies." });
       queryClient.invalidateQueries({ queryKey: [`/api/lead-ops/businesses/${businessId}`] });
     },
     onError: (e: any) => {
@@ -224,11 +224,15 @@ export function BusinessDetailPage() {
           variant="ghost"
           size="sm"
           className="gap-1.5 text-muted-foreground"
-          onClick={() => navigate("/dashboard/lead-ops")}
-          aria-label="Back to Lead Ops Center"
+          onClick={() => {
+            // Return to the list the user came from, with its filters; fall back to the inventory.
+            if (window.history.length > 1) window.history.back();
+            else navigate("/dashboard/lead-ops?tab=businesses");
+          }}
+          aria-label="Back to the previous list"
         >
           <ChevronLeft className="h-4 w-4" />
-          Lead Ops
+          Back
         </Button>
 
         <div className="h-4 w-px bg-border" />
@@ -297,10 +301,8 @@ export function BusinessDetailPage() {
         )}
 
         {b && d && (
-          <div className="grid md:grid-cols-2 gap-6">
-
-            {/* ── LEFT COLUMN ── */}
-
+          <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_320px]" data-testid="business-detail-layout">
+            <div className="grid min-w-0 gap-6 md:grid-cols-2 xl:grid-cols-1" data-testid="business-detail-main">
             {/* 1. Provenance */}
             <Card>
               <CardHeader className="pb-2 pt-4 px-4">
@@ -421,6 +423,72 @@ export function BusinessDetailPage() {
               </CardContent>
             </Card>
 
+            {/* 5. Next Provider Plan — actionable */}
+            <Card>
+              <CardHeader className="pb-2 pt-4 px-4">
+                <SectionHeader icon={Zap} title="5 · Next Provider Plan" />
+              </CardHeader>
+              <CardContent className="px-4 pb-4">
+                {routingQuery.isLoading ? (
+                  <Skeleton className="h-20 w-full" />
+                ) : routingQuery.isError ? (
+                  <p className="text-sm text-red-500">Could not load routing plan</p>
+                ) : routingQuery.data?.routePlan.recipes.length === 0 ? (
+                  <div className="rounded-lg bg-green-50 border border-green-200 px-3 py-3 text-sm text-green-800">
+                    <div className="font-medium">No provider required</div>
+                    <p className="text-xs mt-1 text-green-700">
+                      Existing evidence is sufficient.{" "}
+                      {routingQuery.data.routePlan.stopReasons.join(", ")}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {routingQuery.data?.routePlan.recipes.map((r, i) => (
+                      <div
+                        key={i}
+                        className="flex items-center justify-between gap-2 rounded-lg border bg-muted/10 px-3 py-2.5"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <ArrowRight className="h-3.5 w-3.5 text-blue-500 shrink-0" />
+                          <div className="min-w-0">
+                            <div className="text-sm font-medium capitalize">{r.provider}</div>
+                            <div className="text-xs text-muted-foreground">{r.operation.replace(/_/g, " ")}</div>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          {r.requiresPaidEligibility && (
+                            <Badge variant="outline" className="text-[10px] px-1.5 h-5 text-amber-600 border-amber-300">
+                              paid
+                            </Badge>
+                          )}
+                          {!r.requiresPaidEligibility && (
+                            <Badge variant="outline" className="text-[10px] px-1.5 h-5">diagnostic only</Badge>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                    <div className="pt-2">
+                      <p className="mb-2 text-xs text-muted-foreground">
+                        The rows above describe the planned provider operations and are read-only. The button below requests the
+                        shared generic free-enrichment queue for this business; it does not run a listed operation or any paid provider.
+                      </p>
+                      <Button size="sm" variant="outline" className="h-8 text-xs gap-1"
+                        onClick={() => enrichMutation.mutate()} disabled={enrichMutation.isPending}
+                        data-testid="button-generic-free-enrichment">
+                        <Play className="h-3 w-3" />
+                        Request generic free enrichment
+                      </Button>
+                    </div>
+                    {(routingQuery.data?.routePlan.stopReasons?.length ?? 0) > 0 && (
+                      <p className="text-xs text-muted-foreground pt-1">
+                        Stop reason: {routingQuery.data?.routePlan.stopReasons.join(", ")}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
             {/* 7. Duplicate Check */}
             <Card>
               <CardHeader className="pb-2 pt-4 px-4">
@@ -504,134 +572,8 @@ export function BusinessDetailPage() {
               </CardContent>
             </Card>
 
-
-            {/* ── RIGHT COLUMN ── */}
-
-            {/* 3. Qualification */}
-            <Card className="md:row-start-1 md:col-start-2">
-              <CardHeader className="pb-2 pt-4 px-4">
-                <SectionHeader icon={TrendingUp} title="3 · Qualification" />
-              </CardHeader>
-              <CardContent className="px-4 pb-4 space-y-0">
-                {d.qualificationDecision ? (
-                  <>
-                    <Row label="Disposition" value={dispositionBadge(d.qualificationDecision.disposition)} />
-                    <Row label="Score" value={d.qualificationDecision.score} />
-                    <Row label="Reason codes" value={
-                      Array.isArray(d.qualificationDecision.reason_codes)
-                        ? (d.qualificationDecision.reason_codes as string[]).join(", ") || "—"
-                        : "—"
-                    } />
-                    <Row label="Missing fields" value={
-                      Array.isArray(d.qualificationDecision.missing_field_classes)
-                        ? (d.qualificationDecision.missing_field_classes as string[]).join(", ") || "None"
-                        : "—"
-                    } />
-                    <Row label="Decided" value={new Date(d.qualificationDecision.created_at).toLocaleDateString()} />
-                  </>
-                ) : (
-                  <>
-                    <Row label="Fit tier" value={d.masterLead?.fit_tier} />
-                    <Row label="Quality score" value={d.masterLead?.quality_score} />
-                    <p className="text-xs text-muted-foreground mt-2">No formal qualification decision found</p>
-                  </>
-                )}
-              </CardContent>
-            </Card>
-
-            {/* 5. Next Provider Plan — actionable */}
-            <Card>
-              <CardHeader className="pb-2 pt-4 px-4">
-                <SectionHeader icon={Zap} title="5 · Next Provider Plan" />
-              </CardHeader>
-              <CardContent className="px-4 pb-4">
-                {routingQuery.isLoading ? (
-                  <Skeleton className="h-20 w-full" />
-                ) : routingQuery.isError ? (
-                  <p className="text-sm text-red-500">Could not load routing plan</p>
-                ) : routingQuery.data?.routePlan.recipes.length === 0 ? (
-                  <div className="rounded-lg bg-green-50 border border-green-200 px-3 py-3 text-sm text-green-800">
-                    <div className="font-medium">No provider required</div>
-                    <p className="text-xs mt-1 text-green-700">
-                      Existing evidence is sufficient.{" "}
-                      {routingQuery.data.routePlan.stopReasons.join(", ")}
-                    </p>
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    {routingQuery.data?.routePlan.recipes.map((r, i) => (
-                      <div
-                        key={i}
-                        className="flex items-center justify-between gap-2 rounded-lg border bg-muted/10 px-3 py-2.5"
-                      >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <ArrowRight className="h-3.5 w-3.5 text-blue-500 shrink-0" />
-                          <div className="min-w-0">
-                            <div className="text-sm font-medium capitalize">{r.provider}</div>
-                            <div className="text-xs text-muted-foreground">{r.operation.replace(/_/g, " ")}</div>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2 shrink-0">
-                          {r.requiresPaidEligibility && (
-                            <Badge variant="outline" className="text-[10px] px-1.5 h-5 text-amber-600 border-amber-300">
-                              paid
-                            </Badge>
-                          )}
-                          {!r.requiresPaidEligibility && (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="h-7 text-xs gap-1"
-                              onClick={() => enrichMutation.mutate()}
-                              disabled={enrichMutation.isPending}
-                            >
-                              <Play className="h-3 w-3" />
-                              Run
-                            </Button>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                    {(routingQuery.data?.routePlan.stopReasons?.length ?? 0) > 0 && (
-                      <p className="text-xs text-muted-foreground pt-1">
-                        Stop reason: {routingQuery.data?.routePlan.stopReasons.join(", ")}
-                      </p>
-                    )}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-
-            {/* 6. Email Status */}
-            <Card>
-              <CardHeader className="pb-2 pt-4 px-4">
-                <SectionHeader icon={Mail} title="6 · Email Status" />
-              </CardHeader>
-              <CardContent className="px-4 pb-4 space-y-0">
-                <Row label="Discovery status" value={emailStatusBadge(d.emailDiscoveryStatus)} />
-                <Row label="Validation updated" value={
-                  d.emailValidationUpdatedAt
-                    ? new Date(d.emailValidationUpdatedAt).toLocaleDateString()
-                    : null
-                } />
-                {b.email_outreach_catch_all_approved_at && (
-                  <Row label="Catch-all approved" value={new Date(b.email_outreach_catch_all_approved_at).toLocaleDateString()} />
-                )}
-                {d.isStale && (
-                  <div className="mt-2 flex items-center gap-2 text-xs text-amber-700 rounded bg-amber-50 border border-amber-200 px-3 py-2">
-                    <Clock className="h-3.5 w-3.5 shrink-0" /> Validation is stale (&gt;180 days)
-                  </div>
-                )}
-                {d.pendingIntent && (
-                  <div className="mt-2 rounded border bg-muted/10 px-3 py-2 text-xs space-y-0.5">
-                    <Row label="Pending intent" value={d.pendingIntent.state} />
-                    <Row label="Approval required" value={d.pendingIntent.approval_required ? "Yes" : "No"} />
-                    <Row label="Attempts" value={d.pendingIntent.attempt_count} />
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-
+            </div>
+            <aside className="grid min-w-0 content-start gap-6 md:grid-cols-2 xl:grid-cols-1" aria-label="Record actions and status" data-testid="business-detail-rail">
             {/* 8. Safe Next Action — actionable */}
             <Card>
               <CardHeader className="pb-2 pt-4 px-4">
@@ -679,6 +621,68 @@ export function BusinessDetailPage() {
               </CardContent>
             </Card>
 
+            {/* 3. Qualification */}
+            <Card>
+              <CardHeader className="pb-2 pt-4 px-4">
+                <SectionHeader icon={TrendingUp} title="3 · Qualification" />
+              </CardHeader>
+              <CardContent className="px-4 pb-4 space-y-0">
+                {d.qualificationDecision ? (
+                  <>
+                    <Row label="Disposition" value={dispositionBadge(d.qualificationDecision.disposition)} />
+                    <Row label="Score" value={d.qualificationDecision.score} />
+                    <Row label="Reason codes" value={
+                      Array.isArray(d.qualificationDecision.reason_codes)
+                        ? (d.qualificationDecision.reason_codes as string[]).join(", ") || "—"
+                        : "—"
+                    } />
+                    <Row label="Missing fields" value={
+                      Array.isArray(d.qualificationDecision.missing_field_classes)
+                        ? (d.qualificationDecision.missing_field_classes as string[]).join(", ") || "None"
+                        : "—"
+                    } />
+                    <Row label="Decided" value={new Date(d.qualificationDecision.created_at).toLocaleDateString()} />
+                  </>
+                ) : (
+                  <>
+                    <Row label="Fit tier" value={d.masterLead?.fit_tier} />
+                    <Row label="Quality score" value={d.masterLead?.quality_score} />
+                    <p className="text-xs text-muted-foreground mt-2">No formal qualification decision found</p>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* 6. Email Status */}
+            <Card>
+              <CardHeader className="pb-2 pt-4 px-4">
+                <SectionHeader icon={Mail} title="6 · Email Status" />
+              </CardHeader>
+              <CardContent className="px-4 pb-4 space-y-0">
+                <Row label="Discovery status" value={emailStatusBadge(d.emailDiscoveryStatus)} />
+                <Row label="Validation updated" value={
+                  d.emailValidationUpdatedAt
+                    ? new Date(d.emailValidationUpdatedAt).toLocaleDateString()
+                    : null
+                } />
+                {b.email_outreach_catch_all_approved_at && (
+                  <Row label="Catch-all approved" value={new Date(b.email_outreach_catch_all_approved_at).toLocaleDateString()} />
+                )}
+                {d.isStale && (
+                  <div className="mt-2 flex items-center gap-2 text-xs text-amber-700 rounded bg-amber-50 border border-amber-200 px-3 py-2">
+                    <Clock className="h-3.5 w-3.5 shrink-0" /> Validation is stale (&gt;180 days)
+                  </div>
+                )}
+                {d.pendingIntent && (
+                  <div className="mt-2 rounded border bg-muted/10 px-3 py-2 text-xs space-y-0.5">
+                    <Row label="Pending intent" value={d.pendingIntent.state} />
+                    <Row label="Approval required" value={d.pendingIntent.approval_required ? "Yes" : "No"} />
+                    <Row label="Attempts" value={d.pendingIntent.attempt_count} />
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
             {/* 9. Field Activity */}
             <Card>
               <CardHeader className="pb-2 pt-4 px-4">
@@ -704,6 +708,7 @@ export function BusinessDetailPage() {
               </CardContent>
             </Card>
 
+            </aside>
           </div>
         )}
       </div>

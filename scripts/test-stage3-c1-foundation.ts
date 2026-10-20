@@ -98,11 +98,11 @@ check(buildCrmDestination("R-008",{kind:"contactId",value:"12"},new URLSearchPar
 assert.throws(()=>buildCrmDestination("R-008",{kind:"contactId",value:"Jane"}));checks++;
 assert.throws(()=>buildCrmDestination("R-008",{kind:"businessId",value:"12"}));checks++;
 check(!safeFragment("#../../external") && !safeFragment("#"+ "a".repeat(100)),"fragment policy");
-check(contactSections.length===25 && leadOpsSections.length===13 && stagingSections.length===2 && canonicalSections.length===5,"published section denominations");
+check(contactSections.length===25 && leadOpsSections.length===13 && stagingSections.length===2 && canonicalSections.length===6,"published section denominations");
 for(const section of contactSections)check(recordSectionState(`section=${section}`).value===section,"Contact25 codec");
 for(const tab of leadOpsSections)check(prospectingState(`tab=${tab}`).tab.value===tab,"LeadOps13 codec");
 for(const staging of stagingSections)check(prospectingState(`stagingView=${staging}`).staging.value===staging,"staging2 codec");
-for(const canonical of canonicalSections)check(prospectingState(`canonicalView=${canonical}`).canonical.value===canonical,"Canonical5 codec");
+for(const canonical of canonicalSections)check(prospectingState(`canonicalView=${canonical}`).canonical.value===canonical,"Canonical6 codec");
 check(!fs.readFileSync("client/index.html","utf8").includes("maximum-scale"),"CSR zoom");
 check(!fs.readFileSync("server/ssrShared.ts","utf8").includes("maximum-scale"),"SSR zoom");
 check(fs.readFileSync("client/src/styles/crm-theme.css","utf8").includes("container-name: crm-page"),"named worklist container query has a real container");

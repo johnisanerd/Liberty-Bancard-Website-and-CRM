@@ -25,7 +25,7 @@ export interface OutreachStatus {
     unclassified: number;
     withContactInfo: number;
   };
-  deals: { total: number; fromSunbiz: number; newLead: number; contacted: number; qualified: number; won: number };
+  deals: { total: number; openSalesProduction?: number; fromSunbiz: number; newLead: number; contacted: number; qualified: number; won: number };
   activeCampaigns: number;
   verticalBreakdown: Record<string, number>;
   sourceBreakdown: Array<{ source: string; contactCount: number; dealCount: number }>;
@@ -52,6 +52,9 @@ export interface OutreachStatus {
   lastOutreachRun: any;
   workerRunning: boolean;
   workerStatus: any;
+  /** True when the event breakdown query failed; the empty list then means unknown, not zero. */
+  commEventsUnavailable?: boolean;
+  asOf?: string;
   commEventSourceBreakdown?: Array<{ source: string; emailCount: number; smsCount: number; callCount: number; total: number }>;
   serper?: {
     configured: boolean;

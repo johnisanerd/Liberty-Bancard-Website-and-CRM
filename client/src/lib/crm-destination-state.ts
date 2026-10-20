@@ -277,7 +277,76 @@ export const contactSections = ["overview","deals","tickets","tasks","notes","do
 export const leadOpsSections = ["businesses","prospects","imports","staging","sources",
   "census","intelligence","quality","pipeline","sfp","provider-results","pilot","health"] as const;
 export const stagingSections = ["master-leads","promotion-review"] as const;
-export const canonicalSections = ["pipeline","records","imports","exceptions","health"] as const;
+export const canonicalSections = ["pipeline","backlog","records","imports","exceptions","health"] as const;
+export type CanonicalSection = typeof canonicalSections[number];
+
+// ---- C3 additive destination codec -------------------------------------------------
+// Five Prospecting areas and four Campaigns areas group the existing leaf selectors.
+// The 13 Lead Ops keys, both staging selectors and the six outbound selectors stay valid
+// compatibility inputs; there is no second parser.
+export const prospectingAreas = ["inventory","sources-imports","enrichment","qualification-staging","program-health"] as const;
+export type ProspectingArea = typeof prospectingAreas[number];
+/** "canonical" is a grouped entrance to the standalone Canonical Enrichment views, not a 14th retained Lead Ops key. */
+export const leadOpsGroupedTabs = [...leadOpsSections, "canonical"] as const;
+export type LeadOpsGroupedTab = typeof leadOpsGroupedTabs[number];
+export const prospectingAreaTabs: Record<ProspectingArea, readonly LeadOpsGroupedTab[]> = {
+  inventory: ["businesses"],
+  "sources-imports": ["prospects","sources","imports","census"],
+  enrichment: ["intelligence","provider-results","canonical"],
+  "qualification-staging": ["staging","quality","pipeline","sfp"],
+  "program-health": ["health","pilot"],
+};
+export function prospectingAreaForTab(tab: string): ProspectingArea {
+  return prospectingAreas.find(area => (prospectingAreaTabs[area] as readonly string[]).includes(tab)) ?? "inventory";
+}
+
+/** The six outbound selectors (OutboundCenter `tab`) are retained as compatibility inputs. */
+export const outboundSelectors = ["command","campaigns","sequences","governance","prospects","analytics"] as const;
+export type OutboundSelector = typeof outboundSelectors[number];
+export const campaignAreas = ["manage","audience","delivery","results"] as const;
+export type CampaignArea = typeof campaignAreas[number];
+export const campaignAreaTabs: Record<CampaignArea, readonly OutboundSelector[]> = {
+  manage: ["campaigns","sequences"],
+  audience: ["prospects"],
+  delivery: ["command","governance"],
+  results: ["analytics"],
+};
+export function campaignAreaForTab(tab: string): CampaignArea {
+  return campaignAreas.find(area => (campaignAreaTabs[area] as readonly string[]).includes(tab)) ?? "manage";
+}
+/** Outbound selector from a URL. Invalid or duplicate values fall back to Command with an issue. */
+export function outboundSelectorState(search: string) {
+  return selectValue(new URLSearchParams(search), "tab", outboundSelectors, "command");
+}
+
+/** Canonical view selection. Grouped hosts read `canonicalView`; the standalone page reads the
+ * compatibility `view` parameter. A standalone `canonicalView` is also accepted so a grouped link
+ * pasted onto the standalone route still lands on the same child. Contradictory values are
+ * discarded with an issue, never silently picked. */
+export function canonicalViewState(search: string, grouped: boolean) {
+  const params = new URLSearchParams(search);
+  const primary = grouped ? "canonicalView" : "view";
+  const secondary = grouped ? "view" : "canonicalView";
+  const first = selectValue(params, primary, canonicalSections, "pipeline");
+  if (!params.has(secondary)) return { view: first.value, issues: first.issues };
+  const second = selectValue(params, secondary, canonicalSections, "pipeline");
+  if (!params.has(primary)) return { view: second.value, issues: second.issues };
+  // Both names present: they must agree and each must be individually valid, otherwise discard both.
+  if (first.issues.length || second.issues.length || first.value !== second.value) {
+    return { view: "pipeline" as CanonicalSection, issues: [...first.issues, ...second.issues,
+      { key: primary, kind: "conflict" as const, reason: `${primary}/${secondary}: conflicting selections. Showing pipeline.` }] };
+  }
+  return { view: first.value, issues: [] };
+}
+export function buildCanonicalViewHref(href: string, view: CanonicalSection, grouped: boolean) {
+  if (!canonicalSections.includes(view)) throw new Error("Invalid canonical view");
+  const url = new URL(href, "https://crm.invalid");
+  const params = new URLSearchParams(url.search);
+  params.delete("view"); params.delete("canonicalView");
+  params.set(grouped ? "canonicalView" : "view", view);
+  if (grouped) params.set("tab", "canonical");
+  return destinationUrl(url.pathname, params, url.hash);
+}
 export function recordSectionState(search: string, permitted: readonly typeof contactSections[number][] = contactSections) {
   return selectValue(new URLSearchParams(search),"section",contactSections,
     permitted.includes("overview") ? "overview" : permitted[0],permitted);

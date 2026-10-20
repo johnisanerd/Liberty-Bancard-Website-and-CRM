@@ -297,7 +297,8 @@ export interface IStorage {
   archiveProspectList(id: number, reason: string): Promise<typeof prospectLists.$inferSelect | undefined>;
   archiveDemoData(): Promise<{ listsArchived: number; archivedListNames: string[] }>;
 
-  getProspects(listId?: number, params?: PaginationParams): Promise<PaginatedResult<typeof prospects.$inferSelect>>;
+  getProspects(listId?: number, params?: PaginationParams, filters?: import("./storage/prospects").ProspectListFilters): Promise<PaginatedResult<typeof prospects.$inferSelect>>;
+  getProspectVerticals(listId?: number): Promise<string[]>;
   getProspect(id: number): Promise<typeof prospects.$inferSelect | undefined>;
   createProspect(prospect: InsertProspect): Promise<typeof prospects.$inferSelect>;
   createProspectsBulk(prospectData: InsertProspect[]): Promise<Prospect[]>;

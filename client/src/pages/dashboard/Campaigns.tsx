@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "@/hooks/use-auth";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
+import { useCrmQuery } from "@/hooks/use-crm-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useForm } from "react-hook-form";
@@ -57,11 +58,11 @@ import DashboardErrorState from "@/components/DashboardErrorState";
 import EmailPreviewModal, { EmailPreviewContent } from "@/components/EmailPreviewModal";
 import ReadinessIntelligencePanel from "@/components/ReadinessIntelligencePanel";
 import type { Campaign, CampaignStep, ProspectList } from "@shared/schema";
+import { SFP_CONTACT_VERTICAL_IDS, CONTACT_VERTICAL_MAPPING_VERSION } from "@shared/contact-vertical-taxonomy";
 
-const CANONICAL_VERTICALS = [
-  "Restaurant", "Retail", "Healthcare", "Salon", "Auto Repair",
-  "Dental", "Med Spa", "Hotel", "Gym", "Landscaping", "Construction", "Legal",
-];
+// Current approved taxonomy from its existing owner (stable IDs). Legacy labels already saved on a
+// campaign stay visible read-only and are never rewritten in bulk.
+const CANONICAL_VERTICALS: readonly string[] = SFP_CONTACT_VERTICAL_IDS;
 
 const campaignFormSchema = z.object({
   name: z.string().min(1, "Name is required"),
@@ -156,19 +157,19 @@ function CampaignDetail({ campaign }: { campaign: Campaign }) {
     setEditBodyTab(isMeaningfulBody(editingStep.bodyTemplate ?? "") ? "preview" : "write");
   }, [editingStep?.id]);
 
-  const { data: steps, isLoading: stepsLoading } = useQuery<CampaignStep[]>({
+  const { data: steps, isLoading: stepsLoading } = useCrmQuery<CampaignStep[]>({
     queryKey: ["/api/campaigns", campaign.id, "steps"],
-    queryFn: async () => {
-      const res = await fetch(`/api/campaigns/${campaign.id}/steps`, { credentials: "include" });
+    queryFn: async ({ signal }) => {
+      const res = await fetch(`/api/campaigns/${campaign.id}/steps`, { credentials: "include", signal });
       if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
       return res.json();
     },
   });
 
-  const { data: approvalStatus } = useQuery<{ approved: boolean; contentRevision: number; approvedRevision: number | null }>({
+  const { data: approvalStatus } = useCrmQuery<{ approved: boolean; contentRevision: number; approvedRevision: number | null }>({
     queryKey: ["/api/campaigns", campaign.id, "approval"],
-    queryFn: async () => {
-      const res = await fetch(`/api/campaigns/${campaign.id}/approval`, { credentials: "include" });
+    queryFn: async ({ signal }) => {
+      const res = await fetch(`/api/campaigns/${campaign.id}/approval`, { credentials: "include", signal });
       if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
       return res.json();
     },
@@ -253,10 +254,10 @@ function CampaignDetail({ campaign }: { campaign: Campaign }) {
 
   // Async audience preview — POST to start, GET to poll.
   // Polling runs every 2s while status === "running"; stops when done or error.
-  const { data: previewPoll } = useQuery<PreviewPollResponse>({
+  const { data: previewPoll } = useCrmQuery<PreviewPollResponse>({
     queryKey: ["/api/campaigns", campaign.id, "audience-preview"],
-    queryFn: async () => {
-      const res = await fetch(`/api/campaigns/${campaign.id}/audience-preview`, { credentials: "include" });
+    queryFn: async ({ signal }) => {
+      const res = await fetch(`/api/campaigns/${campaign.id}/audience-preview`, { credentials: "include", signal });
       if (!res.ok) throw new Error(`${res.status}`);
       return res.json();
     },
@@ -548,7 +549,7 @@ function CampaignDetail({ campaign }: { campaign: Campaign }) {
                       <span>{audiencePreview.totalInVerticals.toLocaleString()}</span>
                     </div>
                     <div className="flex justify-between text-muted-foreground">
-                      <span>Daily send limit</span>
+                      <span>Configured daily limit (not sender capacity)</span>
                       <span>{campaign.dailySendLimit ?? 200}</span>
                     </div>
                   </div>
@@ -956,7 +957,7 @@ type StuckSendingResponse = {
 
 function StuckSendingBanner({ onDismiss }: { onDismiss: () => void }) {
   const [showDetail, setShowDetail] = useState(false);
-  const { data } = useQuery<StuckSendingResponse>({
+  const { data } = useCrmQuery<StuckSendingResponse>({
     queryKey: ["/api/outbound-messages/stuck-sending"],
     refetchInterval: 30_000,
   });
@@ -1061,11 +1062,11 @@ export default function Campaigns() {
   const [audienceSource, setAudienceSource] = useState<"prospect" | "crm">("prospect");
   const [stuckBannerDismissed, setStuckBannerDismissed] = useState(false);
 
-  const { data: campaigns, isLoading, isError, refetch } = useQuery<Campaign[]>({
+  const { data: campaigns, isLoading, isError, refetch } = useCrmQuery<Campaign[]>({
     queryKey: ["/api/campaigns"],
   });
 
-  const { data: prospectLists } = useQuery<ProspectList[]>({
+  const { data: prospectLists } = useCrmQuery<ProspectList[]>({
     queryKey: ["/api/prospect-lists"],
   });
 
@@ -1218,7 +1219,9 @@ export default function Campaigns() {
                     render={() => (
                       <FormItem>
                         <FormLabel>Target Verticals</FormLabel>
-                        <p className="text-xs text-muted-foreground">Select industries to target from your 154K CRM contacts.</p>
+                        <p className="text-xs text-muted-foreground">
+                          Select industries from the current taxonomy ({CONTACT_VERTICAL_MAPPING_VERSION}). Choosing a vertical sets a draft audience only; it does not change eligibility, enroll anyone or send.
+                        </p>
                         <div className="flex flex-wrap gap-2 pt-1">
                           {CANONICAL_VERTICALS.map((v) => (
                             <FormField
@@ -1243,6 +1246,11 @@ export default function Campaigns() {
                             />
                           ))}
                         </div>
+                        {(form.watch("targetVerticals") ?? []).filter((v) => !CANONICAL_VERTICALS.includes(v)).length > 0 && (
+                          <p className="text-xs text-muted-foreground pt-1" data-testid="legacy-vertical-labels">
+                            Legacy labels kept as saved (read-only): {(form.watch("targetVerticals") ?? []).filter((v) => !CANONICAL_VERTICALS.includes(v)).join(", ")}
+                          </p>
+                        )}
                         <FormMessage />
                       </FormItem>
                     )}
@@ -1308,7 +1316,10 @@ export default function Campaigns() {
                   name="dailySendLimit"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Daily Send Limit</FormLabel>
+                      <FormLabel>Configured daily send limit</FormLabel>
+                      <p className="text-xs text-muted-foreground">
+                        This is a ceiling for this campaign only. Effective sender capacity and the outbound pause are separate and are applied at send time; saving a campaign never enrolls or sends.
+                      </p>
                       <FormControl>
                         <Input
                           type="number"

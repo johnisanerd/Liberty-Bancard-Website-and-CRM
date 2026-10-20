@@ -988,7 +988,8 @@ export function registerCampaignsRoutes(app: Express) {
       const { storage } = await import("../storage");
 
       // All three queries run in parallel — none depends on another.
-      const [summaryResult, histogramResult, reasonResult, latestRun] = await Promise.all([
+      const startedAtMs = Date.now();
+      const settled = await Promise.allSettled([
         // 1. Summary + grade breakdown
         db.execute(sql`
           SELECT
@@ -1037,7 +1038,7 @@ export function registerCampaignsRoutes(app: Express) {
                jsonb_array_elements_text(readiness_breakdown->'missingReasons') AS reason
           WHERE archived_at IS NULL
             AND readiness_breakdown IS NOT NULL
-            AND readiness_breakdown ? 'missingReasons'
+            AND jsonb_typeof(readiness_breakdown->'missingReasons') = 'array'
           GROUP BY reason
           ORDER BY cnt DESC
           LIMIT 10
@@ -1046,13 +1047,30 @@ export function registerCampaignsRoutes(app: Express) {
         // 4. Latest backfill run (any status) for run-status reporting
         storage.getLatestReadinessRun(),
       ]);
+      // One failed reader must not hide independent siblings, and a failure is
+      // never rendered as zero. Exact errors (with SQLSTATE) go to the server log.
+      const names = ["summary", "histogram", "missingReasons", "backfillRun"] as const;
+      const unavailable: Record<string, { code: string | null; message: string }> = {};
+      settled.forEach((outcome, index) => {
+        if (outcome.status === "rejected") {
+          const reason: any = outcome.reason;
+          const code = reason?.code ?? reason?.cause?.code ?? null;
+          console.error(`[readiness-stats] ${names[index]} reader failed after ${Date.now() - startedAtMs}ms sqlstate=${code ?? "n/a"}: ${reason?.cause?.message ?? reason?.message}`);
+          unavailable[names[index]] = { code, message: `${names[index]} could not be read` };
+        }
+      });
+      const value = (i: number) => (settled[i].status === "fulfilled" ? (settled[i] as PromiseFulfilledResult<any>).value : null);
+      const summaryResult = value(0);
+      const histogramResult = value(1);
+      const reasonResult = value(2);
+      const latestRun = value(3);
 
       // Normalise drizzle execute result — may be array or {rows:[…]}
       const toRows = (r: unknown) => Array.isArray(r) ? r : (r as any)?.rows ?? [];
-      const [summary] = toRows(summaryResult);
-      const histRows: Array<{ bucket_start: number; cnt: number }> = toRows(histogramResult)
+      const [summary] = summaryResult ? toRows(summaryResult) : [null];
+      const histRows: Array<{ bucket_start: number; cnt: number }> = (histogramResult ? toRows(histogramResult) : [])
         .map((r: any) => ({ bucket_start: Number(r.bucket_start), cnt: Number(r.cnt) }));
-      const reasonRows: Array<{ reason: string; cnt: number }> = toRows(reasonResult)
+      const reasonRows: Array<{ reason: string; cnt: number }> = (reasonResult ? toRows(reasonResult) : [])
         .map((r: any) => ({ reason: String(r.reason), cnt: Number(r.cnt) }));
 
       // Build full 10-bucket histogram (0–90 step 10) filling missing buckets with 0
@@ -1064,23 +1082,29 @@ export function registerCampaignsRoutes(app: Express) {
         count: histogramMap[i * 10] ?? 0,
       }));
 
+      if (unavailable.summary && unavailable.histogram && unavailable.missingReasons) {
+        return res.status(503).json({ message: "Readiness statistics are unavailable; nothing was counted.", unavailable });
+      }
+      const n = (v: unknown) => (summary ? Number(v) : null);
       res.json({
-        total: Number(summary.total),
-        nullScore: Number(summary.null_score),
-        staleModel: Number(summary.stale_model),
-        mutationStale: Number(summary.mutation_stale),
-        grades: {
+        total: n(summary?.total),
+        nullScore: n(summary?.null_score),
+        staleModel: n(summary?.stale_model),
+        mutationStale: n(summary?.mutation_stale),
+        grades: summary ? {
           A: Number(summary.grade_a),
           B: Number(summary.grade_b),
           C: Number(summary.grade_c),
           D: Number(summary.grade_d),
           F: Number(summary.grade_f),
-        },
-        avgScore: summary.avg_score !== null ? Number(summary.avg_score) : null,
-        minScore: summary.min_score !== null ? Number(summary.min_score) : null,
-        maxScore: summary.max_score !== null ? Number(summary.max_score) : null,
-        histogram,
-        topMissingReasons: reasonRows,
+        } : null,
+        avgScore: summary && summary.avg_score !== null ? Number(summary.avg_score) : null,
+        minScore: summary && summary.min_score !== null ? Number(summary.min_score) : null,
+        maxScore: summary && summary.max_score !== null ? Number(summary.max_score) : null,
+        histogram: unavailable.histogram ? null : histogram,
+        topMissingReasons: unavailable.missingReasons ? null : reasonRows,
+        unavailable,
+        asOf: new Date().toISOString(),
         modelVersion: READINESS_MODEL_VERSION,
         backfillRun: latestRun
           ? {

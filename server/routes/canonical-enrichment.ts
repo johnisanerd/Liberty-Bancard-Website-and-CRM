@@ -15,38 +15,72 @@ import {
   UploadLedgerInputError, listUploadLedgerRuns, readUploadLedgerPage, readUploadLedgerSummary,
 } from "../services/canonical-upload-ledger";
 
+/** Exact error, SQLSTATE and timing for an unavailable read. The client only ever sees a typed unavailable body. */
+function logReadFailure(label: string, error: unknown, startedAt: number) {
+  const e: any = error;
+  const code = e?.code ?? e?.cause?.code ?? "n/a";
+  console.error(`[canonical-enrichment] ${label} failed after ${Date.now() - startedAt}ms sqlstate=${code}: ${e?.cause?.message ?? e?.message ?? String(error)}`);
+}
+
+/**
+ * The effect (release, revoke, hold resolution, queue request) has already committed when the audit row is
+ * written. An audit failure must be reported as a committed effect with an unrecorded audit, never as
+ * "nothing happened".
+ */
+async function auditCommittedEffect(entry: Parameters<typeof storage.createAuditLog>[0], label: string): Promise<"recorded" | "failed"> {
+  try {
+    await storage.createAuditLog(entry);
+    return "recorded";
+  } catch (error) {
+    logReadFailure(`audit for committed ${label}`, error, Date.now());
+    return "failed";
+  }
+}
+
 export function registerCanonicalEnrichmentRoutes(app: Express) {
   app.get("/api/canonical-enrichment/status", isDashboardUser, requireRole("admin", "manager"), async (_req, res) => {
+    const startedAt = Date.now();
     try {
       res.set("Cache-Control", "no-store");
       res.json(await readCanonicalEnrichmentStatus());
-    } catch {
+    } catch (error) {
+      logReadFailure("status", error, startedAt);
       res.status(503).json({ message: "Canonical enrichment status is unavailable; counts were not calculated." });
     }
   });
 
   // One backlog across every intake family. Cached read model; `?fresh=1` forces a recount (admin only).
   app.get("/api/canonical-enrichment/backlog", isDashboardUser, requireRole("admin", "manager"), async (req, res) => {
+    const startedAt = Date.now();
     try {
       res.set("Cache-Control", "no-store");
       const fresh = req.query.fresh === "1" && (req.user as any)?.role === "admin";
+      // A failed last-run lookup is an explicit unavailable state, never "no previous run".
+      let lastPriorityRunUnavailable = false;
       const [backlog, lastPriorityRun] = await Promise.all([
         readCanonicalEnrichmentBacklog({ fresh }),
-        readLastBacklogPriorityRun().catch(() => null),
+        readLastBacklogPriorityRun().catch((error) => {
+          logReadFailure("last priority run lookup", error, startedAt);
+          lastPriorityRunUnavailable = true;
+          return null;
+        }),
       ]);
-      res.json({ ...backlog, lastPriorityRun });
-    } catch {
-      res.status(503).json({ message: "The enrichment backlog is unavailable; nothing was counted." });
+      res.json({ ...backlog, lastPriorityRun, lastPriorityRunUnavailable });
+    } catch (error) {
+      logReadFailure("backlog", error, startedAt);
+      res.status(503).json({ code: "BACKLOG_UNAVAILABLE", message: "The enrichment backlog is unavailable; nothing was counted." });
     }
   });
 
   // Current prepared recipients re-checked against every launch requirement. Read-only; sends nothing.
   app.get("/api/canonical-enrichment/launch-inventory", isDashboardUser, requireRole("admin", "manager"), async (req, res) => {
+    const startedAt = Date.now();
     try {
       res.set("Cache-Control", "no-store");
       const fresh = req.query.fresh === "1" && (req.user as any)?.role === "admin";
       res.json(await readSfpLaunchInventory({ fresh }));
-    } catch {
+    } catch (error) {
+      logReadFailure("launch inventory", error, startedAt);
       res.status(503).json({ message: "The launch inventory is unavailable; nothing was counted." });
     }
   });
@@ -56,7 +90,7 @@ export function registerCanonicalEnrichmentRoutes(app: Express) {
   const actor = (req: any) => String(req.user?.id ?? req.user?.email ?? "unknown");
   const releaseError = (res: any, error: unknown) => {
     if (error instanceof CanonicalReleaseError) return res.status(error.status).json({ code: error.code, message: error.message });
-    return res.status(503).json({ message: "The release request could not be completed; nothing was released." });
+    return res.status(503).json({ code: "RELEASE_UNCONFIRMED", message: "The release request could not be confirmed. It may or may not have committed: check the release status before doing anything else. Repeating the same request is safe because it replays the same release; do not start a different one until you have checked." });
   };
   app.get("/api/canonical-enrichment/release", isDashboardUser, requireRole("admin", "manager"), async (_req, res) => {
     try {
@@ -64,7 +98,7 @@ export function registerCanonicalEnrichmentRoutes(app: Express) {
       const { readSenderCapacity } = await import("../services/sfp-sender-capacity");
       const [status, capacity] = await Promise.all([describeCanonicalRelease(), readSenderCapacity().catch(() => null)]);
       res.json({ ...status, capacity });
-    } catch { res.status(503).json({ message: "The release state is unavailable." }); }
+    } catch (error) { logReadFailure("release state", error, Date.now()); res.status(503).json({ message: "The release state is unavailable." }); }
   });
   // Read-only: what each current launch package renders for a fictional recipient. Writes and sends nothing.
   app.get("/api/canonical-enrichment/seed-test/rendering", isDashboardUser, requireRole("admin"), async (_req, res) => {
@@ -126,24 +160,25 @@ export function registerCanonicalEnrichmentRoutes(app: Express) {
         requestedLimit: Number(req.body?.limit), snapshotHash: String(req.body?.snapshotHash ?? ""),
         commandKey, expiresInHours: Number(req.body?.expiresInHours), actorId: actor(req),
       });
-      await storage.createAuditLog({
+      // The release is committed here. A failed audit write is reported alongside the receipt.
+      const audit = await auditCommittedEffect({
         action: "sfp_canonical_release_executed", entityType: "sfp_canonical_release",
         entityKey: result.release.releaseId, userId: actor(req),
         details: { replayed: result.replayed, releaseId: result.release.releaseId, size: result.release.enrollmentIds.length,
           admissionClosesAt: result.release.admissionClosesAt, journeyExpiresAt: result.release.journeyExpiresAt,
           snapshotHash: result.release.snapshotHash },
-      } as any);
-      res.json({ replayed: result.replayed, release: result.release });
+      } as any, "release");
+      res.json({ replayed: result.replayed, release: result.release, committed: true, audit });
     } catch (error) { releaseError(res, error); }
   });
   app.post("/api/canonical-enrichment/release/revoke", isDashboardUser, requireRole("admin"), async (req, res) => {
     try {
       const result = await revokeCanonicalRelease(actor(req));
-      await storage.createAuditLog({
+      const audit = await auditCommittedEffect({
         action: "sfp_canonical_release_revoked", entityType: "sfp_canonical_release", userId: actor(req),
         details: { ...result },
-      } as any);
-      res.json(result);
+      } as any, "revoke");
+      res.json({ ...result, committed: true, audit });
     } catch (error) { releaseError(res, error); }
   });
 
@@ -151,10 +186,10 @@ export function registerCanonicalEnrichmentRoutes(app: Express) {
   app.put("/api/canonical-enrichment/release/policy", isDashboardUser, requireRole("admin"), async (req, res) => {
     try {
       const policy = await writeReleasePolicy(req.body, actor(req));
-      await storage.createAuditLog({
+      const audit = await auditCommittedEffect({
         action: "sfp_canonical_release_policy_updated", entityType: "sfp_canonical_release", userId: actor(req), details: { ...policy },
-      } as any);
-      res.json({ policy });
+      } as any, "release policy");
+      res.json({ policy, committed: true, audit });
     } catch (error) { releaseError(res, error); }
   });
   // Operator decision for a held journey (uncertain delivery, repeated unsent). Never automatic.
@@ -167,11 +202,11 @@ export function registerCanonicalEnrichmentRoutes(app: Express) {
       const id = Number(req.params.id);
       if (!Number.isInteger(id)) return res.status(400).json({ code: "ENROLLMENT_INVALID" });
       const result = await resolveCanonicalHold(id, resolution);
-      await storage.createAuditLog({
+      const audit = await auditCommittedEffect({
         action: "sfp_canonical_hold_resolved", entityType: "sequence_enrollment", entityKey: String(id), userId: actor(req),
         details: { resolution, ...result },
-      } as any);
-      res.status(result.resolved ? 200 : 409).json(result);
+      } as any, "hold resolution");
+      res.status(result.resolved ? 200 : 409).json({ ...result, committed: result.resolved, audit });
     } catch (error) { releaseError(res, error); }
   });
 
@@ -184,17 +219,20 @@ export function registerCanonicalEnrichmentRoutes(app: Express) {
       if (error instanceof BacklogProcessInputError) return res.status(400).json({ message: error.message });
       return res.status(400).json({ message: "Invalid request." });
     }
+    let result;
     try {
-      const result = await enqueueBacklogProcess(request);
-      await storage.createAuditLog({
-        action: "canonical_backlog_process_requested", entityType: "canonical_enrichment_backlog",
-        entityKey: result.jobId ?? "not_queued", userId: String((req.user as any)?.id ?? ""),
-        details: { ...request, accepted: result.accepted, alreadyQueued: result.alreadyQueued },
-      });
-      res.status(result.accepted ? 202 : 503).json(result);
-    } catch {
-      res.status(503).json({ message: "The request could not be queued; nothing was started." });
+      result = await enqueueBacklogProcess(request);
+    } catch (error) {
+      logReadFailure("backlog process enqueue", error, Date.now());
+      return res.status(503).json({ code: "PROCESS_UNCONFIRMED", message: "The request could not be confirmed as queued. It may have been queued; the same request is deduplicated per ten-minute window, so repeating it cannot queue it twice." });
     }
+    // Queued (or deduplicated) at this point; the audit write can no longer undo that.
+    const audit = await auditCommittedEffect({
+      action: "canonical_backlog_process_requested", entityType: "canonical_enrichment_backlog",
+      entityKey: result.jobId ?? "not_queued", userId: String((req.user as any)?.id ?? ""),
+      details: { ...request, accepted: result.accepted, alreadyQueued: result.alreadyQueued },
+    }, "backlog process request");
+    res.status(result.accepted ? 202 : 503).json({ ...result, audit });
   });
 
   // Read-only, paginated original-coordinate ledger. Bounded: at most 100 rows per page.
