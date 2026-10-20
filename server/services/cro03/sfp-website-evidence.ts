@@ -29,11 +29,12 @@ export interface WebsiteClassificationEvidence {
   /** Where redirects from sourceUrl ended; informational provenance, not part of the content hash. */
   finalUrl?: string;
   /**
-   * Postal addresses the page itself declares in schema.org JSON-LD. Informational first-party
-   * geography evidence: deliberately NOT part of contentHash, so classification evidence hashes are
-   * unchanged. Optional so older stored evidence stays valid.
+   * Organizations the page declares in schema.org JSON-LD, each with the postal addresses stated on that
+   * same entity. A page can describe several unrelated organizations (publisher, partner, event venue), so
+   * an address is only usable once the consumer has matched the ENTITY (name/url) to the business. Informational
+   * first-party geography evidence: deliberately NOT part of contentHash. Optional so older evidence stays valid.
    */
-  jsonLdAddresses?: WebsiteJsonLdAddress[];
+  jsonLdOrganizations?: WebsiteJsonLdOrganization[];
   capturedAt: string;
   contentHash: string;
 }
@@ -43,6 +44,15 @@ export interface WebsiteJsonLdAddress {
   city: string | null;
   state: string | null;
   postalCode: string | null;
+}
+
+export interface WebsiteJsonLdOrganization {
+  /** The entity's own name; for a branch/location nested under an organization, the parent's name. */
+  name: string | null;
+  url: string | null;
+  /** Set when the addresses belong to a nested location/department/sub-organization of this entity. */
+  branchName: string | null;
+  addresses: WebsiteJsonLdAddress[];
 }
 
 type ResolveImpl = (hostname: string) => Promise<string | string[]>;
@@ -228,7 +238,7 @@ export async function extractWebsiteClassificationEvidence(
     // against); finalUrl records where the redirects ended.
     sourceUrl: parsedUrl.toString(),
     finalUrl: finalUrl.toString(),
-    jsonLdAddresses: extractJsonLdPostalAddresses(html),
+    jsonLdOrganizations: extractJsonLdOrganizations(html),
     pageType,
     jsonLdTypes,
     titleTokens,
@@ -333,25 +343,24 @@ function extractJsonLdTypes(html: string): string[] {
 }
 
 /**
- * Pure: schema.org PostalAddress objects declared in the page's JSON-LD. Only fields the page states are
- * returned (nothing is inferred); non-US declared countries and objects with no locality/region/ZIP are dropped.
+ * Pure: schema.org entities that declare a postal address, grouped by the entity that states it. Only fields the
+ * page states are returned (nothing is inferred); non-US declared countries and address objects with no
+ * locality/region/ZIP are dropped. Ownership is NOT decided here: every entity is returned with its own name/url
+ * so the caller can accept only the entity that is the business (or a branch nested under that entity).
  */
-export function extractJsonLdPostalAddresses(html: string): WebsiteJsonLdAddress[] {
-  const found: WebsiteJsonLdAddress[] = [];
-  const seen = new Set<string>();
+export function extractJsonLdOrganizations(html: string): WebsiteJsonLdOrganization[] {
+  const found: WebsiteJsonLdOrganization[] = [];
   const text = (value: unknown): string | null => {
     if (typeof value === "number") value = String(value);
     if (typeof value !== "string") return null;
     const trimmed = value.replace(/\s+/g, " ").trim();
     return trimmed ? trimmed.slice(0, 200) : null;
   };
-  const visit = (value: unknown, depth: number): void => {
-    if (depth > 8 || found.length >= 5) return;
-    if (Array.isArray(value)) { value.forEach((item) => visit(item, depth + 1)); return; }
-    if (!value || typeof value !== "object") return;
-    const object = value as Record<string, unknown>;
-    const types = (Array.isArray(object["@type"]) ? object["@type"] : [object["@type"]]).map((t) => String(t));
-    if (types.includes("PostalAddress") || "addressLocality" in object || "postalCode" in object) {
+  const addressesOf = (value: unknown): WebsiteJsonLdAddress[] => {
+    const out: WebsiteJsonLdAddress[] = [];
+    for (const item of Array.isArray(value) ? value : [value]) {
+      if (!item || typeof item !== "object") continue;
+      const object = item as Record<string, unknown>;
       const country = object.addressCountry && typeof object.addressCountry === "object"
         ? text((object.addressCountry as Record<string, unknown>).name) : text(object.addressCountry);
       const us = !country || /^(us|usa|u\.s\.a?\.?|united states( of america)?)$/i.test(country);
@@ -359,18 +368,41 @@ export function extractJsonLdPostalAddresses(html: string): WebsiteJsonLdAddress
         streetAddress: text(object.streetAddress), city: text(object.addressLocality),
         state: text(object.addressRegion), postalCode: text(object.postalCode),
       };
-      const key = JSON.stringify(address);
-      if (us && (address.city || address.state || address.postalCode) && !seen.has(key)) {
-        seen.add(key);
-        found.push(address);
-      }
+      if (us && (address.city || address.state || address.postalCode)) out.push(address);
     }
-    Object.values(object).forEach((item) => visit(item, depth + 1));
+    return out.slice(0, 5);
+  };
+  const BRANCH_KEYS = ["location", "department", "subOrganization", "containsPlace", "hasPOS"];
+  const visit = (value: unknown, depth: number, owner: { name: string | null; url: string | null; branchName: string | null } | null): void => {
+    if (depth > 8 || found.length >= 8) return;
+    if (Array.isArray(value)) { value.forEach((item) => visit(item, depth + 1, owner)); return; }
+    if (!value || typeof value !== "object") return;
+    const object = value as Record<string, unknown>;
+    let next = owner;
+    if ("address" in object) {
+      const addresses = addressesOf(object.address);
+      const own = { name: text(object.name), url: text(object.url) };
+      // A nested location/department of an organization belongs to that organization; anything else is its own entity.
+      const entity = owner
+        ? { name: owner.name, url: owner.url, branchName: own.name ?? owner.branchName }
+        : { name: own.name, url: own.url, branchName: null };
+      if (addresses.length) found.push({ ...entity, addresses });
+      next = { name: entity.name, url: entity.url, branchName: entity.branchName };
+    } else if (!owner && (text(object.name) || text(object.url))) {
+      // An organization that states its address only on a nested location still owns that location.
+      next = { name: text(object.name), url: text(object.url), branchName: null };
+    }
+    for (const [key, child] of Object.entries(object)) {
+      if (key === "address") continue;
+      // Only branch-type properties carry the parent's ownership; every other nested object (publisher, author,
+      // mentions, event venue...) is evaluated as an independent entity.
+      visit(child, depth + 1, BRANCH_KEYS.includes(key) ? next : null);
+    }
   };
   const scriptRegex = /<script\b(?=[^>]*\btype\s*=\s*(?:"application\/ld\+json"|'application\/ld\+json'|application\/ld\+json))[^>]*>([\s\S]*?)<\/script\s*>/gi;
   let match: RegExpExecArray | null;
   while ((match = scriptRegex.exec(html))) {
-    try { visit(JSON.parse(match[1]), 0); } catch { /* malformed JSON-LD is ignored */ }
+    try { visit(JSON.parse(match[1]), 0, null); } catch { /* malformed JSON-LD is ignored */ }
   }
   return found;
 }
