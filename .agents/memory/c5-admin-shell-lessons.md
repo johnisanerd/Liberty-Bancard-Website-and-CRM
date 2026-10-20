@@ -15,3 +15,9 @@ description: Durable constraints for the admin diagnostics, Administration areas
 
 **Why:** reviewers rejected claims that outran evidence (inert-ID copy, source-only cutover).
 **How to apply:** before editing diagnostics copy, sidebar targets or acceptance receipts.
+
+## Live-walk lessons
+- A page "stall" can be an unpaginated list, not the feature named in the report: GHL Settings froze because its activity card rendered ~90k log rows. Check DOM node count and API payload sizes before blaming a sync run; my disposable fixtures missed it because they had no activity rows.
+- Hub pages hide inactive tab groups (zero-size tabs); walk by `?tab=` URLs, not clicks.
+- Kernel browser sessions end after ~60s of inactivity; keep calls back-to-back and run one automation call at a time (parallel calls on one tab collide).
+- Review Queue returns ~30k pending dead-letter rows unpaged and hangs the tab; unresolved product decision.
