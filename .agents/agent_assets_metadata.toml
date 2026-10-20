@@ -598,3 +598,17 @@ mtime_ms = 1792431774499
 storage_uri = "gcs://replit-rams-assets-riker/rams/assets/repl:92fd513c-d028-45ae-b664-31ad54630ef0/b6d814bc-4200-4a41-9838-0f6f71277b91/09ee00e2-f73e-460f-9fbb-fb023ba064a1"
 storage_version_token = "1792432787286454"
 content_type = "text/html"
+
+[[outputs]]
+id = "1ybRKk5iFLhssB95TdwwL"
+uri = "file://docs/audits/production-enrichment-audit-2026-10-20.md"
+type = "text"
+title = "Production enrichment audit, Oct 20"
+description = "Read-only audit of every enrichment path, with a ranked ROI plan."
+logical_id = "9aade542-2a37-4c88-a766-e826d3060658"
+content_hash = "sha256:0cb858ebd47c19c54c5fbed3fea5b7f1c8f285239c9baa9139a9beac2d1a929a"
+size = 8349
+mtime_ms = 1792513174919
+storage_uri = "gcs://replit-rams-assets-riker/rams/assets/repl:92fd513c-d028-45ae-b664-31ad54630ef0/9aade542-2a37-4c88-a766-e826d3060658/d78647f6-7d0e-44c6-9ecd-022f83749bdd"
+storage_version_token = "1792513180694063"
+content_type = "text/markdown"
