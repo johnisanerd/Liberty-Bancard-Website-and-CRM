@@ -117,6 +117,8 @@ try {
   const remainingAfterFixed = await pendingAnswered();
   check(fixed.ran && (fixed as any).priority?.examined > 0 && await priorityScanned() > 0,
     "With the reservation the priority lane examines contacts and advances its scanned/cursor state in the same backlogged pass");
+  check(await priorityScanned() <= late.length,
+    "The priority lane spends its window on recipients with no live preparation; the prepared backlog is not re-qualified there");
   check((fixed as any).completion?.examined < remainingAfterControl,
     "The completion lane alone could not drain its backlog in its window: priority advanced while that lane was backlogged");
   check(remainingAfterFixed < remainingAfterControl, "Backlogged recipients still progressed (priority/population also revisit them)");

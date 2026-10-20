@@ -14,7 +14,7 @@ const MAX_PRIORITY_PAGES_PER_TICK=4;
 /** Time each of the two fair-share lanes is guaranteed per pass, whatever the completion and stale-package lanes
  * did before them. Before this reservation both lanes could receive a zero-length window: the slow lanes ran up to
  * the shared deadline first, so the priority cursor sat still for days while the backlog it exists to reach grew. */
-export const PREPARATION_LANE_RESERVES={priorityMs:25_000,populationMs:15_000} as const;
+export const PREPARATION_LANE_RESERVES={priorityMs:75_000,populationMs:15_000} as const;
 export type PreparationLane="completion"|"stale"|"population"|"priority";
 /** Pure scheduling rule for one lane's processing window (an absolute epoch-millisecond deadline).
  *  - completion/stale never run into the time held back for the two reserved lanes;
@@ -279,26 +279,24 @@ export async function processCanonicalRecipientPreparationTick(
     let priority={examined:0,prepared:0};
     // Candidate retrieval only: this does not admit all stored addresses. A separate keyset revisits
     // current bindings without waiting days for the population cursor to reach newly linked, high-ID
-    // recipients. Held or unchanged candidates cost little, so the lane keeps taking pages while
-    // time remains (bounded) instead of stopping after one 25-row page; a full priority cycle is then
-    // limited by preparation work, not by one fixed page per tick.
+    // recipients. The lane keeps taking pages while time remains (bounded) instead of stopping after one
+    // 25-row page; a full priority cycle is then limited by preparation work, not by one fixed page per tick.
     const PRIORITY_PAGE=25;
-    const priorityPage=async()=>rows(await db.execute(sql`WITH priority_candidates AS (
-        SELECT c.id FROM contacts c WHERE c.id>${priorityCursor.afterContactId}
-          AND EXISTS(SELECT 1 FROM cr04_enrollment_intents owned WHERE owned.contact_id=c.id
-            AND owned.preparation_state IN ('pending_validation','ready_held'))
-        UNION
-        SELECT c.id FROM contacts c ${bindingJoins}
+    // The lane exists to reach recipients that have NO live preparation yet (newly linked, high-ID uploads). Contacts
+    // that already hold a pending_validation/ready_held intent are not candidates here: re-qualifying each of them cost
+    // 2-5 seconds per cycle and consumed the lane's whole window on work that the completion, stale-package and population
+    // lanes already own (answered validations, superseded packages, retirement of changed facts).
+    const priorityPage=async()=>rows(await db.execute(sql`SELECT c.id,FALSE AS has_preparation
+        FROM contacts c ${bindingJoins}
         WHERE c.id>${priorityCursor.afterContactId} AND c.record_class='production'
           AND c.archived_at IS NULL AND c.do_not_contact IS NOT TRUE
           AND b.record_class='canonical' AND c.email IS NOT NULL
+          AND NOT EXISTS(SELECT 1 FROM cr04_enrollment_intents owned WHERE owned.contact_id=c.id
+            AND owned.preparation_state IN ('pending_validation','ready_held'))
           AND EXISTS(SELECT 1 FROM contact_business_link_decisions independent
             WHERE independent.contact_id=c.id AND independent.business_id=b.id
               AND independent.decision='verified' AND independent.superseded_at IS NULL)
-      ) SELECT c.id,EXISTS (
-          SELECT 1 FROM cr04_enrollment_intents owned WHERE owned.contact_id=c.id
-            AND owned.preparation_state IN ('pending_validation','ready_held')) AS has_preparation
-        FROM priority_candidates c
+        GROUP BY c.id
         ORDER BY c.id LIMIT ${PRIORITY_PAGE}`));
     let priorityPages=0;
     // The priority lane takes at most this share of the tick, so population coverage keeps moving.

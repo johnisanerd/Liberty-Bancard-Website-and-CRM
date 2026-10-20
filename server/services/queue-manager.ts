@@ -2820,14 +2820,20 @@ export class QueueManager {
             let lastPriorityExamined=0;
             // The requested time budget also bounds starting further recipient-selection passes (a started pass finishes);
             // at least one pass always runs, and the old 10-minute ceiling can no longer exceed the request.
-            const {preparationDeadlineMs,maxPreparationPasses}=backlogPassBounds(priorityRequest);
+            const {preparationDeadlineMs,maxPreparationPasses:requestedPasses}=backlogPassBounds(priorityRequest);
+            const SCHEDULED_PREPARATION_MAX_MS=6*60_000;
+            const maxPreparationPasses=priorityRequest ? requestedPasses : 4;
             for (let pass=0;pass<maxPreparationPasses;pass++) {
               if (priorityRequest && pass>=1 && Date.now()-preparationStartedAt>=preparationDeadlineMs) break;
               // Keep passing while either slow lane or the priority lane is still making progress.
               if (priorityRequest && pass>=3 && ((lastStaleExamined===0 && lastPriorityExamined===0) || Date.now()-preparationStartedAt>10*60_000)) break;
+              // A scheduled tick also keeps passing while the priority lane is still reaching new recipients, bounded to
+              // a few passes and six minutes, so a freshly uploaded cohort is not limited to one pass per 30 minutes.
+              if (!priorityRequest && pass>=1 && (lastPriorityExamined===0 || Date.now()-preparationStartedAt>SCHEDULED_PREPARATION_MAX_MS)) break;
               // An operator request gives the priority lane a larger guaranteed share than a scheduled tick.
               const preparations=await processCanonicalRecipientPreparationTick({
-                staleBudgetMs:priorityRequest ? 90_000 : 60_000,
+                // Later scheduled passes skip the long stale-package share; the first pass already gave it its window.
+                staleBudgetMs:priorityRequest ? 90_000 : pass===0 ? 60_000 : 30_000,
                 ...(priorityRequest ? {priorityReserveMs:60_000} : {}),
               });
               lastStaleExamined=Number((preparations as any).stalePackage?.examined ?? 0);
