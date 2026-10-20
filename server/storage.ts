@@ -281,7 +281,7 @@ export interface IStorage {
   getCollateralPackets(): Promise<typeof collateralPackets.$inferSelect[]>;
   createCollateralPacket(packet: InsertCollateralPacket): Promise<typeof collateralPackets.$inferSelect>;
 
-  getGhlActivityLogs(contactId?: number): Promise<typeof ghlActivityLog.$inferSelect[]>;
+  getGhlActivityLogs(contactId?: number, options?: { limit?: number }): Promise<typeof ghlActivityLog.$inferSelect[]>;
   createGhlActivityLog(log: InsertGhlActivityLog): Promise<typeof ghlActivityLog.$inferSelect>;
 
   getSlaConfigs(): Promise<typeof slaConfigs.$inferSelect[]>;

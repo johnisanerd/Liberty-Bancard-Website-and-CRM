@@ -140,11 +140,11 @@ import { eq, desc, and, lt, isNull, ne, sql, asc, gte, lte, inArray, or, ilike, 
   }
 
 
-  async getGhlActivityLogs(contactId?: number) {
-    if (contactId) {
-      return await db.select().from(ghlActivityLog).where(eq(ghlActivityLog.contactId, contactId)).orderBy(desc(ghlActivityLog.createdAt));
-    }
-    return await db.select().from(ghlActivityLog).orderBy(desc(ghlActivityLog.createdAt));
+  async getGhlActivityLogs(contactId?: number, options?: { limit?: number }) {
+    const base = db.select().from(ghlActivityLog);
+    const filtered = contactId ? base.where(eq(ghlActivityLog.contactId, contactId)) : base;
+    const ordered = filtered.orderBy(desc(ghlActivityLog.createdAt));
+    return options?.limit ? await ordered.limit(options.limit) : await ordered;
   }
 
 

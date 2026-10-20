@@ -227,7 +227,13 @@ export function registerIntegrationsRoutes(app: Express) {
 
   app.get("/api/ghl/activity", isAuthenticated, async (req, res) => {
     const contactId = req.query.contactId ? (parseId(req.query.contactId as string) ?? undefined) : undefined;
-    const logs = await storage.getGhlActivityLogs(contactId);
+    // The unfiltered log holds tens of thousands of rows; the Settings card only
+    // shows recent activity, so cap the response (default 100, max 500).
+    const requestedLimit = Number.parseInt(String(req.query.limit ?? ""), 10);
+    const limit = Number.isFinite(requestedLimit) && requestedLimit > 0
+      ? Math.min(requestedLimit, 500)
+      : (contactId === undefined ? 100 : undefined);
+    const logs = await storage.getGhlActivityLogs(contactId, limit ? { limit } : undefined);
     res.json(logs);
   });
 
