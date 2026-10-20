@@ -392,6 +392,12 @@ const RAW_SUITE_MANIFEST: SuiteManifestDefinition[] = [
     providerDenial: "disposable PostgreSQL with fatal external-network denial; no send or provider operations",
   },
   {
+    name: "Upload-cohort preparation and path cost",
+    script: "scripts/certification/test-preparation-upload-cohort.ts",
+    capability: "deterministic-integration",
+    providerDenial: "disposable PostgreSQL with fatal external-network denial; no send or provider operations",
+  },
+  {
     name: "SFP geography recovery",
     script: "scripts/certification/test-sfp-geography-recovery.ts",
     capability: "deterministic-integration",

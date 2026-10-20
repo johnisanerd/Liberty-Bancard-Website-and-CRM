@@ -4,6 +4,7 @@ import { db } from "../db";
 import { effectiveBusinessVerticalSql } from "@shared/effective-vertical";
 import { contactTargetVerticalSql } from "@shared/contact-vertical-taxonomy";
 import { assertCanonicalPreparationDatabaseGuard,prepareCanonicalRecipient } from "./canonical-recipient-preparation";
+import { resolveGeographyFromCandidates } from "./cro03/sfp-geography-resolver";
 import { claimSfpRuntimeDeploymentOwner,lockCurrentSfpRuntimeOwner } from "./cro03/sfp-provider-operations";
 import { runCanonicalTransaction,boundCanonicalWriteTransaction } from "./canonical-transaction-retry";
 import {assertCanonicalPreparationLease,checkpointCanonicalPreparationLease} from "./canonical-preparation-lease";
@@ -14,6 +15,14 @@ const MAX_PRIORITY_PAGES_PER_TICK=4;
 /** Time each of the two fair-share lanes is guaranteed per pass, whatever the completion and stale-package lanes
  * did before them. Before this reservation both lanes could receive a zero-length window: the slow lanes ran up to
  * the shared deadline first, so the priority cursor sat still for days while the backlog it exists to reach grew. */
+/** Contact uploads completed within this window form the upload cohort that preparation reaches directly. */
+export const UPLOAD_COHORT_WINDOW_DAYS=30;
+/** After a full cohort pass, held contacts (unresolved geography, no program binding) are not re-read for this long. */
+export const UPLOAD_COHORT_REVISIT_HOURS=6;
+const COHORT_PAGE=25;
+/** Lease/cursor renewal cadence inside qualification; the lease lasts two minutes so this is a wide margin. */
+const CHECKPOINT_EVERY_MS=10_000;
+const EMAIL_SHAPE=/^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 export const PREPARATION_LANE_RESERVES={priorityMs:75_000,populationMs:15_000} as const;
 export type PreparationLane="completion"|"stale"|"population"|"priority";
 /** Pure scheduling rule for one lane's processing window (an absolute epoch-millisecond deadline).
@@ -38,14 +47,20 @@ const rows=(result:any):any[]=>result?.rows ?? result ?? [];
 type Cursor={afterContactId:number;cycles:number;scanned:number;prepared:number;held:number;
   reasons:Record<string,number>;leaseToken:string|null;leaseUntil:string|null;lastCycleAt:string|null;
   priority?:{afterContactId:number;cycles:number;scanned:number;prepared:number;held:number;
-    reasons:Record<string,number>;lastCycleAt:string|null}};
+    reasons:Record<string,number>;lastCycleAt:string|null};
+  cohort?:{afterContactId:number;cycles:number;scanned:number;prepared:number;held:number;
+    reasons:Record<string,number>;lastCycleAt:string|null};};
 
 /** Local selection only. Uses the existing published owner, enrollment ledger
  * and queue tick. Provider pauses never gate this pass; it cannot send or spend. */
 export async function processCanonicalRecipientPreparationTick(
   budget:{maxPopulationPages?:number;staleBudgetMs?:number;priorityReserveMs?:number;populationReserveMs?:number;
     /** Base length of the shared pass window before the stale extra and lane reserves; certification only. */
-    passBaseMs?:number}={},
+    passBaseMs?:number;
+    /** Run only the upload-cohort lane (local recovery scheduling); the other lanes and their cursors are untouched. */
+    uploadCohortOnly?:boolean;
+    /** Time window for the cohort-only run. */
+    cohortBudgetMs?:number}={},
 ) {
   const priorityReserveMs=budget.priorityReserveMs ?? PREPARATION_LANE_RESERVES.priorityMs;
   const populationReserveMs=budget.populationReserveMs ?? PREPARATION_LANE_RESERVES.populationMs;
@@ -54,6 +69,10 @@ export async function processCanonicalRecipientPreparationTick(
       !Number.isInteger(populationReserveMs) || populationReserveMs<0 || populationReserveMs>120_000 ||
       !Number.isInteger(passBaseMs) || passBaseMs<1_000 || passBaseMs>300_000) {
     throw new Error("CANONICAL_PREPARATION_INVALID_LANE_RESERVE");
+  }
+  const cohortBudgetMs=budget.cohortBudgetMs ?? 4*60_000;
+  if (!Number.isInteger(cohortBudgetMs) || cohortBudgetMs<1_000 || cohortBudgetMs>10*60_000) {
+    throw new Error("CANONICAL_PREPARATION_INVALID_COHORT_BUDGET");
   }
   const maxPopulationPages=budget.maxPopulationPages ?? 20;
   if (!Number.isInteger(maxPopulationPages) || maxPopulationPages<1 || maxPopulationPages>20) {
@@ -92,6 +111,8 @@ export async function processCanonicalRecipientPreparationTick(
   const state=claimed;
   state.priority ??= {afterContactId:0,cycles:0,scanned:0,prepared:0,held:0,reasons:{},lastCycleAt:null};
   const priorityCursor=state.priority;
+  state.cohort ??= {afterContactId:0,cycles:0,scanned:0,prepared:0,held:0,reasons:{},lastCycleAt:null};
+  const cohortCursor=state.cohort;
   const guard=async(tx:any)=>{
     await fence(tx);
     await assertCanonicalPreparationLease(tx,KEY,token);
@@ -119,13 +140,19 @@ export async function processCanonicalRecipientPreparationTick(
           AND ${sql.raw(contactTargetVerticalSql("pkg.vertical"))}=${sql.raw(effectiveBusinessVerticalSql("b"))})
     )`;
   // Diagnostic stopwatch per lane (milliseconds). Read-only observation of where a tick spends its time.
-  const timingsByLane:Record<string,Record<string,number>>={completion:{},stale:{},priority:{},population:{}};
+  const timingsByLane:Record<string,Record<string,number>>={completion:{},stale:{},priority:{},population:{},cohort:{}};
   let active=timingsByLane.population;
   const timed=async<T>(phase:string,work:()=>Promise<T>):Promise<T>=>{
     const startedAt=Date.now();
     try {return await work();} finally {active[phase]=(active[phase] ?? 0)+Date.now()-startedAt;}
   };
-  const processPage=async(contacts:any[],progress:NonNullable<Cursor["priority"]>,pageDeadline=deadline)=>{
+  // Renew the lease/cursor at most this often. Each renewal is a full guarded transaction, and qualification used to
+  // pay two of them per recipient (plus one more after every prepared contact).
+  const throttledCheckpoint=async()=>{
+    if (Date.now()-lastCheckpointAt>=CHECKPOINT_EVERY_MS) await timed("worker_checkpoint",checkpoint);
+  };
+  const processPage=async(contacts:any[],progress:NonNullable<Cursor["priority"]>,pageDeadline=deadline,
+    onOutcome?:(contactId:number,prepared:boolean,reason:string|null)=>void)=>{
     let examined=0,prepared=0;
     const laneTimings=active;
     // This is candidate retrieval, never write authority. Unbound contacts need
@@ -147,12 +174,45 @@ export async function processCanonicalRecipientPreparationTick(
       programs.set(programId,[...(programs.get(programId) ?? []),Number(binding.sequence_id)]);
       bindingsByContact.set(contactId,programs);
     }
+    // Local pre-screen, one read per page. A contact whose own business has no verified relationship, no resolvable
+    // in-territory geography or no usable address can only end in the same no-write hold the preparation writer
+    // reaches after its (expensive) qualification and lock phases, so the page records that hold directly. The writer
+    // still performs every one of these checks under lock for any contact that passes the screen.
+    const screenedHold=new Map<number,string>();
+    if (bindingsByContact.size) {
+      const facts=rows(await timed("screen_query",()=>db.execute(sql`
+        SELECT c.id AS contact_id,c.email,b.city,b.state,b.postal_code,
+          EXISTS(SELECT 1 FROM contact_business_link_decisions l WHERE l.contact_id=c.id AND l.business_id=c.business_id
+            AND l.decision='verified' AND l.superseded_at IS NULL) AS has_link,
+          COALESCE((SELECT jsonb_agg(jsonb_build_object('id',bl.id,'is_primary',bl.is_primary,'city',bl.city,
+              'state',bl.state,'postal_code',bl.postal_code,'county_fips',bl.county_fips) ORDER BY bl.id)
+            FROM business_locations bl WHERE bl.business_id=b.id),'[]'::jsonb) AS locations
+        FROM contacts c JOIN businesses b ON b.id=c.business_id AND b.record_class='canonical'
+        WHERE c.id IN (${sql.join([...bindingsByContact.keys()].map(id=>sql`${id}`),sql`,`)})`)));
+      for (const fact of facts) {
+        if (fact.has_link!==true) {screenedHold.set(Number(fact.contact_id),"INDEPENDENT_BUSINESS_AFFILIATION_REQUIRED");continue;}
+        const locations:any[]=Array.isArray(fact.locations) ? fact.locations : [];
+        const geography=resolveGeographyFromCandidates([
+          ...locations.map(location=>({
+            locationId:Number(location.id),isPrimary:location.is_primary===true,
+            city:location.city,state:location.state,postalCode:location.postal_code,countyFips:location.county_fips,
+          })),
+          {locationId:null,isPrimary:false,city:fact.city,state:fact.state,postalCode:fact.postal_code,countyFips:null},
+        ]);
+        if (!geography.eligible || !geography.countyFips) {
+          screenedHold.set(Number(fact.contact_id),"CURRENT_GEOGRAPHY_UNRESOLVED_OR_EXCLUDED");continue;
+        }
+        if (!EMAIL_SHAPE.test(String(fact.email ?? "").trim().toLowerCase())) {
+          screenedHold.set(Number(fact.contact_id),"AVAILABLE_EMAIL_REQUIRED");
+        }
+      }
+    }
     for (const contact of contacts) {
       if (Date.now()>=pageDeadline) break;
       // Unbound population rows do not regain a per-row authority transaction.
       // Renew between bounded pages/time slices; actual effects checkpoint
       // independently before/after qualification and after their commits.
-      if (Date.now()-lastCheckpointAt>=30_000) await timed("worker_checkpoint",checkpoint);
+      await throttledCheckpoint();
       // Include unavailable/changed recipients: stale paused slots must retire,
       // so suppressions and affiliation changes cannot strand the allowance.
       if (contact.has_preparation===true) await timed("retirement",()=>runCanonicalTransaction("preparation_retirement",()=>db.transaction(async tx=>{
@@ -186,14 +246,16 @@ export async function processCanonicalRecipientPreparationTick(
       })));
       const programs=bindingsByContact.get(Number(contact.id)) ?? new Map<string,number[]>();
       let advanced=false,reason="NO_CURRENT_PROGRAM_BINDING_OR_AVAILABLE_EMAIL";
-      for (const [programId,sequences] of programs) {
+      const screened=screenedHold.get(Number(contact.id));
+      if (screened) reason=screened;
+      else for (const [programId,sequences] of programs) {
         if (Date.now()>=pageDeadline) break;
         if (sequences.length!==1) {reason="PROGRAM_BINDING_AMBIGUOUS";continue;}
         try {
           const result=await prepareCanonicalRecipient({
             contactId:Number(contact.id),programId,sequenceId:sequences[0],
             actor:{role:"admin",actorId,email:null},source:"canonical_automatic_selection",beforeWrite:guard,
-            checkpoint,timings:laneTimings,
+            checkpoint:throttledCheckpoint,timings:laneTimings,
           });
           if (result.enrollmentId) {advanced=true;prepared++;}
           else reason=result.reasonCode;
@@ -207,13 +269,64 @@ export async function processCanonicalRecipientPreparationTick(
       laneTimings.contacts=(laneTimings.contacts ?? 0)+1;
       if (advanced) progress.prepared++;
       else {progress.held++;progress.reasons[reason]=(progress.reasons[reason] ?? 0)+1;}
-      if (advanced || contact.has_preparation===true || Date.now()-lastCheckpointAt>=30_000) await timed("worker_checkpoint",checkpoint);
+      onOutcome?.(Number(contact.id),advanced,advanced ? null : reason);
+      await throttledCheckpoint();
     }
     await timed("worker_checkpoint",checkpoint);
     return {examined,prepared};
   };
+  // Upload-cohort lane. Contacts from contact uploads completed within UPLOAD_COHORT_WINDOW_DAYS that have never been
+  // examined (no preparation row of any state) are reached directly instead of waiting for an unrelated ID-ordered
+  // sweep. It has its own cursor, so the population and priority cursors are never moved or reset; it uses the same
+  // page processor, therefore the same canonical writer, guards and lease. Contacts that end in a no-write hold
+  // (no program binding, unresolved geography, ...) get a durable per-contact hold record, because they have no
+  // preparation row to show why they stopped.
+  const runCohortLane=async(laneDeadlineAt:number)=>{
+    const out={examined:0,prepared:0,held:0,pages:0,more:false,cooldown:false};
+    const cooldownMs=UPLOAD_COHORT_REVISIT_HOURS*3_600_000;
+    if (cohortCursor.afterContactId===0 && cohortCursor.lastCycleAt
+        && Date.now()-Date.parse(cohortCursor.lastCycleAt)<cooldownMs) {out.cooldown=true;return out;}
+    while (Date.now()<laneDeadlineAt) {
+      const page=rows(await db.execute(sql`SELECT m.contact_id AS id,FALSE AS has_preparation FROM (
+          SELECT DISTINCT cse.contact_id FROM contact_source_events cse
+          JOIN import_executions e ON e.id=cse.import_execution_id AND e.import_type='csv_contact'
+            AND e.status='completed' AND e.completed_at>NOW()-(${UPLOAD_COHORT_WINDOW_DAYS} * INTERVAL '1 day')
+          WHERE cse.contact_id>${cohortCursor.afterContactId}) m
+        JOIN contacts c ON c.id=m.contact_id AND c.record_class='production' AND c.archived_at IS NULL
+        WHERE NOT EXISTS(SELECT 1 FROM cr04_enrollment_intents i WHERE i.contact_id=c.id)
+        ORDER BY m.contact_id LIMIT ${COHORT_PAGE}`));
+      active=timingsByLane.cohort;
+      const holds:Array<{id:number;reason:string}>=[];
+      const result=await processPage(page,cohortCursor,laneDeadlineAt,(contactId,advanced,reason)=>{
+        if (!advanced && reason) holds.push({id:contactId,reason});
+      });
+      out.pages++;out.examined+=result.examined;out.prepared+=result.prepared;out.held+=holds.length;
+      if (holds.length) {
+        await timed("hold_records",()=>db.execute(sql`
+          INSERT INTO audit_logs(user_id,action,entity_type,entity_id,entity_key,details,actor_type,actor_id)
+          SELECT 'system:canonical-recipient-preparation','canonical_preparation.upload_cohort_hold','contact',v.id,v.reason,
+            jsonb_build_object('contactId',v.id,'reason',v.reason,'lane','upload_cohort','cohortCycle',${cohortCursor.cycles}::int),
+            'system','canonical-recipient-preparation'
+          FROM (VALUES ${sql.join(holds.map(h=>sql`(${h.id}::integer,${h.reason}::text)`),sql`, `)}) v(id,reason)
+          WHERE NOT EXISTS(SELECT 1 FROM audit_logs a WHERE a.action='canonical_preparation.upload_cohort_hold'
+            AND a.entity_id=v.id AND a.entity_key=v.reason AND a.created_at>NOW()-INTERVAL '24 hours')`));
+      }
+      if (result.examined===page.length && page.length<COHORT_PAGE) {
+        cohortCursor.afterContactId=0;cohortCursor.cycles++;cohortCursor.lastCycleAt=new Date().toISOString();
+        return out;
+      }
+      if (result.examined!==page.length) {out.more=true;return out;} // deadline reached inside the page
+    }
+    out.more=true;
+    return out;
+  };
   let failed=false;
   try {
+    if (budget.uploadCohortOnly) {
+      const cohort=await runCohortLane(Date.now()+cohortBudgetMs);
+      return {ran:true,uploadCohortOnly:true,cohortCycles:cohortCursor.cycles,uploadCohort:cohort,
+        timingsMs:Object.fromEntries(Object.entries(timingsByLane).filter(([,v])=>Object.keys(v).length>0))};
+    }
     const populationPage=async()=>rows(await db.execute(sql`SELECT c.id,EXISTS (
         SELECT 1 FROM cr04_enrollment_intents owned WHERE owned.contact_id=c.id
           AND owned.preparation_state IN ('pending_validation','ready_held')) AS has_preparation
@@ -301,6 +414,8 @@ export async function processCanonicalRecipientPreparationTick(
     let priorityPages=0;
     // The priority lane takes at most this share of the tick, so population coverage keeps moving.
     const priorityDeadline=laneDeadline("priority",Math.max(50_000,priorityReserveMs));
+    // The upload cohort goes first inside that window (about two thirds of it); the ID-ordered lane keeps the rest.
+    const cohort=await runCohortLane(Date.now()+Math.floor((priorityDeadline-Date.now())*0.65));
     while (Date.now()<priorityDeadline && priorityPages<MAX_PRIORITY_PAGES_PER_TICK) {
       const selected=await priorityPage();
       active=timingsByLane.priority;
@@ -331,7 +446,7 @@ export async function processCanonicalRecipientPreparationTick(
         }
       }
     }
-    return {ran:true,...population,populationPages,cycles:state.cycles,priority:{...priority,pages:priorityPages},completion,stalePackage,
+    return {ran:true,...population,populationPages,cycles:state.cycles,priority:{...priority,pages:priorityPages},uploadCohort:cohort,completion,stalePackage,
       timingsMs:Object.fromEntries(Object.entries(timingsByLane).filter(([,v])=>Object.keys(v).length>0))};
   } catch (error) {
     failed=true;

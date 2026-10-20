@@ -92,10 +92,17 @@ async function prepareCanonicalRecipientPass(input: CanonicalPreparationInput) {
     preparationState: "exception" as PreparationState,
   });
   let mark = Date.now();
+  // Certification-only round-trip counter; absent in production, so it costs nothing there.
+  const counter = (globalThis as any).__preparationQueryCounter as { n: number } | undefined;
+  let markQueries = counter?.n ?? 0;
   const lap = (phase: string) => {
     const now = Date.now();
-    if (input.timings) input.timings[phase] = (input.timings[phase] ?? 0) + now - mark;
+    if (input.timings) {
+      input.timings[phase] = (input.timings[phase] ?? 0) + now - mark;
+      if (counter) input.timings[`q_${phase}`] = (input.timings[`q_${phase}`] ?? 0) + counter.n - markQueries;
+    }
     mark = now;
+    markQueries = counter?.n ?? 0;
   };
   if (!Number.isSafeInteger(input.contactId) || input.contactId < 1 ||
       !Number.isSafeInteger(input.sequenceId) || input.sequenceId < 1) {
@@ -124,7 +131,7 @@ async function prepareCanonicalRecipientPass(input: CanonicalPreparationInput) {
 
   lap("peek");
   const txStartedAt = Date.now();
-  const innerBefore = input.timings ? Object.values(input.timings).reduce((a, b) => a + b, 0) : 0;
+  const innerBefore = input.timings ? Object.entries(input.timings).reduce((a, [k, b]) => k.startsWith("q_") ? a : a + b, 0) : 0;
   const committed = await runCanonicalTransaction("preparation_commit", () => db.transaction(async tx => {
     lap("tx_open");
     await boundCanonicalWriteTransaction(tx);
@@ -416,7 +423,7 @@ async function prepareCanonicalRecipientPass(input: CanonicalPreparationInput) {
   }));
   if (input.timings) {
     // Whatever the transaction spent beyond its measured phases (BEGIN/COMMIT, deferred constraint and trigger work).
-    const innerAfter = Object.values(input.timings).reduce((a, b) => a + b, 0);
+    const innerAfter = Object.entries(input.timings).reduce((a, [k, b]) => k.startsWith("q_") ? a : a + b, 0);
     input.timings.tx_commit_and_unmeasured = (input.timings.tx_commit_and_unmeasured ?? 0)
       + Math.max(0, Date.now() - txStartedAt - (innerAfter - innerBefore));
   }

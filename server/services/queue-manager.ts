@@ -2731,6 +2731,21 @@ export class QueueManager {
           try { uploadsResumed = await resumeExpiredCsvImports(processPersistedCsvImport); }
           catch (error) { uploadFailure = error; uploadFailed = true; }
           if (uploadsResumed) console.log(`[CsvImportRecovery] Resumed ${uploadsResumed} expired executions`);
+          // Local preparation of recently uploaded contacts. Runs on this serial local-only schedule so a new upload's
+          // outstanding contacts drain without waiting for the 30-minute discovery tick (which also keeps running the
+          // same lane). No provider tick, spend or send is reachable from here; it uses the same preparation lease.
+          let uploadCohortMore=false;
+          try {
+            const { processCanonicalRecipientPreparationTick } = await import("./canonical-recipient-preparation-worker");
+            const cohortRun: any = await processCanonicalRecipientPreparationTick({ uploadCohortOnly: true, cohortBudgetMs: 4 * 60_000 });
+            if (cohortRun.ran && cohortRun.uploadCohort) {
+              if (cohortRun.uploadCohort.pages > 0) console.log(`[UploadCohortPreparation] ${JSON.stringify({
+                ...cohortRun.uploadCohort, cohortCycles: cohortRun.cohortCycles })}`);
+              uploadCohortMore = cohortRun.uploadCohort.more === true;
+            }
+          } catch (error: any) {
+            console.error("[UploadCohortPreparation] held", safeCanonicalEnrichmentFailureDiagnostics(error));
+          }
           if (linkingFailed) throw new Error("CANONICAL_IMPORT_INDEPENDENT_LINKING_FAILED",
             {cause:{linkingFailure,retainedFailure,uploadFailure}});
           if (retainedFailed && uploadFailed)
@@ -2738,7 +2753,7 @@ export class QueueManager {
               {cause:{originalError:retainedFailure,cleanupError:uploadFailure}});
           if (retainedFailed) throw retainedFailure;
           if (uploadFailed) throw uploadFailure;
-          if (recovered?.ran && recovered.budgetExhausted) {
+          if ((recovered?.ran && recovered.budgetExhausted) || uploadCohortMore) {
             const { canonicalImportContinuationOptions } = await import("./canonical-import-recovery-scheduling");
             // Serial continuation: no extra concurrency, no provider work and
             // no ten-minute wait between batches. Deduplicate repeat-triggered
