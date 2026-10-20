@@ -19,6 +19,8 @@ const MAX_PRIORITY_PAGES_PER_TICK=4;
 export const UPLOAD_COHORT_WINDOW_DAYS=30;
 /** After a full cohort pass, held contacts (unresolved geography, no program binding) are not re-read for this long. */
 export const UPLOAD_COHORT_REVISIT_HOURS=6;
+/** After a full answered-validation drain cycle, recipients that stayed pending are not re-read for this long. */
+export const COMPLETION_DRAIN_REVISIT_MINUTES=10;
 const COHORT_PAGE=25;
 /** Lease/cursor renewal cadence inside qualification; the lease lasts two minutes so this is a wide margin. */
 const CHECKPOINT_EVERY_MS=10_000;
@@ -49,6 +51,8 @@ type Cursor={afterContactId:number;cycles:number;scanned:number;prepared:number;
   priority?:{afterContactId:number;cycles:number;scanned:number;prepared:number;held:number;
     reasons:Record<string,number>;lastCycleAt:string|null};
   cohort?:{afterContactId:number;cycles:number;scanned:number;prepared:number;held:number;
+    reasons:Record<string,number>;lastCycleAt:string|null};
+  completion?:{afterContactId:number;cycles:number;scanned:number;prepared:number;held:number;
     reasons:Record<string,number>;lastCycleAt:string|null};};
 
 /** Local selection only. Uses the existing published owner, enrollment ledger
@@ -113,6 +117,8 @@ export async function processCanonicalRecipientPreparationTick(
   const priorityCursor=state.priority;
   state.cohort ??= {afterContactId:0,cycles:0,scanned:0,prepared:0,held:0,reasons:{},lastCycleAt:null};
   const cohortCursor=state.cohort;
+  state.completion ??= {afterContactId:0,cycles:0,scanned:0,prepared:0,held:0,reasons:{},lastCycleAt:null};
+  const completionCursor=state.completion;
   const guard=async(tx:any)=>{
     await fence(tx);
     await assertCanonicalPreparationLease(tx,KEY,token);
@@ -320,11 +326,44 @@ export async function processCanonicalRecipientPreparationTick(
     out.more=true;
     return out;
   };
+  // Answered-validation drain (local recovery schedule only). A provider answer is stored against the address, but the
+  // pending recipient advances only when preparation revisits its contact, and the ordinary tick's completion lane
+  // revisits a random slice of about six per half hour. This keyset drain revisits every pending recipient that already
+  // has a definite stored answer, through the same page processor and writer, so valid answers become ready_held and
+  // invalid ones rejected without waiting. It reads stored answers only: it can never request a validation.
+  const runCompletionDrain=async(laneDeadlineAt:number)=>{
+    const out={examined:0,prepared:0,pages:0,more:false,cooldown:false};
+    if (completionCursor.afterContactId===0 && completionCursor.lastCycleAt
+        && Date.now()-Date.parse(completionCursor.lastCycleAt)<COMPLETION_DRAIN_REVISIT_MINUTES*60_000) {
+      out.cooldown=true;return out;
+    }
+    while (Date.now()<laneDeadlineAt) {
+      const page=rows(await db.execute(sql`SELECT answered.id,TRUE AS has_preparation FROM (
+          SELECT DISTINCT i.contact_id AS id FROM cr04_enrollment_intents i
+          JOIN provider_observations po ON po.provider='zerobounce' AND po.email_token_hash=i.normalized_email_hash
+            AND po.retryable=FALSE AND po.outcome IN ('valid','invalid')
+          WHERE i.program_id IS NOT NULL AND i.preparation_state='pending_validation'
+            AND i.contact_id>${completionCursor.afterContactId}) answered
+        ORDER BY answered.id LIMIT ${COHORT_PAGE}`));
+      active=timingsByLane.completion;
+      const result=await processPage(page,completionCursor,laneDeadlineAt);
+      out.pages++;out.examined+=result.examined;out.prepared+=result.prepared;
+      if (result.examined===page.length && page.length<COHORT_PAGE) {
+        completionCursor.afterContactId=0;completionCursor.cycles++;completionCursor.lastCycleAt=new Date().toISOString();
+        return out;
+      }
+      if (result.examined!==page.length) {out.more=true;return out;}
+    }
+    out.more=true;
+    return out;
+  };
   let failed=false;
   try {
     if (budget.uploadCohortOnly) {
-      const cohort=await runCohortLane(Date.now()+cohortBudgetMs);
-      return {ran:true,uploadCohortOnly:true,cohortCycles:cohortCursor.cycles,uploadCohort:cohort,
+      const endsAt=Date.now()+cohortBudgetMs;
+      const cohort=await runCohortLane(endsAt);
+      const completionDrain=await runCompletionDrain(endsAt);
+      return {ran:true,uploadCohortOnly:true,cohortCycles:cohortCursor.cycles,uploadCohort:cohort,completionDrain,
         timingsMs:Object.fromEntries(Object.entries(timingsByLane).filter(([,v])=>Object.keys(v).length>0))};
     }
     const populationPage=async()=>rows(await db.execute(sql`SELECT c.id,EXISTS (

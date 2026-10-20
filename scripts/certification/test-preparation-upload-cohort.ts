@@ -9,6 +9,7 @@ applyCertificationProviderDenyBoundary({ fatal: true });
 const { pool } = await import("../../server/db");
 const pg = (await import("pg")).default;
 const { prepareCanonicalRecipient } = await import("../../server/services/canonical-recipient-preparation");
+const { processValidationIntent } = await import("../../server/services/provider-readiness-control");
 const { previewContactBusinessSystemLinks, applyContactBusinessSystemLink } =
   await import("../../server/services/contact-business-system-links");
 const { processCanonicalRecipientPreparationTick } =
@@ -179,6 +180,39 @@ try {
   console.log(JSON.stringify({ profile: "eligible recipient, per contact", queries: phaseB.queries / eligible.length,
     dbMs: phaseB.dbMs / eligible.length, wallMs: phaseB.wallMs / eligible.length, laneTimingsMs: b.timingsMs?.cohort }));
 
+  // ---- Answered-validation drain: stored provider answers advance pending recipients; nothing is requested. ----
+  {
+    await pool.query("UPDATE provider_controls SET enabled=TRUE,circuit_state='closed' WHERE provider='zerobounce'");
+    const answers: Array<[string | null, number]> = [];
+    for (const status of ["valid", "valid", "invalid", null] as const) {
+      const contactId = await fixture("eligible", null);
+      await prepareCanonicalRecipient({ contactId, sequenceId, programId, actor, source: prefix });
+      if (status) {
+        const intent = (await pool.query("SELECT id FROM validation_intents WHERE contact_id=$1", [contactId])).rows[0];
+        check(await processValidationIntent(intent.id, { verifyEmail: async () => ({
+          provider: "zerobounce", status, verifiedAt: new Date().toISOString(), outcome: "completed" }) as any }) === "completed",
+          `Injected ${status} answer stored for a pending recipient`);
+      }
+      answers.push([status, contactId]);
+    }
+    const ids = answers.map(([, id]) => id);
+    const stateOf = async (id: number) => (await pool.query(
+      "SELECT preparation_state s FROM cr04_enrollment_intents WHERE contact_id=$1", [id])).rows[0]?.s;
+    check((await Promise.all(ids.map(stateOf))).every(state => state === "pending_validation"), "All four wait in pending_validation");
+    await pool.query(`UPDATE system_settings SET value=jsonb_set(value,'{completion,lastCycleAt}','"2020-01-01T00:00:00Z"'::jsonb)
+      WHERE key='canonical_recipient_preparation_cursor'`);
+    const requestsBefore = Number((await pool.query("SELECT count(*)::int n FROM provider_operations")).rows[0].n);
+    const drain: any = await processCanonicalRecipientPreparationTick({ uploadCohortOnly: true, cohortBudgetMs: 120_000 });
+    check(drain.completionDrain.examined >= 3 && drain.completionDrain.cooldown === false, "The drain revisits recipients that hold a stored answer");
+    check(await stateOf(answers[0][1]) === "ready_held" && await stateOf(answers[1][1]) === "ready_held",
+      "Valid stored answers move recipients to ready_held");
+    check(await stateOf(answers[2][1]) === "rejected", "An invalid stored answer rejects the recipient");
+    check(await stateOf(answers[3][1]) === "pending_validation", "A recipient with no answer is left pending and unrequested");
+    check(Number((await pool.query("SELECT count(*)::int n FROM provider_operations")).rows[0].n) === requestsBefore,
+      "The drain created no provider operation");
+    const again: any = await processCanonicalRecipientPreparationTick({ uploadCohortOnly: true, cohortBudgetMs: 30_000 });
+    check(again.completionDrain.cooldown === true && again.completionDrain.examined === 0, "A finished drain cycle waits before re-reading");
+  }
   {
     const { evaluateCr04ChannelQualification } = await import("../../server/services/cr04-cohort-ready-authority");
     const probe = await fixture("eligible", null);

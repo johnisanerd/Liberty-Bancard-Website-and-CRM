@@ -2739,9 +2739,9 @@ export class QueueManager {
             const { processCanonicalRecipientPreparationTick } = await import("./canonical-recipient-preparation-worker");
             const cohortRun: any = await processCanonicalRecipientPreparationTick({ uploadCohortOnly: true, cohortBudgetMs: 4 * 60_000 });
             if (cohortRun.ran && cohortRun.uploadCohort) {
-              if (cohortRun.uploadCohort.pages > 0) console.log(`[UploadCohortPreparation] ${JSON.stringify({
-                ...cohortRun.uploadCohort, cohortCycles: cohortRun.cohortCycles })}`);
-              uploadCohortMore = cohortRun.uploadCohort.more === true;
+              if (cohortRun.uploadCohort.pages > 0 || cohortRun.completionDrain?.pages > 0) console.log(`[UploadCohortPreparation] ${JSON.stringify({
+                ...cohortRun.uploadCohort, cohortCycles: cohortRun.cohortCycles, completionDrain: cohortRun.completionDrain })}`);
+              uploadCohortMore = cohortRun.uploadCohort.more === true || cohortRun.completionDrain?.more === true;
             }
           } catch (error: any) {
             console.error("[UploadCohortPreparation] held", safeCanonicalEnrichmentFailureDiagnostics(error));
