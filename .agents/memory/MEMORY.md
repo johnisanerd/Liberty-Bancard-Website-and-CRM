@@ -171,3 +171,4 @@
 - [Disposable runner roster](disposable-runner-roster.md) — register certs in CERTIFICATION_FIXTURE_SUITES to run them on a disposable DB; restarts kill background runs.
 - [Private browser suite pitfalls](private-browser-suite-pitfalls.md) — rebuild before browser suites (identity covers scripts/); narrow viewports need prefer_desktop; wait on test IDs.
 - [Full roster run pitfalls](full-roster-run-pitfalls.md) — roster dirties docs/ evidence; rerun failures clean and diff against a baseline worktree.
+- [Recipient-selection lane starvation](recipient-selection-lane-starvation.md) — priority runs do not reach new uploads; staged-email businesses gated by geography; projection tick timing out.
