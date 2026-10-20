@@ -30,7 +30,7 @@ function isPage(value: unknown): value is DeadLetterPage {
 }
 
 /** Background-job failure alerts, read newest first through the paged history route. */
-export function DeadLetterHistory({ counts }: { counts?: { pending: number; archived: number; total: number } }) {
+export function DeadLetterHistory({ counts }: { counts?: { pending: number } }) {
   const [more, setMore] = useState<DeadLetterEvent[]>([]);
   const [cursor, setCursor] = useState<string | null | undefined>(undefined);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -73,7 +73,7 @@ export function DeadLetterHistory({ counts }: { counts?: { pending: number; arch
         <CardTitle className="text-base">Queue failure alerts</CardTitle>
         <p className="text-sm text-muted-foreground" data-testid="text-dead-letter-counts">
           Background jobs that failed repeatedly. Kept as history and not part of the review list above.
-          {counts ? ` ${counts.pending} pending, ${counts.archived} archived, ${counts.total} total.` : ""}
+          {counts ? ` ${counts.pending} pending.` : ""}
         </p>
       </CardHeader>
       <CardContent className="space-y-3">

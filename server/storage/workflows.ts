@@ -248,13 +248,12 @@ import { sanitizeDeadLetterEvent } from "../services/audit-sanitizer";
       .groupBy(reviewQueue.sourceType, reviewQueue.status);
     let pending = 0;
     let approved = 0;
-    const deadLetter = { pending: 0, archived: 0, total: 0 };
+    // Archived dead letters are intentionally not counted or shown anywhere.
+    const deadLetter = { pending: 0 };
     for (const row of result) {
       const n = Number(row.cnt);
       if (row.sourceType === "dead_letter_job") {
-        deadLetter.total += n;
         if (row.status === "pending") deadLetter.pending += n;
-        else if (row.status === "archived") deadLetter.archived += n;
         continue;
       }
       if (row.status === "pending") pending += n;
@@ -313,6 +312,7 @@ import { sanitizeDeadLetterEvent } from "../services/audit-sanitizer";
     const limit = Math.min(Math.max(Math.floor(opts.limit ?? 50), 1), 100);
     const conditions = [
       eq(reviewQueue.sourceType, "dead_letter_job"),
+      ne(reviewQueue.status, "archived"),
       lte(reviewQueue.id, opts.snapshotId),
     ];
     if (opts.afterId != null) conditions.push(lt(reviewQueue.id, opts.afterId));

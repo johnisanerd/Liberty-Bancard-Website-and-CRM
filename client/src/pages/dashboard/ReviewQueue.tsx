@@ -290,7 +290,7 @@ export default function ReviewQueue() {
     staleTime: Infinity,
   });
 
-  const { data: aggregates,isLoading:aggregatesLoading,isError:aggregatesError,refetch:retryAggregates } = useQuery<{ count: number; pending: number; approved: number; total: number; deadLetter?: { pending: number; archived: number; total: number } }>({
+  const { data: aggregates,isLoading:aggregatesLoading,isError:aggregatesError,refetch:retryAggregates } = useQuery<{ count: number; pending: number; approved: number; total: number; deadLetter?: { pending: number } }>({
     queryKey: ["/api/review-queue/pending-count"],
     queryFn:async({signal})=>{
       const response=await fetch("/api/review-queue/pending-count",{credentials:"include",signal});
@@ -555,7 +555,7 @@ export default function ReviewQueue() {
         </Card>
       )}
 
-      {aggregatesAvailable && (aggregates!.deadLetter?.total ?? 0) > 0 && <DeadLetterHistory counts={aggregates!.deadLetter} />}
+      {aggregatesAvailable && (aggregates!.deadLetter?.pending ?? 0) > 0 && <DeadLetterHistory counts={aggregates!.deadLetter} />}
 
       {selectedItem && (
         <Sheet open onOpenChange={open=>{if(!open){setSelectedItem(null);setApproveDialogOpen(false);}}}>

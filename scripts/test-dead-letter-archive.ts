@@ -31,7 +31,7 @@ try{
   check((list.body as any[]).some(r=>r.sourceType==="quiz"),"review list still includes real items");
   const agg=await h.request("manager","GET","/api/review-queue/pending-count");
   check((agg.body as any).pending===1&&(agg.body as any).total===1,"pending/total count only real review items");
-  check((agg.body as any).deadLetter.pending===10&&(agg.body as any).deadLetter.total===10,"dead-letter counts are reported separately");
+  check((agg.body as any).deadLetter.pending===10,"dead-letter counts are reported separately");
   const history=await h.request("manager","GET","/api/review-queue/dead-letter-events?limit=5");
   check(history.status===200&&(history.body as any).events.length===5&&!!(history.body as any).next_cursor,"history route pages dead-letter rows");
 
@@ -57,10 +57,14 @@ try{
   const total=(await db.execute(sql`select count(*)::int n from review_queue where source_type='dead_letter_job'`)).rows[0] as any;
   check(total.n===10,"no dead-letter rows were deleted");
   const agg2=await h.request("manager","GET","/api/review-queue/pending-count");
-  check((agg2.body as any).deadLetter.archived===7&&(agg2.body as any).deadLetter.pending===3,"counts reflect the archive");
+  check((agg2.body as any).deadLetter.pending===3&&!("archived" in (agg2.body as any).deadLetter),"counts show only pending; archived rows are not reported");
   const logged=(await db.execute(sql`select count(*)::int n from audit_logs where action='dead_letter_events_archived'`)).rows[0] as any;
   check(logged.n===1,"one audit log entry for the executed archive");
   const archivedRow=(await db.select().from(reviewQueue).where(eq(reviewQueue.status,"archived")).limit(1))[0];
+  const hist=await h.request("manager","GET","/api/review-queue/dead-letter-events?limit=100");
+  check((hist.body as any).events.length===3&&(hist.body as any).events.every((e:any)=>e.status==="pending"),"history route returns no archived rows");
+  const archivedRead=await h.request("manager","GET",`/api/review-queue/${archivedRow.id}`);
+  check(archivedRead.status===404,"an archived row cannot be read by id");
   const approve=await h.request("admin","POST",`/api/review-queue/${archivedRow.id}/approve`,{});
   check(approve.status===400,"archived items cannot be approved");
   console.log(`Dead-letter archive: PASS (${checks.length} checks)`);

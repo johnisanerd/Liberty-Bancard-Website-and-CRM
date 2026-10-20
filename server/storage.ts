@@ -265,7 +265,7 @@ export interface IStorage {
 
   getReviewQueue(status?: string, options?: { excludeDeadLetters?: boolean }): Promise<import("@shared/schema").ReviewQueueItem[]>;
   getReviewQueuePendingCount(): Promise<number>;
-  getReviewQueueAggregates(): Promise<{ pending: number; approved: number; total: number; deadLetter: { pending: number; archived: number; total: number } }>;
+  getReviewQueueAggregates(): Promise<{ pending: number; approved: number; total: number; deadLetter: { pending: number } }>;
   archiveDeadLetterEvents(input: { queueName: string; jobName?: string; createdBefore: Date; expectedCount: number; dryRun: boolean }): Promise<{ matched: number; archived: number; countMatches: boolean }>;
   getReviewQueueItem(id: number): Promise<import("@shared/schema").ReviewQueueItem | undefined>;
   createReviewQueueItem(data: import("@shared/schema").InsertReviewQueueItem): Promise<import("@shared/schema").ReviewQueueItem>;

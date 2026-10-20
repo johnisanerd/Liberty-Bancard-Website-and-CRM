@@ -131,7 +131,7 @@ export function registerReviewQueueRoutes(app: Express) {
   app.get("/api/review-queue/:id", isDashboardUser, requireRole("admin", "manager"), async (req, res) => {
     try {
       const item = await storage.getReviewQueueItem(Number(req.params.id));
-      if (!item) return res.status(404).json({ message: "Not found" });
+      if (!item || (item.sourceType === "dead_letter_job" && item.status === "archived")) return res.status(404).json({ message: "Not found" });
       res.json(item.sourceType === "dead_letter_job"
         ? {
             ...item,
