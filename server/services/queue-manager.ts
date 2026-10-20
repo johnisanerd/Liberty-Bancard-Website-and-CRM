@@ -2817,14 +2817,21 @@ export class QueueManager {
             // time share; an operator request keeps passing while it is still making progress, bounded to 10 minutes.
             const preparationStartedAt=Date.now();
             let lastStaleExamined=0;
+            let lastPriorityExamined=0;
             // The requested time budget also bounds starting further recipient-selection passes (a started pass finishes);
             // at least one pass always runs, and the old 10-minute ceiling can no longer exceed the request.
             const {preparationDeadlineMs,maxPreparationPasses}=backlogPassBounds(priorityRequest);
             for (let pass=0;pass<maxPreparationPasses;pass++) {
               if (priorityRequest && pass>=1 && Date.now()-preparationStartedAt>=preparationDeadlineMs) break;
-              if (priorityRequest && pass>=3 && (lastStaleExamined===0 || Date.now()-preparationStartedAt>10*60_000)) break;
-              const preparations=await processCanonicalRecipientPreparationTick({staleBudgetMs:priorityRequest ? 90_000 : 60_000});
+              // Keep passing while either slow lane or the priority lane is still making progress.
+              if (priorityRequest && pass>=3 && ((lastStaleExamined===0 && lastPriorityExamined===0) || Date.now()-preparationStartedAt>10*60_000)) break;
+              // An operator request gives the priority lane a larger guaranteed share than a scheduled tick.
+              const preparations=await processCanonicalRecipientPreparationTick({
+                staleBudgetMs:priorityRequest ? 90_000 : 60_000,
+                ...(priorityRequest ? {priorityReserveMs:60_000} : {}),
+              });
               lastStaleExamined=Number((preparations as any).stalePackage?.examined ?? 0);
+              lastPriorityExamined=Number((preparations as any).priority?.examined ?? 0);
               if (preparations.ran) console.log(`[CanonicalRecipientPreparation] ${JSON.stringify(preparations)}`);
               priorityRun.preparationPasses=pass+1;
               if (!preparations.ran) break;

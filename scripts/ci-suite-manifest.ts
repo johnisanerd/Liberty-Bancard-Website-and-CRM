@@ -386,6 +386,24 @@ const RAW_SUITE_MANIFEST: SuiteManifestDefinition[] = [
     providerDenial: "disposable PostgreSQL with fatal external-network denial; no send or provider operations",
   },
   {
+    name: "Recipient preparation lane reservation",
+    script: "scripts/certification/test-recipient-preparation-lane-reserve.ts",
+    capability: "deterministic-integration",
+    providerDenial: "disposable PostgreSQL with fatal external-network denial; no send or provider operations",
+  },
+  {
+    name: "SFP geography recovery",
+    script: "scripts/certification/test-sfp-geography-recovery.ts",
+    capability: "deterministic-integration",
+    providerDenial: "disposable PostgreSQL with fatal external-network denial; website reads are injected, no provider operations",
+  },
+  {
+    name: "Effective vertical projection slicing",
+    script: "scripts/certification/test-effective-vertical-projection-slicing.ts",
+    capability: "deterministic-integration",
+    providerDenial: "disposable PostgreSQL with fatal external-network denial; no send or provider operations",
+  },
+  {
     name:"Audited retained original identity and fair recovery",
     script:"scripts/certification/test-audited-retained-import-recovery.ts",
     capability:"deterministic-integration",

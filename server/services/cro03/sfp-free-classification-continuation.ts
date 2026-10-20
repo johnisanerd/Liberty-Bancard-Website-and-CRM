@@ -9,6 +9,7 @@ import { CLASSIFIER_VERSION } from "./sfp-vertical-classifier";
 import { runPreCohortClassificationBridge, type PreCohortClassificationBridgeDeps } from "./sfp-classification-bridge";
 import { getSfpProviderReadiness } from "./sfp-provider-operations";
 import { resolveGeographyForBusiness } from "./sfp-geography-resolver";
+import { processGeographyRecovery, type GeographyRecoveryDeps } from "./sfp-geography-recovery";
 import { sfpAttemptedAtSql, sfpReconsiderationDueSql } from "./sfp-reconsideration";
 import { SFP_VERTICAL_ACCEPTANCE_POLICY_VERSION } from "./sfp-vertical-acceptance";
 import {
@@ -21,8 +22,13 @@ import {
 const rows = (r: any): any[] => r?.rows ?? r ?? [];
 /** Per-tick follow-up work (geography re-checks) stays small. */
 const RUN_LIMIT = 25;
-/** Free, provider-less watermark window per bridge run. */
-const WINDOW_LIMIT = 500;
+/** Free, provider-less watermark window per bridge run. Smaller than before because each business with a
+ * website now also gets a bounded first-party read (serial, 6s timeout), which must fit the run lease. */
+const WINDOW_LIMIT = 100;
+/** Parked geography items examined for retained-evidence recovery per tick (each may read the business's own site). */
+const GEOGRAPHY_RECOVERY_LIMIT = 15;
+/** Idempotency-key tag for runs made with first-party website reads; keeps them from replaying runs made without. */
+const WEBSITE_READ_RUN_TAG = "web1";
 /** OpenAI escalations per tick (paid). */
 const ESCALATION_LIMIT = 200;
 
@@ -312,7 +318,7 @@ async function processVerticalReconsideration(program: any, deps: PreCohortClass
   return processed;
 }
 
-async function processResolvedGeographyFollowups(program: any): Promise<number> {
+async function processResolvedGeographyFollowups(program: any, deps: PreCohortClassificationBridgeDeps = {}): Promise<number> {
   if (!program) return 0;
   const pending = rows(await db.execute(sql`
     SELECT DISTINCT ON (i.business_id) i.business_id
@@ -363,7 +369,7 @@ async function processResolvedGeographyFollowups(program: any): Promise<number> 
   `))[0];
   const result = await runPreCohortClassificationBridge({
     programId: String(program.id),
-    idempotencyKey: `sfp-free-continuation:${String(program.id)}:geography-followup:${Number(priorRuns?.run_count ?? 0) + 1}:${resolvedIds.join(",")}`,
+    idempotencyKey: `sfp-free-continuation:${String(program.id)}:geography-followup-${WEBSITE_READ_RUN_TAG}:${Number(priorRuns?.run_count ?? 0) + 1}:${resolvedIds.join(",")}`,
     actorId: "system:sfp-free-continuation",
     maxBusinesses: RUN_LIMIT,
     targetIds: (Array.isArray(program.vertical_ids) ? program.vertical_ids : []).map(String),
@@ -371,15 +377,27 @@ async function processResolvedGeographyFollowups(program: any): Promise<number> 
     taxonomyVersion: 2,
     businessIdFilter: checkedIds,
     freeOnly: true,
-  });
+    // Reading the business's own site is first-party and free; without it a business whose geography has just
+    // resolved could only be classified from listing categories it may not have.
+    allowFirstPartyWebsiteRead: true,
+  }, deps);
   if (result.costMicros !== 0) throw new Error("SFP_GEOGRAPHY_FOLLOWUP_NONZERO_COST");
   // Version the new held decision so an unchanged alias/territory conflict does
   // not monopolize the next ordinary tick. Changed site evidence still revisits.
-  await db.execute(sql`UPDATE sfp_classification_items
-    SET outcome_code=(CASE WHEN left(outcome_code,1)='{' THEN outcome_code::jsonb ELSE '{}'::jsonb END ||
-      '{"geographyAliasPolicy":"florida_state_alias_v1"}'::jsonb)::text
-    WHERE run_id=${result.runId}::uuid AND state='skipped'
-      AND business_id=ANY(ARRAY[${sql.join(checkedIds.map(id=>sql`${id}`),sql`, `)}]::integer[])`);
+  // The new run's parked items inherit the latest retained-evidence recovery stamp, so an unchanged business
+  // that still cannot be placed is not re-read on every follow-up.
+  await db.execute(sql`UPDATE sfp_classification_items n
+    SET outcome_code=(CASE WHEN left(n.outcome_code,1)='{' THEN n.outcome_code::jsonb ELSE '{}'::jsonb END ||
+      '{"geographyAliasPolicy":"florida_state_alias_v1"}'::jsonb ||
+      COALESCE((SELECT jsonb_build_object(
+          'geographyRecoveryVersion',p.outcome_code::jsonb->>'geographyRecoveryVersion',
+          'geographyRecoveryAt',p.outcome_code::jsonb->>'geographyRecoveryAt')
+        FROM sfp_classification_items p
+       WHERE p.business_id=n.business_id AND p.run_id<>n.run_id AND left(p.outcome_code,1)='{'
+         AND p.outcome_code::jsonb ? 'geographyRecoveryVersion'
+       ORDER BY p.created_at DESC LIMIT 1),'{}'::jsonb))::text
+    WHERE n.run_id=${result.runId}::uuid AND n.state='skipped'
+      AND n.business_id=ANY(ARRAY[${sql.join(checkedIds.map(id=>sql`${id}`),sql`, `)}]::integer[])`);
   await db.execute(sql`
     UPDATE sfp_classification_items i
        SET state='completed',
@@ -411,7 +429,7 @@ async function processResolvedGeographyFollowups(program: any): Promise<number> 
  * window after lease expiry; current evidence avoids reclassifying completed
  * target/non-target records. */
 export async function processSfpFreeClassificationTick(programIdFilter?: string,
-  options: { skipSideWork?: boolean; bridgeDeps?: PreCohortClassificationBridgeDeps } = {}): Promise<{
+  options: { skipSideWork?: boolean; bridgeDeps?: PreCohortClassificationBridgeDeps; geographyRecoveryDeps?: GeographyRecoveryDeps } = {}): Promise<{
   claimed: boolean; programId?: string; scanned?: number; processed?: number; target?: number; state?: string;
   escalated?: number; escalationCostMicros?: number;
 }> {
@@ -425,8 +443,17 @@ export async function processSfpFreeClassificationTick(programIdFilter?: string,
   // Repeat drain iterations in one queue job skip follow-ups/escalation so the
   // paid OpenAI step runs at most once per scheduled tick.
   const runSideWork = followupsEnabled && !options.skipSideWork;
+  // Recover retained, evidence-backed geography first so the follow-up pass can classify what it places.
+  if (runSideWork) {
+    try {
+      await processGeographyRecovery(automaticProgram, GEOGRAPHY_RECOVERY_LIMIT, options.geographyRecoveryDeps);
+    } catch (error: any) {
+      // Recovery is best-effort side work: logged, never blocks ordinary classification.
+      console.error(`[SfpFreeClassification] geography recovery failed: ${String(error?.message ?? error)}`);
+    }
+  }
   const geographyFollowups = runSideWork
-    ? await processResolvedGeographyFollowups(automaticProgram)
+    ? await processResolvedGeographyFollowups(automaticProgram, options.bridgeDeps)
     : 0;
   const reconsidered = runSideWork ? await processVerticalReconsideration(automaticProgram, options.bridgeDeps) : 0;
   const escalation = runSideWork
@@ -491,7 +518,7 @@ export async function processSfpFreeClassificationTick(programIdFilter?: string,
         Number(stillCurrent.taxonomy_version) !== 2) throw new Error("SFP_FREE_CONTINUATION_POLICY_CHANGED");
     const bridgeRun = await runPreCohortClassificationBridge({
       programId,
-      idempotencyKey: `sfp-free-continuation:${programId}:policy:${Number(claimed.policy_version)}:pass:${Math.floor(new Date(claimed.started_at).getTime() / 1000)}:window:${Number(claimed.high_water_business_id)}-${windowIds[windowIds.length - 1]}`,
+      idempotencyKey: `sfp-free-continuation:${programId}:policy:${Number(claimed.policy_version)}:pass:${Math.floor(new Date(claimed.started_at).getTime() / 1000)}:${WEBSITE_READ_RUN_TAG}:window:${Number(claimed.high_water_business_id)}-${windowIds[windowIds.length - 1]}`,
       actorId: "system:sfp-free-continuation",
       maxBusinesses: WINDOW_LIMIT,
       targetIds: (Array.isArray(stillCurrent.vertical_ids) ? stillCurrent.vertical_ids : []).map(String),
@@ -499,6 +526,9 @@ export async function processSfpFreeClassificationTick(programIdFilter?: string,
       taxonomyVersion: 2,
       businessIdFilter: windowIds,
       freeOnly: true,
+      // First-party read of the business's own website: free, no provider, and the only classification evidence
+      // many staged-email businesses have. Cost is still asserted to be zero below.
+      allowFirstPartyWebsiteRead: true,
     }, options.bridgeDeps);
     if (bridgeRun.costMicros !== 0) throw new Error("SFP_FREE_CONTINUATION_NONZERO_COST");
     processed = bridgeRun.processed;

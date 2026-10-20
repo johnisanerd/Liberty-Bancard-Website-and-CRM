@@ -7,3 +7,9 @@ description: Why repeated priority runs did not reach newly uploaded high-ID con
 - The effective-vertical projection tick has been failing with SQLSTATE 57014 (statement timeout) since Oct 16; cursor stuck, stored vertical column stale.
 **Why:** prevents repeating run loops and "classify staged-email businesses first" proposals that cannot work.
 **How to apply:** verify per-cohort movement (cursor and prepared counts) after any run before repeating; check deployment logs for 57014 before blaming ordering.
+
+## Resolution notes
+- Projection timeout root cause: each contact with a verified relationship costs ~100ms in the relationship-evidence SQL (domain-expression predicate misses the native-function index), so a 2,500-row contact page exceeds 30s. Fix was savepointed, adaptive slices with a per-slice timeout, not a larger timeout; an expression index is a possible later optimization.
+- Staged-email businesses are mostly national/out-of-territory domains: only ~14 of ~3,180 carry a retained address that resolves to a South Florida ZIP. Recovery (retained provider address strings, contact address, first-party JSON-LD) writes location rows only when the existing resolver gives a definite answer; never a county guess, phone area code, or Sunbiz registry address. Unresolved stays geography_review, distinct from vertical evidence.
+- Ordinary free sweep now reads the business's own website (free); window shrank to 100 and run-key tag web1 avoids replay hash conflicts with earlier runs.
+- Known baseline failures (also fail without these changes): canonical-flow-progression deadlock check, automatic-continuity discovery admission.

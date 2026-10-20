@@ -28,8 +28,21 @@ export interface WebsiteClassificationEvidence {
   serviceDescriptions?: string[];
   /** Where redirects from sourceUrl ended; informational provenance, not part of the content hash. */
   finalUrl?: string;
+  /**
+   * Postal addresses the page itself declares in schema.org JSON-LD. Informational first-party
+   * geography evidence: deliberately NOT part of contentHash, so classification evidence hashes are
+   * unchanged. Optional so older stored evidence stays valid.
+   */
+  jsonLdAddresses?: WebsiteJsonLdAddress[];
   capturedAt: string;
   contentHash: string;
+}
+
+export interface WebsiteJsonLdAddress {
+  streetAddress: string | null;
+  city: string | null;
+  state: string | null;
+  postalCode: string | null;
 }
 
 type ResolveImpl = (hostname: string) => Promise<string | string[]>;
@@ -215,6 +228,7 @@ export async function extractWebsiteClassificationEvidence(
     // against); finalUrl records where the redirects ended.
     sourceUrl: parsedUrl.toString(),
     finalUrl: finalUrl.toString(),
+    jsonLdAddresses: extractJsonLdPostalAddresses(html),
     pageType,
     jsonLdTypes,
     titleTokens,
@@ -316,6 +330,49 @@ function extractJsonLdTypes(html: string): string[] {
     }
   }
   return [...types];
+}
+
+/**
+ * Pure: schema.org PostalAddress objects declared in the page's JSON-LD. Only fields the page states are
+ * returned (nothing is inferred); non-US declared countries and objects with no locality/region/ZIP are dropped.
+ */
+export function extractJsonLdPostalAddresses(html: string): WebsiteJsonLdAddress[] {
+  const found: WebsiteJsonLdAddress[] = [];
+  const seen = new Set<string>();
+  const text = (value: unknown): string | null => {
+    if (typeof value === "number") value = String(value);
+    if (typeof value !== "string") return null;
+    const trimmed = value.replace(/\s+/g, " ").trim();
+    return trimmed ? trimmed.slice(0, 200) : null;
+  };
+  const visit = (value: unknown, depth: number): void => {
+    if (depth > 8 || found.length >= 5) return;
+    if (Array.isArray(value)) { value.forEach((item) => visit(item, depth + 1)); return; }
+    if (!value || typeof value !== "object") return;
+    const object = value as Record<string, unknown>;
+    const types = (Array.isArray(object["@type"]) ? object["@type"] : [object["@type"]]).map((t) => String(t));
+    if (types.includes("PostalAddress") || "addressLocality" in object || "postalCode" in object) {
+      const country = object.addressCountry && typeof object.addressCountry === "object"
+        ? text((object.addressCountry as Record<string, unknown>).name) : text(object.addressCountry);
+      const us = !country || /^(us|usa|u\.s\.a?\.?|united states( of america)?)$/i.test(country);
+      const address = {
+        streetAddress: text(object.streetAddress), city: text(object.addressLocality),
+        state: text(object.addressRegion), postalCode: text(object.postalCode),
+      };
+      const key = JSON.stringify(address);
+      if (us && (address.city || address.state || address.postalCode) && !seen.has(key)) {
+        seen.add(key);
+        found.push(address);
+      }
+    }
+    Object.values(object).forEach((item) => visit(item, depth + 1));
+  };
+  const scriptRegex = /<script\b(?=[^>]*\btype\s*=\s*(?:"application\/ld\+json"|'application\/ld\+json'|application\/ld\+json))[^>]*>([\s\S]*?)<\/script\s*>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = scriptRegex.exec(html))) {
+    try { visit(JSON.parse(match[1]), 0); } catch { /* malformed JSON-LD is ignored */ }
+  }
+  return found;
 }
 
 function collectTypes(value: unknown, types: Set<string>): void {

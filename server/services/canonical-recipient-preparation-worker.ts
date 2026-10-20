@@ -11,6 +11,29 @@ import {assertCanonicalPreparationLease,checkpointCanonicalPreparationLease} fro
 const KEY="canonical_recipient_preparation_cursor";
 /** Priority-lane 25-row pages per tick (a single page per tick took 2+ days per full cycle). */
 const MAX_PRIORITY_PAGES_PER_TICK=4;
+/** Time each of the two fair-share lanes is guaranteed per pass, whatever the completion and stale-package lanes
+ * did before them. Before this reservation both lanes could receive a zero-length window: the slow lanes ran up to
+ * the shared deadline first, so the priority cursor sat still for days while the backlog it exists to reach grew. */
+export const PREPARATION_LANE_RESERVES={priorityMs:25_000,populationMs:15_000} as const;
+export type PreparationLane="completion"|"stale"|"population"|"priority";
+/** Pure scheduling rule for one lane's processing window (an absolute epoch-millisecond deadline).
+ *  - completion/stale never run into the time held back for the two reserved lanes;
+ *  - population keeps its reserve even if earlier lanes overran, and stops where the priority reserve begins;
+ *  - priority always keeps its reserve, even when earlier lanes overran the whole pass.
+ *  A reserve is a floor measured from the moment the lane starts, so overshoot inside one slow contact (a started
+ *  contact finishes) can delay a lane but never remove its window. */
+export function preparationLaneDeadline(lane:PreparationLane,input:{
+  now:number;passDeadline:number;capMs:number;priorityReserveMs:number;populationReserveMs:number;
+}):number {
+  const {now,passDeadline,capMs,priorityReserveMs,populationReserveMs}=input;
+  const capped=now+capMs;
+  switch (lane) {
+    case "completion":
+    case "stale": return Math.min(passDeadline-priorityReserveMs-populationReserveMs,capped);
+    case "population": return Math.max(Math.min(passDeadline-priorityReserveMs,capped),now+populationReserveMs);
+    case "priority": return Math.max(Math.min(passDeadline,capped),now+priorityReserveMs);
+  }
+}
 const rows=(result:any):any[]=>result?.rows ?? result ?? [];
 type Cursor={afterContactId:number;cycles:number;scanned:number;prepared:number;held:number;
   reasons:Record<string,number>;leaseToken:string|null;leaseUntil:string|null;lastCycleAt:string|null;
@@ -20,8 +43,18 @@ type Cursor={afterContactId:number;cycles:number;scanned:number;prepared:number;
 /** Local selection only. Uses the existing published owner, enrollment ledger
  * and queue tick. Provider pauses never gate this pass; it cannot send or spend. */
 export async function processCanonicalRecipientPreparationTick(
-  budget:{maxPopulationPages?:number;staleBudgetMs?:number}={},
+  budget:{maxPopulationPages?:number;staleBudgetMs?:number;priorityReserveMs?:number;populationReserveMs?:number;
+    /** Base length of the shared pass window before the stale extra and lane reserves; certification only. */
+    passBaseMs?:number}={},
 ) {
+  const priorityReserveMs=budget.priorityReserveMs ?? PREPARATION_LANE_RESERVES.priorityMs;
+  const populationReserveMs=budget.populationReserveMs ?? PREPARATION_LANE_RESERVES.populationMs;
+  const passBaseMs=budget.passBaseMs ?? 90_000;
+  if (!Number.isInteger(priorityReserveMs) || priorityReserveMs<0 || priorityReserveMs>120_000 ||
+      !Number.isInteger(populationReserveMs) || populationReserveMs<0 || populationReserveMs>120_000 ||
+      !Number.isInteger(passBaseMs) || passBaseMs<1_000 || passBaseMs>300_000) {
+    throw new Error("CANONICAL_PREPARATION_INVALID_LANE_RESERVE");
+  }
   const maxPopulationPages=budget.maxPopulationPages ?? 20;
   if (!Number.isInteger(maxPopulationPages) || maxPopulationPages<1 || maxPopulationPages>20) {
     throw new Error("CANONICAL_PREPARATION_INVALID_TICK_BUDGET");
@@ -71,7 +104,10 @@ export async function processCanonicalRecipientPreparationTick(
     }));
     lastCheckpointAt=Date.now();
   };
-  const deadline=Date.now()+90_000+Math.max(0,staleBudgetMs-30_000);
+  // The reserved lane windows are added to the pass, so the slow lanes keep the share they always had.
+  const deadline=Date.now()+passBaseMs+Math.max(0,staleBudgetMs-30_000)+priorityReserveMs+populationReserveMs;
+  const laneDeadline=(lane:PreparationLane,capMs:number)=>preparationLaneDeadline(lane,
+    {now:Date.now(),passDeadline:deadline,capMs,priorityReserveMs,populationReserveMs});
   const bindingJoins=sql`JOIN businesses b ON b.id=c.business_id
     JOIN sfp_programs p ON p.is_active AND p.taxonomy_version=2
       AND ${sql.raw(effectiveBusinessVerticalSql("b"))}=ANY(p.vertical_ids)
@@ -203,7 +239,7 @@ export async function processCanonicalRecipientPreparationTick(
     const completion=completionContacts.length
       ? await processPage(completionContacts,
           {afterContactId:0,cycles:0,scanned:0,prepared:0,held:0,reasons:{},lastCycleAt:null},
-          Math.min(deadline,Date.now()+30_000))
+          laneDeadline("completion",30_000))
       : {examined:0,prepared:0};
     // Stale-package refresh lane. Republishing a package makes every recipient prepared against the previous
     // content stale (not releasable until re-prepared). The keyset cursors only reach those contacts as they wrap,
@@ -227,12 +263,13 @@ export async function processCanonicalRecipientPreparationTick(
     const stalePackage=staleContacts.length
       ? await processPage(staleContacts,
           {afterContactId:0,cycles:0,scanned:0,prepared:0,held:0,reasons:{},lastCycleAt:null},
-          Math.min(deadline,Date.now()+staleBudgetMs))
+          laneDeadline("stale",staleBudgetMs))
       : {examined:0,prepared:0};
     const contacts=await populationPage();
     active=timingsByLane.population;
-    // Keep the population pass first so priority work cannot starve coverage.
-    const population=await processPage(contacts,state,Math.min(deadline,Date.now()+45_000));
+    // Population keeps its reserved window and stops where the priority reserve begins, so neither fair-share
+    // lane can be consumed by the completion/stale lanes or by the other.
+    const population=await processPage(contacts,state,laneDeadline("population",45_000));
     let populationPages=1;
     let populationComplete=false;
     if (population.examined===contacts.length && contacts.length<250) {
@@ -265,7 +302,7 @@ export async function processCanonicalRecipientPreparationTick(
         ORDER BY c.id LIMIT ${PRIORITY_PAGE}`));
     let priorityPages=0;
     // The priority lane takes at most this share of the tick, so population coverage keeps moving.
-    const priorityDeadline=Math.min(deadline,Date.now()+50_000);
+    const priorityDeadline=laneDeadline("priority",Math.max(50_000,priorityReserveMs));
     while (Date.now()<priorityDeadline && priorityPages<MAX_PRIORITY_PAGES_PER_TICK) {
       const selected=await priorityPage();
       active=timingsByLane.priority;
