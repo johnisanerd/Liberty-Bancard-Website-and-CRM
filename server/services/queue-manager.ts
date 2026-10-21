@@ -2802,6 +2802,15 @@ export class QueueManager {
           } catch (error: any) {
             console.error("[ContactLinkAutomation] held", safeCanonicalEnrichmentFailureDiagnostics(error));
           }
+          if (process.env.RETAINED_SUNBIZ_BUSINESS_COMPLETION_ENABLED !== "false") try {
+            // Local-only: complete legacy Sunbiz promotions that never produced a business (contactless
+            // prospects, South Florida). No provider call, contact, enrollment or send.
+            const {processRetainedSunbizBusinessCompletionTick}=await import("./retained-sunbiz-business-completion");
+            const completed=await processRetainedSunbizBusinessCompletionTick({limit:100});
+            if (completed.eligible>0||completed.wrapped) console.log(`[RetainedSunbizCompletion] ${JSON.stringify(completed)}`);
+          } catch(error:any) {
+            console.error("[RetainedSunbizCompletion] held",safeCanonicalEnrichmentFailureDiagnostics(error));
+          }
           try {
             // Local-only: staged first-party emails -> contacts verified-linked to their
             // exact business. No provider call, send or enrollment; preparation below owns

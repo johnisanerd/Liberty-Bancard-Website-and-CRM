@@ -307,7 +307,7 @@ function meaningfulTokens(normalized: string): Set<string> {
   );
 }
 
-function compatibleIdentityName(a: string, b: string): boolean {
+export function compatibleIdentityName(a: string, b: string): boolean {
   const left = normalizedIdentityName(a);
   const right = normalizedIdentityName(b);
   if (!left || !right) return false;
@@ -326,7 +326,7 @@ function compatibleIdentityName(a: string, b: string): boolean {
   return overlap / Math.max(leftTokens.size, rightTokens.size) >= 0.6;
 }
 
-function compatibleCityState(candidate: SunbizBootstrapCandidate, business: any): boolean {
+export function compatibleCityState(candidate: SunbizBootstrapCandidate, business: any): boolean {
   return !!candidate.principalCity && !!candidate.principalState &&
     candidate.principalCity.trim().toLowerCase() === String(business.city ?? "").trim().toLowerCase() &&
     candidate.principalState.trim().toLowerCase() === String(business.state ?? "").trim().toLowerCase();
@@ -341,7 +341,7 @@ function compatibleCityState(candidate: SunbizBootstrapCandidate, business: any)
  * agent address, franchise hub, etc.) must not auto-link just because the
  * city/state happens to match.
  */
-function namesClearlyConflict(a: string, b: string): boolean {
+export function namesClearlyConflict(a: string, b: string): boolean {
   const left = normalizedIdentityName(a);
   const right = normalizedIdentityName(b);
   if (!left || !right) return false;

@@ -434,6 +434,12 @@ const RAW_SUITE_MANIFEST: SuiteManifestDefinition[] = [
     providerDenial: "disposable PostgreSQL with fatal external-network denial; website reads are injected, no provider operations",
   },
   {
+    name: "Retained Sunbiz business completion",
+    script: "scripts/certification/test-retained-sunbiz-business-completion.ts",
+    capability: "deterministic-integration",
+    providerDenial: "disposable PostgreSQL with fatal external-network denial; no send or provider operations",
+  },
+  {
     name: "Effective vertical projection slicing",
     script: "scripts/certification/test-effective-vertical-projection-slicing.ts",
     capability: "deterministic-integration",

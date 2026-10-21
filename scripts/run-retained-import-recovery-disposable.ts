@@ -42,6 +42,7 @@ try {
   }else await run(["scripts/migrate.ts"]);
    if(process.argv.includes("--retained-sunbiz-only")){
      await run(["scripts/certification/test-retained-sunbiz-contact-completion.ts"]);
+     await run(["scripts/certification/test-retained-sunbiz-business-completion.ts"]);
    } else if(process.argv.includes("--intake-review-only")){
      await run(["scripts/certification/test-intake-review-pages.ts"]);
     } else if(process.argv.includes("--intake-geography-only")){
