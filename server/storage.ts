@@ -266,9 +266,10 @@ export interface IStorage {
   getReviewQueue(status?: string, options?: { excludeDeadLetters?: boolean }): Promise<import("@shared/schema").ReviewQueueItem[]>;
   getReviewQueuePendingCount(): Promise<number>;
   getReviewQueueAggregates(): Promise<{ pending: number; approved: number; total: number; deadLetter: { pending: number } }>;
-  archiveDeadLetterEvents(input: { queueName: string; jobName?: string; createdBefore: Date; expectedCount: number; dryRun: boolean }): Promise<{ matched: number; archived: number; countMatches: boolean }>;
+  archiveDeadLetterEvents(input: { queueName: string; jobName?: string; createdBefore: Date; expectedCount: number; dryRun: boolean; audit?: { userId?: string } }): Promise<{ matched: number; archived: number; countMatches: boolean }>;
   getReviewQueueItem(id: number): Promise<import("@shared/schema").ReviewQueueItem | undefined>;
   createReviewQueueItem(data: import("@shared/schema").InsertReviewQueueItem): Promise<import("@shared/schema").ReviewQueueItem>;
+  approveReviewQueueItemIfPending(id: number, updates: Partial<import("@shared/schema").InsertReviewQueueItem>): Promise<import("@shared/schema").ReviewQueueItem | undefined>;
   updateReviewQueueItem(id: number, updates: Partial<import("@shared/schema").InsertReviewQueueItem>): Promise<import("@shared/schema").ReviewQueueItem | undefined>;
   getDeadLetterEventHistory(opts: { snapshotId: number; afterId?: number; limit?: number }): Promise<Array<{ id: number; source_type: "dead_letter_job"; source_id: number; status: string; event: import("./services/audit-sanitizer").DeadLetterEventSnapshot; created_at: string | Date | null | undefined }>>;
   getDeadLetterEventSnapshotId(): Promise<number>;

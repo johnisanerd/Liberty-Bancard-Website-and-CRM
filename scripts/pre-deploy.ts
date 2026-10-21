@@ -195,6 +195,8 @@ export const MANDATORY_SUITES: Suite[] = [
   { name: "SFP geography recovery",
     script: "scripts/certification/test-sfp-geography-recovery.ts",
     timeoutSecs: 180, requiresDisposableTestDatabase: true },
+  { name: "Partner route registration order",
+    script: "scripts/test-partner-route-order.ts", timeoutSecs: 120 },
   { name: "Retained Sunbiz business completion",
     script: "scripts/certification/test-retained-sunbiz-business-completion.ts",
     timeoutSecs: 180, requiresDisposableTestDatabase: true },

@@ -109,6 +109,21 @@ async function failPartnerLoginClosed(req: any, res: any): Promise<void> {
   res.clearCookie("connect.sid");
 }
 
+/**
+ * `/api/partners/:id` is registered before several fixed sibling paths (`me`, `leaderboard`,
+ * `referral-pipeline`, registered later or in other modules). A non-numeric segment must fall through
+ * to those routes instead of reaching an integer lookup, and a numeric ID must be a safe integer.
+ */
+export function numericPartnerIdOnly(req: any, res: any, next: (arg?: any) => void) {
+  const raw = String(req.params.id ?? "");
+  if (!/^\d+$/.test(raw)) return next("route");
+  const id = Number(raw);
+  if (!Number.isSafeInteger(id) || id <= 0 || id > 2147483647) {
+    return res.status(400).json({ message: "Invalid partner id" });
+  }
+  next();
+}
+
 export function registerPartnersRoutes(app: Express) {
   // === PARTNERS (admin) ===
   app.get("/api/partners", isDashboardUser, async (req, res) => {
@@ -120,7 +135,7 @@ export function registerPartnersRoutes(app: Express) {
     }
   });
 
-  app.get("/api/partners/:id", isDashboardUser, async (req, res) => {
+  app.get("/api/partners/:id", numericPartnerIdOnly, isDashboardUser, async (req, res) => {
     try {
       const partner = await storage.getPartner(Number(req.params.id));
       if (!partner) return res.status(404).json({ message: "Not found" });
@@ -141,7 +156,7 @@ export function registerPartnersRoutes(app: Express) {
     }
   });
 
-  app.patch("/api/partners/:id", requireRole("admin"), async (req, res) => {
+  app.patch("/api/partners/:id", numericPartnerIdOnly, requireRole("admin"), async (req, res) => {
     try {
       const { status, commissionPercent, notes } = req.body;
       const updates: Partial<InsertPartner> = {};

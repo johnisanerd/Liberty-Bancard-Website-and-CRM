@@ -102,22 +102,16 @@ export function registerReviewQueueRoutes(app: Express) {
         expectedCount: z.number().int().min(0).max(1_000_000),
         dryRun: z.boolean().default(true),
       }).strict().parse(req.body);
+      const user = req.user as any;
+      // The archive and its audit row commit together; an audit failure rolls the archive back.
       const result = await storage.archiveDeadLetterEvents({
         queueName: body.queueName,
         jobName: body.jobName,
         createdBefore: new Date(body.createdBefore),
         expectedCount: body.expectedCount,
         dryRun: body.dryRun,
+        audit: { userId: user?.id ? String(user.id) : undefined },
       });
-      const user = req.user as any;
-      if (!body.dryRun && result.archived > 0) {
-        await storage.createAuditLog({
-          userId: user?.id ? String(user.id) : undefined,
-          action: "dead_letter_events_archived",
-          entityType: "review_queue",
-          details: { queueName: body.queueName, jobName: body.jobName ?? null, createdBefore: body.createdBefore, archived: result.archived },
-        });
-      }
       if (!result.countMatches) {
         return res.status(409).json({ message: "Live match count differs from expectedCount; nothing was archived", matched: result.matched, expectedCount: body.expectedCount });
       }
@@ -185,12 +179,14 @@ export function registerReviewQueueRoutes(app: Express) {
       const schema = z.object({ ghlWorkflowId: z.string().optional() });
       const { ghlWorkflowId } = schema.parse(req.body);
 
-      const updated = await storage.updateReviewQueueItem(Number(req.params.id), {
-        status: "approved",
+      // Conditional pending -> approved transition: an item archived since it was read cannot be revived,
+      // and the audit row and GHL enrollment below happen only after this transition succeeds.
+      const updated = await storage.approveReviewQueueItemIfPending(Number(req.params.id), {
         approvedBy: user?.id ? String(user.id) : "unknown",
         approvedAt: new Date(),
         ghlWorkflowId: ghlWorkflowId || undefined,
       });
+      if (!updated) return res.status(409).json({ message: "Item is no longer pending" });
 
       await storage.createAuditLog({
         userId: user?.id ? String(user.id) : undefined,

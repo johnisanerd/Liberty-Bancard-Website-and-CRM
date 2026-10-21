@@ -434,6 +434,12 @@ const RAW_SUITE_MANIFEST: SuiteManifestDefinition[] = [
     providerDenial: "disposable PostgreSQL with fatal external-network denial; website reads are injected, no provider operations",
   },
   {
+    name: "Partner route registration order",
+    script: "scripts/test-partner-route-order.ts",
+    capability: "deterministic-integration",
+    providerDenial: "real partner and onboarding route modules registered in production order; no request, database query or provider call is made",
+  },
+  {
     name: "Retained Sunbiz business completion",
     script: "scripts/certification/test-retained-sunbiz-business-completion.ts",
     capability: "deterministic-integration",

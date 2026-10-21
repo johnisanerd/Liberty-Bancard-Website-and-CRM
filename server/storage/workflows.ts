@@ -2,6 +2,7 @@
   // Methods are mixed into DatabaseStorage in server/storage.ts.
   import { db, pool } from "../db";
 import { WorkflowCommandError } from "../services/workflow-command-error";
+import { sanitizeAuditPayload } from "../services/audit-sanitizer";
 import {
   liveChats, liveChatMessages,
   type LiveChat, type InsertLiveChat, type LiveChatMessage, type InsertLiveChatMessage,
@@ -266,8 +267,17 @@ import { sanitizeDeadLetterEvent } from "../services/audit-sanitizer";
    * Moves pending dead-letter history rows for one queue (optionally one job) to
    * "archived" without deleting them. The caller states how many rows it expects;
    * a different live count changes nothing, so a stale preview cannot archive more.
+   *
+   * The protected row set is locked once (FOR UPDATE); the count check, the status change and the audit
+   * row all describe and use exactly that set, in one transaction. A concurrent approval waits on the row
+   * lock and then fails its pending-status condition, so it cannot revive an archived item. An audit
+   * failure rolls the archive back. Archiving is acknowledgement of obsolete failure alerts, not recovery
+   * of the original import rows.
    */
-  async archiveDeadLetterEvents(input: { queueName: string; jobName?: string; createdBefore: Date; expectedCount: number; dryRun: boolean }) {
+  async archiveDeadLetterEvents(input: {
+    queueName: string; jobName?: string; createdBefore: Date; expectedCount: number; dryRun: boolean;
+    audit?: { userId?: string };
+  }) {
     return await db.transaction(async (tx) => {
       const scope = and(
         eq(reviewQueue.sourceType, "dead_letter_job"),
@@ -277,16 +287,38 @@ import { sanitizeDeadLetterEvent } from "../services/audit-sanitizer";
         lt(reviewQueue.createdAt, input.createdBefore),
       );
       await tx.execute(sql`SET LOCAL statement_timeout = '60s'`);
-      const [row] = await tx.select({ n: count() }).from(reviewQueue).where(scope);
-      const matched = Number(row?.n ?? 0);
+      const locked = await tx.select({ id: reviewQueue.id }).from(reviewQueue).where(scope).orderBy(reviewQueue.id).for("update");
+      const ids = locked.map((row) => row.id);
+      const matched = ids.length;
       const countMatches = matched === input.expectedCount;
       if (input.dryRun || !countMatches || matched === 0) return { matched, archived: 0, countMatches };
       const updated = await tx.update(reviewQueue)
         .set({ status: "archived", updatedAt: new Date() })
-        .where(scope)
+        .where(and(inArray(reviewQueue.id, ids), eq(reviewQueue.status, "pending")))
         .returning({ id: reviewQueue.id });
+      if (updated.length !== matched) throw new Error("DEAD_LETTER_ARCHIVE_SET_CHANGED");
+      await tx.insert(auditLogs).values({
+        userId: input.audit?.userId,
+        action: "dead_letter_events_archived",
+        entityType: "review_queue",
+        details: sanitizeAuditPayload({
+          queueName: input.queueName, jobName: input.jobName ?? null,
+          createdBefore: input.createdBefore.toISOString(), archived: updated.length,
+          firstId: ids[0], lastId: ids[ids.length - 1],
+          note: "Acknowledgement of obsolete failure alerts; does not close import-row exceptions.",
+        }) as any,
+      });
       return { matched, archived: updated.length, countMatches };
     });
+  }
+
+  /** Pending -> approved only. Returns undefined when the item is no longer pending (e.g. archived concurrently). */
+  async approveReviewQueueItemIfPending(id: number, updates: Partial<InsertReviewQueueItem>) {
+    const [updated] = await db.update(reviewQueue)
+      .set({ ...updates, status: "approved", updatedAt: new Date() })
+      .where(and(eq(reviewQueue.id, id), eq(reviewQueue.status, "pending")))
+      .returning();
+    return updated;
   }
 
   async getReviewQueueItem(id: number) {

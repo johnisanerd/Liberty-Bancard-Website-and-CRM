@@ -2807,7 +2807,7 @@ export class QueueManager {
             // prospects, South Florida). No provider call, contact, enrollment or send.
             const {processRetainedSunbizBusinessCompletionTick}=await import("./retained-sunbiz-business-completion");
             const completed=await processRetainedSunbizBusinessCompletionTick({limit:100});
-            if (completed.eligible>0||completed.wrapped) console.log(`[RetainedSunbizCompletion] ${JSON.stringify(completed)}`);
+            if (completed.eligible>0||completed.wrapped||completed.lockStatus!=="acquired") console.log(`[RetainedSunbizCompletion] ${JSON.stringify(completed)}`);
           } catch(error:any) {
             console.error("[RetainedSunbizCompletion] held",safeCanonicalEnrichmentFailureDiagnostics(error));
           }

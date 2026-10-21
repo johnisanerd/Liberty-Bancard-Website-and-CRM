@@ -67,5 +67,43 @@ try{
   check(archivedRead.status===404,"an archived row cannot be read by id");
   const approve=await h.request("admin","POST",`/api/review-queue/${archivedRow.id}/approve`,{});
   check(approve.status===400,"archived items cannot be approved");
+  // Archive and audit commit together: an audit failure rolls the whole archive back.
+  const {pool}=await import("../server/db");
+  const auditBefore=(await db.execute(sql`select count(*)::int n from audit_logs where action='dead_letter_events_archived'`)).rows[0] as any;
+  await db.insert(reviewQueue).values(Array.from({length:3},()=>({sourceType:"dead_letter_job" as const,sourceId:0,status:"pending" as const,metadata:event("dlq-audit-fail","tick"),createdAt:old})));
+  await pool.query(`CREATE OR REPLACE FUNCTION dlq_test_fail_audit() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'dlq test audit failure'; END $$ LANGUAGE plpgsql`);
+  await pool.query(`CREATE TRIGGER dlq_test_fail_audit BEFORE INSERT ON audit_logs FOR EACH ROW WHEN (NEW.action='dead_letter_events_archived') EXECUTE FUNCTION dlq_test_fail_audit()`);
+  try{
+    const failing=await h.request("admin","POST","/api/review-queue/dead-letter-events/archive",{queueName:"dlq-audit-fail",createdBefore:"2026-10-16T00:00:00Z",expectedCount:3,dryRun:false});
+    check(failing.status===500,"audit failure fails the request");
+    const stillPending=(await db.execute(sql`select count(*)::int n from review_queue where status='pending' and source_type='dead_letter_job' and metadata->>'queueName'='dlq-audit-fail'`)).rows[0] as any;
+    check(stillPending.n===3,"audit failure rolls the archive back");
+  }finally{
+    await pool.query(`DROP TRIGGER IF EXISTS dlq_test_fail_audit ON audit_logs`);await pool.query(`DROP FUNCTION IF EXISTS dlq_test_fail_audit()`);
+  }
+  const retry=await h.request("admin","POST","/api/review-queue/dead-letter-events/archive",{queueName:"dlq-audit-fail",createdBefore:"2026-10-16T00:00:00Z",expectedCount:3,dryRun:false});
+  check(retry.status===200&&(retry.body as any).archived===3,"retry after the audit fault archives exactly the same rows");
+  const auditAfter=(await db.execute(sql`select count(*)::int n from audit_logs where action='dead_letter_events_archived'`)).rows[0] as any;
+  check(auditAfter.n===auditBefore.n+1,"exactly one audit row for the successful archive");
+
+  // Approval cannot revive an item archived between its read and its update.
+  const {REVIEW_CHECKLIST_ITEMS}=await import("../shared/schema");
+  const checklistState=Object.fromEntries(REVIEW_CHECKLIST_ITEMS.map(i=>[i.key,true]));
+  const [raced]=await db.insert(reviewQueue).values({sourceType:"quiz" as const,sourceId:2,status:"pending" as const,metadata:{email:"dlq-race@example.invalid"},checklistState,createdAt:old}).returning();
+  const holder=await pool.connect();
+  try{
+    await holder.query("BEGIN");
+    await holder.query("SELECT id FROM review_queue WHERE id=$1 FOR UPDATE",[raced.id]);
+    const approving=h.request("admin","POST",`/api/review-queue/${raced.id}/approve`,{});
+    await new Promise(r=>setTimeout(r,700));
+    await holder.query("UPDATE review_queue SET status='archived' WHERE id=$1",[raced.id]);
+    await holder.query("COMMIT");
+    const outcome=await approving;
+    check(outcome.status===409,"approval racing an archive is refused");
+  }finally{holder.release();}
+  const racedAfter=(await db.execute(sql`select status from review_queue where id=${raced.id}`)).rows[0] as any;
+  check(racedAfter.status==="archived","archived item stays archived");
+  const approvalAudit=(await db.execute(sql`select count(*)::int n from audit_logs where action='review_queue_approved' and entity_id=${raced.id}`)).rows[0] as any;
+  check(approvalAudit.n===0,"no approval audit for a refused approval");
   console.log(`Dead-letter archive: PASS (${checks.length} checks)`);
 }finally{await h.close();}

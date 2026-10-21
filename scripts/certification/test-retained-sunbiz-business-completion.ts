@@ -7,7 +7,7 @@ const {processRetainedSunbizBusinessCompletionTick:tick,RETAINED_SUNBIZ_COMPLETI
   await import("../../server/services/retained-sunbiz-business-completion");
 const {normalOrganizationName}=await import("../../server/services/organization-resolution-policy");
 let checks=0;
-type Opts={contact?:boolean;cold?:boolean;city?:string;state?:string;zip?:string;existing?:"canonical"|"production";site?:boolean};
+type Opts={contact?:boolean;cold?:boolean;city?:string;state?:string;zip?:string;existing?:"canonical"|"production";site?:boolean;businessDomain?:string;crawlState?:string};
 async function fixture(o:Opts={}){
   const name=`Legacy Completion ${randomUUID().slice(0,8)} LLC`,filing=`lc-${randomUUID()}`;
   let contactId:number|null=null;
@@ -20,10 +20,11 @@ async function fixture(o:Opts={}){
   await pool.query(`INSERT INTO sunbiz_bootstrap_claims(filing_number,sunbiz_entity_id,status,deferred_reason_code,completed_at)
     VALUES($1,$2,'deferred_collision','legacy_sunbiz_promotion_exists',now())`,[filing,eid]);
   let businessId:number|undefined;
-  if(o.existing)businessId=(await pool.query(`INSERT INTO businesses(canonical_name,normalized_name,city,state,record_class)
-    VALUES($1,$2,'Miami','FL',$3) RETURNING id`,[name,normalOrganizationName(name),o.existing]).catch(()=>({rows:[{id:undefined}]}))).rows[0].id;
+  if(o.existing)businessId=(await pool.query(`INSERT INTO businesses(canonical_name,normalized_name,city,state,record_class,website_domain,free_enrichment_status)
+    VALUES($1,$2,'Miami','FL',$3,$4,$5) RETURNING id`,[name,normalOrganizationName(name),o.existing,o.businessDomain??null,o.crawlState??null])).rows[0].id;
   return {name,filing,eid,prospect,businessId};
 }
+const sourceRow=async(eid:number)=>(await pool.query(`SELECT se.*,to_jsonb(se) source_snapshot FROM sunbiz_entities se WHERE se.id=$1`,[eid])).rows[0];
 const links=async(filing:string)=>(await pool.query(`SELECT business_id,raw_evidence FROM canonical_source_links WHERE source_system='sunbiz' AND source_type='sunbiz_entity' AND stable_key=$1`,[filing])).rows;
 const claim=async(filing:string)=>(await pool.query(`SELECT to_jsonb(c) v FROM sunbiz_bootstrap_claims c WHERE filing_number=$1`,[filing])).rows[0].v;
 try{
@@ -88,9 +89,79 @@ try{
 
   // Authority fence loss aborts before any write.
   const fenced=await fixture();
-  const [row]=(await pool.query(`SELECT se.* FROM sunbiz_entities se WHERE se.id=$1`,[fenced.eid])).rows;
+  const row=await sourceRow(fenced.eid);
   await assert.rejects(()=>complete(row,async()=>false),/AUTHORITY_FENCE_LOST/);checks++;
   assert.equal((await links(fenced.filing)).length,0);checks++;
   assert.equal((await pool.query("SELECT count(*)::int n FROM businesses WHERE canonical_name=$1",[fenced.name])).rows[0].n,0);checks++;
+  // R3: created business keeps the retained ZIP and is immediately eligible for the ordinary free crawl.
+  const createdBiz=(await pool.query(`SELECT postal_code,record_class,website_domain,free_enrichment_status FROM businesses WHERE id=$1`,[createdLink[0].business_id])).rows[0];
+  assert.equal(createdBiz.postal_code,"33130");assert.equal(createdBiz.record_class,"canonical");
+  assert(createdBiz.website_domain&&createdBiz.free_enrichment_status===null);checks+=3;
+  assert.equal(createdLink[0].raw_evidence.addressPurpose,"registered_principal_address");
+  assert.equal(createdLink[0].raw_evidence.operatingLocationConfirmed,false);checks+=2;
+
+  // R3: a matched canonical shell receives the absent website, phone and ZIP and is made crawl-eligible again.
+  const shell=await fixture({existing:"canonical",crawlState:"skipped"});
+  await pool.query(`UPDATE sunbiz_entities SET phone='305-555-0142' WHERE id=$1`,[shell.eid]);
+  const shellOut=await complete(await sourceRow(shell.eid));
+  assert.equal(shellOut.status,"matched");assert.equal((shellOut as any).businessId,shell.businessId);
+  const shellBiz=(await pool.query(`SELECT website_domain,main_phone,postal_code,free_enrichment_status,city FROM businesses WHERE id=$1`,[shell.businessId])).rows[0];
+  assert.equal(shellBiz.website_domain,`${shell.filing}.example.com`);assert.equal(shellBiz.main_phone,"305-555-0142");
+  assert.equal(shellBiz.postal_code,"33130");assert.equal(shellBiz.free_enrichment_status,null);checks+=5;
+  assert.deepEqual((await links(shell.filing))[0].raw_evidence.projectedFields.sort(),["main_phone","postal_code","website_domain"]);checks++;
+  // A same-name business that already has a different domain is a conflict: held, and nothing is overwritten.
+  const conflict=await fixture({existing:"canonical",businessDomain:"already-set.example.org",crawlState:"enriched"});
+  assert.equal((await complete(await sourceRow(conflict.eid))).status,"held");assert.equal((await links(conflict.filing)).length,0);checks++;
+  const conflictBiz=(await pool.query(`SELECT website_domain,free_enrichment_status FROM businesses WHERE id=$1`,[conflict.businessId])).rows[0];
+  assert.equal(conflictBiz.website_domain,"already-set.example.org");assert.equal(conflictBiz.free_enrichment_status,"enriched");checks+=3;
+  // A domain already owned by another business is never copied.
+  const owned=await fixture({existing:"canonical"});
+  const ownerDomain=`${owned.filing}.example.com`;
+  await pool.query(`INSERT INTO businesses(canonical_name,normalized_name,record_class,website_domain) VALUES('Other Owner','other owner','canonical',$1)`,[ownerDomain]);
+  const ownedOut=await complete(await sourceRow(owned.eid));assert.notEqual(ownedOut.status,"created");checks++;
+  assert.equal((await pool.query(`SELECT website_domain FROM businesses WHERE id=$1`,[owned.businessId])).rows[0].website_domain,null);checks++;
+
+  // R2: a source invalidated after selection rolls back the business the resolver just created.
+  const invalidations:Array<[string,(f:any)=>Promise<void>]>=[
+    ["source field edited",async f=>{await pool.query(`UPDATE sunbiz_entities SET entity_name=entity_name||' Renamed' WHERE id=$1`,[f.eid]);}],
+    ["prospect gained a contact",async f=>{const c=(await pool.query(`INSERT INTO contacts(first_name,last_name,email,phone,company_name,record_class) VALUES('I','V',$1,'','x','production') RETURNING id`,[`${randomUUID()}@gmail.com`])).rows[0].id;await pool.query(`UPDATE prospects SET contact_id=$1 WHERE id=$2`,[c,f.prospect]);}],
+    ["claim status changed",async f=>{await pool.query(`UPDATE sunbiz_bootstrap_claims SET status='created' WHERE filing_number=$1`,[f.filing]);}],
+  ];
+  for(const [label,mutate] of invalidations){
+    const f=await fixture();
+    const staleRow=await sourceRow(f.eid);
+    await mutate(f);
+    const businessesBeforeInvalid=(await pool.query("SELECT count(*)::int n FROM businesses")).rows[0].n;
+    const out=await complete(staleRow);
+    assert.equal(out.status,"skipped",label);assert.equal((out as any).reasonCode,"RETAINED_EVIDENCE_CHANGED",label);
+    assert.equal((await pool.query("SELECT count(*)::int n FROM businesses")).rows[0].n,businessesBeforeInvalid,`${label}: business survived`);
+    assert.equal((await links(f.filing)).length,0,label);
+    assert.equal((await pool.query(`SELECT count(*)::int n FROM audit_logs WHERE action='retained_sunbiz_business_completed' AND entity_key=$1`,[f.filing])).rows[0].n,0,label);checks+=5;
+  }
+
+  // Per-entity dispositions: one append-only row per (entity, reason, source snapshot), not one per rescan.
+  const dispositions=async(filing:string)=>(await pool.query(`SELECT details FROM audit_logs WHERE action='retained_sunbiz_business_completion_disposition' AND entity_key=$1`,[filing])).rows;
+  assert.equal((await dispositions(heldNonCanonical.filing)).length,1);
+  assert.equal((await dispositions(heldNonCanonical.filing))[0].details.reasonCode,"RETAINED_REGISTRY_BUSINESS_NOT_CANONICAL");checks+=2;
+  await pool.query(`DELETE FROM system_settings WHERE key=$1`,[CURSOR]);
+  await tick({limit:200});
+  assert.equal((await dispositions(heldNonCanonical.filing)).length,1);checks++;
+
+  // Production authority wiring: the default tick path is a singleton and honours the worker switch.
+  await pool.query(`DELETE FROM system_settings WHERE key=$1`,[CURSOR]);
+  const gated=await fixture();
+  process.env.RETAINED_SUNBIZ_BUSINESS_COMPLETION_ENABLED="false";
+  const off=await tick({limit:200});
+  delete process.env.RETAINED_SUNBIZ_BUSINESS_COMPLETION_ENABLED;
+  assert.equal(off.created+off.matched,0);assert(off.failed>=1);assert.equal((await links(gated.filing)).length,0);checks+=3;
+  const {acquireJobLock,releaseJobLock}=await import("../../server/services/job-registry");
+  const held=await acquireJobLock("retained_sunbiz_business_completion");
+  assert.equal(held.status,"acquired");
+  const blocked=await tick({limit:200});
+  assert.equal(blocked.lockStatus,"held");assert.equal(blocked.eligible,0);assert.equal((await links(gated.filing)).length,0);checks+=3;
+  if(held.status==="acquired")await releaseJobLock("retained_sunbiz_business_completion",true,undefined,held.lockToken);
+  await pool.query(`DELETE FROM system_settings WHERE key=$1`,[CURSOR]);
+  const free=await tick({limit:200});
+  assert.equal(free.lockStatus,"acquired");assert.equal((await links(gated.filing)).length,1);checks+=2;
   console.log(`Retained Sunbiz business completion: ${checks} checks passed; original claims/prospects preserved; zero providers/outbound`);
 }finally{await pool.end();}
