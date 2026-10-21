@@ -62,6 +62,36 @@ export function registerAdminRoutes(app: Express) {
     } catch (error) { serverError(res, error); }
   });
 
+  app.get("/api/admin/contact-business-domain-location/preview", isDashboardUser, requireRole("admin"), async (req, res) => {
+    const parsed = z.object({
+      afterContactId: z.coerce.number().int().nonnegative().default(0),
+      span: z.coerce.number().int().min(1).max(50000).default(20000),
+    }).safeParse(req.query);
+    if (!parsed.success) return res.status(400).json({ message: "Invalid domain/location preview parameters" });
+    try {
+      const { previewDomainLocationAssignments } = await import("../services/contact-business-domain-location-links");
+      const preview = await previewDomainLocationAssignments(parsed.data);
+      res.json({ ...preview, eligible: preview.eligible.slice(0, 100), eligibleTruncated: preview.eligible.length > 100 });
+    } catch (error) { serverError(res, error); }
+  });
+  app.post("/api/admin/contact-business-domain-location/apply", isDashboardUser, requireRole("admin"), async (req, res) => {
+    const parsed = z.object({ items: z.array(z.object({
+      contactId: z.number().int().positive(), businessId: z.number().int().positive(),
+      snapshotHash: z.string().regex(/^[a-f0-9]{64}$/),
+    }).strict()).min(1).max(25) }).strict().safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: "Invalid domain/location assignment request" });
+    try {
+      const { applyDomainLocationAssignment, DOMAIN_LOCATION_RULE } = await import("../services/contact-business-domain-location-links");
+      const outcomes = [];
+      for (const item of parsed.data.items) outcomes.push(await applyDomainLocationAssignment(item, String((req.user as any).id)));
+      await auditChange({
+        userId: String((req.user as any).id), action: "domain_location_assignments_applied",
+        entityType: "contact_business_link_batch", entityKey: "batch", after: { outcomes, rule: DOMAIN_LOCATION_RULE },
+      });
+      res.json({ outcomes, paidProviderCalls: 0, messagesSent: 0 });
+    } catch (error) { serverError(res, error); }
+  });
+
   app.get(
     "/api/admin/contact-business-system-links/preview",
     isDashboardUser,

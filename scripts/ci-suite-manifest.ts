@@ -448,6 +448,13 @@ const RAW_SUITE_MANIFEST: SuiteManifestDefinition[] = [
     providerDenial: "real validation worker with an injected fake provider on a disposable migrated database; provider network egress is denied and counted",
   },
   {
+    name: "Independent domain/location contact assignment",
+    script: "scripts/certification/test-domain-location-assignment.ts",
+    isolateInfrastructure: true,
+    capability: "deterministic-integration",
+    providerDenial: "pure database policy evaluation and the audited relationship writer on a disposable migrated database; no provider, send or enrollment path is reachable",
+  },
+  {
     name: "Partner route registration order",
     script: "scripts/test-partner-route-order.ts",
     capability: "deterministic-integration",
