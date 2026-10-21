@@ -8,10 +8,12 @@ import { resolveGeographyFromCandidates } from "./cro03/sfp-geography-resolver";
 import { claimSfpRuntimeDeploymentOwner,lockCurrentSfpRuntimeOwner } from "./cro03/sfp-provider-operations";
 import { runCanonicalTransaction,boundCanonicalWriteTransaction } from "./canonical-transaction-retry";
 import {assertCanonicalPreparationLease,checkpointCanonicalPreparationLease} from "./canonical-preparation-lease";
+import {contactSuppressedSql,CONTACT_SUPPRESSED_REASON} from "./canonical-contact-suppression";
 
 const KEY="canonical_recipient_preparation_cursor";
-/** Priority-lane 25-row pages per tick (a single page per tick took 2+ days per full cycle). */
-const MAX_PRIORITY_PAGES_PER_TICK=4;
+/** Priority-lane 25-row pages per tick. The lane window (a deadline) is the real bound: screened holds cost almost
+ * nothing, so a small page cap left most of the window unused. */
+const MAX_PRIORITY_PAGES_PER_TICK=40;
 /** Time each of the two fair-share lanes is guaranteed per pass, whatever the completion and stale-package lanes
  * did before them. Before this reservation both lanes could receive a zero-length window: the slow lanes ran up to
  * the shared deadline first, so the priority cursor sat still for days while the backlog it exists to reach grew. */
@@ -185,9 +187,10 @@ export async function processCanonicalRecipientPreparationTick(
     // reaches after its (expensive) qualification and lock phases, so the page records that hold directly. The writer
     // still performs every one of these checks under lock for any contact that passes the screen.
     const screenedHold=new Map<number,string>();
+    const contactsWithoutPreparation=new Set(contacts.filter(contact=>contact.has_preparation!==true).map(contact=>Number(contact.id)));
     if (bindingsByContact.size) {
       const facts=rows(await timed("screen_query",()=>db.execute(sql`
-        SELECT c.id AS contact_id,c.email,b.city,b.state,b.postal_code,
+        SELECT c.id AS contact_id,c.email,b.city,b.state,b.postal_code,${sql.raw(contactSuppressedSql("c"))} AS suppressed,
           EXISTS(SELECT 1 FROM contact_business_link_decisions l WHERE l.contact_id=c.id AND l.business_id=c.business_id
             AND l.decision='verified' AND l.superseded_at IS NULL) AS has_link,
           COALESCE((SELECT jsonb_agg(jsonb_build_object('id',bl.id,'is_primary',bl.is_primary,'city',bl.city,
@@ -210,6 +213,12 @@ export async function processCanonicalRecipientPreparationTick(
         }
         if (!EMAIL_SHAPE.test(String(fact.email ?? "").trim().toLowerCase())) {
           screenedHold.set(Number(fact.contact_id),"AVAILABLE_EMAIL_REQUIRED");
+          continue;
+        }
+        // A suppressed or invalid address with no live preparation can only end in a hold after the two-second
+        // qualification. Contacts that already hold a preparation still go through retirement and the writer.
+        if (fact.suppressed===true && contactsWithoutPreparation.has(Number(fact.contact_id))) {
+          screenedHold.set(Number(fact.contact_id),CONTACT_SUPPRESSED_REASON);
         }
       }
     }

@@ -133,6 +133,35 @@ try {
   const lateStates = (await pool.query(`SELECT count(DISTINCT contact_id)::int n FROM cr04_enrollment_intents
     WHERE contact_id=ANY($1::int[])`, [late])).rows[0].n;
   check(lateStates === late.length, "Late-ID recipients were all reached and prepared");
+  // Suppressed/invalid addresses with no live preparation are recorded as held by the page screen: they reach the same
+  // outcome the writer reaches after its qualification, without paying for it (no channel decision, no preparation row).
+  const suppressedIds: number[] = [];
+  for (let i = 0; i < 4; i++) {
+    const id = await fixture();
+    await pool.query("UPDATE contacts SET email_status='invalid' WHERE id=$1", [id]);
+    suppressedIds.push(id);
+  }
+  const normalId = await fixture();
+  const screenedBefore = Number((await pool.query(`SELECT COALESCE((value->'priority'->'reasons'->>'contact_suppressed_or_invalid')::int,0) n
+    FROM system_settings WHERE key='canonical_recipient_preparation_cursor'`)).rows[0]?.n ?? 0);
+  for (let tick = 0; tick < 20; tick++) {
+    const prepared = Number((await pool.query("SELECT count(*)::int n FROM cr04_enrollment_intents WHERE contact_id=$1", [normalId])).rows[0].n);
+    if (prepared > 0) break;
+    await processCanonicalRecipientPreparationTick({ passBaseMs: 1_000, priorityReserveMs: 6_000, populationReserveMs: 1_000 });
+  }
+  check(Number((await pool.query("SELECT count(*)::int n FROM cr04_enrollment_intents WHERE contact_id=$1", [normalId])).rows[0].n) > 0,
+    "A normal bound recipient is still prepared alongside suppressed ones");
+  const suppressedRows = (await pool.query(`SELECT
+    (SELECT count(*) FROM cr04_enrollment_intents WHERE contact_id=ANY($1::int[]))::int intents,
+    (SELECT count(*) FROM cr04_channel_decisions WHERE contact_id=ANY($1::int[]))::int decisions,
+    (SELECT count(*) FROM sequence_enrollments WHERE contact_id=ANY($1::int[]))::int memberships`, [suppressedIds])).rows[0];
+  check(suppressedRows.intents === 0 && suppressedRows.memberships === 0,
+    "Suppressed addresses gain no preparation row or paused membership");
+  check(suppressedRows.decisions === 0, "Suppressed addresses are held by the screen without paying for the qualification phase");
+  const screenedAfter = Number((await pool.query(`SELECT COALESCE((value->'priority'->'reasons'->>'contact_suppressed_or_invalid')::int,0)
+    + COALESCE((value->'population'->'reasons'->>'contact_suppressed_or_invalid')::int,0) n
+    FROM system_settings WHERE key='canonical_recipient_preparation_cursor'`)).rows[0]?.n ?? 0);
+  check(screenedAfter >= screenedBefore, "Screened holds are recorded in lane progress");
   const unsafe = (await pool.query(`SELECT
     (SELECT count(*) FROM sequence_enrollments WHERE metadata->>'canonicalPreparationId' IS NOT NULL
        AND (status<>'paused' OR next_action_at IS NOT NULL))::int active,

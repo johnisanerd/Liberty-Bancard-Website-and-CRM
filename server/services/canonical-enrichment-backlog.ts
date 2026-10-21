@@ -8,6 +8,7 @@ import {
   type BacklogStageKey, type BacklogState, type CanonicalEnrichmentBacklog,
 } from "@shared/canonical-enrichment-backlog";
 import { businessHasDbprLineageSql } from "./dbpr";
+import { contactSuppressedSql } from "./canonical-contact-suppression";
 import { serperLookupExclusionSql } from "./cro03/sfp-serper-lookup-memory";
 import { readUnlabeledDiscoveryGate } from "./cro03/sfp-serper-allowance";
 import { resolveGeographyFromCandidates } from "./cro03/sfp-geography-resolver";
@@ -37,6 +38,8 @@ const REASON_LABELS: Record<string, string> = {
   not_a_target_vertical: "Classified outside the target verticals",
   conflicting_evidence: "Classification evidence conflicts",
   awaiting_first_classification: "No classification yet; website evidence is available",
+  classification_deferred_outside_territory: "Not classified: the business is outside the program's territory",
+  classification_deferred_location_unresolved: "Not classified: the business location cannot be resolved to a county yet",
   recent_decision_hold: "Classified recently; held before the next look",
   due_for_reconsideration: "Due for a fresh classification",
   vertical_not_in_active_program: "Vertical is not part of the active program",
@@ -115,6 +118,8 @@ function businessLadder(gateOpen: boolean) {
     WHEN vstatus='excluded' THEN 'vertical|done|not_a_target_vertical'
     WHEN vstatus='conflicting' THEN 'vertical|held|conflicting_evidence'
     WHEN vstatus IN ('unresolved','missing') AND has_site THEN CASE
+      WHEN last_class_at IS NULL AND class_route='o' THEN 'vertical|held|classification_deferred_outside_territory'
+      WHEN last_class_at IS NULL AND class_route='g' THEN 'vertical|held|classification_deferred_location_unresolved'
       WHEN last_class_at IS NULL THEN 'vertical|eligible_now|awaiting_first_classification'
       WHEN last_class_at > now() - interval '${RETRY_AFTER_DECISION_DAYS} days' THEN 'vertical|waiting|recent_decision_hold'
       ELSE 'vertical|retryable|due_for_reconsideration' END
@@ -179,6 +184,13 @@ function businessFacts(idFilter: ReturnType<typeof sql> | null, gateOpen: boolea
       COALESCE(bb.do_not_visit,FALSE) AS dnv,
       (SELECT max(ev.created_at) FROM sfp_classification_evidence ev WHERE ev.business_id=bb.id
          AND ev.taxonomy_version=2 AND ev.classifier_version=3 AND ev.terminal_state='completed') AS last_class_at,
+      -- Where the classification sweep routed a business it never classified (no evidence row): its location was not
+      -- resolvable ('g') or lies outside the program's territory ('o'). Those are deferred by the geography gate,
+      -- not waiting for a classification pass. Only websites matter here, so the lookup is limited to them.
+      CASE WHEN NULLIF(btrim(bb.website_domain),'') IS NOT NULL THEN (
+        SELECT CASE WHEN i.outcome_code ~ '"route": ?"outside_territory"' THEN 'o'
+                    WHEN i.outcome_code ~ '"route": ?"geography_review"' THEN 'g' END
+          FROM sfp_classification_items i WHERE i.business_id=bb.id ORDER BY i.created_at DESC LIMIT 1) END AS class_route,
       ${serperLookupExclusionSql("bb")} AS serper_fresh,
       EXISTS(SELECT 1 FROM sfp_serper_lookup_memory m WHERE m.business_id=bb.id) AS serper_any,
       bb.free_enrichment_status AS fes, COALESCE(bb.free_enrichment_attempt_count,0) AS fea,
@@ -324,9 +336,7 @@ export async function computeCanonicalEnrichmentBacklog(): Promise<CanonicalEnri
           CASE WHEN c.ghl_contact_id IS NOT NULL THEN 'crm_ghl'
                WHEN u.contact_id IS NOT NULL OR c.primary_source_type='historical_backfill' THEN 'uploaded'
                ELSE 'other' END AS fam,
-          (COALESCE(c.do_not_contact,FALSE) OR COALESCE(c.do_not_auto_contact,FALSE) OR COALESCE(c.opted_out_email,FALSE)
-            OR COALESCE(c.bounce_status,'none')='hard' OR c.suppression_reason IS NOT NULL
-            OR COALESCE(c.email_status,'unvalidated') IN ('invalid','bounced','unsafe','opted_out')) AS suppressed,
+          ${sql.raw(contactSuppressedSql("c"))} AS suppressed,
           (l.contact_id IS NOT NULL) AS is_linked,
           disp.outcome, disp.reason_code, disp.next_retry_at,
           prep.preparation_state, prep.reason_code AS prep_reason,

@@ -84,6 +84,8 @@ export interface Cr04QualificationContext {
   asOf?: Date;
   persist?: boolean;
   scope?: Cr04ActorScope;
+  /** Optional phase stopwatch (milliseconds per phase, accumulated; keys start with `qual_`). Diagnostic only. */
+  timings?: Record<string, number>;
 }
 
 export interface Cr04ChannelDecision {
@@ -168,6 +170,12 @@ export async function evaluateCr04ChannelQualification(
   let commercialResolutionSnapshotId: string | null = null;
   let sequenceId: number | null = context.sequenceId ?? null;
   let evidenceRefs: Array<{ authority: string; ref: string; version?: number }> = [];
+  let lapAt = Date.now();
+  const lap = (phase: string) => {
+    const now = Date.now();
+    if (context.timings) context.timings[`qual_${phase}`] = (context.timings[`qual_${phase}`] ?? 0) + now - lapAt;
+    lapAt = now;
+  };
 
   const [contact] = await db.select({
     id: contacts.id,
@@ -192,6 +200,7 @@ export async function evaluateCr04ChannelQualification(
     lastMeaningfulContactMutationAt: contacts.lastMeaningfulContactMutationAt,
     updatedAt: contacts.updatedAt,
   }).from(contacts).where(eq(contacts.id, contactId)).limit(1);
+  lap("contact_read");
 
   if (!contact) reasons.push("CONTACT_NOT_FOUND");
   if (contact && !scopeAllows(contact, context.scope)) reasons.push("OUT_OF_SCOPE");
@@ -207,6 +216,7 @@ export async function evaluateCr04ChannelQualification(
         sql`${sequenceEnrollments.status} IN ('active','paused')`,
       )).limit(1);
     if (active) reasons.push("ACTIVE_ENROLLMENT");
+    lap("enrollment_check");
 
     if (contact.dataReadinessScore == null || contact.readinessModelVersion == null) {
       reasons.push("COMPLETENESS_MISSING");
@@ -229,6 +239,7 @@ export async function evaluateCr04ChannelQualification(
        WHERE s.subject_type='contact' AND s.subject_key=${String(contact.id)}
        ORDER BY o.observed_at DESC LIMIT 1
     `).catch(() => ({ rows: [] as any[] }));
+    lap("source_evidence");
     const sourceRow = (sourceEvidence as any).rows?.[0];
     if (sourceRow) {
       evidenceRefs.push({ authority: "cro03_source_observation", ref: sourceRow.observation_id });
@@ -254,6 +265,7 @@ export async function evaluateCr04ChannelQualification(
       decision = "unavailable";
     }
 
+    lap("commercial_authority");
     if (context.campaignId) {
       const [campaign] = await db.select({ id: campaigns.id, status: campaigns.status })
         .from(campaigns).where(eq(campaigns.id, context.campaignId)).limit(1);
@@ -288,6 +300,7 @@ export async function evaluateCr04ChannelQualification(
       }
     }
 
+    lap("sequence");
     if (context.channel === "email") {
       if (!contact.email?.trim()) {
         reasons.push("EMAIL_MISSING");
@@ -306,6 +319,7 @@ export async function evaluateCr04ChannelQualification(
       reasons.push("PHONE_MISSING");
     }
 
+    lap("email_eligibility");
     try {
       const permission = await evaluateContactability({
         contactId: contact.id,
@@ -317,6 +331,7 @@ export async function evaluateCr04ChannelQualification(
       if (!permission.allowed) reasons.push(normalizeContactabilityReason(permission.reason));
       evidenceRefs.push({ authority: "contactability", ref: fingerprint(permission.auditLogPayload), version: 1 });
 
+      lap("contactability");
       // Task #1956 Step 8: data-hygiene dimension (DBPR-family lineage etc.) —
       // "Ready for Outreach" must never mark a DBPR-lineage record ready.
       const { evaluateContactDecisions } = await import("./contactability");
@@ -324,6 +339,7 @@ export async function evaluateCr04ChannelQualification(
       if (hygiene.dataHygiene.status === "blocked") {
         reasons.push(...(hygiene.dataHygiene.reasonCodes as Cr04ReasonCode[]));
       }
+      lap("hygiene");
     } catch {
       reasons.push("DEPENDENCY_UNAVAILABLE");
       decision = "unavailable";
@@ -396,6 +412,7 @@ export async function evaluateCr04ChannelQualification(
       )).limit(1);
     }
     id = stored?.id ?? null;
+    lap("persist");
   }
 
   return {

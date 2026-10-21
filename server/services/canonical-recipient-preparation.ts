@@ -119,6 +119,7 @@ async function prepareCanonicalRecipientPass(input: CanonicalPreparationInput) {
   lap("checkpoint");
   const decision = await evaluateCr04ChannelQualification(input.contactId, {
     channel: "email", sequenceId: input.sequenceId, scope: input.actor, persist: true,
+    timings: input.timings,
   });
   lap("qualification");
   if (input.checkpoint) await input.checkpoint();
@@ -327,6 +328,7 @@ async function prepareCanonicalRecipientPass(input: CanonicalPreparationInput) {
       historicalCohortRunId: input.historicalCohortRunId ?? null,
       source: input.source, outboundAuthorized: false,
     };
+    lap("tx_snapshot_build");
     await tx.execute(sql`
       INSERT INTO cr04_enrollment_intents
         (id,idempotency_key,contact_id,sequence_id,channel,source,actor_id,decision_id,
@@ -338,6 +340,7 @@ async function prepareCanonicalRecipientPass(input: CanonicalPreparationInput) {
       ON CONFLICT(id) DO UPDATE SET decision_id=EXCLUDED.decision_id,reason_code=EXCLUDED.reason_code,
         preparation_state=EXCLUDED.preparation_state,preparation_snapshot=EXCLUDED.preparation_snapshot
     `);
+    lap("tx_intent_upsert");
     let enrollmentId: number | null = existing?.enrollment_id == null ? null : Number(existing.enrollment_id);
     if (preparationState === "pending_validation" || preparationState === "ready_held") {
       const member = rows(await tx.execute(sql`
@@ -393,6 +396,7 @@ async function prepareCanonicalRecipientPass(input: CanonicalPreparationInput) {
       ${JSON.stringify({preparationState,outboundAuthorized:false})}::jsonb
       WHERE id=${enrollmentId} AND status='paused'
         AND metadata->>'canonicalPreparationId'=${String(intentId)}`);
+    lap("tx_enrollment_write");
     let receiptProjectionChanged=false;
     if (enrollmentId && preparationState==="ready_held" && receipt?.outcome==="valid") {
       // Reusing a business/address receipt does not create a validation intent.
@@ -407,6 +411,7 @@ async function prepareCanonicalRecipientPass(input: CanonicalPreparationInput) {
         receiptProjectionChanged=contact.email_status!=="valid";
       }
     }
+    lap("tx_receipt_projection");
     if (preparationState === "pending_validation" && enrollmentId) {
       const { createValidationIntent } = await import("./provider-readiness-control");
       await createValidationIntent(tx,{
