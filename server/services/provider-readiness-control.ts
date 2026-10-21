@@ -13,7 +13,7 @@ import { contacts, eligibilitySnapshots, providerObservations, validationIntents
 import { CRO03C_CURRENT_MIGRATION_HEAD } from "./cro03/contracts";
 import { currentCanonicalValidationSelection } from "./canonical-recipient-preparation";
 import {
-  claimCanonicalAddressValidation,bindCanonicalAddressOperation,
+  claimCanonicalAddressValidation,recoveredAddressDispatchExhausted,bindCanonicalAddressOperation,
   markCanonicalAddressDispatch,releaseCanonicalAddressValidation,
 } from "./canonical-address-validation";
 import { findFreshProviderObservation,getActiveSfpOutreachPolicy } from "./cro03/sfp-outreach-policy";
@@ -473,6 +473,15 @@ export async function processValidationIntent(
     return "deferred";
   }
   try {
+  // One physical attempt per authorized recovery. An unknown completed response or HTTP failure on that
+  // attempt never reopens paid retries; a pre-dispatch deferral leaves no dispatch mark and may resume.
+  if (await recoveredAddressDispatchExhausted(tokenHash!)) {
+    await releaseCanonicalAddressValidation(addressOwner);
+    await db.execute(sql`UPDATE validation_intents SET state='blocked',terminal_code='ambiguous_recovery_exhausted',
+      claim_token=NULL,lease_expires_at=NULL,completed_at=NOW(),updated_at=NOW()
+      WHERE id=${intentId}::uuid AND claim_token=${claimToken}::uuid`);
+    return "failed";
+  }
   if (!deps.verifyEmail && !(process.env.ZEROBOUNCE_API_KEY ?? process.env.ZEROBOUNCE_APi_KEY)) {
     await db.execute(sql`UPDATE validation_intents SET state='pending',enqueue_state='deferred',
       terminal_code='provider_not_configured',claim_token=NULL,lease_expires_at=NULL,
@@ -569,11 +578,15 @@ export async function processValidationIntent(
     await tx.execute(sql`UPDATE provider_attempts SET dispatch_marked_at=clock_timestamp()
       WHERE id=${attemptId}::uuid AND dispatch_marked_at IS NULL`);
     return true;
-  }).catch(()=>{
-    dispatchFailureReason="predispatch_authority_unavailable";
+  }).catch((err:any)=>{
+    const message=String(err?.message ?? "");
+    dispatchFailureReason=message.includes("ZB_RECOVERY_ATTEMPT_EXHAUSTED") ? "ambiguous_recovery_exhausted"
+      : message.includes("ZB_RECOVERY_REUSE_ONLY") ? "ambiguous_recovery_reuse_only"
+      : "predispatch_authority_unavailable";
     return false;
   });
   if (!dispatchReady) {
+    const recoveryBlocked=dispatchFailureReason==="ambiguous_recovery_exhausted"||dispatchFailureReason==="ambiguous_recovery_reuse_only";
     await db.execute(sql`
       UPDATE provider_operations SET state='cancelled',billing_state='released',completed_at=NOW(),updated_at=NOW()
        WHERE id=${operationId}::uuid AND state='running'
@@ -584,10 +597,10 @@ export async function processValidationIntent(
     `);
     await db.execute(sql`
       UPDATE validation_intents SET
-             state=${dispatchFailureReason==="canonical_target_selection_stale" ? "blocked" : "pending"},
+             state=${recoveryBlocked||dispatchFailureReason==="canonical_target_selection_stale" ? "blocked" : "pending"},
              terminal_code=${dispatchFailureReason},
              lease_expires_at=NULL,claim_token=NULL,
-             completed_at=${dispatchFailureReason==="canonical_target_selection_stale" ? sql`NOW()` : sql`NULL`},
+             completed_at=${recoveryBlocked||dispatchFailureReason==="canonical_target_selection_stale" ? sql`NOW()` : sql`NULL`},
              next_attempt_at=NOW()+INTERVAL '5 minutes',updated_at=NOW()
        WHERE id=${intentId}::uuid AND claim_token=${claimToken}::uuid
     `);

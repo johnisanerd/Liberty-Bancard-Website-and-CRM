@@ -830,10 +830,10 @@ Return maximum 5 segments, 4 recommendations, 4 outreach priorities, 3 quick win
     try {
       const body = req.body ?? {};
       const keys = Object.keys(body).sort().join(",");
-      if (keys !== "authorizationKey,expectedAuthorizableAddresses,expectedReadyFingerprint" ||
+      if (keys !== "authorizationKey,expectedAuthorizableAddresses,expectedMaxAuthorizedPurchases,expectedReadyFingerprint" ||
           typeof body.authorizationKey !== "string" || !Number.isInteger(body.expectedAuthorizableAddresses) ||
-          body.expectedAuthorizableAddresses < 0 || typeof body.expectedReadyFingerprint !== "string") {
-        return res.status(400).json({ message: "authorizationKey, expectedAuthorizableAddresses and expectedReadyFingerprint (from the preview) are required" });
+          body.expectedAuthorizableAddresses < 0 || !Number.isInteger(body.expectedMaxAuthorizedPurchases) || body.expectedMaxAuthorizedPurchases < 0 || typeof body.expectedReadyFingerprint !== "string") {
+        return res.status(400).json({ message: "authorizationKey, expectedAuthorizableAddresses, expectedMaxAuthorizedPurchases and expectedReadyFingerprint (from the preview) are required" });
       }
       const { authorizeAmbiguousRecovery } = await import("../services/zerobounce-ambiguous-recovery");
       const user = req.user as any;
@@ -841,6 +841,7 @@ Return maximum 5 segments, 4 recommendations, 4 outreach priorities, 3 quick win
         res.json(await authorizeAmbiguousRecovery({
           authorizationKey: body.authorizationKey,
           expectedAuthorizableAddresses: body.expectedAuthorizableAddresses,
+          expectedMaxAuthorizedPurchases: body.expectedMaxAuthorizedPurchases,
           expectedReadyFingerprint: body.expectedReadyFingerprint,
           actor: user?.id ? String(user.id) : undefined,
         }));

@@ -441,6 +441,13 @@ const RAW_SUITE_MANIFEST: SuiteManifestDefinition[] = [
     providerDenial: "claim, preview and authorization code on a disposable migrated database with fixture operations; provider network egress is denied and counted",
   },
   {
+    name: "ZeroBounce ambiguous recovery real worker",
+    script: "scripts/certification/test-zerobounce-ambiguous-recovery-worker.ts",
+    isolateInfrastructure: true,
+    capability: "deterministic-integration",
+    providerDenial: "real validation worker with an injected fake provider on a disposable migrated database; provider network egress is denied and counted",
+  },
+  {
     name: "Partner route registration order",
     script: "scripts/test-partner-route-order.ts",
     capability: "deterministic-integration",

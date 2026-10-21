@@ -181,17 +181,47 @@ export async function bindCanonicalAddressOperation(
   `));
   if (result.length !== 1) throw new Error("CANONICAL_ADDRESS_CLAIM_LOST");
   // Associate the additional attempt's new operation with its one recovery (no-op for ordinary claims).
+  // A resumed attempt (the earlier operation never dispatched) re-associates to the latest operation.
   await executor.execute(sql`
-    UPDATE zerobounce_ambiguous_recoveries SET new_operation_id=${operationId}::uuid
-     WHERE email_token_hash=${claim.emailTokenHash} AND state='consumed'
-       AND consumed_claim_token=${claim.claimToken}::uuid AND new_operation_id IS NULL
+    UPDATE zerobounce_ambiguous_recoveries r SET new_operation_id=${operationId}::uuid
+     WHERE r.email_token_hash=${claim.emailTokenHash} AND r.state='consumed'
+       AND (r.new_operation_id IS NULL OR (r.new_operation_id<>${operationId}::uuid
+         AND NOT EXISTS (SELECT 1 FROM provider_attempts a WHERE a.operation_id=r.new_operation_id
+           AND a.dispatch_marked_at IS NOT NULL)))
   `);
+}
+
+/**
+ * True once an authorized recovery has been consumed AND a physical provider dispatch has been marked for
+ * this address since. The recovery buys exactly one physical attempt: a completed-but-unknown response or
+ * an HTTP failure on that attempt does not permit another paid call. A pre-dispatch deferral leaves no
+ * dispatch mark, so it never exhausts the recovery.
+ */
+export async function recoveredAddressDispatchExhausted(emailTokenHash: string, executor: Executor = db): Promise<boolean> {
+  assertHash(emailTokenHash);
+  return rows(await executor.execute(sql`
+    SELECT 1 FROM zerobounce_ambiguous_recoveries r
+     WHERE r.email_token_hash=${emailTokenHash} AND r.state='consumed'
+       AND EXISTS (SELECT 1 FROM provider_operations op
+         JOIN provider_attempts a ON a.operation_id=op.id
+        WHERE op.provider='zerobounce' AND op.target_fingerprint=r.email_token_hash
+          AND a.dispatch_marked_at IS NOT NULL AND a.dispatch_marked_at>=r.consumed_at)
+     LIMIT 1`)).length > 0;
 }
 
 /** Executed in the final provider-dispatch transaction, after source rechecks. */
 export async function markCanonicalAddressDispatch(
   claim: AddressValidationClaim, operationId: string, executor: Executor,
 ): Promise<void> {
+  // Serialize with other dispatches for a recovered address, then enforce: one physical attempt per
+  // recovery, and none at all when the recovery was authorized only for fresh-receipt reuse.
+  const recovery = rows(await executor.execute(sql`
+    SELECT evidence->>'authorizedAs' authorized_as FROM zerobounce_ambiguous_recoveries
+     WHERE email_token_hash=${claim.emailTokenHash} AND state='consumed' FOR UPDATE`))[0];
+  if (recovery) {
+    if (recovery.authorized_as === "reuse") throw new Error("ZB_RECOVERY_REUSE_ONLY");
+    if (await recoveredAddressDispatchExhausted(claim.emailTokenHash, executor)) throw new Error("ZB_RECOVERY_ATTEMPT_EXHAUSTED");
+  }
   const result = rows(await executor.execute(sql`
     UPDATE canonical_address_validation_claims
        SET dispatched_at=clock_timestamp(),updated_at=clock_timestamp()

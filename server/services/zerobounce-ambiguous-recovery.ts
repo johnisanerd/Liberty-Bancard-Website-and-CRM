@@ -16,10 +16,10 @@ import { createHash } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { db } from "../db";
 import { settledAddressOperation } from "./canonical-address-validation";
+import { findFreshProviderObservation, getActiveSfpOutreachPolicy } from "./cro03/sfp-outreach-policy";
 
 const rows = (r: any): any[] => r?.rows ?? r ?? [];
 export const ZB_RECOVERY_COOLDOWN_HOURS = 24;
-export const ZB_RECOVERY_FRESH_RECEIPT_DAYS = 30;
 
 type Executor = { execute(query: any): Promise<any> };
 
@@ -37,9 +37,6 @@ const candidateRows = (executor: Executor) => executor.execute(sql`
     (SELECT count(DISTINCT ct.business_id)::int FROM validation_intents vi JOIN contacts ct ON ct.id=vi.contact_id
       WHERE vi.normalized_email_token_hash=c.email_token_hash
         AND (vi.state IN ('pending','processing') OR (vi.state='blocked' AND vi.terminal_code='ambiguous_billing'))) businesses,
-    EXISTS (SELECT 1 FROM provider_observations o WHERE o.provider='zerobounce' AND o.email_token_hash=c.email_token_hash
-      AND o.retryable=FALSE AND o.outcome IN ('valid','invalid')
-      AND o.observed_at>clock_timestamp()-make_interval(days => ${ZB_RECOVERY_FRESH_RECEIPT_DAYS})) fresh_receipt,
     (SELECT r.state FROM zerobounce_ambiguous_recoveries r WHERE r.email_token_hash=c.email_token_hash) recovery_state
   FROM canonical_address_validation_claims c
   JOIN provider_operations op ON op.id=c.operation_id AND op.provider='zerobounce'
@@ -51,8 +48,27 @@ const candidateRows = (executor: Executor) => executor.execute(sql`
   ORDER BY c.email_token_hash
 `);
 
-const fingerprint = (hashes: string[]) =>
-  createHash("sha256").update(["zb-ambiguous-recovery-v1", ...hashes].join("\n")).digest("hex");
+/**
+ * Receipt reuse versus purchase is decided with the same canonical rule the worker uses
+ * (findFreshProviderObservation with the active policy TTL), never a separate approximation.
+ */
+async function withReceipts(executor: Executor, list: any[]) {
+  const ttlDays = (await getActiveSfpOutreachPolicy({ bypassCache: true })).validationTtlDays;
+  const out: any[] = [];
+  for (const r of list) {
+    const receipt = await findFreshProviderObservation({ businessId: 0, emailTokenHash: String(r.email_token_hash), ttlDays }, executor);
+    out.push({ ...r, receipt, fresh_receipt: !!receipt });
+  }
+  return out;
+}
+
+/** Binds each address to its original operations, reuse-versus-purchase status and receipt identity. */
+const entryLine = (r: any) => [
+  r.email_token_hash, [...(r.superseded as string[])].sort().join(","),
+  r.receipt ? `reuse:${r.receipt.operationId}:${r.receipt.outcome}` : "purchase",
+].join("|");
+const fingerprint = (entries: any[], maxPurchases: number) =>
+  createHash("sha256").update(["zb-ambiguous-recovery-v2", `max:${maxPurchases}`, ...entries.map(entryLine)].join("\n")).digest("hex");
 
 export interface AmbiguousRecoveryPreview {
   cooldownHours: number;
@@ -74,10 +90,12 @@ export interface AmbiguousRecoveryPreview {
   /** Authorization binds to this: ready addresses plus fresh-receipt addresses (which cost nothing). */
   readyFingerprint: string;
   authorizableAddresses: number;
+  /** Purchases the authorization would permit: authorizable addresses without a fresh receipt. */
+  maxAuthorizedPurchases: number;
 }
 
 export async function previewAmbiguousRecovery(executor: Executor = db): Promise<AmbiguousRecoveryPreview> {
-  const all = rows(await candidateRows(executor));
+  const all = await withReceipts(executor, rows(await candidateRows(executor)));
   const open = all.filter(r => !r.recovery_state);
   const fresh = open.filter(r => r.fresh_receipt);
   const needsPurchase = open.filter(r => !r.fresh_receipt);
@@ -97,13 +115,15 @@ export async function previewAmbiguousRecovery(executor: Executor = db): Promise
     businesses: open.reduce((n, r) => n + Number(r.businesses), 0),
     byOriginalOperationState: byState,
     authorizableAddresses: authorizable.length,
-    readyFingerprint: fingerprint(authorizable.map(r => String(r.email_token_hash))),
+    maxAuthorizedPurchases: authorizable.filter(r => !r.fresh_receipt).length,
+    readyFingerprint: fingerprint(authorizable, authorizable.filter(r => !r.fresh_receipt).length),
   };
 }
 
 export interface AuthorizeAmbiguousRecoveryInput {
   authorizationKey: string;
   expectedAuthorizableAddresses: number;
+  expectedMaxAuthorizedPurchases: number;
   expectedReadyFingerprint: string;
   actor?: string;
 }
@@ -119,9 +139,11 @@ export async function authorizeAmbiguousRecovery(input: AuthorizeAmbiguousRecove
     const lock = rows(await tx.execute(sql`
       SELECT pg_try_advisory_xact_lock(hashtextextended('zerobounce-ambiguous-recovery-authorize',0)) acquired`))[0];
     if (lock?.acquired !== true) throw new Error("ZB_RECOVERY_AUTHORIZATION_IN_PROGRESS");
-    const ready = rows(await candidateRows(tx)).filter(r => !r.recovery_state && (r.fresh_receipt || r.cooldown_ready));
+    const ready = (await withReceipts(tx, rows(await candidateRows(tx)))).filter(r => !r.recovery_state && (r.fresh_receipt || r.cooldown_ready));
     const hashes = ready.map(r => String(r.email_token_hash));
-    if (ready.length !== input.expectedAuthorizableAddresses || fingerprint(hashes) !== input.expectedReadyFingerprint)
+    const maxPurchases = ready.filter(r => !r.fresh_receipt).length;
+    if (ready.length !== input.expectedAuthorizableAddresses || maxPurchases !== input.expectedMaxAuthorizedPurchases
+        || fingerprint(ready, maxPurchases) !== input.expectedReadyFingerprint)
       throw new Error("ZB_RECOVERY_PREVIEW_STALE");
     let authorized = 0;
     for (const r of ready) {
@@ -131,7 +153,7 @@ export async function authorizeAmbiguousRecovery(input: AuthorizeAmbiguousRecove
         VALUES (${r.email_token_hash},${sql.raw("ARRAY[")}${sql.join((r.superseded as string[]).map(id => sql`${id}::uuid`), sql`,`)}${sql.raw("]")},
           ${input.authorizationKey},${input.actor ?? null},
           ${r.fresh_receipt ? sql`clock_timestamp()` : sql`${r.dispatched_at}::timestamptz + make_interval(hours => ${ZB_RECOVERY_COOLDOWN_HOURS})`},
-          ${JSON.stringify({ freshReceiptReuse: !!r.fresh_receipt, originalOperationId: r.operation_id, originalOperationState: r.op_state,
+          ${JSON.stringify({ authorizedAs: r.fresh_receipt ? "reuse" : "purchase", receiptOperationId: r.receipt?.operationId ?? null, freshReceiptReuse: !!r.fresh_receipt, originalOperationId: r.operation_id, originalOperationState: r.op_state,
             originalDispatchedAt: r.dispatched_at, rule: "one_additional_attempt_per_address" })}::jsonb)
         ON CONFLICT (email_token_hash) DO NOTHING RETURNING id`));
       authorized += inserted.length;

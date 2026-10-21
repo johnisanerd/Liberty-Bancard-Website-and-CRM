@@ -69,11 +69,11 @@ try{
   ok(preview.supersededOperations>=5,"superseded operations include the legacy operation");
 
   // Authorization is snapshot-bound and explicit.
-  await assert.rejects(()=>svc.authorizeAmbiguousRecovery({authorizationKey:`auth-${tag}-x`,expectedAuthorizableAddresses:3,expectedReadyFingerprint:"0".repeat(64),actor:"cert"}),/PREVIEW_STALE/);checks++;
-  await assert.rejects(()=>svc.authorizeAmbiguousRecovery({authorizationKey:`auth-${tag}-x`,expectedAuthorizableAddresses:9,expectedReadyFingerprint:preview.readyFingerprint,actor:"cert"}),/PREVIEW_STALE/);checks++;
+  await assert.rejects(()=>svc.authorizeAmbiguousRecovery({authorizationKey:`auth-${tag}-x`,expectedAuthorizableAddresses:3,expectedMaxAuthorizedPurchases:2,expectedReadyFingerprint:"0".repeat(64),actor:"cert"}),/PREVIEW_STALE/);checks++;
+  await assert.rejects(()=>svc.authorizeAmbiguousRecovery({authorizationKey:`auth-${tag}-x`,expectedAuthorizableAddresses:9,expectedMaxAuthorizedPurchases:2,expectedReadyFingerprint:preview.readyFingerprint,actor:"cert"}),/PREVIEW_STALE/);checks++;
   ok(!(await recovery(A.hash)),"a refused authorization writes nothing");
   const authKey=`auth-${tag}-ok`;
-  const auth=await svc.authorizeAmbiguousRecovery({authorizationKey:authKey,expectedAuthorizableAddresses:3,expectedReadyFingerprint:preview.readyFingerprint,actor:"cert"});
+  const auth=await svc.authorizeAmbiguousRecovery({authorizationKey:authKey,expectedAuthorizableAddresses:3,expectedMaxAuthorizedPurchases:2,expectedReadyFingerprint:preview.readyFingerprint,actor:"cert"});
   ok(auth.authorized===3&&auth.intentsReopened===3&&auth.providerCallsMade===0,JSON.stringify(auth));
   ok(!(await recovery(B.hash))&&!(await recovery(D.hash)),"cooldown and no-need addresses are not authorized");
   const rA=await recovery(A.hash);
