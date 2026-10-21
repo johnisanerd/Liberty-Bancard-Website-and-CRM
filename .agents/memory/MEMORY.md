@@ -176,3 +176,4 @@
 - [Enrichment funnel blockers](enrichment-audit-blockers.md) — unclassified website businesses are mostly geography-deferred; suppressed contacts dominated the priority lane.
 - [Serper contact-page stage](serper-contact-page-stage.md) — governed one-request-per-business lookup; closed by default; request vs credit accounting; yield only from real runs.
 - [Contacts vs businesses counts](contact-vs-business-counts.md) — domain/location audit counts are contacts; always give distinct businesses separately; empty executeSql output means the query errored.
+- [Slow dashboard page causes](slow-page-causes.md) — Outreach Queue pre-filter, SFP status count snapshot, health stale-while-revalidate; entities/sunbiz stats still slow.

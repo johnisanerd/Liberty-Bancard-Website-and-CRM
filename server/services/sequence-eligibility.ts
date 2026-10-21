@@ -52,9 +52,28 @@ export async function canEnrollContactInSequence(
     sequenceFamily?: string | null;
     eligibleConsentTiers?: string[] | null;
     lifecycleStagesAllowed?: string[] | null;
-  }
+  },
+  /** Callers testing many sequences against one contact pass it once instead of re-reading it per sequence. */
+  preloadedContact?: Awaited<ReturnType<typeof storage.getContact>>
 ): Promise<EnrollmentEligibilityResult> {
-  const contact = await storage.getContact(contactId);
+  return evaluateEnrollmentEligibility(preloadedContact ?? await storage.getContact(contactId), sequence);
+}
+
+/**
+ * Pure eligibility decision over an already-loaded contact. Callers that test many sequences against one contact
+ * load it once and call this, instead of re-reading the contact per sequence.
+ */
+export function evaluateEnrollmentEligibility(
+  contact: Awaited<ReturnType<typeof storage.getContact>> | undefined | null,
+  sequence: {
+    id?: number;
+    name?: string | null;
+    status?: string | null;
+    sequenceFamily?: string | null;
+    eligibleConsentTiers?: string[] | null;
+    lifecycleStagesAllowed?: string[] | null;
+  }
+): EnrollmentEligibilityResult {
   if (!contact) {
     return { allowed: false, reason: "Contact not found." };
   }

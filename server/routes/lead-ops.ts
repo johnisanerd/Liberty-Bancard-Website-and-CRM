@@ -73,6 +73,24 @@ function getOpenAI() {
 }
 
 // ── In-process health cache (300 s TTL) with single-flight guard ──────────────
+/** TTL + single-flight memo for expensive read-only count snapshots; a rejected computation is never cached. */
+const _snapshotMemo = new Map<string, { at: number; value: any; inflight: Promise<any> | null }>();
+async function memoizeSnapshot<T>(key: string, ttlMs: number, compute: () => Promise<T>): Promise<T> {
+  const entry = _snapshotMemo.get(key);
+  if (entry && entry.value !== undefined && Date.now() - entry.at < ttlMs) return entry.value as T;
+  if (entry?.inflight) return entry.inflight as Promise<T>;
+  const inflight = compute().then(value => {
+    _snapshotMemo.set(key, { at: Date.now(), value, inflight: null });
+    return value;
+  }, error => {
+    const current = _snapshotMemo.get(key);
+    if (current) _snapshotMemo.set(key, { ...current, inflight: null });
+    throw error;
+  });
+  _snapshotMemo.set(key, { at: entry?.at ?? 0, value: entry?.value, inflight });
+  return inflight;
+}
+
 let _healthCache: { data: any; ts: number } | null = null;
 let _healthInflight: Promise<any> | null = null;
 // Incremented each time the cache is invalidated.  A completed computation
@@ -271,12 +289,10 @@ export function registerLeadOpsRoutes(app: Express) {
         whereClause = sql`${whereClause} AND tags && ARRAY['quiz_lead_linked','lead_free_analysis','src_quiz']::text[]`;
       }
 
-      const countResult = await db.execute(
+      // The count and the page are independent scans; run them together.
+      const [countResult, rowsResult] = await Promise.all([db.execute(
         sql`SELECT COUNT(*)::int AS total FROM sunbiz_entities ${whereClause}`
-      );
-      const total = ((countResult as any).rows ?? countResult)[0]?.total ?? 0;
-
-      const rowsResult = await db.execute(sql`
+      ), db.execute(sql`
         SELECT id, entity_name, principal_city, principal_state, vertical, score,
                enrichment_status, enriched_at, owner_name, owner_email, owner_phone,
                email, phone, website, prospect_id, ai_summary, tags, created_at, updated_at
@@ -287,7 +303,8 @@ export function registerLeadOpsRoutes(app: Express) {
           enriched_at DESC NULLS LAST,
           created_at DESC
         LIMIT ${limit} OFFSET ${offset}
-      `);
+      `)]);
+      const total = ((countResult as any).rows ?? countResult)[0]?.total ?? 0;
 
       res.json({ data: (rowsResult as any).rows ?? rowsResult, total, page, limit });
     } catch (err: any) {
@@ -1408,6 +1425,13 @@ Return maximum 5 segments, 4 recommendations, 4 outreach priorities, 3 quick win
       // stale-fallback logic uniformly.
     }
 
+    // Stale-while-revalidate: an expired snapshot is served at once while the refresh (15-30s of scans) runs in the
+    // background, so only the very first computation after a restart is ever waited on.
+    if (_healthCache && !HEALTH_CACHE_TEST_MODE) {
+      _healthInflight!.catch((err) => console.error("[LeadOps] background health refresh failed:", (err as Error)?.message));
+      return { data: _healthCache.data, isStale: false };
+    }
+
     // Every caller — creator and all joiners — awaits here with the same error
     // handling so stale-data fallback is applied to every concurrent request.
     try {
@@ -2502,6 +2526,9 @@ Return maximum 5 segments, 4 recommendations, 4 outreach priorities, 3 quick win
       // exclusion). This telemetry must use the identical predicate so the
       // operator-facing count matches what the cohort/eligibility authority
       // actually admits — not a narrower, more permissive approximation.
+      // The count blocks below are 5-9s of table scans. They are snapshotted for 60s (single flight, failures not
+      // cached); the pause state, provider controls, spend and Serper state above and below stay live.
+      const countsSnapshot = await memoizeSnapshot("lead-ops-status-overview-counts", 60_000, async () => {
       const eligibleCounts = rows(await db.execute(sql`
         SELECT
           (SELECT COUNT(*)::int FROM businesses WHERE record_class = 'canonical') AS canonical_businesses,
@@ -2811,6 +2838,9 @@ Return maximum 5 segments, 4 recommendations, 4 outreach priorities, 3 quick win
         v2VerticalFunnel24h = null;
         console.error("[LeadOps] SFP throughput telemetry unavailable:", err?.message);
       }
+      return { countsSnapshotAt: new Date().toISOString(), eligibleCounts, zbOutcomes, crosswalkOnlyExcluded, funnelSnapshotAt, funnel, funnelUnavailableReason, sourcePool, throughput24h, paidEvidenceByProvider24h, validationBySourceStatus24h, v2VerticalFunnel24h, telemetryUnavailableReason };
+      });
+      const { countsSnapshotAt, eligibleCounts, zbOutcomes, crosswalkOnlyExcluded, funnelSnapshotAt, funnel, funnelUnavailableReason, sourcePool, throughput24h, paidEvidenceByProvider24h, validationBySourceStatus24h, v2VerticalFunnel24h, telemetryUnavailableReason } = countsSnapshot;
 
       res.json({
         poolAuthority,
@@ -2835,6 +2865,7 @@ Return maximum 5 segments, 4 recommendations, 4 outreach priorities, 3 quick win
           source: outboundPauseState.source,
           epoch: outboundPauseState.epoch?.toString?.() ?? String(outboundPauseState.epoch),
         },
+        countsSnapshotAt,
         eligibleCounts,
         zbOutcomes,
         funnel: funnel

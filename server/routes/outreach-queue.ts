@@ -15,6 +15,7 @@ import {
   freezeCr04Cohort,
   enrollThroughCr04Fence,
   queryCr04ReadyProjection,
+  listCr04Assignees,
   type Cr04ActorScope,
   type Cr04Channel,
   type Cr04ReadyFilters,
@@ -128,16 +129,10 @@ export function registerOutreachQueueRoutes(app: Express) {
         const scope = actorScope(req)!;
         const channel = parseChannel(req.query.channel);
         if (!channel) return res.status(400).json({ message: "Invalid channel" });
-        const result = await queryCr04ReadyProjection({
-          scope,
-          filters: parseFilters(req.query as Record<string, unknown>, channel),
-          cursor: 0,
-          limit: 1,
-        });
         res.json({
-          assignees: result.assignees,
-          complete: false,
-          policyVersion: result.policyVersion,
+          assignees: await listCr04Assignees(scope),
+          complete: true,
+          policyVersion: CR04_POLICY_VERSION,
           channel,
         });
       } catch (err) {

@@ -24,6 +24,7 @@ import { evaluateContactability } from "./contactability";
 import { evaluateMarketingEmailEligibility, EMAIL_VALIDATION_POLICY_VERSION } from "./provider-readiness-control";
 import { authorizeCommercialUse, CRO02_POLICY_VERSION } from "./commercial-resolution";
 import { canEnrollContactInSequence } from "./sequence-eligibility";
+import { storage } from "../storage";
 import { resolveSender } from "./sender-policy";
 
 export const CR04_POLICY_VERSION = 1;
@@ -86,6 +87,15 @@ export interface Cr04QualificationContext {
   scope?: Cr04ActorScope;
   /** Optional phase stopwatch (milliseconds per phase, accumulated; keys start with `qual_`). Diagnostic only. */
   timings?: Record<string, number>;
+  /**
+   * Request-scoped read cache for the active sequences and their steps. Only a read projection that evaluates many
+   * contacts in one request supplies it; enrollment and single-contact evaluation always read live.
+   */
+  sequenceCache?: Cr04SequenceCache;
+}
+export interface Cr04SequenceCache {
+  candidates?: Promise<Array<typeof followUpSequences.$inferSelect>>;
+  steps: Map<number, Promise<Array<{ actionType: string }>>>;
 }
 
 export interface Cr04ChannelDecision {
@@ -132,18 +142,26 @@ function channelForStep(actionType: string | null): Cr04Channel | null {
   return null;
 }
 
-async function resolveSequence(contactId: number, requestedId: number | null | undefined, channel: Cr04Channel) {
-  const candidates = requestedId
-    ? await db.select().from(followUpSequences).where(eq(followUpSequences.id, requestedId)).limit(1)
-    : await db.select().from(followUpSequences)
+async function resolveSequence(contactId: number, requestedId: number | null | undefined, channel: Cr04Channel, cache?: Cr04SequenceCache) {
+  const loadCandidates = () => requestedId
+    ? db.select().from(followUpSequences).where(eq(followUpSequences.id, requestedId)).limit(1)
+    : db.select().from(followUpSequences)
         .where(eq(followUpSequences.status, "active"))
         .orderBy(asc(followUpSequences.id));
+  const candidates = cache && !requestedId ? await (cache.candidates ??= loadCandidates()) : await loadCandidates();
+  let contactForEligibility: Awaited<ReturnType<typeof storage.getContact>> | undefined;
+  let contactLoaded = false;
   for (const sequence of candidates) {
     if (sequence.status !== "active") continue;
-    const steps = await db.select({ actionType: sequenceSteps.actionType })
+    const loadSteps = () => db.select({ actionType: sequenceSteps.actionType })
       .from(sequenceSteps).where(eq(sequenceSteps.sequenceId, sequence.id));
+    let pending = cache?.steps.get(sequence.id);
+    if (cache && !pending) { pending = loadSteps(); cache.steps.set(sequence.id, pending); }
+    const steps = pending ? await pending : await loadSteps();
     if (!steps.some((step) => channelForStep(step.actionType) === channel)) continue;
-    const eligibility = await canEnrollContactInSequence(contactId, sequence);
+    // One contact read per resolution, not one per candidate sequence (there can be hundreds of active sequences).
+    if (!contactLoaded) { contactForEligibility = await storage.getContact(contactId); contactLoaded = true; }
+    const eligibility = await canEnrollContactInSequence(contactId, sequence, contactForEligibility);
     if (eligibility.allowed) return { sequence, steps, eligibility };
   }
   return null;
@@ -287,7 +305,7 @@ export async function evaluateCr04ChannelQualification(
         evidenceRefs.push({ authority: "campaign_content", ref: fingerprint(content), version: 1 });
       }
     } else {
-      const resolved = await resolveSequence(contact.id, context.sequenceId, context.channel);
+      const resolved = await resolveSequence(contact.id, context.sequenceId, context.channel, context.sequenceCache);
       if (!resolved) {
         reasons.push(context.sequenceId ? "SEQUENCE_INCOMPATIBLE" : "SEQUENCE_REQUIRED");
       } else {
@@ -441,6 +459,17 @@ function scoreTier(score: number | null): "hot" | "warm" | "cold" | "unqualified
   return "unqualified";
 }
 
+const CR04_PROJECTION_CONCURRENCY = 4;
+
+/** Every assignee with a live contact in the actor's scope (not only those on one qualified page): one indexed distinct read. */
+export async function listCr04Assignees(scope: Cr04ActorScope): Promise<Array<string | null>> {
+  if (scope.role !== "admin" && !scope.email) throw new Error("CR04_SCOPE_UNAVAILABLE");
+  const result = scope.role === "admin"
+    ? await pool.query(`SELECT DISTINCT assigned_to FROM contacts WHERE archived_at IS NULL AND assigned_to IS NOT NULL`)
+    : await pool.query(`SELECT DISTINCT assigned_to FROM contacts WHERE archived_at IS NULL AND assigned_to = $1`, [scope.email]);
+  return result.rows.map((row: any) => String(row.assigned_to)).sort((a: string, b: string) => a.localeCompare(b));
+}
+
 export async function queryCr04ReadyProjection(input: {
   scope: Cr04ActorScope;
   filters?: Cr04ReadyFilters;
@@ -458,6 +487,9 @@ export async function queryCr04ReadyProjection(input: {
 
   const params: unknown[] = [cursor];
   const conditions = ["c.archived_at IS NULL", "c.id > $1"];
+  // An unowned contact always carries OWNER_REQUIRED and so can never be qualified; scanning them only burned the
+  // candidate budget (every evaluation is ~25 queries). Excluding them in SQL leaves the qualified set unchanged.
+  if (filters.assignedTo !== "unassigned") conditions.push("c.assigned_to IS NOT NULL");
   if (input.scope.role !== "admin") {
     params.push(input.scope.email);
     conditions.push(`c.assigned_to = $${params.length}`);
@@ -496,18 +528,26 @@ export async function queryCr04ReadyProjection(input: {
   const qualified: any[] = [];
   const reasonBuckets: Record<string, number> = {};
   let lastEvaluatedId = cursor;
-  for (const row of rows.rows) {
-    // Stop at the requested qualified page.  The next keyset starts after the
-    // last decision actually evaluated, so no candidate is silently skipped.
-    const decision = await evaluateCr04ChannelQualification(row.id, {
+  // Candidates are evaluated a few at a time (each evaluation is ~10 sequential queries, so one-by-one scanning of up
+  // to 500 candidates took 30-40s when few qualify). Results are consumed strictly in id order and the scan stops at the
+  // requested qualified page, so the keyset cursor still names the last candidate actually consumed; decisions computed
+  // for later candidates in the final batch are idempotent persisted facts, never skipped or reported.
+  const sequenceCache: Cr04SequenceCache = { steps: new Map() };
+  scan: for (let start = 0; start < rows.rows.length; start += CR04_PROJECTION_CONCURRENCY) {
+    const batch = rows.rows.slice(start, start + CR04_PROJECTION_CONCURRENCY);
+    const decisions = await Promise.all(batch.map((row: any) => evaluateCr04ChannelQualification(row.id, {
       channel,
       scope: input.scope,
       asOf: input.asOf,
-    });
-    lastEvaluatedId = row.id;
-    for (const reason of decision.reasonCodes) reasonBuckets[reason] = (reasonBuckets[reason] ?? 0) + 1;
-    if (decision.qualified) qualified.push({ ...row, scoreTier: scoreTier(row.leadScore), decision });
-    if (qualified.length >= limit) break;
+      sequenceCache,
+    })));
+    for (const [index, row] of batch.entries()) {
+      const decision = decisions[index];
+      lastEvaluatedId = row.id;
+      for (const reason of decision.reasonCodes) reasonBuckets[reason] = (reasonBuckets[reason] ?? 0) + 1;
+      if (decision.qualified) qualified.push({ ...row, scoreTier: scoreTier(row.leadScore), decision });
+      if (qualified.length >= limit) break scan;
+    }
   }
   const assignees = [...new Set(qualified.map((row) => row.assignedTo as string | null))]
     .sort((a, b) => String(a ?? "").localeCompare(String(b ?? "")));
