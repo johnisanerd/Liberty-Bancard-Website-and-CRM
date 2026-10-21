@@ -814,6 +814,48 @@ Return maximum 5 segments, 4 recommendations, 4 outreach priorities, 3 quick win
     }
   });
 
+  // Bounded ZeroBounce recovery for addresses whose earlier call ended with an unknown outcome. Preview is
+  // read-only. Authorization lifts each held address once (one additional attempt per address, ever) and
+  // never calls the provider; the attempt itself still runs through every existing gate.
+  app.get("/api/lead-ops/zerobounce-recovery/preview", requireRole("admin"), async (_req, res) => {
+    try {
+      const { previewAmbiguousRecovery } = await import("../services/zerobounce-ambiguous-recovery");
+      res.json(await previewAmbiguousRecovery());
+    } catch (err: any) {
+      serverError(res, err);
+    }
+  });
+
+  app.post("/api/lead-ops/zerobounce-recovery/authorize", requireRole("admin"), async (req, res) => {
+    try {
+      const body = req.body ?? {};
+      const keys = Object.keys(body).sort().join(",");
+      if (keys !== "authorizationKey,expectedAuthorizableAddresses,expectedReadyFingerprint" ||
+          typeof body.authorizationKey !== "string" || !Number.isInteger(body.expectedAuthorizableAddresses) ||
+          body.expectedAuthorizableAddresses < 0 || typeof body.expectedReadyFingerprint !== "string") {
+        return res.status(400).json({ message: "authorizationKey, expectedAuthorizableAddresses and expectedReadyFingerprint (from the preview) are required" });
+      }
+      const { authorizeAmbiguousRecovery } = await import("../services/zerobounce-ambiguous-recovery");
+      const user = req.user as any;
+      try {
+        res.json(await authorizeAmbiguousRecovery({
+          authorizationKey: body.authorizationKey,
+          expectedAuthorizableAddresses: body.expectedAuthorizableAddresses,
+          expectedReadyFingerprint: body.expectedReadyFingerprint,
+          actor: user?.id ? String(user.id) : undefined,
+        }));
+      } catch (err: any) {
+        const message = String(err?.message ?? "");
+        if (message.includes("ZB_RECOVERY_PREVIEW_STALE")) return res.status(409).json({ message: "The eligible set changed since the preview; preview again" });
+        if (message.includes("ZB_RECOVERY_AUTHORIZATION_KEY_INVALID")) return res.status(400).json({ message: "authorizationKey must be 8-120 characters of letters, digits and _ . : -" });
+        if (message.includes("ZB_RECOVERY_AUTHORIZATION_IN_PROGRESS")) return res.status(409).json({ message: "Another authorization is in progress" });
+        throw err;
+      }
+    } catch (err: any) {
+      serverError(res, err);
+    }
+  });
+
   app.get("/api/lead-ops/enrichment-program-health", requireRole("admin", "manager"), async (_req, res) => {
     try {
       const { getFreeEnrichmentLaneStatus } = await import("../services/free-enrichment-lane");

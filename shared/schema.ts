@@ -597,6 +597,26 @@ export const providerObservations = pgTable("provider_observations", {
 ]);
 
 // ---------------------------------------------------------------------------
+// Bounded one-time recovery for addresses whose earlier ZeroBounce call ended with an unknown outcome.
+export const zerobounceAmbiguousRecoveries = pgTable("zerobounce_ambiguous_recoveries", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  emailTokenHash: text("email_token_hash").notNull().unique(),
+  supersededOperationIds: uuid("superseded_operation_ids").array().notNull(),
+  authorizationKey: text("authorization_key").notNull(),
+  authorizedBy: text("authorized_by"),
+  authorizedAt: timestamp("authorized_at", { withTimezone: true }).notNull().defaultNow(),
+  cooldownUntil: timestamp("cooldown_until", { withTimezone: true }).notNull(),
+  state: text("state").notNull().default("authorized"),
+  consumedAt: timestamp("consumed_at", { withTimezone: true }),
+  consumedClaimToken: uuid("consumed_claim_token"),
+  newOperationId: uuid("new_operation_id").references(() => providerOperations.id, { onDelete: "restrict" }),
+  evidence: jsonb("evidence").notNull().default({}),
+}, table => [
+  check("zerobounce_ambiguous_recoveries_hash_check", sql`${table.emailTokenHash} ~ '^[a-f0-9]{64}$'`),
+  check("zerobounce_ambiguous_recoveries_state_check", sql`${table.state} IN ('authorized','consumed','revoked')`),
+  index("zerobounce_ambiguous_recoveries_authorization_idx").on(table.authorizationKey, table.state),
+]);
+
 // CRO-03 durable enrichment factory. Membership/evidence rows are immutable;
 export const canonicalAddressValidationClaims = pgTable("canonical_address_validation_claims", {
   emailTokenHash: text("email_token_hash").primaryKey(),

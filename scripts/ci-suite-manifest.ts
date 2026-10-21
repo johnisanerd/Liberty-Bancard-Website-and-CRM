@@ -434,6 +434,13 @@ const RAW_SUITE_MANIFEST: SuiteManifestDefinition[] = [
     providerDenial: "disposable PostgreSQL with fatal external-network denial; website reads are injected, no provider operations",
   },
   {
+    name: "ZeroBounce ambiguous recovery",
+    script: "scripts/certification/test-zerobounce-ambiguous-recovery.ts",
+    isolateInfrastructure: true,
+    capability: "deterministic-integration",
+    providerDenial: "claim, preview and authorization code on a disposable migrated database with fixture operations; provider network egress is denied and counted",
+  },
+  {
     name: "Partner route registration order",
     script: "scripts/test-partner-route-order.ts",
     capability: "deterministic-integration",

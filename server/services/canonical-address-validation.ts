@@ -8,7 +8,7 @@ const rows = (result: any): any[] => result?.rows ?? result ?? [];
 // from an unknown network outcome. Retain its billing/attempt facts and allow
 // the existing bounded retry policy to work. Never release ambiguous I/O merely
 // because an operation's coarse state is "failed".
-const settledAddressOperation = sql`(
+export const settledAddressOperation = sql`(
   op.provider='zerobounce' AND (
     (op.state='completed' AND EXISTS (
       SELECT 1 FROM provider_observations receipt
@@ -102,11 +102,35 @@ export async function claimCanonicalAddressValidation(
       AND NOT EXISTS(SELECT 1 FROM provider_observations settled
         WHERE settled.operation_id=op.id AND settled.email_token_hash=${emailTokenHash}
           AND settled.retryable=FALSE AND settled.outcome IN ('valid','invalid'))
+      -- Operations named by this address's one bounded recovery stay as evidence but no longer block it.
+      AND NOT EXISTS(SELECT 1 FROM zerobounce_ambiguous_recoveries recovery
+        WHERE recovery.email_token_hash=${emailTokenHash} AND recovery.state IN ('authorized','consumed')
+          AND op.id=ANY(recovery.superseded_operation_ids))
     LIMIT 1`));
   if (legacyInFlight.length) return null;
   await executor.execute(sql`
     INSERT INTO canonical_address_validation_claims(email_token_hash)
     VALUES(${emailTokenHash}) ON CONFLICT DO NOTHING
+  `);
+  // Single-use bounded recovery: an authorized, cooled-down recovery turns the held claim of its superseded
+  // operations into an ordinary free claim exactly once. The state change and the release are one statement
+  // under this address's transaction lock, so workers, contacts and old operations cannot reuse it. The
+  // original operation, attempt, observation and billing rows are not touched.
+  await executor.execute(sql`
+    WITH recovery AS (
+      UPDATE zerobounce_ambiguous_recoveries r
+         SET state='consumed',consumed_at=clock_timestamp()
+       WHERE r.email_token_hash=${emailTokenHash} AND r.state='authorized'
+         AND r.cooldown_until<=clock_timestamp()
+         AND EXISTS (SELECT 1 FROM canonical_address_validation_claims c
+           WHERE c.email_token_hash=r.email_token_hash AND c.dispatched_at IS NOT NULL
+             AND c.operation_id=ANY(r.superseded_operation_ids)
+             AND c.lease_expires_at<clock_timestamp())
+       RETURNING r.email_token_hash
+    )
+    UPDATE canonical_address_validation_claims c
+       SET claim_token=NULL,lease_expires_at=NULL,operation_id=NULL,dispatched_at=NULL,updated_at=clock_timestamp()
+      FROM recovery WHERE c.email_token_hash=recovery.email_token_hash
   `);
   const claimToken = randomUUID();
   const claimed = rows(await executor.execute(sql`
@@ -130,6 +154,12 @@ export async function claimCanonicalAddressValidation(
        )
     RETURNING email_token_hash
   `));
+  if (claimed.length) {
+    await executor.execute(sql`
+      UPDATE zerobounce_ambiguous_recoveries SET consumed_claim_token=${claimToken}::uuid
+       WHERE email_token_hash=${emailTokenHash} AND state='consumed' AND consumed_claim_token IS NULL
+    `);
+  }
   return claimed.length ? { emailTokenHash, claimToken } : null;
 }
 
@@ -150,6 +180,12 @@ export async function bindCanonicalAddressOperation(
     RETURNING email_token_hash
   `));
   if (result.length !== 1) throw new Error("CANONICAL_ADDRESS_CLAIM_LOST");
+  // Associate the additional attempt's new operation with its one recovery (no-op for ordinary claims).
+  await executor.execute(sql`
+    UPDATE zerobounce_ambiguous_recoveries SET new_operation_id=${operationId}::uuid
+     WHERE email_token_hash=${claim.emailTokenHash} AND state='consumed'
+       AND consumed_claim_token=${claim.claimToken}::uuid AND new_operation_id IS NULL
+  `);
 }
 
 /** Executed in the final provider-dispatch transaction, after source rechecks. */
