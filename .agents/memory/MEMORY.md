@@ -177,3 +177,4 @@
 - [Serper contact-page stage](serper-contact-page-stage.md) — governed one-request-per-business lookup; closed by default; request vs credit accounting; yield only from real runs.
 - [Contacts vs businesses counts](contact-vs-business-counts.md) — domain/location audit counts are contacts; always give distinct businesses separately; empty executeSql output means the query errored.
 - [Slow dashboard page causes](slow-page-causes.md) — Outreach Queue pre-filter, SFP status count snapshot, health stale-while-revalidate; entities/sunbiz stats still slow.
+- [Production audit baseline](production-audit-2026-10-21.md) — dated funnel snapshot, Serper budget exhaustion, status funnel unavailable; compare later audits against it.
