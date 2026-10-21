@@ -14,3 +14,9 @@ description: Verified reasons linked contacts and websites-bearing businesses st
 - Domain match alone never links a legacy contact; 10.6k held Sunbiz claims are contactless prospects; a business-only completion tick now creates their canonical businesses (original claim untouched, cursor-based, kill switch env).
 **Why:** these were the items the first pass left out; the findings show what each needs.
 **How to apply:** do not re-derive; start from the needed prerequisite listed per item.
+
+## Lessons (Oct 2026 continuation)
+- Express `/:id` routes registered before literal siblings shadow them; guard numeric ids with `next("route")`.
+- Resolver inserts that must roll back need a thrown-sentinel transaction abort, not a quiet return.
+- ZeroBounce ambiguous recovery: one UNIQUE row per address is the single-use mechanism; fresh-receipt addresses are authorizable at zero cost so the held claim is released and the ordinary path reuses the receipt.
+- Legacy domain assignment: 4,355 contacts have domain+company+location agreement with a single identity; only 6 unlinked contacts have retained import events. Do not widen acceptance without an owner decision.
