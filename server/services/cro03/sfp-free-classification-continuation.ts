@@ -26,7 +26,7 @@ const RUN_LIMIT = 25;
  * website now also gets a bounded first-party read (serial, 6s timeout), which must fit the run lease. */
 const WINDOW_LIMIT = 100;
 /** Parked geography items examined for retained-evidence recovery per tick (each may read the business's own site). */
-const GEOGRAPHY_RECOVERY_LIMIT = 15;
+const GEOGRAPHY_RECOVERY_LIMIT = 60;
 /** Idempotency-key tag for runs made with first-party website reads; keeps them from replaying runs made without. */
 const WEBSITE_READ_RUN_TAG = "web1";
 /** OpenAI escalations per tick (paid). */

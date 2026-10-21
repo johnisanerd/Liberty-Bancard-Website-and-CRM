@@ -222,6 +222,20 @@ const beforeK = calls.length;
 await processGeographyRecovery({ id: programId, policy_version: 52 }, 15, { extractWebsiteEvidence, allowWebsiteRead: false });
 eq(calls.length, beforeK, "allowWebsiteRead=false performs no website read");
 
+// Priority: with a single slot, a never-attempted business that has a production contact goes before one without.
+const P1 = await business("Priority Plain Plumbing P1", { domain: "p1-site.test" });
+const P2 = await business("Priority Linked Plumbing P2", { domain: "p2-site.test" });
+for (const id of [P1, P2]) {
+  await pool.query(`INSERT INTO sfp_classification_items(run_id,business_id,state,outcome_code)
+    SELECT id,$2,'skipped','{"route":"geography_review"}' FROM sfp_classification_runs WHERE program_id=$1 ORDER BY created_at LIMIT 1`, [programId, id]);
+}
+await pool.query(`INSERT INTO contacts(first_name,last_name,email,phone,company_name,record_class,business_id)
+  VALUES('Pri','Linked',$1,'','Priority Linked Plumbing P2','production',$2)`, [`pri.${Date.now()}@example.test`, P2]);
+const priorityCalls = calls.length;
+await processGeographyRecovery({ id: programId, policy_version: 52 }, 1, { extractWebsiteEvidence });
+const touched = calls.slice(priorityCalls);
+ok(touched.length > 0 && touched.every((u) => u.includes("p2-site.test")), "the business with a production contact is recovered first");
+
 const after = (await pool.query(`SELECT
   (SELECT COUNT(*)::int FROM provider_operations) AS providers,
   (SELECT COUNT(*)::int FROM sequence_enrollments) AS enrollments`)).rows[0];

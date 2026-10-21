@@ -34,6 +34,8 @@ const rows = (result: any): any[] => result?.rows ?? result ?? [];
 /** Bump when parsing, source set or acceptance rules change; items are revisited under a new version. */
 export const GEOGRAPHY_RECOVERY_VERSION = "retained_geography_recovery_v2";
 export const GEOGRAPHY_RECOVERY_RETRY_DAYS = 7;
+/** Businesses recovered at once within a tick (each does at most two 6s reads of its own site). */
+export const GEOGRAPHY_RECOVERY_CONCURRENCY = 4;
 
 export type RecoveredAddressSource = "business_address" | "contact_address" | "contact_fields" | "website_jsonld";
 
@@ -352,36 +354,50 @@ export async function processGeographyRecovery(
        AND l.j @> '{"route":"geography_review"}'::jsonb
        AND b.record_class='canonical'
        AND (c.attempted_at IS NULL OR c.attempted_at < NOW() - (${GEOGRAPHY_RECOVERY_RETRY_DAYS} * INTERVAL '1 day'))
-     ORDER BY c.attempted_at NULLS FIRST,l.business_id
+     -- Never-attempted businesses first; within a tier, businesses that have a verified linked contact (the ones
+     -- recovery can turn into recipients) before the rest, and Florida/unstated-state before businesses whose own
+     -- record already names another state (those can only resolve to out-of-territory).
+     ORDER BY (c.attempted_at IS NULL) DESC,
+       EXISTS(SELECT 1 FROM contacts k WHERE k.business_id=l.business_id AND k.record_class='production') DESC,
+       (upper(btrim(COALESCE(b.state,''))) IN ('','FL','FLORIDA')) DESC,
+       c.attempted_at NULLS FIRST,l.business_id
      LIMIT ${limit}
   `));
   let recovered = 0;
   let unresolved = 0;
-  for (const row of pending) {
-    const businessId = Number(row.business_id);
-    let result: RecoveryOutcome;
-    try {
-      result = await recoverBusinessGeography(businessId, deps);
-    } catch (error: any) {
-      // A single business failing must not stop the pass; it is retried on the next version/interval and logged.
-      console.error(`[SfpGeographyRecovery] business ${businessId} failed: ${String(error?.message ?? error)}`);
-      continue;
+  let next = 0;
+  // Each business waits on up to two bounded network reads of its own site, so a small worker pool keeps a larger
+  // page inside the tick without raising any timeout. Each business is independent and row-locked on write.
+  const worker = async () => {
+    for (;;) {
+      const row = pending[next++];
+      if (!row) return;
+      const businessId = Number(row.business_id);
+      let result: RecoveryOutcome;
+      try {
+        result = await recoverBusinessGeography(businessId, deps);
+      } catch (error: any) {
+        // A single business failing must not stop the pass; it is retried on the next version/interval and logged.
+        console.error(`[SfpGeographyRecovery] business ${businessId} failed: ${String(error?.message ?? error)}`);
+        continue;
+      }
+      if (result.status === "recovered") recovered++; else unresolved++;
+      const note = JSON.stringify({
+        geographyRecoveryVersion: GEOGRAPHY_RECOVERY_VERSION,
+        geographyRecoveryAt: new Date().toISOString(),
+        geographyRecovery: result.status === "recovered"
+          ? { status: "recovered", sources: result.sources, outcome: result.outcome, references: result.references }
+          : result.status === "unresolved"
+            ? { status: "unresolved", websiteError: result.websiteError, examined: result.examined }
+            : { status: result.status },
+      });
+      await db.execute(sql`
+        UPDATE sfp_classification_items
+           SET outcome_code=(CASE WHEN left(outcome_code,1)='{' THEN outcome_code::jsonb ELSE '{}'::jsonb END || ${note}::jsonb)::text
+         WHERE id=${String(row.item_id)}::uuid AND state='skipped'
+      `);
     }
-    if (result.status === "recovered") recovered++; else unresolved++;
-    const note = JSON.stringify({
-      geographyRecoveryVersion: GEOGRAPHY_RECOVERY_VERSION,
-      geographyRecoveryAt: new Date().toISOString(),
-      geographyRecovery: result.status === "recovered"
-        ? { status: "recovered", sources: result.sources, outcome: result.outcome, references: result.references }
-        : result.status === "unresolved"
-          ? { status: "unresolved", websiteError: result.websiteError, examined: result.examined }
-          : { status: result.status },
-    });
-    await db.execute(sql`
-      UPDATE sfp_classification_items
-         SET outcome_code=(CASE WHEN left(outcome_code,1)='{' THEN outcome_code::jsonb ELSE '{}'::jsonb END || ${note}::jsonb)::text
-       WHERE id=${String(row.item_id)}::uuid AND state='skipped'
-    `);
-  }
+  };
+  await Promise.all(Array.from({ length: Math.min(GEOGRAPHY_RECOVERY_CONCURRENCY, pending.length) }, worker));
   return { examined: pending.length, recovered, unresolved };
 }

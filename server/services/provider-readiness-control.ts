@@ -227,8 +227,10 @@ export async function recoverValidationIntents(limit = 100): Promise<number> {
       JOIN contacts vc ON vc.id=vi.contact_id
       LEFT JOIN contact_email_prefilter pf
         ON pf.contact_id=vi.contact_id AND pf.email_token_hash=vi.normalized_email_token_hash
-     WHERE vi.state = 'pending'
-       AND vi.next_attempt_at <= NOW()
+     WHERE (vi.state = 'pending' AND vi.next_attempt_at <= NOW()
+            -- A worker that died mid-claim leaves the intent 'processing'. processValidationIntent re-checks the
+            -- lease, and a dispatched operation still blocks a second purchase (operation key + address claim).
+            OR vi.state = 'processing' AND vi.lease_expires_at IS NOT NULL AND vi.lease_expires_at < NOW())
        AND COALESCE(pf.status,'unchecked') NOT IN ('dead_domain','bad_syntax','disposable')
        AND COALESCE(vc.bounce_status,'none')='none' AND vc.bounced_at IS NULL
        AND vc.contact_bounced_at IS NULL AND vc.bounce_date IS NULL
