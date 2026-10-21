@@ -1269,6 +1269,39 @@ export const sfpSerperLookupMemory = pgTable("sfp_serper_lookup_memory", {
   index("sfp_serper_lookup_memory_expiry_idx").on(table.expiresAt),
 ]);
 
+/** Serper contact-page stage: claim, retained provider evidence, request/credit accounting and remembered outcome. */
+export const serperContactPageLookups = pgTable("serper_contact_page_lookups", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  businessId: integer("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+  operationKey: text("operation_key").notNull(),
+  domain: text("domain").notNull(),
+  inputFingerprint: text("input_fingerprint").notNull(),
+  ruleVersion: integer("rule_version").notNull(),
+  status: text("status").notNull().default("claimed"),
+  claimToken: uuid("claim_token").notNull(),
+  claimExpiresAt: timestamp("claim_expires_at", { withTimezone: true }).notNull(),
+  endpoint: text("endpoint").notNull().default("/search"),
+  queryText: text("query_text"),
+  requestedAt: timestamp("requested_at", { withTimezone: true }),
+  retrievedAt: timestamp("retrieved_at", { withTimezone: true }),
+  httpStatus: integer("http_status"),
+  requestsUsed: integer("requests_used").notNull().default(0),
+  reportedCredits: integer("reported_credits"),
+  returnedFields: jsonb("returned_fields").notNull().default(sql`'[]'::jsonb`),
+  resultUrls: jsonb("result_urls").notNull().default(sql`'[]'::jsonb`),
+  pagesRead: jsonb("pages_read").notNull().default(sql`'[]'::jsonb`),
+  outcomeClass: text("outcome_class"),
+  candidateIds: jsonb("candidate_ids").notNull().default(sql`'[]'::jsonb`),
+  generationId: uuid("generation_id"),
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+}, (table) => [
+  uniqueIndex("serper_contact_page_lookups_operation_key_uidx").on(table.operationKey),
+  uniqueIndex("serper_contact_page_lookups_one_claim_uidx").on(table.businessId).where(sql`status = 'claimed'`),
+  index("serper_contact_page_lookups_business_idx").on(table.businessId, table.createdAt),
+]);
+
 /** Durable shared credit ledger for the unlabeled Serper scope: worst-case reserved before
  * each physical request, settled to the reported charge, or left reserved when unknown. */
 export const sfpSerperCreditLedger = pgTable("sfp_serper_credit_ledger", {

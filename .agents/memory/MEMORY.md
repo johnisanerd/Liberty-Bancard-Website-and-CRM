@@ -174,3 +174,5 @@
 - [Recipient-selection lane starvation](recipient-selection-lane-starvation.md) — priority runs do not reach new uploads; staged-email businesses gated by geography; projection tick timing out.
 - [C5 admin/shell lessons](c5-admin-shell-lessons.md) — Express 5 mount provenance, generator-parses-pages rule, sidebar cutover data, readiness test limits.
 - [Enrichment funnel blockers](enrichment-audit-blockers.md) — unclassified website businesses are mostly geography-deferred; suppressed contacts dominated the priority lane.
+- [Serper contact-page stage](serper-contact-page-stage.md) — governed one-request-per-business lookup; closed by default; request vs credit accounting; yield only from real runs.
+- [Contacts vs businesses counts](contact-vs-business-counts.md) — domain/location audit counts are contacts; always give distinct businesses separately; empty executeSql output means the query errored.

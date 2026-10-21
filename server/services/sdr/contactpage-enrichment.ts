@@ -300,7 +300,7 @@ function isJunkCandidateEmail(email: string): boolean {
   return false;
 }
 
-function extractCandidatesFromPage(html: string, sourceUrl: string): ContactPageCrawlCandidate[] {
+export function extractCandidatesFromPage(html: string, sourceUrl: string): ContactPageCrawlCandidate[] {
   const byEmail = new Map<string, "mailto" | "visible_text">();
   const mailtoMatches = html.matchAll(/href=["']mailto:([^"'?\s]+)/gi);
   for (const m of mailtoMatches) {
@@ -434,7 +434,7 @@ const TWO_LABEL_PUBLIC_SUFFIXES = new Set([
  * last-two-labels approach would otherwise treat as an exact match for any
  * two unrelated ".co.uk" (etc.) sites.
  */
-function registrableDomain(rawDomain: string): string {
+export function registrableDomain(rawDomain: string): string {
   const clean = rawDomain.replace(/^https?:\/\//i, "").replace(/^www\./i, "").split(/[\/?#]/)[0].toLowerCase();
   const parts = clean.split(".").filter(Boolean);
   if (parts.length <= 2) return clean;

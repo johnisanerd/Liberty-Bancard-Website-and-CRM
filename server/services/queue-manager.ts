@@ -2812,6 +2812,16 @@ export class QueueManager {
             console.error("[RetainedSunbizCompletion] held",safeCanonicalEnrichmentFailureDiagnostics(error));
           }
           try {
+            // Serper contact-page stage: one governed /search request per accepted in-territory business whose free
+            // website search found no email, then the bounded first-party reader stages any role inbox. Closed unless
+            // the operator enables serper_contact_page_stage; creates no contact, link, enrollment or send.
+            const {runSerperContactPageStage}=await import("./serper-contact-page-stage");
+            const contactPages=await runSerperContactPageStage();
+            if (contactPages.ran&&contactPages.examined>0) console.log(`[SerperContactPageStage] ${JSON.stringify(contactPages)}`);
+          } catch(error:any) {
+            console.error("[SerperContactPageStage] held",safeCanonicalEnrichmentFailureDiagnostics(error));
+          }
+          try {
             // Local-only: staged first-party emails -> contacts verified-linked to their
             // exact business. No provider call, send or enrollment; preparation below owns
             // recipient selection and validation intent/receipt reuse.

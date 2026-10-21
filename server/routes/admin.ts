@@ -6898,6 +6898,38 @@ export function registerAdminRoutes(app: Express) {
     }
   });
 
+  app.get("/api/admin/serper/contact-page-stage", isDashboardUser, requireRole('admin'), async (_req, res) => {
+    try {
+      const { readContactPageStageGate, readSerperContactPageYield } = await import("../services/serper-contact-page-stage");
+      res.json({ gate: await readContactPageStageGate(), yield: await readSerperContactPageYield() });
+    } catch (err: any) {
+      serverError(res, err);
+    }
+  });
+
+  app.put("/api/admin/serper/contact-page-stage", isDashboardUser, requireRole('admin'), async (req, res) => {
+    try {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const reason = typeof body.reason === "string" ? body.reason.trim().slice(0, 500) : "";
+      if (!reason) return res.status(400).json({ message: "reason is required" });
+      const { parseContactPageStageGate, SERPER_CONTACT_PAGE_SETTING_KEY } = await import("../services/serper-contact-page-stage");
+      const value = body.enabled === false ? { enabled: false } : { enabled: true, perRunRequests: body.perRunRequests };
+      if (value.enabled && !parseContactPageStageGate(value).enabled) {
+        return res.status(400).json({ message: "perRunRequests must be a positive integer" });
+      }
+      const before = ((await db.execute(sql`SELECT value FROM system_settings WHERE key=${SERPER_CONTACT_PAGE_SETTING_KEY}`)) as any).rows?.[0]?.value ?? null;
+      await db.execute(sql`INSERT INTO system_settings (key,value,updated_at) VALUES (${SERPER_CONTACT_PAGE_SETTING_KEY},${JSON.stringify(value)}::jsonb,NOW())
+        ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()`);
+      await storage.createAuditLog({
+        action: "serper_contact_page_stage_gate_updated", entityType: "system_setting",
+        userId: (req.user as any)?.id ?? null, details: { before, after: value, reason },
+      });
+      res.json({ gate: parseContactPageStageGate(value), stored: value });
+    } catch (err: any) {
+      serverError(res, err);
+    }
+  });
+
   app.post("/api/admin/serper/recovery", isDashboardUser, requireRole('admin'), async (req, res) => {
     try {
       const reason = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";

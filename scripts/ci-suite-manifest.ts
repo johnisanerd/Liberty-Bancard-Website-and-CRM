@@ -455,6 +455,13 @@ const RAW_SUITE_MANIFEST: SuiteManifestDefinition[] = [
     providerDenial: "pure database policy evaluation and the audited relationship writer on a disposable migrated database; no provider, send or enrollment path is reachable",
   },
   {
+    name: "Serper contact-page stage",
+    script: "scripts/certification/test-serper-contact-page-stage.ts",
+    isolateInfrastructure: true,
+    capability: "deterministic-integration",
+    providerDenial: "injected fake Serper transport and page reader on a disposable migrated database; provider network egress is denied and counted",
+  },
+  {
     name: "Partner route registration order",
     script: "scripts/test-partner-route-order.ts",
     capability: "deterministic-integration",

@@ -62,7 +62,7 @@ Findings (production, read-only, nothing here verified against the new build):
 - Production read-only measurement before any execution: 112 distinct held addresses with an open need; 0 with a fresh receipt; 77 past cooldown, 35 inside it; maximum additional purchases = 112. Out of scope: 60 addresses whose legacy operations had vendor responses with unknown usage, and 31 intents that are not blocked.
 
 ### Legacy domain-based assignment evidence (measurement only, no acceptance change)
-Population: 151,764 unlinked non-test contacts. 66 have no corporate domain; 110,899 have a domain that matches no business website; 27,019 match exactly one business; 13,780 match more than one. Territory uses the active South Florida geography resolver on the business location (single-match rows) or the contact's own city/state (multi-match rows, which have no ZIP); businesses with no state/city cannot be SFP.
+Population: 151,764 unlinked non-test contacts. 66 have no corporate domain; 110,899 have a domain that matches no business website; 27,019 contacts have a domain that matches exactly one business; 13,780 contacts have a domain shared by more than one business. (These are contact counts; distinct business counts are smaller.) Territory uses the active South Florida geography resolver on the business location (single-match rows) or the contact's own city/state (multi-match rows, which have no ZIP); businesses with no state/city cannot be SFP.
 
 Single-business domain match (27,019):
 | Evidence | SFP | Nationwide | Total |
@@ -75,8 +75,19 @@ Single-business domain match (27,019):
 | domain only, location conflicts | 1,448 | 633 | 2,081 |
 
 Shared-brand check (the domain is used by contacts with more than one company identity): among domain + company + location agrees, 729 of the 5,084 (SFP 118, nationwide 611); among domain + company + conflict, 4,680 of 8,292.
-Business origin: 26,810 of the 27,019 matched businesses are independently established (registry/provider/discovery); 209 were derived from contact records (all nationwide). Only 6 of the 27,019 contacts have a retained import/provider source event, so retained relationship evidence supports almost none of this population; existing automatic linking already handles those.
+Business origin: for 26,810 of the 27,019 single-match contacts the matched business is independently established (registry/provider/discovery); for 209 it was derived from contact records (all nationwide). Only 6 of the 27,019 contacts have a retained import/provider source event, so retained relationship evidence supports almost none of this population; existing automatic linking already handles those.
 
 Multiple-business domain match (13,780): resolved by company and location 2,296 (SFP 80); same company at several locations (shared brand) 11; one company match with unconfirmed location 438 (SFP 107); company ambiguous 8,857 (SFP 268); no company match 2,178 (SFP 250). Contact-derived businesses are included in 354 of these.
 
 Reading: the only evidence tier that agrees on domain, company and location without a competing identity is 4,355 contacts (SFP 1,438, nationwide 2,917) plus 2,296 resolved multi-business rows. Acceptance semantics are unchanged pending a decision on that tier.
+
+### Measured yield of the independent domain/location tier (contacts versus businesses)
+Read-only production sample (15 of 34 contact-id slices; ids 60,000-150,000 were not returned): 3,574 eligible contacts across 3,425 distinct businesses; South Florida 1,451 contacts / 1,417 businesses. Counting businesses by next action, about 120 South Florida businesses could realistically become new outreach recipients (about 3% of the eligible contacts). The assignment path (preview and apply routes, audited writer, no native contract change) exists but is manual; no recurring worker was built because of the low yield.
+
+### Serper contact-page stage (built, certified on fake transport, closed by default)
+- Selection: businesses the backlog reports as `website_searched_no_email_recheck` (accepted vertical in the active program, bound sequence, in territory, free website email search finished empty, no staged, main or contact email). Same ladder as the read model.
+- One `/search` request per business through the existing gateway (`site:<domain> (contact OR "contact us" OR email)`), then at most three result pages on the business's own registrable domain are read with the bounded first-party reader. Only role inboxes are staged, as ordinary `first_party_contact_page` business evidence; the existing materializer, link authority and preparation do the rest. The stage creates no contact, link, enrollment, queue or send. Snippets and titles are never mined or stored.
+- `serper_contact_page_lookups` (migration 0369; Publish owns DDL) is the claim (one active claim per business), idempotent operation key, retained provider evidence (query pin, result URLs/hosts/positions, returned field names, retrieval time, pages read), request count versus provider-reported credits (NULL when not reported), and remembered outcome (30 days for negatives, 7 for unreadable pages, 1 hour for failures; unchanged domain and rule version only).
+- Gate: `serper_contact_page_stage` setting, closed unless `{enabled:true, perRunRequests:N}`; admin routes `GET/PUT /api/admin/serper/contact-page-stage` (GET also returns yield: requests, reported credits, staged, linked, qualified businesses, per-request and per-credit ratios, and whether credits were reported for every request). It shares no allowance with the unlabeled-discovery scope, and the Serper ceiling is unchanged.
+- Certification: `scripts/certification/test-serper-contact-page-stage.ts` (33 checks, no provider network attempts).
+- Not yet measured: additional qualified businesses per credit. That number only exists after the stage runs on production; it is not estimated here.

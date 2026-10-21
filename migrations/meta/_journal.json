@@ -2604,6 +2604,13 @@
       "when":1800400080000,
       "tag":"0368_zerobounce_ambiguous_recovery",
       "breakpoints":true
+    },
+    {
+      "idx":372,
+      "version":"7",
+      "when":1800400160000,
+      "tag":"0369_serper_contact_page_lookups",
+      "breakpoints":true
     }
   ]
 }

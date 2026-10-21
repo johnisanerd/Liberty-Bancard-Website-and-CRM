@@ -295,6 +295,40 @@ async function readProgram(): Promise<ProgramScope | null> {
   return { name: p.name ?? null, verticals: (p.vertical_ids ?? []).map(String), countyFips: (p.county_fips ?? []).map(String) };
 }
 
+/**
+ * Accepted, in-territory businesses whose free website email search completed with nothing usable and that hold no
+ * staged, main or contact email: the businesses the backlog reports as `email|*|website_searched_no_email_recheck`.
+ * Uses the same ladder as the read model so a stage built on it can never disagree with the reported backlog.
+ * `extraWhere` may reference `keyed.id` (the caller's own memory/claim exclusions).
+ */
+export async function selectBusinessesAfterFreeEmailSearch(
+  opts: { limit: number; extraWhere?: ReturnType<typeof sql> },
+): Promise<Array<{ businessId: number; domain: string }>> {
+  const program = await readProgram();
+  const counties = program?.countyFips ?? [];
+  if (!counties.length) return [];
+  const limit = Math.max(1, Math.min(500, Math.floor(opts.limit)));
+  const found = await db.transaction(async tx => {
+    await tx.execute(sql.raw(`SET LOCAL statement_timeout='${STATEMENT_TIMEOUT}'`));
+    return rows(await tx.execute(sql`
+      WITH ${businessFacts(null, true)}
+      SELECT keyed.id, bn.website_domain AS domain, keyed.gstate, keyed.gzip, keyed.gcity, keyed.glocs
+        FROM keyed JOIN businesses bn ON bn.id = keyed.id
+       WHERE keyed.bk IN ('email|waiting|website_searched_no_email_recheck','email|retryable|website_searched_no_email_recheck')
+         AND NULLIF(btrim(bn.website_domain),'') IS NOT NULL
+         ${opts.extraWhere ? sql`AND ${opts.extraWhere}` : sql``}
+       ORDER BY keyed.id
+       LIMIT ${limit * 4}`));
+  });
+  const out: Array<{ businessId: number; domain: string }> = [];
+  for (const r of found) {
+    if (territory({ gstate: r.gstate, gzip: r.gzip, gcity: r.gcity, glocs: r.glocs }, counties) !== "in") continue;
+    out.push({ businessId: Number(r.id), domain: String(r.domain) });
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
 export async function computeCanonicalEnrichmentBacklog(): Promise<CanonicalEnrichmentBacklog> {
   const gate = await readUnlabeledDiscoveryGate();
   const program = await readProgram();
