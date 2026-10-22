@@ -22,7 +22,7 @@ import {
 } from "./contact-business-domain-location-links";
 
 export const DOMAIN_LOCATION_AUTOMATION_KEY = "contact_domain_location_automation_v1";
-const WINDOW_SPAN = 5000;
+const WINDOW_SPAN = 10000;
 const LEASE_MINUTES = 2;
 /** After a full pass, rescan no sooner than this; unchanged contacts are cheap but the policy query is set-based. */
 export const DOMAIN_LOCATION_RESCAN_HOURS = 6;
@@ -122,7 +122,12 @@ export async function processDomainLocationAutomationTick(budget: { maxDurationM
     while (Date.now() < deadline) {
       const after = state.cursor;
       const upper = after + WINDOW_SPAN;
-      const items = await evaluateDomainLocationPolicy(db, sql`c.id > ${after} AND c.id <= ${upper}`);
+      // The set-based policy query scans businesses and candidate contacts once per window (about 5-10 s on
+      // production), so it gets its own statement limit instead of the pool default.
+      const items = await db.transaction(async (tx) => {
+        await tx.execute(sql`SET LOCAL statement_timeout = '90s'`);
+        return evaluateDomainLocationPolicy(tx, sql`c.id > ${after} AND c.id <= ${upper}`);
+      });
       const seen = new Set<number>();
       const byContact = new Map<number, typeof items>();
       for (const it of items) byContact.set(it.contactId, [...(byContact.get(it.contactId) ?? []), it]);

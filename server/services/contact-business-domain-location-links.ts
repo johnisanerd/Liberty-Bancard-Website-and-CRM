@@ -102,10 +102,18 @@ export function domainLocationPolicyQuery(filter: any) {
                      ${emailDomain("c2.email")} edom,${websiteDomain("c2.website")} wdom
                 FROM contacts c2
                WHERE c2.archived_at IS NULL AND COALESCE(c2.record_class,'unknown') NOT IN ('test','demo','synthetic')
-                 AND NULLIF(btrim(c2.company_name),'') IS NOT NULL) x
+                 AND NULLIF(btrim(c2.company_name),'') IS NOT NULL
+                 -- Cheap superset prefilter (hashed): only contacts whose raw email domain or website host is a
+                 -- candidate domain reach the expensive normalization below. Results are unchanged.
+                 AND (lower(btrim(split_part(c2.email,'@',2))) IN (SELECT cdom FROM cd WHERE cdom IS NOT NULL)
+                   OR lower(regexp_replace(split_part(split_part(regexp_replace(btrim(coalesce(c2.website,'')),'^[a-zA-Z]+://',''),'/',1),':',1),'^www[.]','','i'))
+                      IN (SELECT cdom FROM cd WHERE cdom IS NOT NULL))) x
         CROSS JOIN LATERAL (VALUES (x.edom),(x.wdom)) d(dom)
        WHERE d.dom IS NOT NULL AND d.dom IN (SELECT bdom FROM bm) AND x.nm<>''
     ), dc AS MATERIALIZED (SELECT dom,count(DISTINCT nm) identities FROM ad GROUP BY dom),
+    ada AS MATERIALIZED (
+      SELECT dom,nm,array_agg(DISTINCT business_id) ids FROM ad WHERE business_id IS NOT NULL GROUP BY dom,nm
+    ),
     bn AS MATERIALIZED (
       SELECT ${rawName("o.canonical_name")} nm,${cityNorm("o.city")} ct,${stateNorm("o.state")} st,count(*) n
         FROM businesses o WHERE o.record_class='canonical'
@@ -117,14 +125,16 @@ export function domainLocationPolicyQuery(filter: any) {
            bm.postal_code business_postal_code,cd.email_status,bm.last_source_type,cd.cname,bm.bname,
            count(*) OVER (PARTITION BY cd.id) domain_businesses,
            COALESCE(dc.identities,0) identities,
-           COALESCE((SELECT sum(bn.n) FROM bn WHERE bn.nm=bm.bname AND bn.ct IS NOT DISTINCT FROM ${cityNorm("bm.bcity")}
-             AND bn.st IS NOT DISTINCT FROM ${stateNorm("bm.bstate")}),0)::int same_identity_here,
-           EXISTS (SELECT 1 FROM ad WHERE ad.dom=cd.cdom AND ad.nm=cd.cname AND ad.business_id IS NOT NULL
-             AND ad.business_id<>bm.bid AND ad.id<>cd.id) contradictory,
+           COALESCE(bn.n,0)::int same_identity_here,
+           -- cd rows have no business_id, so no assigned row can be the contact itself.
+           (ada.ids IS NOT NULL AND EXISTS (SELECT 1 FROM unnest(ada.ids) x(bid_) WHERE x.bid_<>bm.bid)) contradictory,
            (${cityNorm("cd.city")} IS NOT NULL AND ${stateNorm("cd.state")} IS NOT NULL
              AND ${cityNorm("cd.city")}=${cityNorm("bm.bcity")} AND ${stateNorm("cd.state")}=${stateNorm("bm.bstate")}) location_ok,
            bm.independent,bm.contact_derived,cd.domain_conflict
       FROM cd JOIN bm ON bm.cid=cd.id LEFT JOIN dc ON dc.dom=cd.cdom
+      LEFT JOIN ada ON ada.dom=cd.cdom AND ada.nm=cd.cname
+      LEFT JOIN bn ON bn.nm=bm.bname AND bn.ct IS NOT DISTINCT FROM ${cityNorm("bm.bcity")}
+        AND bn.st IS NOT DISTINCT FROM ${stateNorm("bm.bstate")}
      ORDER BY cd.id,bm.bid
   `;
 }
