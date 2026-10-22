@@ -185,3 +185,4 @@
 - [Heading ownership claims](heading-ownership-claims.md) — one h1 per page via runtime claim; hubs embed children at h2; verify by settled-h1 crawl.
 - [Stale dist and import gaps](stale-dist-and-import-gaps.md) — rebuild before browser suites; scripted page migrations can miss imports that only fail at render time.
 - [Dev blank app / cold load / cert iteration](dev-app-blank-and-cold-load.md) — restart app workflow first; wait >5s on cold routes; stub-import trick to avoid rebuild per cert edit.
+- [D-V review repair patterns](dv-review-repair-patterns.md) — cohort URL selectors, in-page fetch hold tests, bounded CSV streaming, rebuild-after-scripts rule.
