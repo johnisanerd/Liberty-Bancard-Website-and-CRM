@@ -16,13 +16,15 @@ import { syncContactToGhl, syncDealToGhl } from "../services/ghl-sync";
 import { extractRelationshipsForContact } from "../services/relationship-extractor";
 import { propagateDealDeleteToGhl, propagateTaskDeleteToGhl } from "../services/ghl-delete-sync";
 import { serverError } from "../utils/server-error";
+import { streamKeysetCsv } from "../services/bounded-csv-export";
+import { contactReadPredicate, dealReadPredicate } from "../services/revenue-read-authority";
 import { advanceDealStage, DealStageConflictError, DealStageIllegalTransitionError } from "../services/deal-stage-service";
 import { GoLiveGateError } from "../services/go-live-gate";
 import { authorizeContactAccess, canAccessOwner } from "../services/crm-object-access";
 import { taskReadPredicate, taskStateSql } from "../services/task-read-authority";
 import { contactSections } from "../../client/src/lib/crm-destination-state";
 import {isSdrSourcedContact} from "../services/sales-prep";
-import { db } from "../db";
+import { db, pool } from "../db";
 import { tickets, tasks } from "@shared/schema";
 import { eq, getTableColumns } from "drizzle-orm";
 import { onboardingPreparationFields } from "@shared/onboarding-preparation";
@@ -135,63 +137,82 @@ export function registerCrmOperationsRoutes(app: Express, deps: { nativeTaskDele
 
 
   // === EXPORT CSV ===
+  // === CSV EXPORTS ===
+  // Complete (uncapped) exports, read in bounded keyset pages by ascending id and streamed; see bounded-csv-export.ts.
+  // Contacts and deals use the same authorized read predicates as the People and Pipeline lists. Tickets use the same
+  // population as the Today open-ticket count and the ticket list (all tickets; tickets carry no archive/class/owner scope).
+  // A mid-stream failure destroys the connection rather than finishing a short file.
+  const exportFailed = (label: string) => (error: unknown) => console.error(`[export/${label}] stream failed:`, (error as any)?.message ?? error);
   app.get("/api/export/contacts", requireRole("admin", "manager"), async (req, res) => {
     try {
-      const { data: allContacts } = await storage.getContacts({ limit: 500 });
-      const headers = ["ID","First Name","Last Name","Email","Phone","Company","Status","Decision Maker","Email Status","Tags","Created"];
-      const rows = allContacts.map(c => [
-        c.id, c.firstName, c.lastName, c.email, c.phone, c.companyName || "", c.status || "",
-        (c as any).isDecisionMaker === true ? "true" : "false",
-        (c as any).emailStatus || "",
-        (c.tags || []).join(";"), c.createdAt ? new Date(c.createdAt).toISOString() : ""
-      ]);
-      const csv = [headers.join(","), ...rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(","))].join("\n");
-      res.setHeader("Content-Type", "text/csv");
-      res.setHeader("Content-Disposition", "attachment; filename=contacts.csv");
-      res.send(csv);
+      const text = (key: string) => typeof req.query[key] === "string" && (req.query[key] as string).trim() ? (req.query[key] as string).trim() : undefined;
+      const filters = { limit: 0, offset: 0, search: text("search"), status: text("status"), assignedTo: text("assignedTo"), recordClass: text("recordClass") } as Parameters<typeof contactReadPredicate>[1];
+      await streamKeysetCsv(res, {
+        filename: "contacts.csv",
+        headers: ["ID","First Name","Last Name","Email","Phone","Company","Status","Decision Maker","Email Status","Tags","Created"],
+        headersExtra: { "X-Metric-Population": "people_matching_shared_filters" },
+        onStreamFailure: exportFailed("contacts"),
+        fetchPage: async (afterId, limit) => {
+          const values: unknown[] = [];
+          const where = contactReadPredicate(req.user as any, filters, values);
+          values.push(afterId, limit);
+          return (await pool.query(`SELECT c.id, c.first_name, c.last_name, c.email, c.phone, c.company_name, c.status, c.is_decision_maker, c.email_status, c.tags, c.created_at
+            FROM contacts c WHERE ${where} AND c.id > $${values.length - 1} ORDER BY c.id ASC LIMIT $${values.length}`, values)).rows;
+        },
+        toRows: page => page.map((c: any) => [c.id, c.first_name, c.last_name, c.email, c.phone, c.company_name || "", c.status || "",
+          c.is_decision_maker === true ? "true" : "false", c.email_status || "", (c.tags || []).join(";"),
+          c.created_at ? new Date(c.created_at).toISOString() : ""]),
+      });
     } catch (err: any) {
-      serverError(res, err);
+      if (!res.headersSent) serverError(res, err);
     }
   });
 
   app.get("/api/export/deals", requireRole("admin", "manager"), async (req, res) => {
     try {
-      const { data: allDeals } = await storage.getDeals({ limit: 500 });
-      const { data: allContacts } = await storage.getContacts({ limit: 500 });
-      const contactMap = new Map(allContacts.map(c => [c.id, c]));
-      const headers = ["ID","Contact","Company","Pipeline","Stage","Offer Path","Volume","Fees","Profit/mo","Created"];
-      const rows = allDeals.map(d => {
-        const c = d.contactId ? contactMap.get(d.contactId) : null;
-        return [
-          d.id, c ? `${c.firstName} ${c.lastName}` : "", c?.companyName || "", d.pipeline, d.stage, d.offerPath || "",
-          d.totalVolume || "", d.totalFees || "", d.estimatedNetProfitMonthly || "",
-          d.createdAt ? new Date(d.createdAt).toISOString() : ""
-        ];
+      await streamKeysetCsv(res, {
+        filename: "deals.csv",
+        headers: ["ID","Contact","Company","Pipeline","Stage","Offer Path","Volume","Fees","Profit/mo","Created"],
+        headersExtra: { "X-Metric-Population": "production_non_archived_deals" },
+        onStreamFailure: exportFailed("deals"),
+        fetchPage: async (afterId, limit) => {
+          const values: unknown[] = [];
+          const where = dealReadPredicate(req.user as any, { includeArchived: false }, values);
+          values.push(afterId, limit);
+          return (await pool.query(`SELECT d.id, d.contact_id, d.pipeline, d.stage, d.offer_path, d.total_volume, d.total_fees, d.estimated_net_profit_monthly, d.created_at
+            FROM deals d WHERE ${where} AND d.id > $${values.length - 1} ORDER BY d.id ASC LIMIT $${values.length}`, values)).rows;
+        },
+        // Contacts are resolved by the page's linked ids, never by position in a separate first-page list.
+        toRows: async (page: any[]) => {
+          const ids = [...new Set(page.map(d => d.contact_id).filter((id): id is number => typeof id === "number"))];
+          const linked = ids.length ? (await pool.query("SELECT id, first_name, last_name, company_name FROM contacts WHERE id = ANY($1::int[])", [ids])).rows : [];
+          const byId = new Map<number, any>(linked.map((c: any) => [c.id, c]));
+          return page.map(d => {
+            const c = d.contact_id ? byId.get(d.contact_id) : null;
+            return [d.id, c ? `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() : "", c?.company_name || "", d.pipeline, d.stage, d.offer_path || "",
+              d.total_volume || "", d.total_fees || "", d.estimated_net_profit_monthly || "", d.created_at ? new Date(d.created_at).toISOString() : ""];
+          });
+        },
       });
-      const csv = [headers.join(","), ...rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(","))].join("\n");
-      res.setHeader("Content-Type", "text/csv");
-      res.setHeader("Content-Disposition", "attachment; filename=deals.csv");
-      res.send(csv);
     } catch (err: any) {
-      serverError(res, err);
+      if (!res.headersSent) serverError(res, err);
     }
   });
 
   app.get("/api/export/tickets", requireRole("admin", "manager"), async (req, res) => {
     try {
-      const { data: allTickets } = await storage.getTickets({ limit: 500 });
-      const headers = ["ID","Subject","Category","Priority","Status","Assigned To","SLA Deadline","Created"];
-      const rows = allTickets.map(t => [
-        t.id, t.subject, t.category || "", t.priority || "", t.status || "", t.assignedTo || "",
-        t.slaDeadline ? new Date(t.slaDeadline).toISOString() : "",
-        t.createdAt ? new Date(t.createdAt).toISOString() : ""
-      ]);
-      const csv = [headers.join(","), ...rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(","))].join("\n");
-      res.setHeader("Content-Type", "text/csv");
-      res.setHeader("Content-Disposition", "attachment; filename=tickets.csv");
-      res.send(csv);
+      await streamKeysetCsv(res, {
+        filename: "tickets.csv",
+        headers: ["ID","Subject","Category","Priority","Status","Assigned To","SLA Deadline","Created"],
+        headersExtra: { "X-Metric-Population": "all_tickets_not_role_scoped" },
+        onStreamFailure: exportFailed("tickets"),
+        fetchPage: async (afterId, limit) =>
+          (await pool.query(`SELECT id, subject, category, priority, status, assigned_to, sla_deadline, created_at FROM tickets WHERE id > $1 ORDER BY id ASC LIMIT $2`, [afterId, limit])).rows,
+        toRows: page => page.map((t: any) => [t.id, t.subject, t.category || "", t.priority || "", t.status || "", t.assigned_to || "",
+          t.sla_deadline ? new Date(t.sla_deadline).toISOString() : "", t.created_at ? new Date(t.created_at).toISOString() : ""]),
+      });
     } catch (err: any) {
-      serverError(res, err);
+      if (!res.headersSent) serverError(res, err);
     }
   });
 

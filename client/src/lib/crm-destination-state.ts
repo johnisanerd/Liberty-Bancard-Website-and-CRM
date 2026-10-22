@@ -533,6 +533,35 @@ export function buildWorkWorkspaceHref(href: string, tab: "tasks" | "calendar") 
   params.set("tab", tab);
   return destinationUrl("/dashboard/tasks-appointments", params, url.hash);
 }
+/** Task cohort destinations. `taskState` and `due` are registered selectors parsed at the destination; the Today actions and the
+ * Tasks filters share these values and the overdue predicate, so a count and the list it opens use one definition. */
+export const taskStateFilters = ["all", "pending", "in_progress", "completed", "cancelled"] as const;
+export const taskDueFilters = ["all", "overdue"] as const;
+export function taskCohortState(search: string) {
+  const params = new URLSearchParams(search);
+  const status = selectValue(params, "taskState", taskStateFilters, "all");
+  const due = selectValue(params, "due", taskDueFilters, "all");
+  return { status: status.value, due: due.value, issues: [...status.issues, ...due.issues] };
+}
+export function buildTaskCohortHref(href: string, cohort: { status: typeof taskStateFilters[number]; due: typeof taskDueFilters[number] }) {
+  const url = new URL(href, "https://crm.invalid"), params = safeParams(url.search, [...workspaceContextKeys(), "tab", "taskState", "due"]);
+  params.set("tab", "tasks");
+  cohort.status === "all" ? params.delete("taskState") : params.set("taskState", cohort.status);
+  cohort.due === "all" ? params.delete("due") : params.set("due", cohort.due);
+  return destinationUrl(url.pathname, params, url.hash);
+}
+/** Overdue = still open (pending or in progress) with a due time before `asOf`; identical to the server's Today metric. */
+export function isOverdueTask(task: { status: string | null; dueDate?: string | Date | null }, asOf: Date) {
+  if (task.status !== "pending" && task.status !== "in_progress") return false;
+  if (!task.dueDate) return false;
+  const due = new Date(task.dueDate);
+  return Number.isFinite(due.getTime()) && due.getTime() < asOf.getTime();
+}
+export const todayDestinations = {
+  overdueTasks: "/dashboard/tasks-appointments?tab=tasks&due=overdue",
+  pendingTasks: "/dashboard/tasks-appointments?tab=tasks&taskState=pending",
+  newLeads7d: "/dashboard/pipeline?created=7d",
+} as const;
 export const inboxChannels = ["all", "email", "sms", "voicemail", "site", "ghl_chat"] as const;
 export const inboxFilters = ["all", "unread", "needs_reply"] as const;
 export function inboxWorkspaceState(search: string) {

@@ -25,6 +25,8 @@ export interface OutreachStatus {
     unclassified: number;
     withContactInfo: number;
   };
+  /** Population behind contacts.* (stated by the server). */
+  contactsScope?: { key: string; label: string };
   deals: { total: number; openSalesProduction?: number; fromSunbiz: number; newLead: number; contacted: number; qualified: number; won: number };
   activeCampaigns: number;
   verticalBreakdown: Record<string, number>;

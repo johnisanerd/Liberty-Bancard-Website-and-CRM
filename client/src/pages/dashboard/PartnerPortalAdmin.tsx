@@ -14,6 +14,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { PageHeader, CrmPage, ScopedMetricStrip } from "@/components/crm/CrmPresentation";
+import { CrmDataState } from "@/components/crm/CrmPresentation";
+import { readFailureKind, metricAvailability } from "@/lib/query-state";
 import {
   Users, DollarSign, TrendingUp, Building2, Search,
   RefreshCw, Loader2, CheckCircle, Clock, ArrowRight,
@@ -62,11 +64,12 @@ function PartnerPipelineCard({ partner }: { partner: EnrichedPartner }) {
   const [expanded, setExpanded] = useState(false);
 
   // Only fetch referrals when expanded (admin route via partner ID)
-  const { data: referrals = [], isLoading } = useQuery<PipelineRow[]>({
+  const referralsRead = useQuery<PipelineRow[]>({
     queryKey: ["/api/referrals", { partnerId: partner.id }],
     queryFn: async () => {
       const res = await fetch(`/api/referrals?partnerId=${partner.id}`, { credentials: "include" });
-      if (!res.ok) return [];
+      // A non-OK read is an error, not an empty referral list: throw so the card shows unavailable/denied with Retry.
+      if (!res.ok) throw new Error(`${res.status}: referrals could not be read`);
       const data: any[] = await res.json();
       // map referral records to pipeline view
       return data.map(r => {
@@ -89,6 +92,8 @@ function PartnerPipelineCard({ partner }: { partner: EnrichedPartner }) {
     enabled: expanded,
   });
 
+  const { isLoading } = referralsRead;
+  const referrals = referralsRead.data ?? [];
   const stageCounts = { pending: 0, contacted: 0, boarded: 0, earning: 0 };
   for (const r of referrals) stageCounts[r.pipelineStage]++;
 
@@ -127,8 +132,10 @@ function PartnerPipelineCard({ partner }: { partner: EnrichedPartner }) {
             <div className="flex items-center gap-2 py-4 text-muted-foreground text-sm">
               <Loader2 className="w-4 h-4 animate-spin" /> Loading referrals…
             </div>
+          ) : referralsRead.isError && referralsRead.data === undefined ? (
+            <CrmDataState state={readFailureKind(referralsRead.error)} message={readFailureKind(referralsRead.error) === "denied" ? "You do not have access to this partner's referrals." : "This partner's referrals could not be loaded."} onRetry={() => void referralsRead.refetch()} />
           ) : referrals.length === 0 ? (
-            <p className="text-sm text-muted-foreground py-3">No referrals on record for this partner yet.</p>
+            <p className="text-sm text-muted-foreground py-3" data-testid="partner-referrals-empty">No referrals on record for this partner yet.</p>
           ) : (
             <>
               {/* Stage summary */}
@@ -183,9 +190,14 @@ function PartnerPipelineCard({ partner }: { partner: EnrichedPartner }) {
 export default function PartnerPortalAdmin() {
   const [search, setSearch] = useState("");
 
-  const { data: partners = [], isLoading, refetch } = useQuery<EnrichedPartner[]>({
+  const partnersRead = useQuery<EnrichedPartner[]>({
     queryKey: ["/api/partners/referral-pipeline"],
   });
+  const { isLoading, refetch } = partnersRead;
+  const partners = partnersRead.data ?? [];
+  const readFailed = partnersRead.isError;
+  // Pending, real zero, forbidden and unavailable stay distinct; a failed read is never shown as zero.
+  const metric = (value: string | number) => isLoading ? "…" : partnersRead.data === undefined && readFailed ? "Unavailable" : value;
 
   const filtered = partners.filter(p => {
     if (!search.trim()) return true;
@@ -216,7 +228,7 @@ export default function PartnerPortalAdmin() {
       />
 
       {/* KPIs */}
-      <ScopedMetricStrip className="grid-cols-2 sm:grid-cols-4 md:grid-cols-4 xl:grid-cols-4" scopeId="PartnerPortalAdmin">
+      <ScopedMetricStrip className="grid-cols-2 sm:grid-cols-4 md:grid-cols-4 xl:grid-cols-4" scopeId="PartnerPortalAdmin" availability={metricAvailability(partnersRead)}>
         <Card data-testid="kpi-active-partners">
           <CardContent className="p-4">
             <div className="flex items-center gap-3">
@@ -225,7 +237,7 @@ export default function PartnerPortalAdmin() {
               </div>
               <div>
                 <p className="text-xs text-muted-foreground">Active Partners</p>
-                <p className="text-xl font-bold">{isLoading ? "…" : activePartners}</p>
+                <p className="text-xl font-bold">{metric(activePartners)}</p>
               </div>
             </div>
           </CardContent>
@@ -238,7 +250,7 @@ export default function PartnerPortalAdmin() {
               </div>
               <div>
                 <p className="text-xs text-muted-foreground">Total Referrals</p>
-                <p className="text-xl font-bold">{isLoading ? "…" : totalReferrals}</p>
+                <p className="text-xl font-bold">{metric(totalReferrals)}</p>
               </div>
             </div>
           </CardContent>
@@ -251,7 +263,7 @@ export default function PartnerPortalAdmin() {
               </div>
               <div>
                 <p className="text-xs text-muted-foreground">Pipeline Value</p>
-                <p className="text-xl font-bold">{isLoading ? "…" : fmtCurrency(totalPipeline)}</p>
+                <p className="text-xl font-bold">{metric(fmtCurrency(totalPipeline))}</p>
               </div>
             </div>
           </CardContent>
@@ -264,7 +276,7 @@ export default function PartnerPortalAdmin() {
               </div>
               <div>
                 <p className="text-xs text-muted-foreground">Earning Partners</p>
-                <p className="text-xl font-bold">{isLoading ? "…" : earningPartners}</p>
+                <p className="text-xl font-bold">{metric(earningPartners)}</p>
               </div>
             </div>
           </CardContent>
@@ -313,6 +325,8 @@ export default function PartnerPortalAdmin() {
         <div className="flex items-center justify-center py-16">
           <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
         </div>
+      ) : readFailed && partnersRead.data === undefined ? (
+        <CrmDataState state={readFailureKind(partnersRead.error)} message={readFailureKind(partnersRead.error) === "denied" ? "You do not have access to the partner list." : "The partner list could not be loaded."} onRetry={() => void refetch()} />
       ) : filtered.length === 0 ? (
         <Card>
           <CardContent className="py-12 text-center text-muted-foreground">

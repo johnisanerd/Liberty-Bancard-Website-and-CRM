@@ -19,7 +19,7 @@ for (const r of routes) {
   const row={route:r};
   for (const w of [1280,768,390]) { await b.setViewport(w,900,false); await b.sleep(500); row[w]=JSON.parse(await b.evalJs(`JSON.stringify(${facts})`).catch(()=>'{"err":"eval"}')); }
   out.push(row);
-  const bad=[1280,768,390].flatMap(w=>{const f=row[w];const p=[];if(f.h1!==1)p.push(`${w}:h1=${f.h1}`);if(f.overflowPx>1)p.push(`${w}:overflow=${f.overflowPx}`);if(f.unnamed)p.push(`${w}:unnamed=${f.unnamed}`);if(f.err)p.push(`${w}:ERR`);if(f.dupIds?.length)p.push(`${w}:dupIds`);if(f.noAlt)p.push(`${w}:noAlt=${f.noAlt}`);return p});
+  const bad=[1280,768,390].flatMap(w=>{const f=row[w];const p=[];if(f.h1!==1)p.push(`${w}:h1=${f.h1}`);if(f.main!==1)p.push(`${w}:main=${f.main}`);if(f.overflowPx>1)p.push(`${w}:overflow=${f.overflowPx}`);if(f.unnamed)p.push(`${w}:unnamed=${f.unnamed}`);if(f.err)p.push(`${w}:ERR`);if(f.dupIds?.length)p.push(`${w}:dupIds`);if(f.noAlt)p.push(`${w}:noAlt=${f.noAlt}`);return p});
   console.log(r, bad.length?bad.join(' '):'ok');
 }
 fs.writeFileSync("/tmp/lb/resp.json",JSON.stringify(out,null,1));

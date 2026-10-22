@@ -20,7 +20,7 @@ export type RevenueFilters = {
   stale?: boolean; recentlyUpdated?: boolean; neverContacted?: boolean; notContactedIn30?: boolean;
   noDeal?: boolean; createdThisWeek?: boolean; pipeline?: string;
   includeArchived?: boolean; groupContactId?: number; offerPath?: string;
-  noFollowUp?:boolean; unassigned?:boolean; pastGoLive?:boolean;
+  noFollowUp?:boolean; unassigned?:boolean; pastGoLive?:boolean; createdLast7Days?:boolean;
   isParentAccount?:boolean;
 };
 
@@ -191,7 +191,7 @@ export function contactReadPredicate(user: RevenueUser, filters: RevenueFilters,
 }
 
 /** Same production/nonarchived/owned-or-unassigned population as the deal list. */
-export function dealReadPredicate(user: RevenueUser, filters: Pick<RevenueFilters, "pipeline"|"includeArchived"|"assignedTo"|"vertical"|"groupContactId"|"offerPath"|"noFollowUp"|"unassigned"|"pastGoLive">, values: unknown[], alias = "d"): string {
+export function dealReadPredicate(user: RevenueUser, filters: Pick<RevenueFilters, "pipeline"|"includeArchived"|"assignedTo"|"vertical"|"groupContactId"|"offerPath"|"noFollowUp"|"unassigned"|"pastGoLive"|"createdLast7Days">, values: unknown[], alias = "d"): string {
   const where = [`${alias}.record_class='production'`];
   if(!filters.includeArchived)where.push(`${alias}.archived_at IS NULL`);
   if (filters.pipeline) {
@@ -212,6 +212,8 @@ export function dealReadPredicate(user: RevenueUser, filters: Pick<RevenueFilter
   }
   if(filters.noFollowUp)where.push(`${alias}.next_follow_up IS NULL`);
   if(filters.unassigned)where.push(`${alias}.owner IS NULL`);
+  // Same population as the Today "New leads in the last 7 days" figure (/api/kpi/summary newLeads7d).
+  if(filters.createdLast7Days)where.push(`${alias}.created_at >= NOW() - INTERVAL '7 days'`);
   if(filters.pastGoLive)where.push(`${alias}.expected_go_live_date < CURRENT_TIMESTAMP AND LOWER(COALESCE(${alias}.boarding_status,'')) NOT IN ('live','approved')`);
   if(filters.vertical) {
     values.push(filters.vertical);
@@ -556,7 +558,7 @@ export async function readRevenueDeals(user: RevenueUser, filters: RevenueFilter
   const dealsCacheScope = privileged(user) ? "all" : (user.email ?? "anon");
   const normalizedFilters={pipeline:filters.pipeline??null,includeArchived:filters.includeArchived??false,
     assignedTo:filters.assignedTo??null,vertical:filters.vertical??null,groupContactId:filters.groupContactId??null,offerPath:filters.offerPath??null,
-    noFollowUp:filters.noFollowUp??false,unassigned:filters.unassigned??false,pastGoLive:filters.pastGoLive??false};
+    noFollowUp:filters.noFollowUp??false,unassigned:filters.unassigned??false,pastGoLive:filters.pastGoLive??false,createdLast7Days:filters.createdLast7Days??false};
   const dealsCacheKey = `deals-count:v3:${JSON.stringify({ factRevision:await crmFactRevision(),scope: dealsCacheScope,...normalizedFilters })}`;
   const _cachedDeals = _getCachedFacet(dealsCacheKey);
   let countRow: { total: number; as_of: string | Date; stage_distribution:Record<string,number> } = _cachedDeals

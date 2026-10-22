@@ -9,6 +9,8 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { PageHeader, CrmPage, ScopedMetricStrip } from "@/components/crm/CrmPresentation";
+import { CrmDataState } from "@/components/crm/CrmPresentation";
+import { readFailureKind, metricAvailability } from "@/lib/query-state";
 import {
   Users, Building2, DollarSign, Calendar, CheckCircle, Clock,
   Search, Plus, Edit, ExternalLink, Loader2, RefreshCw,
@@ -141,9 +143,14 @@ export default function PartnerReferralPipeline() {
   const [editPartner, setEditPartner] = useState<EnrichedPartner | null>(null);
   const [categoryFilter, setCategoryFilter] = useState("all");
 
-  const { data: partners = [], isLoading, refetch } = useQuery<EnrichedPartner[]>({
+  const partnersRead = useQuery<EnrichedPartner[]>({
     queryKey: ["/api/partners/referral-pipeline"],
   });
+  const { isLoading, refetch } = partnersRead;
+  const partners = partnersRead.data ?? [];
+  const readFailed = partnersRead.isError;
+  // Pending, real zero, forbidden and unavailable stay distinct; a failed read is never shown as zero.
+  const metric = (value: string | number) => isLoading ? "…" : partnersRead.data === undefined && readFailed ? "Unavailable" : value;
 
   const filtered = partners.filter(p => {
     const matchesSearch = !search.trim() ||
@@ -172,7 +179,7 @@ export default function PartnerReferralPipeline() {
       />
 
       {/* KPIs */}
-      <ScopedMetricStrip className="grid-cols-2 sm:grid-cols-4 md:grid-cols-4 xl:grid-cols-4" scopeId="PartnerReferralPipeline">
+      <ScopedMetricStrip className="grid-cols-2 sm:grid-cols-4 md:grid-cols-4 xl:grid-cols-4" scopeId="PartnerReferralPipeline" availability={metricAvailability(partnersRead)}>
         <Card data-testid="kpi-total-partners">
           <CardContent className="p-4">
             <div className="flex items-center gap-3">
@@ -181,7 +188,7 @@ export default function PartnerReferralPipeline() {
               </div>
               <div>
                 <p className="text-xs text-muted-foreground">Active Partners</p>
-                <p className="text-xl font-bold">{isLoading ? "…" : activePartners}</p>
+                <p className="text-xl font-bold">{metric(activePartners)}</p>
               </div>
             </div>
           </CardContent>
@@ -194,7 +201,7 @@ export default function PartnerReferralPipeline() {
               </div>
               <div>
                 <p className="text-xs text-muted-foreground">Total Referrals</p>
-                <p className="text-xl font-bold">{isLoading ? "…" : totalReferrals}</p>
+                <p className="text-xl font-bold">{metric(totalReferrals)}</p>
               </div>
             </div>
           </CardContent>
@@ -207,7 +214,7 @@ export default function PartnerReferralPipeline() {
               </div>
               <div>
                 <p className="text-xs text-muted-foreground">Pipeline Value</p>
-                <p className="text-xl font-bold">${totalPipelineValue.toLocaleString()}</p>
+                <p className="text-xl font-bold">{metric(`$${totalPipelineValue.toLocaleString()}`)}</p>
               </div>
             </div>
           </CardContent>
@@ -220,7 +227,7 @@ export default function PartnerReferralPipeline() {
               </div>
               <div>
                 <p className="text-xs text-muted-foreground">All Partners</p>
-                <p className="text-xl font-bold">{isLoading ? "…" : partners.length}</p>
+                <p className="text-xl font-bold">{metric(partners.length)}</p>
               </div>
             </div>
           </CardContent>
@@ -257,6 +264,8 @@ export default function PartnerReferralPipeline() {
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {[1,2,3].map(i => <Card key={i}><CardContent className="p-4 h-32 animate-pulse bg-muted/20" /></Card>)}
         </div>
+      ) : readFailed && partnersRead.data === undefined ? (
+        <CrmDataState state={readFailureKind(partnersRead.error)} message={readFailureKind(partnersRead.error) === "denied" ? "You do not have access to the partner pipeline." : "The partner pipeline could not be loaded."} onRetry={() => void refetch()} />
       ) : filtered.length === 0 ? (
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-16 gap-3">

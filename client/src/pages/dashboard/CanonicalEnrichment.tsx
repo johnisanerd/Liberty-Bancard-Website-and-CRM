@@ -590,7 +590,8 @@ export default function CanonicalEnrichment({ embedded = false }: { embedded?: b
     </>
   ) : null;
 
-  const Shell = embedded ? "div" : "main";
+  // DashboardLayout already provides the page main landmark; this is a labelled section, never a second main.
+  const Shell = embedded ? "div" : "section";
   return (
     <Shell className={embedded ? "text-foreground" : "min-h-[100dvh] bg-background px-4 py-6 text-foreground sm:px-6 lg:px-8"} data-testid="canonical-enrichment">
       {!embedded && (

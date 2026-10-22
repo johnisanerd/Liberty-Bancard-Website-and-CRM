@@ -529,6 +529,7 @@ import { eq, desc, and, lt, isNull, ne, sql, asc, gte, lte, inArray, or, ilike, 
   }
 
 
+  /** Population: archived_at IS NULL only. Record class and owner are deliberately not filtered; every field shares it. */
   async getContactAggregateStats(): Promise<{
     total: number; fromSunbiz: number; newLeads: number; syncedToGhl: number;
     hot: number; warm: number; cold: number; unqualified: number; unclassified: number; withContactInfo: number;

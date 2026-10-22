@@ -99,8 +99,11 @@ export function registerPermissionsAuditRoutes(app: Express) {
     }
   });
 
-  // Dashboard KPI stats. Every number is a whole-population count under the same definitions as /api/kpi/summary and
-  // /api/analytics/pipeline (production, non-archived records; open sales stages from OPEN_SALES_LEAD_STAGES).
+  // Dashboard KPI stats. Every number is a whole-population count, and each field names its own population:
+  //   deals and contacts: production, non-archived records (agents: their own), open sales stages from OPEN_SALES_LEAD_STAGES;
+  //   tickets: every ticket whose status is not Resolved or Closed. This is the same definition as /api/kpi/summary
+  //   support.openTickets; tickets carry no archive or record-class predicate and are not role-scoped there either, so this
+  //   route does not invent a second policy. The response states that rather than labelling the whole payload production.
   // The previous implementation counted the first 500 rows of each table and labelled them totals.
   app.get("/api/dashboard/stats", requireRole("admin", "manager", "agent"), async (req, res) => {
     try {
@@ -115,7 +118,11 @@ export function registerPermissionsAuditRoutes(app: Express) {
         deals: { total: sales.total + pipeline.data.onboarding.total, activeSales: sales.active, closedWon30d: sales.wonLast30Days },
         contacts: { total: contactsR.total },
         tickets: { open: openTickets[0]?.n ?? 0 },
-        population: "production_non_archived_whole_population",
+        populations: {
+          deals: { key: "production_non_archived_whole_population", label: "Production, non-archived deals (agents: own deals); active sales = open sales stages" },
+          contacts: { key: "production_non_archived_whole_population", label: "Production, non-archived contacts (agents: own contacts)" },
+          tickets: { key: "all_open_tickets_not_role_scoped", label: "All tickets with a status other than Resolved or Closed; no archive, record-class or owner filter (same as /api/kpi/summary)" },
+        },
         asOf: pipeline.metadata.asOf,
       });
     } catch (err) {

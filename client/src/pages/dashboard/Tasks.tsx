@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef, Fragment, type ReactNode } from "react";
+import { useSearch, useLocation } from "wouter";
+import { taskCohortState, buildTaskCohortHref, isOverdueTask, taskStateFilters } from "@/lib/crm-destination-state";
 import { useWorkCommands, invalidateWorkFacts } from "@/hooks/use-work-commands";
 import { useMutation } from "@tanstack/react-query";
 import { useCrmQuery as useQuery } from "@/hooks/use-crm-query";
@@ -112,7 +114,18 @@ export default function Tasks({ embedded = false }: { embedded?: boolean }) {
   const {user}=useAuth();
   const aiCapability=useToolCapability("ai");
   const [createOpen, setCreateOpen] = useState(false);
-  const [filterStatus, setFilterStatus] = useState<string>("all");
+  // The status and due cohort live in the URL (registered selectors parsed here), so direct entry, reload and Back/Forward
+  // restore the same list the Today action counted.
+  const cohortSearch = useSearch();
+  const [, navigateCohort] = useLocation();
+  const cohort = taskCohortState(cohortSearch);
+  const filterStatus: string = cohort.status;
+  const filterDue = cohort.due;
+  const setCohort = (status: string, due: "all" | "overdue") => {
+    const safeStatus = (taskStateFilters as readonly string[]).includes(status) ? status as typeof taskStateFilters[number] : "all";
+    navigateCohort(buildTaskCohortHref(window.location.href, { status: safeStatus, due }));
+  };
+  const setFilterStatus = (status: string) => setCohort(status, filterDue);
   const [filterSource, setFilterSource] = useState<string>("all");
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<number>>(new Set());
   const [selectAll, setSelectAll] = useState(false);
@@ -157,7 +170,7 @@ export default function Tasks({ embedded = false }: { embedded?: boolean }) {
     ticketId: "",
   });
   const actorContext=JSON.stringify(protectedScope(user));
-  const commandContext=JSON.stringify([actorContext,filterSource,filterStatus,createOpen,editTaskId,[...selectedTaskIds].sort()]);
+  const commandContext=JSON.stringify([actorContext,filterSource,filterStatus,filterDue,createOpen,editTaskId,[...selectedTaskIds].sort()]);
   const currentContext=useRef(commandContext);currentContext.current=commandContext;
   const mutationBoundary={onMutate:()=>commandContext};
   const accepts=(submitted:string|undefined)=>submitted===currentContext.current;
@@ -381,6 +394,7 @@ export default function Tasks({ embedded = false }: { embedded?: boolean }) {
 
   const filteredTasks = tasks?.filter((t) => {
     if (filterStatus !== "all" && t.status !== filterStatus) return false;
+    if (filterDue === "overdue" && !isOverdueTask(t, new Date())) return false;
     return true;
   }) || [];
 
@@ -461,6 +475,15 @@ export default function Tasks({ embedded = false }: { embedded?: boolean }) {
                 {STATUS_OPTIONS.map((s) => (
                   <SelectItem key={s} value={s}>{getStatusLabel(s)}</SelectItem>
                 ))}
+              </SelectContent>
+            </Select>
+            <Select value={filterDue} onValueChange={(v) => { setCohort(filterStatus, v === "overdue" ? "overdue" : "all"); setSelectedTaskIds(new Set()); setSelectAll(false); }}>
+              <SelectTrigger aria-label="Filter tasks by due date" className="w-[160px]" data-testid="select-filter-due">
+                <SelectValue placeholder="Due" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Any due date</SelectItem>
+                <SelectItem value="overdue">Overdue only</SelectItem>
               </SelectContent>
             </Select>
             <Button
@@ -778,9 +801,9 @@ export default function Tasks({ embedded = false }: { embedded?: boolean }) {
 
       <SavedFilterBar
         entityType="task"
-        currentFilters={{ filterStatus, filterSource }}
+        currentFilters={{ filterStatus, filterSource, filterDue }}
         onApplyFilter={(filters) => {
-          setFilterStatus(String(filters.filterStatus || "all"));
+          setCohort(String(filters.filterStatus || "all"), filters.filterDue === "overdue" ? "overdue" : "all");
           setFilterSource(String(filters.filterSource || "all"));
           setSelectedTaskIds(new Set());
           setSelectAll(false);
@@ -791,7 +814,7 @@ export default function Tasks({ embedded = false }: { embedded?: boolean }) {
 
       <p role="status" data-testid="work-ai-capability-reason">{aiCapability.reason}</p>
       <p className="text-xs" data-testid="work-reader-coverage">
-        {tasks?.length ?? 0} tasks returned by the authorized array reader; {filteredTasks.length} match these loaded filters.
+        {tasks?.length ?? 0} tasks returned by the authorized array reader; {filteredTasks.length} match these loaded filters{filterDue === "overdue" ? " (overdue: pending or in progress, due before now)" : ""}.{cohort.issues.length > 0 ? ` ${cohort.issues[0].reason}` : ""}
         No server paging or whole-population selection is claimed. Due times use {Intl.DateTimeFormat().resolvedOptions().timeZone}.
       </p>
       <div className="overflow-x-auto border rounded-md" data-testid="tasks-table">

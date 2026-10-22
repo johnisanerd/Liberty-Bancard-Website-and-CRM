@@ -11,6 +11,8 @@ import { apiRequest, queryClient, protectedScope } from "@/lib/queryClient";
 import { useToolCapability } from "@/hooks/use-tool-capabilities";
 import { useOutboundPauseObservation } from "@/hooks/use-outbound-pause-observation";
 import { Link } from "wouter";
+import { OPEN_SALES_LEAD_STAGES } from "@shared/schema";
+import { todayDestinations } from "@/lib/crm-destination-state";
 import { CrmPage, CrmPageHeader, ScopedMetricStrip } from "@/components/crm/CrmPresentation";
 import {
   Users, Ticket, TrendingUp, CheckCircle, AlertTriangle, Clock,
@@ -405,7 +407,7 @@ export default function Overview() {
     return false;
   };
   const recentContacts = (contacts || []).filter((c: Contact) => !isTestContact(c)).slice(0, 5);
-  const activeDeals = deals?.filter((d: Deal) => d.pipeline === "sales" && d.stage !== "Closed Won" && d.stage !== "Closed Lost").slice(0, 5) || [];
+  const activeDeals = deals?.filter((d: Deal) => d.pipeline === "sales" && (OPEN_SALES_LEAD_STAGES as readonly string[]).includes(d.stage ?? "")).slice(0, 5) || [];
 
   const handleSendDigest = async () => {
     if(pause.blocked || digestSending)return;
@@ -448,9 +450,9 @@ export default function Overview() {
         <h2 id="today-next-actions-heading" className="text-base font-semibold">Next actions</h2>
         <ul className="mt-2 divide-y">
           {[
-            { key: "overdue", label: "Overdue tasks", value: kpi?.tasks?.overdue, href: "/dashboard/tasks-appointments?tab=tasks", cta: "Review overdue" },
-            { key: "pending", label: "Pending tasks", value: kpi?.tasks?.pending, href: "/dashboard/tasks-appointments?tab=tasks", cta: "Open tasks" },
-            { key: "leads", label: "New leads in the last 7 days", value: kpi?.pipeline?.newLeads7d, href: "/dashboard/contacts", cta: "Open People" },
+            { key: "overdue", label: "Overdue tasks", value: kpi?.tasks?.overdue, href: todayDestinations.overdueTasks, cta: "Review overdue" },
+            { key: "pending", label: "Pending tasks", value: kpi?.tasks?.pending, href: todayDestinations.pendingTasks, cta: "Open pending tasks" },
+            { key: "leads", label: "New leads in the last 7 days", value: kpi?.pipeline?.newLeads7d, href: todayDestinations.newLeads7d, cta: "Open new pipeline leads" },
             { key: "tickets", label: "Open tickets", value: kpi?.support?.openTickets, href: "/dashboard/support-hub?tab=tickets", cta: "Open tickets" },
           ].map(item => (
             <li key={item.key} className="flex min-h-11 flex-wrap items-center justify-between gap-2 py-2" data-testid={`today-next-action-${item.key}`}>

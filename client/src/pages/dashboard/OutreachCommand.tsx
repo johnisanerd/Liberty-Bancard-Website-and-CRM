@@ -140,7 +140,7 @@ export default function OutreachCommand() {
       <ScopedMetricStrip scopeId="crm-contacts-and-deals" sourceLabel="Source: CRM contacts and deals, scopes labelled on each card"
         asOf={s.asOf ? new Date(s.asOf).toLocaleString() : undefined}
         availability={s.commEventsUnavailable ? "partial" : "available"}>
-        <StatCard icon={Users} color="amber" value={s.contacts.total} label="All stored contacts (no archive or record-class filter)" testId="card-contacts" />
+        <StatCard icon={Users} color="amber" value={s.contacts.total} label={s.contactsScope?.label ?? "All unarchived contacts (all record classes, all owners)"} testId="card-contacts" />
         <StatCard icon={Briefcase} color="indigo" value={typeof s.deals.openSalesProduction === "number" ? s.deals.openSalesProduction.toLocaleString() : "—"}
           label="Open production sales deals (unarchived, open stage, all owners)" testId="card-open-deals" />
         <StatCard icon={Briefcase} color="indigo" value={s.deals.total} label="All unarchived deals (every pipeline and class)" testId="card-deals" />

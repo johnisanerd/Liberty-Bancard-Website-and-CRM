@@ -24,3 +24,14 @@ export class RetainedContactCore<T> {
     return this.entry?.key === key ? this.entry.data : null;
   }
 }
+
+/**
+ * The only shape retained across section reads: contact core and capability flags. Section arrays (deals, tickets, tasks,
+ * notes), loaded flags and any other part of the detail response are never copied into the retained value, so a section
+ * payload cannot be shown for a different section, actor or record.
+ */
+export interface ContactCoreProjection<C, Cap> { contact: C; capabilities: Cap | undefined }
+export function projectContactCore<C, Cap>(detail: { contact?: C | null; capabilities?: Cap } | null | undefined): ContactCoreProjection<C, Cap> | null {
+  if (!detail?.contact) return null;
+  return { contact: detail.contact, capabilities: detail.capabilities };
+}

@@ -80,16 +80,17 @@ export function registerDealsRoutes(app: Express) {
         noFollowUp:z.enum(["true","false"]).optional(),
         unassigned:z.enum(["true","false"]).optional(),
         pastGoLive:z.enum(["true","false"]).optional(),
+        createdLast7Days:z.enum(["true","false"]).optional(),
         assignedTo:z.string().trim().min(1).max(320).optional(),
         vertical:z.string().trim().min(1).max(160).optional(),
         offerPath:z.string().trim().min(1).max(160).optional(),
         groupContactId:z.string().regex(/^[1-9][0-9]*$/).transform(Number).refine(Number.isSafeInteger).optional(),
       }).safeParse(req.query);
       if(!parsedFilters.success)return res.status(400).json({message:"Invalid deal scope filters",code:"INVALID_DEAL_FILTERS",correlationId});
-      const {includeArchived,noFollowUp,unassigned,pastGoLive,...dealFilters}=parsedFilters.data;
+      const {includeArchived,noFollowUp,unassigned,pastGoLive,createdLast7Days,...dealFilters}=parsedFilters.data;
       if(dealFilters.groupContactId && !await authorizeContactAccess(req,res,dealFilters.groupContactId))return;
       const result = await readRevenueDeals(req.user as any, { pipeline, limit, offset,...dealFilters,includeArchived:includeArchived==="true",
-        noFollowUp:noFollowUp==="true",unassigned:unassigned==="true",pastGoLive:pastGoLive==="true" });
+        noFollowUp:noFollowUp==="true",unassigned:unassigned==="true",pastGoLive:pastGoLive==="true",createdLast7Days:createdLast7Days==="true" });
       // REV-05A: Serialize each deal — masks mid and sanitizes boardingLog.
       const { serializeDeal: _serializeDeal2 } = await import("../utils/mask-mid");
       const maskedResult = {

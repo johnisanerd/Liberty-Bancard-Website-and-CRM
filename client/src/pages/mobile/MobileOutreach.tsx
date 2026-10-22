@@ -143,7 +143,7 @@ export default function MobileOutreach() {
             <div className="grid grid-cols-2 gap-3">
               <StatCard
                 icon={Users}
-                label="Total Contacts"
+                label="Total Contacts (all unarchived, all record classes)"
                 value={data?.contacts?.total ?? "—"}
                 sub={data?.contacts?.reachable != null ? `${data.contacts.reachable.toLocaleString()} reachable` : undefined}
                 color="blue"

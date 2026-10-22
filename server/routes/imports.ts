@@ -216,6 +216,8 @@ export function registerImportsRoutes(app: Express) {
       entities: entityStats,
       prospects: prospectStats,
       contacts: contactStats,
+      // States the exact population behind contacts.* so no client has to guess: archived rows are excluded; record class and owner are not filtered.
+      contactsScope: { key: "all_unarchived_contacts_all_record_classes_all_owners", label: "All unarchived contacts (all record classes, all owners)" },
       deals: dealStats,
       activeCampaigns,
       verticalBreakdown,

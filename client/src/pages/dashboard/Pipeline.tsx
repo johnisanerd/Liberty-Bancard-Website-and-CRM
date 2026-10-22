@@ -1632,7 +1632,11 @@ function PipelineWorkspace() {
     setProposalsRetryingByDeal(prev => { const next = { ...prev }; delete next[String(dealId)]; return next; });
   }, [fetchSingleDealProposals]);
 
-  const dealScopeFilters={pipeline:"sales",includeArchived:String(showArchived),
+  // Registered cohort selector from the Today "new leads" action; derived from the URL on every render so reload and
+  // Back/Forward restore it. Same population as the Today figure: sales deals created in the last 7 days.
+  const createdLast7Days = new URLSearchParams(search).get("created") === "7d";
+  const clearCreatedCohort = () => { const params = new URLSearchParams(search); params.delete("created"); const qs = params.toString(); navigatePipeline(`/dashboard/pipeline${qs ? `?${qs}` : ""}`); };
+  const dealScopeFilters={pipeline:"sales",includeArchived:String(showArchived),...(createdLast7Days?{createdLast7Days:"true"}:{}),
     noFollowUp:String(showNoFollowUpOnly),unassigned:String(showUnassignedOnly),pastGoLive:String(sortMode==="past_golive"),
     ...(repEmailFilter?{assignedTo:repEmailFilter}:{}),...(verticalFilter?{vertical:verticalFilter}:{}),
     ...(offerPathFilter?{offerPath:offerPathFilter}:{}),...(groupFilterContactId?{groupContactId:String(groupFilterContactId)}:{})};
@@ -2538,6 +2542,11 @@ function PipelineWorkspace() {
               List
             </Button>
           </div>
+          {createdLast7Days && (
+            <Button type="button" size="sm" variant="secondary" onClick={clearCreatedCohort} data-testid="pipeline-created-cohort" aria-label="Showing sales deals created in the last 7 days. Clear this filter.">
+              Created in last 7 days ✕
+            </Button>
+          )}
           <Select value={sortMode} onValueChange={(v) => setSortMode(v as any)}>
             <SelectTrigger aria-label="Sort pipeline deals" className="h-9 w-[180px]" data-testid="select-pipeline-sort">
               <ArrowUpDown className="w-3.5 h-3.5 mr-1.5 opacity-70" />
