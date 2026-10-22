@@ -2488,6 +2488,7 @@ function PipelineWorkspace() {
             <Switch
               checked={showArchived}
               onCheckedChange={setShowArchived}
+              aria-label="Show archived deals"
               data-testid="switch-show-archived-deals"
             />
             <Label className="text-sm cursor-pointer" onClick={() => setShowArchived(!showArchived)}>
@@ -2499,6 +2500,7 @@ function PipelineWorkspace() {
             <Switch
               checked={hideEmptyStages}
               onCheckedChange={setHideEmptyStages}
+              aria-label="Hide empty stages"
               data-testid="switch-hide-empty-stages"
             />
             <Label className="text-sm cursor-pointer" onClick={() => setHideEmptyStages(v => !v)}>
@@ -2510,6 +2512,7 @@ function PipelineWorkspace() {
             <Switch
               checked={showUnassignedOnly}
               onCheckedChange={setShowUnassignedOnly}
+              aria-label="Show unassigned deals only"
               data-testid="switch-unassigned-only"
             />
             <Label className="text-sm cursor-pointer" onClick={() => setShowUnassignedOnly(v => !v)}>

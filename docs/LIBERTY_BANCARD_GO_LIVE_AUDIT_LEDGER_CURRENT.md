@@ -1755,3 +1755,55 @@ D-R2 changes presentation, heading ownership and one read-only search route. No 
 - Deliberately retained: thin hubs that delegate presentation to children (GHL Integration, System Health, Merchant Risk, Merchant Success, Support, Content, Playbooks, Contacts and Leads, My Leads); redirect routes and sidebar aliases (no UI of their own); Comms Hub keeps a hard-coded `crm-page` root because the inbox workspace needs its own layout class; large bespoke screens left unchanged to avoid risk (Activation Panel, Lead Operations Center, Training, Statement Review, Settings Integrations, Canonical Enrichment, Prospect Import, Underwriting, Onboarding Kickoff, Business Detail, Outbound Center); `WorklistToolbar` is used nowhere because People uses the filter panel with chips, which the toolbar contract does not fit. Provenance paragraphs on these retained screens were not shortened in this pass; that remains open under D-V/UI follow-up.
 
 **Not verified:** published behavior (D-R2 is not published at the time of writing), non-admin role matrix and full performance evidence (D-V), narrow-viewport inspection beyond the screens named above. D-V remains tracked and must also verify that D01's direct SQL preserves authorization, identity and lifecycle invariants. Stage 3 D remains open.
+
+## 41. Stage 3 D-V — integrated acceptance, 2026-10-22 UTC (source; not yet published; no GO verdict)
+
+D-V closed the three D-R2 observations, ran integrated acceptance, and repaired the defects that acceptance found. No outbound pause, provider budget, worker schedule, enrollment, release, GHL apply or deal classification was changed; the ~1,570 unknown-class deals were not touched. Production was read-only (health and public GETs only). The previous published build is `f22318cb31797e7484075b10c4586c5492d21b48` (built 2026-10-22T16:34:47Z, verified at `https://libertybancard.com/api/health`). This section describes the next commit, which is not live until the owner publishes it.
+
+### 41.1 D-R2 observations
+
+| Observation | Result | Evidence |
+|---|---|---|
+| Knowledge Admin at 1280, heading and error state | No defect. Six loads (3 direct, 1 in-app navigation, 1 reload) each end with one H1 "Knowledge Base Admin" once the lazy chunk loads (0.9–1.6 s typical, one 5.8 s cold dev compile; the earlier "missing H1" was still loading at a 4.5 s window). With `/api/knowledge*` blocked the H1 stays and two `role=alert` states appear ("Whole-library statistics unavailable", "Knowledge sources are unavailable. This is not an empty library."). | Browser run on dev serving build. |
+| Company picker selection, pagination, keyboard | No defect on current source. Contact 192678: 25 of 1,222 shown; no match → "No match"; clear restores; Show more → 50; ArrowDown/ArrowUp moves through options and back to the input; selection summary names company and ID with submit enabled; no horizontal overflow at 390 px. First dev load needs about 14 s. | Browser run on dev serving build. |
+| UI-04 provenance presentation | Added `ProvenanceNote` (visible summary + expandable "Data source and limits"). Leaderboard, Document Vault and Canonical Enrichment now show a short scope / as-of / uncertainty line (Leaderboard keeps period, as-of, deals loaded/total, completeness and "not observed revenue or native receipts"; Document Vault keeps "not complete relationship coverage"); diagnostics are inside the expandable detail. A 45-route crawl found one h1 everywhere; remaining long text is operational data (tables, queue holds header, GHL inbound sync card, settings/integrations, system health) and was left unchanged. | `scripts/test-stage3-d-r2-contracts.ts` (58 checks) and browser expand/collapse on the three pages. |
+
+### 41.2 Defects found by acceptance and repaired
+
+| Defect | Repair | Proof |
+|---|---|---|
+| `GET /api/dashboard/stats` counted the first 500 rows of deals, contacts and tickets and returned them as totals (dev: contacts 500 of 154,889). No page consumes it, but it is a role-guarded API. | Deals use `readPipelineAnalytics` (production, non-archived, open stages from `OPEN_SALES_LEAD_STAGES`), contacts use the authorized production total, tickets use an uncapped open count. Response adds `population` and `asOf`. | Dev after restart: deals 90 / activeSales 90 (matches `/api/analytics/pipeline` and `/api/kpi/summary`), contacts 154,889 (matches lifecycle distribution), tickets 5 (matches KPI). Contract check in the D-R2 suite. Role-guard smoke 162/162 includes this route. |
+| `/sitemap-compare.xml` listed `/compare/{shopify-payments,heartland,worldpay,fiserv,gravity-payments}`, which have no comparison page and answered an empty 404. | Sitemap lists a `/compare/<slug>` URL only when the page exists. | All 539 sitemap URLs return 200 on dev after the fix (was 11 non-200 across two causes). |
+| `/industries/{dental,med-spa,legal,accounting,fitness,hospitality}-payment-processing` answered an empty 404 from the server although the client app renders them. | Listed industry slugs without a server-rendered page fall through to the client app. | Same 539-URL check. |
+| Controls without an accessible name found by the crawl: People contact links for records with no person name, People Show Archived switch, three Pipeline toggles, Partner Referral Pipeline email icon link, 15 Knowledge Admin archive buttons. | Name fallback (company, email, then `Contact #id`), `aria-label` on the others. | Crawl rerun: 45 routes, 0 failures; real unnamed controls 0 (the 6 reported on Onboarding Kickoff are aria-hidden Radix mirrors). |
+
+### 41.3 D01 direct-SQL invariants
+
+`server/services/data-health-reconcile.ts` applies each action in its own transaction with row locks and a same-transaction audit row, rechecks unique active exact-email identity under the lock, and does not go through `LifecycleService` (the storage layer's own deal and enrollment updates do not either, so behavior is at parity). Authorization is route-level admin-only.
+
+- `scripts/certification/test-data-health-reconcile.ts` now also snapshots invariants around apply: contact rows and lifecycle state unchanged, deal fields other than the link unchanged, enrollment schedule fields unchanged, no `communication_events` written, pause settings unchanged. Disposable database: 50 checks passed.
+- New `scripts/test-stage3-d-v-data-health-browser.ts` (registered in `scripts/pre-deploy.ts` and `scripts/ci-suite-manifest.ts`): real browser, real admin route module, disposable migrated database, real admin/manager/agent sessions. Plan → select → review → confirm; a real post-commit truncated response (executed fault event recorded) leaves the page saying "Result not confirmed" with no receipt; the saved effect is durable and has exactly one audit row; re-submitting the same operation shows "Result (saved)" and does not apply or audit twice; contact lifecycle/record, deal stage and pause settings unchanged; no provider call. Manager sees no plan controls and the plan route returns 403; agent plan request returns 403. 24 checks passed. A connection-reset fault was tried first: Chrome retried the POST by itself with the same operation id and the page showed the saved result, so the truncated-response fault is the one that exercises the visible failure path. Receipt: `docs/certification/stage3-d-v/data-health-browser-receipt.json`.
+
+### 41.4 Suites executed on the final dev/disposable build (all passed)
+
+Built with `node --import tsx script/build.ts` after the last source edit; each suite verifies the candidate identity.
+
+- Disposable-database browser/route suites: D-V Data Health browser; C5 walk; C5 role-negative requests (admin-only routes denied to manager, agent and anonymous); C5 data-bearing panels; C5 browser; C2 contact header; C2 post-merge browser; C2 actions; C5 GHL settings stored run; C2 post-merge repairs.
+- Static/mounted suites: C5 route inventory, diagnostics, hub tabs (33 checks, tab deep links), D-R2 contracts (58), D-R2 headings (jsdom; React `act` warning only), C5 resources, sidebar, mounted GHL settings, C2 contracts.
+- `smoke-role-guards`: 162/162. `check-api-coverage`: no new client endpoint without a server handler (860 client endpoints, 1,739 handlers). `test-public-route-validation`: 12 passed. SEO audit: 421 routes, 0 failed, 12 with warnings.
+- Matched performance (`scripts/test-stage3-c5-performance.ts`, baseline = pre-C5 client from commit 1422503b built into `generated-artifacts/c5-baseline-client`): medians baseline → candidate, `/dashboard` 349 → 346 ms, admin hub 385 → 232 ms, knowledge base 346 → 326 ms, permissions 467 → 355 ms; all within the bound. Scope: same disposable API/DB/machine, cold navigation, cache disabled, 7 runs; not a production or network measurement.
+- Responsive and accessibility crawl: 45 routes × 1280/768/390: one h1, no page overflow, no error text, no duplicate ids, no missing alt (`docs/certification/stage3-d-v/route-control-coverage.md`).
+
+### 41.5 Metric parity checked
+
+Dev, admin session: open sales pipeline = 90 in `/api/analytics/pipeline`, `/api/kpi/summary` and (after repair) `/api/dashboard/stats`, and equals the SQL count of non-archived production sales deals (the dev table holds 2,076 sales deals in total; the rest are archived or non-production). Production contacts = 154,889 in the lifecycle distribution and `/api/dashboard/stats`, matching SQL. `/api/outreach/status` reports 164,267 contacts because it counts every non-archived contact regardless of record class. The two populations differ by definition; whether each screen labels its population was not audited here.
+
+### 41.6 Not executed or not established
+
+- Post-publication smoke of this commit: not run, because the commit is unpublished. Required after publish: `/api/health` sha equals the pushed commit, public page GETs, an admin sign-in walk of the dashboard routes (h1, overflow, console errors), `/api/dashboard/stats` returns whole-population counts, `/sitemap-compare.xml` lists only existing pages, the six `/industries/*` URLs return 200.
+- Live (production) role matrix and live apply were not run; role evidence is from disposable-database sessions and the role-guard smoke.
+- Performance is a local matched comparison only.
+- axe-core is not installed; contrast rests on the calculations in Section 40; no screen-reader testing.
+- The accessibility crawl covers 45 routes at rest. `Label`-without-`htmlFor` next to `Switch` exists in other files (29 files use `Switch`); only switches reachable on the 45 routes were checked.
+- Other routes still read capped samples (`storage.getDeals/getContacts/getTickets({limit: 500})` in `server/routes/ai.ts`, `crm-operations.ts`, `deals.ts`, `conversation-ai-config.ts`). They feed AI context and operational helpers, not the metric destinations compared above, and were not changed.
+- The full pre-deploy roster was not run; only the suites listed in 41.4.

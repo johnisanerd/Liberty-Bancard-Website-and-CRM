@@ -71,8 +71,29 @@ check(!/from "@\/components\/ui\/page-header"/.test(read("client/src/components/
 const unresolved: string[] = [];
 for (const file of [...walk("client/src/pages"), ...walk("client/src/components")].filter(f => f.endsWith(".tsx") && !f.endsWith("CrmPresentation.tsx"))) {
   const src = read(file);
-  for (const tag of ["CrmPage", "CrmPageHeader", "ScopedMetricStrip", "CrmDataState", "PageHeader", "PageTitle"])
+  for (const tag of ["CrmPage", "CrmPageHeader", "ScopedMetricStrip", "CrmDataState", "PageHeader", "PageTitle", "ProvenanceNote"])
     if (new RegExp(`<${tag}[\\s>/]`).test(src) && !new RegExp(`import[^;]*\\b${tag}\\b[^;]*from`, "s").test(src)) unresolved.push(`${file}:${tag}`);
 }
 check(unresolved.length === 0, `Every shared presentation tag in use is imported (${unresolved.join(", ") || "none missing"})`);
+// UI-04 provenance: long internal provenance sits behind an expandable control; the visible summary keeps scope, freshness and the uncertainty limit.
+const prov = read("client/src/components/crm/CrmPresentation.tsx");
+check(/export function ProvenanceNote/.test(prov) && /<details\b/.test(prov) && /role="note"/.test(prov), "ProvenanceNote renders a visible summary plus expandable details");
+const lb = read("client/src/pages/dashboard/Leaderboard.tsx");
+check(/<ProvenanceNote testId="leaderboard-provenance"/.test(lb) && /not observed revenue or native receipts/.test(lb.slice(lb.indexOf("<ProvenanceNote"), lb.indexOf("</ProvenanceNote>"))) &&
+  /summary=\{<>[^]*?as of[^]*?deals loaded[^]*?not observed revenue/.test(lb), "Leaderboard summary keeps period, as-of, population and the not-revenue limit visible");
+check(/<ProvenanceNote testId="document-vault-provenance"[^>]*summary="[^"]*not complete relationship coverage/.test(read("client/src/pages/dashboard/DocumentVault.tsx").replace(/\n\s*/g, " ")), "Document Vault summary keeps the coverage limit visible");
+check(/detail="Validation figures describe pending intents/.test(read("client/src/pages/dashboard/CanonicalEnrichment.tsx")), "Canonical Enrichment moves diagnostic provenance into expandable detail");
+// D-V metric parity: the dashboard KPI endpoint is a whole-population read under the shared definitions, never a capped sample.
+const stats = read("server/routes/permissions-audit.ts");
+const statsBody = stats.slice(stats.indexOf('"/api/dashboard/stats"'));
+check(/readPipelineAnalytics/.test(statsBody) && !/limit:\s*500/.test(statsBody), "Dashboard stats use the canonical pipeline read and no capped 500-row sample");
+// D-V accessibility crawl repairs: controls that had no accessible name.
+check(/function contactLinkLabel/.test(people) && !/\{contact\.firstName\} \{contact\.lastName\}<\/a>/.test(people), "People contact links fall back to company, email or id when a record has no person name");
+check(/aria-label="Show archived contacts"/.test(people), "People Show Archived switch has an accessible name");
+check(["Show archived deals", "Hide empty stages", "Show unassigned deals only"].every(l => read("client/src/pages/dashboard/Pipeline.tsx").includes(`aria-label="${l}"`)), "Pipeline toggles have accessible names");
+check(/aria-label=\{`Email \$\{partner\.email\}`\}/.test(read("client/src/pages/dashboard/PartnerReferralPipeline.tsx")), "Partner email icon link has an accessible name");
+check(/aria-label=\{`Archive source /.test(read("client/src/pages/dashboard/KnowledgeAdmin.tsx")), "Knowledge source archive icon button has an accessible name");
+const ssr = read("server/routes/ssr-routes.ts");
+check(/if \(getCompareHtml\(slug\)\) xml \+= `[^`]*\/compare\//.test(ssr), "Compare sitemap lists only comparison pages that exist (no sitemap URL answers 404)");
+check(/INDUSTRY_SLUGS as readonly string\[\]\)\.includes\(req\.params\.slug\)\) return next\(\)/.test(ssr), "Listed industry pages without server rendering fall through to the client app instead of an empty 404");
 console.log(`PASS Stage 3 D-R2 contracts: ${checks} checks`);

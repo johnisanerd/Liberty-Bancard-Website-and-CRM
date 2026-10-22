@@ -2,8 +2,9 @@ import type { Express, Request, Response } from "express";
 import { requireRole, isDashboardUser } from "../replit_integrations/auth";
 import { storage } from "../storage";
 import { db } from "../db";
-import { users } from "@shared/schema";
-import { desc } from "drizzle-orm";
+import { users, tickets } from "@shared/schema";
+import { desc, count, notInArray } from "drizzle-orm";
+import { readPipelineAnalytics } from "../services/revenue-read-authority";
 import { serverError } from "../utils/server-error";
 import { extractRouteInventory } from "../services/express-route-provenance";
 
@@ -98,33 +99,24 @@ export function registerPermissionsAuditRoutes(app: Express) {
     }
   });
 
-  // Generic dashboard KPI stats — thin alias of /api/kpi/summary computation
-  // so the dashboard can hit a single, predictable endpoint.
-  app.get("/api/dashboard/stats", requireRole("admin", "manager", "agent"), async (_req, res) => {
+  // Dashboard KPI stats. Every number is a whole-population count under the same definitions as /api/kpi/summary and
+  // /api/analytics/pipeline (production, non-archived records; open sales stages from OPEN_SALES_LEAD_STAGES).
+  // The previous implementation counted the first 500 rows of each table and labelled them totals.
+  app.get("/api/dashboard/stats", requireRole("admin", "manager", "agent"), async (req, res) => {
     try {
-      const [dealsR, ticketsR, contactsR] = await Promise.all([
-        storage.getDeals({ limit: 500 }),
-        storage.getTickets({ limit: 500 }),
-        storage.getContacts({ limit: 500 }),
+      const user = req.user as { email?: string | null; role?: string } | undefined;
+      const [pipeline, contactsR, openTickets] = await Promise.all([
+        readPipelineAnalytics(req.user as any),
+        storage.getContacts({ limit: 1, recordClass: "production", ...(user?.role === "agent" ? { ownerEmail: user.email ?? "" } : {}) }),
+        db.select({ n: count() }).from(tickets).where(notInArray(tickets.status, ["Resolved", "Closed"])),
       ]);
-      const deals = dealsR.data;
-      const tickets = ticketsR.data;
-      const contacts = contactsR.data;
-      const now = new Date();
-      const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-      const salesDeals = deals.filter((d) => d.pipeline === "sales");
-      const closedWon = salesDeals.filter(
-        (d) => d.stage === "Closed Won" && d.closedAt && new Date(d.closedAt) >= thirtyDaysAgo
-      );
-      const openTickets = tickets.filter((t) => t.status !== "Resolved" && t.status !== "Closed");
+      const sales = pipeline.data.sales;
       res.json({
-        deals: {
-          total: deals.length,
-          activeSales: salesDeals.filter((d) => d.stage !== "Closed Won" && d.stage !== "Closed Lost").length,
-          closedWon30d: closedWon.length,
-        },
-        contacts: { total: contacts.length },
-        tickets: { open: openTickets.length },
+        deals: { total: sales.total + pipeline.data.onboarding.total, activeSales: sales.active, closedWon30d: sales.wonLast30Days },
+        contacts: { total: contactsR.total },
+        tickets: { open: openTickets[0]?.n ?? 0 },
+        population: "production_non_archived_whole_population",
+        asOf: pipeline.metadata.asOf,
       });
     } catch (err) {
       serverError(res, err);

@@ -357,7 +357,7 @@ export default function PartnerReferralPipeline() {
                       asChild
                       data-testid={`button-email-partner-${partner.id}`}
                     >
-                      <a href={`mailto:${partner.email}`}>
+                      <a href={`mailto:${partner.email}`} aria-label={`Email ${partner.email}`}>
                         <ExternalLink className="w-3 h-3" />
                       </a>
                     </Button>

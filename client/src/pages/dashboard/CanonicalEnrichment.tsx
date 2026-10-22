@@ -185,16 +185,25 @@ function SectionHeading({
   kicker,
   title,
   description,
+  detail,
 }: {
   kicker: string;
   title: string;
   description: string;
+  /** Diagnostic provenance, kept behind an expandable control so scope stays concise. */
+  detail?: string;
 }) {
   return (
     <div className="mb-5">
       <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">{kicker}</p>
       <h2 className="mt-1 text-xl font-semibold tracking-tight text-foreground">{title}</h2>
       <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">{description}</p>
+      {detail && (
+        <details className="mt-1 max-w-3xl text-xs leading-5 text-muted-foreground">
+          <summary className="cursor-pointer rounded-sm underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2">Data source and limits</summary>
+          <p className="mt-1">{detail}</p>
+        </details>
+      )}
     </div>
   );
 }
@@ -246,7 +255,8 @@ export default function CanonicalEnrichment({ embedded = false }: { embedded?: b
             <SectionHeading
               kicker="Automatic progress · current signals"
               title="Preparation cursor and validation queue"
-              description="These are the status service's current automatic-progress observations. Preparation values are cumulative pass transitions, not distinct recipients; validation figures describe pending intents linked to persisted preparation, not a fresh eligibility decision."
+              description="Current automatic-progress observations from the status service. Preparation values are cumulative pass transitions, not distinct recipients."
+              detail="Validation figures describe pending intents linked to persisted preparation, not a fresh eligibility decision."
             />
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               <CurrentSignal
@@ -295,7 +305,8 @@ export default function CanonicalEnrichment({ embedded = false }: { embedded?: b
             <SectionHeading
               kicker="Production record inventory"
               title="A clear view of work in motion"
-              description="Current production contact and business counts, alongside historical preparation, import, and provider state totals. Historical activity is context—not recipient qualification."
+              description="Current production contact and business counts with historical totals. Historical activity is context, not recipient qualification."
+              detail="Historical totals cover preparation, import and provider state; none of them is a qualification decision."
             />
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               <StatTile label="Contacts" value={formatCount(data.contacts.total)} note={`${formatCount(data.contacts.valid)} valid · ${formatCount(data.contacts.unvalidated)} unvalidated · ${formatCount(data.contacts.blocked)} blocked`} icon={Users} />

@@ -134,6 +134,28 @@ export function ScopedMetricStrip({ children, className, scopeId, asOf, sourceLa
   );
 }
 
+/**
+ * Concise scope / as-of / uncertainty line with the full diagnostic provenance behind an expandable control.
+ * The summary must keep scope, freshness and any "not X" limit visible; only the diagnostics move into details.
+ */
+export function ProvenanceNote({ summary, children, className, testId, detailsLabel = "Data source and limits" }: {
+  summary: ReactNode;
+  children: ReactNode;
+  className?: string;
+  testId?: string;
+  detailsLabel?: string;
+}) {
+  return (
+    <div className={cn("text-xs text-muted-foreground", className)} data-testid={testId} role="note">
+      <p>{summary}</p>
+      <details className="mt-1" data-testid={testId ? `${testId}-details` : undefined}>
+        <summary className="cursor-pointer rounded-sm underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2">{detailsLabel}</summary>
+        <div className="mt-1 space-y-1 leading-5">{children}</div>
+      </details>
+    </div>
+  );
+}
+
 export function CrmAreaNav({ entries, current, className }: {
   entries: Array<{ label: string; href: string; allowed: boolean; reason?: string }>;
   current: string;

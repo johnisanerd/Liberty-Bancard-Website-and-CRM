@@ -389,6 +389,11 @@ function DuplicateFinderDialog({ open, onOpenChange }: { open: boolean; onOpenCh
   );
 }
 
+/** Visible, accessible name for a contact link; records without a person name fall back to company, email, then id. */
+function contactLinkLabel(c: { id: number; firstName?: string | null; lastName?: string | null; companyName?: string | null; email?: string | null }): string {
+  return [c.firstName, c.lastName].map(v => (v ?? "").trim()).filter(Boolean).join(" ") || (c.companyName ?? "").trim() || (c.email ?? "").trim() || `Contact #${c.id}`;
+}
+
 export default function Contacts() {
   const [location, setLocation] = useLocation();
   const search = useSearch();
@@ -1077,6 +1082,7 @@ export default function Contacts() {
             <Switch
               checked={showArchived}
               onCheckedChange={setShowArchived}
+              aria-label="Show archived contacts"
               data-testid="switch-show-archived-contacts"
             />
             <Label className="text-sm cursor-pointer" onClick={() => setShowArchived(!showArchived)}>
@@ -2022,7 +2028,7 @@ export default function Contacts() {
                         </div>
                         <a href={`/dashboard/contacts/${contact.id}`} onClick={e=>e.stopPropagation()}
                           className={`inline-flex min-h-11 items-center text-foreground hover:underline ${isArchived ? "line-through" : ""}`}
-                          data-testid={`link-contact-${contact.id}`}>{contact.firstName} {contact.lastName}</a>
+                          data-testid={`link-contact-${contact.id}`}>{contactLinkLabel(contact)}</a>
                         {confirmationFailedMap.has(contact.id) && (
                           <Badge variant="destructive" className="text-xs gap-1 cursor-pointer no-default-hover-elevate no-default-active-elevate"
                             data-testid={`badge-confirmation-failed-${contact.id}`}
@@ -2302,7 +2308,7 @@ export default function Contacts() {
                       <div className="flex items-center gap-1 flex-wrap">
                         <a href={`/dashboard/contacts/${contact.id}`} onClick={e=>e.stopPropagation()}
                           className={`inline-flex min-h-11 items-center font-medium text-sm text-foreground hover:underline ${isArchived ? "line-through" : ""}`}
-                          data-testid={`link-contact-card-${contact.id}`}>{contact.firstName} {contact.lastName}</a>
+                          data-testid={`link-contact-card-${contact.id}`}>{contactLinkLabel(contact)}</a>
                         {(contact as any).isDecisionMaker && <Star className="h-3 w-3 fill-amber-400 text-amber-400" />}
                         {/* #542 — DNC flag */}
                         {(contact as any).doNotContact && (

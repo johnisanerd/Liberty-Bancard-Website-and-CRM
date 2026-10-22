@@ -337,6 +337,7 @@ export default function KnowledgeAdmin() {
                             variant="ghost"
                             className="h-7 text-xs text-muted-foreground"
                             onClick={() => archiveMutation.mutate(src.id)}
+                            aria-label={`Archive source ${src.title ?? src.id}`}
                             data-testid={`button-archive-${src.id}`}
                           >
                             <Archive className="w-3 h-3" />

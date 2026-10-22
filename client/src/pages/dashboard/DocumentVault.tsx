@@ -20,7 +20,7 @@ import {
   FileImage, File, Calendar, User, Building2, ExternalLink,
   CheckCircle2, XCircle, Clock, Archive, Package,
 } from "lucide-react";
-import { PageHeader } from "@/components/crm/CrmPresentation";
+import { PageHeader, ProvenanceNote } from "@/components/crm/CrmPresentation";
 
 function formatFileSize(bytes: number | null | undefined): string {
   if (!bytes) return "—";
@@ -357,7 +357,11 @@ export default function DocumentVault() {
         ))}
       </div>
 
-      <p className="text-xs text-muted-foreground">Counts and search describe returned document records in the category/status scope. Contact names are optional matches from the loaded contact directory, not complete relationship coverage. No shared snapshot clock or contact-class completeness receipt is supplied.</p>
+      <ProvenanceNote testId="document-vault-provenance"
+        summary="Counts and search cover the document records returned for the selected category and status. Contact names are optional matches, not complete relationship coverage.">
+        <p>Contact names come from the loaded contact directory only.</p>
+        <p>No shared snapshot clock or contact-class completeness receipt is supplied, so counts are not guaranteed to share one point in time.</p>
+      </ProvenanceNote>
       {contactsError&&<CrmDataState state="unavailable" message="Contact-name directory unavailable; document records remain independently readable." onRetry={()=>void retryContactNames()}/>}
       {/* Filters */}
       <div className="flex flex-wrap gap-3 items-center">

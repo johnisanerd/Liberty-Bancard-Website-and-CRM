@@ -4,7 +4,7 @@ import { useCrmQuery as useQuery } from "@/hooks/use-crm-query";
 import { CrmDataState, CrmPage } from "@/components/crm/CrmPresentation";
 import { AgentReportsNavigation } from "@/components/crm/AgentReportsNavigation";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import { PageHeader } from "@/components/crm/CrmPresentation";
+import { PageHeader, ProvenanceNote } from "@/components/crm/CrmPresentation";
 import { useAuth } from "@/hooks/use-auth";
 import { leaderboardPeriods, leaderboardMetrics } from "@/lib/crm-destination-state";
 import { useC4RetainedSelection } from "@/hooks/use-c4-retained-selection";
@@ -245,15 +245,12 @@ export default function Leaderboard() {
         }
       />
 
-      <p className="text-xs text-muted-foreground" data-testid="leaderboard-provenance">
-        Source: {data?.read.source??"unavailable"}; read asOf {data?.read.asOf??"unavailable"};
-        timezone {data?.read.timezone??"unavailable"}; current period {data?.read.currentStart??"unavailable"} through {data?.read.currentEnd??"unavailable"}.
-        {" "}Deal population {data?.read.loadedDealCount??"unavailable"} / {data?.read.totalDealCount??"unavailable"};
-        {" "}{data?.read.completeness??"unavailable"}; {data?.read.consistency??"no snapshot assumed"}.
-        {" "}Stored closed-won processing volume is not observed revenue or native receipts; USD is a display assumption.
-        {" "}Attribution: {data?.read.attribution??"unavailable"}. Call logs and immutable creator events are separate event populations, not merchant counts.
-        {" "}Call records {data?.read.sources.callLogs??"unavailable"}; per-agent call attribution unavailable because stored calls lack a canonical actor. Creator-event source {data?.read.sources.creatorEvents??"unavailable"}. Proposal ratio is a touched-deal proxy, not a prospect response receipt.
-      </p>
+      <ProvenanceNote testId="leaderboard-provenance"
+        summary={<>Current period {data?.read.currentStart?.slice(0,10)??"unavailable"} through {data?.read.currentEnd?.slice(0,10)??"unavailable"} ({data?.read.timezone??"unavailable"}) · as of {data?.read.asOf??"unavailable"} · {data?.read.loadedDealCount??"unavailable"} of {data?.read.totalDealCount??"unavailable"} deals loaded ({data?.read.completeness??"unavailable"}). Stored closed-won volume is not observed revenue or native receipts.</>}>
+        <p>Source: {data?.read.source??"unavailable"}; period {data?.read.currentStart??"unavailable"} through {data?.read.currentEnd??"unavailable"}; read asOf {data?.read.asOf??"unavailable"}; {data?.read.consistency??"no snapshot assumed"}.</p>
+        <p>USD is a display assumption. Attribution: {data?.read.attribution??"unavailable"}. Call logs and immutable creator events are separate event populations, not merchant counts.</p>
+        <p>Call records {data?.read.sources.callLogs??"unavailable"}; per-agent call attribution unavailable because stored calls lack a canonical actor. Creator-event source {data?.read.sources.creatorEvents??"unavailable"}. Proposal ratio is a touched-deal proxy, not a prospect response receipt.</p>
+      </ProvenanceNote>
       {editingSettings && localSettings && (
         <Card data-testid="card-leaderboard-settings">
           <CardHeader>

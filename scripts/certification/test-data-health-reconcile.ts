@@ -100,9 +100,23 @@ try {
   const forged = `deal_link:${dAmbiguous}:${cDupA}`;
   const chosen = [`deal_link:${dUnique}:${cUnique}`, `enrollment_cancel:${eActive}`, `enrollment_cancel:${eX1}`, forged];
   const op2 = randomUUID();
+  // Direct-SQL invariants: apply may change only deals.contact_id / enrollment status+metadata (and write audit/receipt rows).
+  const invariantSnapshot = async () => ({
+    contacts: (await q(`SELECT md5(string_agg(to_jsonb(c)::text, '|' ORDER BY id)) h, count(*)::int n, count(*) FILTER (WHERE lifecycle_state IS NULL)::int nl FROM contacts c WHERE email LIKE $1`, [`%.${nonce}@dh.example.test`]))[0],
+    dealsOther: (await q(`SELECT md5(string_agg((to_jsonb(d) - 'contact_id' - 'updated_at')::text, '|' ORDER BY id)) h, count(*)::int n FROM deals d WHERE notes LIKE $1 OR notes IS NULL`, [`%${nonce}%`]))[0],
+    enrollOther: (await q(`SELECT md5(string_agg((to_jsonb(e) - 'status' - 'metadata' - 'updated_at')::text, '|' ORDER BY id)) h FROM sequence_enrollments e`))[0].h,
+    commEvents: (await q(`SELECT CASE WHEN to_regclass('public.communication_events') IS NULL THEN -1 ELSE (xpath('/row/n/text()', query_to_xml('SELECT count(*) n FROM communication_events', false, true, '')))[1]::text::int END n`))[0].n,
+    pause: (await q(`SELECT md5(string_agg(key||value::text, '|' ORDER BY key)) h FROM system_settings WHERE key ILIKE '%pause%'`))[0].h,
+  });
+  const invBefore = await invariantSnapshot();
   const run = await svc.applyDataHealthReconcile({ operationId: op2, actionKeys: chosen, actorId: adminId });
   const byKey = Object.fromEntries(run.receipt.outcomes.map(o => [o.key, o.status]));
   check(!run.replayed && run.receipt.status === "complete", "First request completes");
+  const invAfter = await invariantSnapshot();
+  check(invAfter.contacts.h === invBefore.contacts.h && invAfter.contacts.nl === 0, "Lifecycle and every other contact field are unchanged by apply (no lifecycle transition, no null lifecycle)");
+  check(invAfter.dealsOther.h === invBefore.dealsOther.h && invAfter.enrollOther === invBefore.enrollOther, "Apply changes no deal stage/owner/value and no enrollment schedule field (next_action_at, step, sequence)");
+  check(invAfter.commEvents === invBefore.commEvents, "Apply records no communication event and sends nothing");
+  check(invAfter.pause === invBefore.pause, "Apply leaves every pause setting unchanged");
   check(byKey[chosen[0]] === "applied" && byKey[chosen[1]] === "applied" && byKey[chosen[2]] === "applied", "Selected actions apply");
   check(byKey[forged] === "not_current" && await dealContact(dAmbiguous) == null, "A forged link to an ambiguous identity is refused and nothing changes");
   check(Number(await dealContact(dUnique)) === cUnique, "Deal link read back from the database");

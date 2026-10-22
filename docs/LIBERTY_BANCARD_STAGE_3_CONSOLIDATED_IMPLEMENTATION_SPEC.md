@@ -2061,3 +2061,14 @@ D-R2 implements D06–D09 and UI-01–UI-06 as recorded in ledger Section 40. Co
 - Business Back opens the remembered inventory URL (search, filters, page) or the default inventory; it never depends on browser history.
 - Return context is a per-user, pattern-validated People or inventory URL; Collateral stays a public handoff with its own return link.
 - D-V is still open: full route/control/role/action/metric/UI/performance evidence, and verification that D01's direct SQL preserves authorization, identity and lifecycle invariants. Stage 3 D is not closed.
+
+### 32.1 D-V acceptance contract — 2026-10-22 (source; not published)
+
+D-V results and gaps are in ledger Section 41. Contract points that later work must keep:
+
+- Long provenance text uses `ProvenanceNote`: the visible summary keeps scope, as-of and any "not X" limit; only diagnostics go in the expandable detail.
+- A count labelled as a total must be a whole-population read under the shared definition (production, non-archived; open sales stages from `OPEN_SALES_LEAD_STAGES`). `/api/dashboard/stats` follows this and reports `population` and `asOf`.
+- Sitemaps list only URLs that answer 200; listed industry pages without a server render fall through to the client app.
+- Every visible control has an accessible name; the D-R2 contract suite checks the controls repaired in D-V.
+- D01 apply keeps direct SQL with per-action transaction, row locks, same-transaction audit and unique-email identity recheck. Invariants (contact record/lifecycle, deal non-link fields, enrollment schedule, communication events, pause settings) are asserted by `test-data-health-reconcile.ts` and the D-V browser suite.
+- Stage 3 completion needs, after publish, the post-publication smoke listed in ledger Section 41.6.

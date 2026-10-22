@@ -6,140 +6,140 @@
   "verdict": [
     {
       "url": "/dashboard",
-      "baselineMedianMs": 575,
-      "candidateMedianMs": 514,
-      "deltaMs": -61,
+      "baselineMedianMs": 349,
+      "candidateMedianMs": 346,
+      "deltaMs": -3,
       "withinBound": true
     },
     {
       "url": "/dashboard/admin-hub?tab=users",
-      "baselineMedianMs": 500,
-      "candidateMedianMs": 359,
-      "deltaMs": -141,
+      "baselineMedianMs": 385,
+      "candidateMedianMs": 232,
+      "deltaMs": -153,
       "withinBound": true
     },
     {
       "url": "/dashboard/knowledge-base",
-      "baselineMedianMs": 311,
-      "candidateMedianMs": 311,
-      "deltaMs": 0,
+      "baselineMedianMs": 346,
+      "candidateMedianMs": 326,
+      "deltaMs": -20,
       "withinBound": true
     },
     {
       "url": "/dashboard/permissions",
-      "baselineMedianMs": 335,
-      "candidateMedianMs": 218,
-      "deltaMs": -117,
+      "baselineMedianMs": 467,
+      "candidateMedianMs": 355,
+      "deltaMs": -112,
       "withinBound": true
     }
   ],
   "results": {
     "baseline": {
       "/dashboard": {
-        "medianMs": 575,
+        "medianMs": 349,
         "samples": [
-          710,
-          897,
-          487,
-          343,
-          463,
-          726,
-          575
+          2420,
+          464,
+          380,
+          313,
+          349,
+          233,
+          257
         ],
         "jsBytes": 621962
       },
       "/dashboard/admin-hub?tab=users": {
-        "medianMs": 500,
+        "medianMs": 385,
         "samples": [
-          760,
-          500,
-          581,
-          490,
-          619,
-          414,
-          416
+          887,
+          348,
+          520,
+          462,
+          385,
+          318,
+          323
         ],
         "jsBytes": 810114
       },
       "/dashboard/knowledge-base": {
-        "medianMs": 311,
+        "medianMs": 346,
         "samples": [
-          451,
-          380,
-          279,
-          281,
-          287,
-          311,
-          410
+          478,
+          305,
+          346,
+          317,
+          289,
+          351,
+          465
         ],
         "jsBytes": 1009330
       },
       "/dashboard/permissions": {
-        "medianMs": 335,
+        "medianMs": 467,
         "samples": [
-          335,
-          421,
-          322,
-          304,
-          279,
-          335,
-          388
+          484,
+          930,
+          508,
+          447,
+          413,
+          422,
+          467
         ],
         "jsBytes": 810114
       }
     },
     "candidate": {
       "/dashboard": {
-        "medianMs": 514,
+        "medianMs": 346,
         "samples": [
-          557,
-          514,
-          382,
-          356,
-          963,
-          649,
-          397
+          346,
+          271,
+          478,
+          424,
+          351,
+          206,
+          205
         ],
-        "jsBytes": 629525
+        "jsBytes": 633352
       },
       "/dashboard/admin-hub?tab=users": {
-        "medianMs": 359,
+        "medianMs": 232,
         "samples": [
-          350,
-          326,
-          674,
-          395,
-          411,
-          260,
-          359
+          233,
+          216,
+          227,
+          452,
+          232,
+          245,
+          190
         ],
-        "jsBytes": 613675
+        "jsBytes": 615806
       },
       "/dashboard/knowledge-base": {
-        "medianMs": 311,
+        "medianMs": 326,
         "samples": [
-          458,
-          312,
-          282,
-          311,
-          272,
-          445,
-          292
+          294,
+          333,
+          324,
+          283,
+          350,
+          326,
+          425
         ],
-        "jsBytes": 1028790
+        "jsBytes": 1033383
       },
       "/dashboard/permissions": {
-        "medianMs": 218,
+        "medianMs": 355,
         "samples": [
-          226,
-          228,
-          199,
-          218,
-          263,
-          208,
-          207
+          355,
+          709,
+          364,
+          280,
+          380,
+          257,
+          187
         ],
-        "jsBytes": 601413
+        "jsBytes": 602953
       }
     }
   },

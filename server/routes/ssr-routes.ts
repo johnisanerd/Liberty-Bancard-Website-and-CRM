@@ -1,5 +1,6 @@
 import type { Express } from "express";
 import { getIndustryHtml } from "../ssr/industries";
+import { INDUSTRY_SLUGS } from "../../shared/blog-slugs";
 import { getCompareHtml } from "../ssr/compare";
 import { getLocationHtml, getCityHubHtml } from "../ssr/locations";
 import { isValidLocationCombination } from "../ssr/location-html";
@@ -138,8 +139,10 @@ export function registerSsrRoutes(app: Express) {
     res.send(html);
   });
 
-  app.get("/industries/:slug", (req, res) => {
+  app.get("/industries/:slug", (req, res, next) => {
     const html = getIndustryHtml(req.params.slug);
+    // Listed industries without a server-rendered page are client-rendered pages: serve the app, not an empty 404.
+    if (!html && (INDUSTRY_SLUGS as readonly string[]).includes(req.params.slug)) return next();
     if (!html) return res.status(404).end();
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Cache-Control", PAGE_CACHE);
@@ -413,7 +416,8 @@ export function registerSsrRoutes(app: Express) {
     let xml = `<?xml version="1.0" encoding="UTF-8"?>\n`;
     xml += `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n`;
     for (const slug of COMPETITOR_SLUGS) {
-      xml += `  <url><loc>${baseUrl}/compare/${slug}</loc><lastmod>${date}</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>\n`;
+      // List /compare/<slug> only when that page exists; /compare/:competitor answers 404 for slugs without a comparison page.
+      if (getCompareHtml(slug)) xml += `  <url><loc>${baseUrl}/compare/${slug}</loc><lastmod>${date}</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>\n`;
       xml += `  <url><loc>${baseUrl}/alternatives/${slug}</loc><lastmod>${date}</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>\n`;
       xml += `  <url><loc>${baseUrl}/switch-from/${slug}</loc><lastmod>${date}</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>\n`;
     }
