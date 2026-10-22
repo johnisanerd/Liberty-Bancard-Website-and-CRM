@@ -13,7 +13,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { PageHeader } from "@/components/ui/page-header";
+import { PageHeader, CrmPage, ScopedMetricStrip } from "@/components/crm/CrmPresentation";
 import {
   Users, DollarSign, TrendingUp, Building2, Search,
   RefreshCw, Loader2, CheckCircle, Clock, ArrowRight,
@@ -203,7 +203,7 @@ export default function PartnerPortalAdmin() {
   const earningPartners = partners.filter(p => (p.totalConversions ?? 0) > 0).length;
 
   return (
-    <div className="space-y-6" data-testid="page-partner-portal-admin">
+    <CrmPage className="space-y-6" data-testid="page-partner-portal-admin">
       <PageHeader
         title="Partner Portal"
         subtitle="Track referring partners, their merchant pipeline, and residual earnings"
@@ -216,7 +216,7 @@ export default function PartnerPortalAdmin() {
       />
 
       {/* KPIs */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+      <ScopedMetricStrip className="grid-cols-2 sm:grid-cols-4 md:grid-cols-4 xl:grid-cols-4" scopeId="PartnerPortalAdmin">
         <Card data-testid="kpi-active-partners">
           <CardContent className="p-4">
             <div className="flex items-center gap-3">
@@ -269,7 +269,7 @@ export default function PartnerPortalAdmin() {
             </div>
           </CardContent>
         </Card>
-      </div>
+      </ScopedMetricStrip>
 
       {/* Pipeline automation status */}
       <Card>
@@ -326,6 +326,6 @@ export default function PartnerPortalAdmin() {
           ))}
         </div>
       )}
-    </div>
+    </CrmPage>
   );
 }

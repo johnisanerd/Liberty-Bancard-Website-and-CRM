@@ -1,4 +1,4 @@
-import { PageTitle } from "@/components/ui/page-header";
+import { CrmPage, CrmPageHeader } from "@/components/crm/CrmPresentation";
 import { useState, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, getCsrfToken, queryClient } from "@/lib/queryClient";
@@ -274,21 +274,16 @@ export default function OutreachQueue() {
 
   // ─── Render ───────────────────────────────────────────────────────────────
   return (
-    <div className="space-y-6 pb-12">
+    <CrmPage className="space-y-6 pb-12">
       {/* ── Page header ──────────────────────────────────────────────────── */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <PageTitle className="text-2xl font-bold tracking-tight flex items-center gap-2">
-            <Rocket className="h-6 w-6 text-primary" />
-            Ready for Outreach
-          </PageTitle>
-          <p className="text-muted-foreground text-sm mt-0.5">
+        <CrmPageHeader title="Ready for Outreach" icon={<Rocket className="h-6 w-6" />}
+          description={<>
             Channel-qualified leads from policy v{queueQuery.data?.policyVersion ?? "—"}.
             {total != null && total > 0 && (
               <span className="ml-1 font-medium text-foreground">{total.toLocaleString()} waiting.</span>
             )}
-          </p>
-        </div>
+          </>} />
         <Button
           variant="outline" size="sm"
           onClick={() => queryClient.invalidateQueries({ queryKey: ["/api/outreach-queue"] })}
@@ -567,6 +562,6 @@ export default function OutreachQueue() {
           </div>
         </div>
       )}
-    </div>
+    </CrmPage>
   );
 }

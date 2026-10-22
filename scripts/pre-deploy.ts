@@ -138,6 +138,8 @@ export const MANDATORY_SUITES: Suite[] = [
   {name:"Stage 3 D GHL Ownership Readiness",script:"scripts/test-ghl-ownership-readiness.ts",timeoutSecs:60},
   {name:"Stage 3 D Hub Tab URL State",script:"scripts/test-stage3-d-hub-tabs.ts",timeoutSecs:60},
   {name:"Stage 3 D-R2 Contracts",script:"scripts/test-stage3-d-r2-contracts.ts",timeoutSecs:60},
+  {name:"Stage 3 D-R2 Retained Contact Core",script:"scripts/test-retained-contact-core.ts",timeoutSecs:60},
+  {name:"Stage 3 D-R2 Heading Ownership Mounted",script:"scripts/test-stage3-d-r2-headings.ts",timeoutSecs:120},
   {name:"Stage 3 D-R2 Company Search Authority",script:"scripts/test-company-search-authority.ts",timeoutSecs:240,requiresDisposableTestDatabase:true},
   {name:"Stage 3 C5 Resources And Selectors",script:"scripts/test-stage3-c5-resources.ts",timeoutSecs:60},
   {name:"Stage 3 C5 Final Sidebar",script:"scripts/test-stage3-c5-sidebar.ts",timeoutSecs:60},

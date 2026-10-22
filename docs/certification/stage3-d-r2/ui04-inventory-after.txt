@@ -1,0 +1,57 @@
+Administration	/dashboard/activation	ActivationPanel	-	-	-	-	-	-	0	
+Administration	/dashboard/admin-hub	AdminHub	P	H	-	-	-	-	0	
+Administration	/dashboard/consent-audit	/dashboard/admin-hub?tab=consent	-	-	-	-	-	-	0	NOFILE
+Administration	/dashboard/ghl-integration	GhlIntegrationHub	-	-	-	-	-	-	0	
+Administration	/dashboard/pci-assessment	/dashboard/admin-hub?tab=pci	-	-	-	-	-	-	0	NOFILE
+Administration	/dashboard/permissions	/dashboard/admin-hub?tab=permissions	-	-	-	-	-	-	0	NOFILE
+Administration	/dashboard/queue-holds	QueueHoldsPage	P	H	-	-	-	-	0	
+Administration	/dashboard/settings/arbitration	ArbitrationLog	P	H	-	-	-	-	0	
+Administration	/dashboard/settings/integrations	SettingsIntegrations	-	-	-	-	-	-	0	
+Administration	/dashboard/system-health	SystemHealthHub	-	-	-	-	-	-	0	
+Campaigns	/dashboard/campaigns	/dashboard/outbound-center?tab=campaigns	-	-	-	-	-	-	0	NOFILE
+Campaigns	/dashboard/outbound-center	OutboundCenter	P	-	-	-	-	-	0	
+Campaigns	/dashboard/sequences	/dashboard/outbound-center?tab=sequences	-	-	-	-	-	-	0	NOFILE
+Inbox	/dashboard/comms-hub	CommsHub	-	H	-	S	-	-	0	
+Merchant Operations	/dashboard/boarding	BoardingTracker	P	-	-	-	-	-	0	
+Merchant Operations	/dashboard/co-branded-proposals	CoBrandedProposals	P	H	-	-	-	-	0	
+Merchant Operations	/dashboard/document-vault	DocumentVault	P	-	-	S	-	-	0	
+Merchant Operations	/dashboard/merchant-applications	MerchantApplicationsList	P	-	-	-	-	-	0	
+Merchant Operations	/dashboard/merchant-risk	MerchantRiskHub	-	-	-	-	-	-	0	
+Merchant Operations	/dashboard/merchant-success	MerchantSuccessHub	-	-	-	-	-	-	0	
+Merchant Operations	/dashboard/onboarding	OnboardingHub	-	H	-	-	-	-	0	
+Merchant Operations	/dashboard/onboarding-kickoff	OnboardingKickoff	-	-	-	S	-	-	0	
+Merchant Operations	/dashboard/partner-orgs	PartnerOrgs	P	H	-	-	-	-	0	
+Merchant Operations	/dashboard/partner-portal	PartnerPortalAdmin	P	-	M	-	-	-	4	
+Merchant Operations	/dashboard/partner-referral-pipeline	PartnerReferralPipeline	P	-	M	-	-	-	4	
+Merchant Operations	/dashboard/portfolio	MerchantPortfolio	P	H	-	-	-	-	0	
+Merchant Operations	/dashboard/referral-program	ReferralProgram	P	H	-	-	-	-	0	
+Merchant Operations	/dashboard/statement-review	StatementReview	-	-	-	S	-	-	0	
+Merchant Operations	/dashboard/support-hub	SupportHub	-	-	-	-	-	-	0	
+Merchant Operations	/dashboard/underwriting	UnderwritingPage	-	-	-	S	-	-	0	
+Pipeline	/dashboard/pipeline	Pipeline	P	H	-	S	-	-	0	
+Prospecting	/dashboard/canonical-enrichment	CanonicalEnrichment	-	-	-	-	-	-	0	
+Prospecting	/dashboard/lead-imports	LegacyLeadImportsRedirect	-	-	-	-	-	-	0	NOFILE
+Prospecting	/dashboard/lead-ops	LeadOpsCenter	-	-	-	-	-	-	3	
+Prospecting	/dashboard/lead-ops/business/:id	BusinessDetailPage	-	-	-	-	-	-	0	
+Prospecting	/dashboard/outreach-queue	OutreachQueue	P	H	-	-	-	-	0	
+Prospecting	/dashboard/prospects	LegacyProspectsRedirect	-	-	-	-	-	-	0	NOFILE
+Prospecting	/dashboard/prospects/import	ProspectImport	-	-	-	-	-	-	0	
+Records	/dashboard/companies/:id	CompanyDetail	P	H	-	-	-	-	0	
+Records	/dashboard/contacts	Contacts	P	H	-	-	-	T	2	
+Records	/dashboard/contacts-leads	ContactsAndLeads	-	-	-	-	-	-	0	
+Records	/dashboard/contacts/:id	ContactDetail	P	H	-	S	-	-	0	
+Records	/dashboard/my-leads	Leads	-	-	-	-	-	-	0	
+Reports	/dashboard/financial-hub	LegacyFinancialRedirect	-	-	-	-	-	-	0	NOFILE
+Reports	/dashboard/leaderboard	Leaderboard	P	-	-	S	-	-	0	
+Reports	/dashboard/my-earnings	MyEarnings	P	H	M	S	-	-	0	
+Reports	/dashboard/reporting	ReportingHub	P	H	-	-	-	-	0	
+Resources	/dashboard/content-hub	ContentHub	-	-	-	-	-	-	0	
+Resources	/dashboard/knowledge-admin	KnowledgeAdmin	P	H	-	S	-	-	0	
+Resources	/dashboard/knowledge-base	KnowledgeBase	P	H	-	-	-	-	0	
+Resources	/dashboard/playbooks	PlaybooksHub	-	-	-	-	-	-	0	
+Resources	/dashboard/training	Training	-	-	-	-	-	-	0	
+Today	/dashboard	Overview	P	H	M	-	-	-	8	
+Today	/dashboard/my-day	SalesRepHome	P	H	M	-	-	-	9	
+Today	/dashboard/nba	NbaPriorityPage	P	H	-	-	-	-	0	
+Work	/dashboard/tasks-appointments	TasksAppointments	P	H	-	-	-	-	0	
+routes=56

@@ -10,7 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { PageHeader } from "@/components/ui/page-header";
+import { PageHeader, CrmPage } from "@/components/crm/CrmPresentation";
 import { DataState } from "@/components/ui/data-state";
 import { boardingStatuses } from "@/lib/crm-destination-state";
 import { useC4RetainedSelection } from "@/hooks/use-c4-retained-selection";
@@ -224,7 +224,7 @@ export default function BoardingTracker() {
   ).length;
 
   return (
-    <div className="space-y-6" data-testid="page-boarding-tracker">
+    <CrmPage className="space-y-6" data-testid="page-boarding-tracker">
       <Helmet>
         <title>Boarding Submissions | Liberty Bancard</title>
       </Helmet>
@@ -467,6 +467,6 @@ export default function BoardingTracker() {
         </CardContent>
       </Card>
       </DataState>
-    </div>
+    </CrmPage>
   );
 }

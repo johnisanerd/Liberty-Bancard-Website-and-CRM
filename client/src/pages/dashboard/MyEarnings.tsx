@@ -1,6 +1,5 @@
-import { PageTitle } from "@/components/ui/page-header";
 import { useCrmQuery as useQuery } from "@/hooks/use-crm-query";
-import { CrmDataState } from "@/components/crm/CrmPresentation";
+import { CrmDataState, CrmPage, CrmPageHeader, ScopedMetricStrip } from "@/components/crm/CrmPresentation";
 import { AgentReportsNavigation } from "@/components/crm/AgentReportsNavigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -83,19 +82,16 @@ export default function MyEarnings() {
   const latestPayout = payouts[0] ?? null;
 
   return (
-    <div className="space-y-6" data-testid="page-my-earnings">
+    <CrmPage className="space-y-6" data-testid="page-my-earnings">
       <AgentReportsNavigation />
       <div>
-        <PageTitle className="text-2xl leading-8 font-semibold" data-testid="text-page-title">My Earnings</PageTitle>
-        <p className="text-muted-foreground mt-1 text-sm">
-          Your residual commission history — period by period
-        </p>
+        <CrmPageHeader title="My Earnings" description="Your residual commission history — period by period" titleTestId="text-page-title" />
         <p className="text-xs text-muted-foreground">Source: authorized /api/payouts/my ledger; client read {dataUpdatedAt?new Date(dataUpdatedAt).toISOString():"unavailable"}. USD display assumption; periods are the returned ledger periods. Recorded paid status is not a native settlement receipt or a complete earnings forecast.</p>
       </div>
       {isError ? <CrmDataState state="unavailable" message="Your payout ledger is unavailable; no zero earnings, empty history or pending assignment is inferred." onRetry={()=>void refetch()}/> : <>
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4" data-testid="section-earnings-kpis">
+      <ScopedMetricStrip className="grid-cols-1 sm:grid-cols-3 md:grid-cols-3 xl:grid-cols-3" testId="section-earnings-kpis" scopeId="my-earnings">
         <Card data-testid="card-total-paid">
           <CardHeader className="flex flex-row items-center justify-between gap-2 pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">Recorded Paid Share</CardTitle>
@@ -150,7 +146,7 @@ export default function MyEarnings() {
             )}
           </CardContent>
         </Card>
-      </div>
+      </ScopedMetricStrip>
 
       {/* Payout History Table */}
       <Card data-testid="card-payout-history">
@@ -223,6 +219,6 @@ export default function MyEarnings() {
         </CardContent>
       </Card>
       </>}
-    </div>
+    </CrmPage>
   );
 }

@@ -1,6 +1,7 @@
 import { Component, type ReactNode } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { PageTitle } from "@/components/ui/page-header";
 import { AlertTriangle, ChevronDown, ChevronUp, RefreshCw } from "lucide-react";
 
 interface Props {
@@ -144,9 +145,9 @@ export class ErrorBoundary extends Component<Props, State> {
               <div className="w-16 h-16 rounded-full bg-destructive/10 flex items-center justify-center mb-4">
                 <AlertTriangle className="w-8 h-8 text-destructive" />
               </div>
-              <h2 className="text-xl font-semibold text-foreground mb-2" data-testid="text-error-boundary-title">
+              <PageTitle className="text-xl font-semibold text-foreground mb-2" data-testid="text-error-boundary-title">
                 {isChunkError ? "Page failed to load" : "Something went wrong"}
-              </h2>
+              </PageTitle>
               <p className="text-sm text-muted-foreground mb-2" data-testid="text-error-boundary-message">
                 {isChunkError
                   ? "A page chunk could not be loaded. This can happen after a deployment. Reloading will fix it."

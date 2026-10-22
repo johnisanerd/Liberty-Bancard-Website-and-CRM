@@ -1,4 +1,4 @@
-import { PageTitle } from "@/components/ui/page-header";
+import { CrmPage, CrmPageHeader } from "@/components/crm/CrmPresentation";
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
@@ -582,9 +582,9 @@ export default function ReferralProgram() {
   };
 
   return (
-    <div className="space-y-6">
+    <CrmPage className="space-y-6">
       <div className="flex flex-col sm:flex-row justify-between gap-4">
-        <PageTitle className="text-2xl font-bold" data-testid="text-page-title">Referral & Partner Program</PageTitle>
+        <CrmPageHeader title="Referral & Partner Program" titleTestId="text-page-title" />
         <div className="flex items-center gap-2 flex-wrap">
           <Dialog open={isPartnerDialogOpen} onOpenChange={setIsPartnerDialogOpen}>
             <DialogTrigger asChild>
@@ -1160,6 +1160,6 @@ export default function ReferralProgram() {
       <ReferralExplainer />
 
       <HelpCenter context="referral" />
-    </div>
+    </CrmPage>
   );
 }

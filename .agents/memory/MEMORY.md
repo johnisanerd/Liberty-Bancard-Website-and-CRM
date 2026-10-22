@@ -183,3 +183,4 @@
 - [Domain/location automation](domain-location-automation.md) — closed-by-default worker; admin PUT enables.
 - [Domain/location tick resumability](domain-location-tick-resume.md) — budget-stopped windowed ticks must persist cursor to the last handled id; else progress stalls.
 - [Heading ownership claims](heading-ownership-claims.md) — one h1 per page via runtime claim; hubs embed children at h2; verify by settled-h1 crawl.
+- [Stale dist and import gaps](stale-dist-and-import-gaps.md) — rebuild before browser suites; scripted page migrations can miss imports that only fail at render time.

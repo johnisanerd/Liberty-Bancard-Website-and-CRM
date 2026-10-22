@@ -36,6 +36,7 @@ import {
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
+import { rememberReturnUrl } from "@/lib/crm-return-context";
 import { SouthFloridaQualificationPanel } from "@/components/lead-ops/SouthFloridaQualificationPanel";
 import { SouthFloridaProspectingPanel } from "@/components/lead-ops/SouthFloridaProspectingPanel";
 import { SourceRegistryPanel } from "@/pages/dashboard/SourceRegistryPanel";
@@ -1540,6 +1541,7 @@ function EnrichmentQueuePanel() {
 // ─── Main component ───────────────────────────────────────────────────────────
 // ─── MI-08: Businesses Tab ────────────────────────────────────────────────────
 function BusinessesTab({ userRole }: { userRole: string }) {
+  const inventoryActorId = useAuth().user?.id;
   // List context lives in the address (replace, not push) so Back from a business restores the same page.
   const initialList = new URLSearchParams(window.location.search);
   const listParam = (key: string) => { const all = initialList.getAll(key); return all.length === 1 ? all[0] : ""; };
@@ -1556,7 +1558,12 @@ function BusinessesTab({ userRole }: { userRole: string }) {
     if (next !== `${window.location.pathname}${window.location.search}${window.location.hash}`) {
       window.history.replaceState(window.history.state, "", next);
     }
-  }, [search, verticalFilter, emailStatusFilter, offset]);
+    // A business opened from this inventory returns to the same search, filters and page (validated per actor on read).
+    const remembered = new URL("/dashboard/lead-ops", window.location.origin);
+    remembered.searchParams.set("tab", "businesses");
+    for (const key of ["bq", "bvertical", "bemail", "boffset"]) { const v = url.searchParams.get(key); if (v) remembered.searchParams.set(key, v); }
+    rememberReturnUrl("inventory", inventoryActorId, `${remembered.pathname}${remembered.search}`);
+  }, [search, verticalFilter, emailStatusFilter, offset, inventoryActorId]);
   const [selectedBusiness, setSelectedBusiness] = useState<BusinessListItem | null>(null);
   const [, navigateTo] = useLocation();
   const [bootstrapConfirmation, setBootstrapConfirmation] = useState("");

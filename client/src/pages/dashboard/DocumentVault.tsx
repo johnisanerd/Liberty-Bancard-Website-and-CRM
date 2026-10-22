@@ -1,7 +1,7 @@
 import { useState,useEffect } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {useCrmQuery as useQuery,useCrmActorIdentity} from "@/hooks/use-crm-query";
-import {CrmDataState} from "@/components/crm/CrmPresentation";
+import { CrmDataState, CrmPage } from "@/components/crm/CrmPresentation";
 import { useLocation } from "wouter";
 import { apiRequest, getCsrfToken } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -20,7 +20,7 @@ import {
   FileImage, File, Calendar, User, Building2, ExternalLink,
   CheckCircle2, XCircle, Clock, Archive, Package,
 } from "lucide-react";
-import { PageHeader } from "@/components/ui/page-header";
+import { PageHeader } from "@/components/crm/CrmPresentation";
 
 function formatFileSize(bytes: number | null | undefined): string {
   if (!bytes) return "—";
@@ -266,7 +266,7 @@ export default function DocumentVault() {
   }
 
   return (
-    <div className="space-y-6" data-testid="document-vault-page">
+    <CrmPage className="space-y-6" data-testid="document-vault-page">
       <PageHeader
         title="Document Vault"
         subtitle="All merchant KYC documents across all records"
@@ -662,6 +662,6 @@ export default function DocumentVault() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </CrmPage>
   );
 }

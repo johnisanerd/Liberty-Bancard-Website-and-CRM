@@ -7,6 +7,7 @@ import { useUpdateContact } from "@/hooks/use-contacts";
 import { readReturnUrl } from "@/lib/crm-return-context";
 import { useCompanySearch, type CompanySearchItem } from "@/hooks/use-company-search";
 import { apiRequest, getCsrfToken, protectedContextToken, protectedScope } from "@/lib/queryClient";
+import { RetainedContactCore } from "@/lib/retained-contact-core";
 import { useOwnedToast as useToast } from "@/hooks/use-owned-toast";
 import { useAuth } from "@/hooks/use-auth";
 import {useRetainedLocalIntent} from "@/hooks/use-retained-local-intent";
@@ -1420,10 +1421,11 @@ function ContactDetailRecord() {
   });
   const detailAuthorized = Boolean(data?.contact && !error);
   // Contact core retained across section reads. Keyed by actor scope + entity, so another actor or contact never reuses it.
-  const coreKey = `${JSON.stringify(protectedScope(user))}:${contactId}`;
-  const coreRef = useRef<{ key: string; data: ContactDetailData } | null>(null);
-  if (data?.contact && !error) coreRef.current = { key: coreKey, data };
-  const retainedCore = coreRef.current?.key === coreKey ? { contact: coreRef.current.data.contact, capabilities: coreRef.current.data.capabilities } : null;
+  const coreKey = RetainedContactCore.key(protectedScope(user), contactId);
+  const coreStore = useRef(new RetainedContactCore<ContactDetailData>());
+  coreStore.current.observe(coreKey, { data, hasCore: Boolean(data?.contact), error });
+  const retainedSource = coreStore.current.read(coreKey);
+  const retainedCore = retainedSource ? { contact: retainedSource.contact, capabilities: retainedSource.capabilities } : null;
   const sectionReadAllowed = (section: ContactSection) => {
     if (!detailAuthorized || requestedSection !== section) return false;
     if (section === "company-intelligence") return !!data?.contact?.isParentAccount;

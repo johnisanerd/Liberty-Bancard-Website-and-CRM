@@ -26,6 +26,14 @@ export function PageHeadingOwnerProvider({ children }: { children: ReactNode }) 
 /** True while a mounted page or hub owns the h1, so the shell must not render another. */
 export function usePageHeadingClaimed() { return useContext(HeadingClaimedContext); }
 
+/** The employee shell title: the page's fallback h1 only while no mounted page or hub has claimed it. */
+export function ShellPageTitle({ label, className }: { label: string; className?: string }) {
+  const claimed = usePageHeadingClaimed();
+  return claimed
+    ? createElement("div", { className, "data-testid": "text-page-title", "aria-label": label }, label)
+    : createElement("h1", { className, "data-testid": "text-page-title" }, label);
+}
+
 /** Resolves the heading level for this position in the tree and registers an h1 claim when it is level 1. */
 export function useHeadingLevel(override?: 1 | 2): 1 | 2 {
   const inherited = useContext(HeadingLevelContext);
@@ -43,34 +51,4 @@ export function useHeadingLevel(override?: 1 | 2): 1 | 2 {
 export function PageTitle({ level, ...props }: HTMLAttributes<HTMLHeadingElement> & { level?: 1 | 2; "data-testid"?: string }) {
   const resolved = useHeadingLevel(level);
   return createElement(resolved === 2 ? "h2" : "h1", props);
-}
-
-interface PageHeaderProps {
-  title: string;
-  subtitle?: string;
-  actions?: ReactNode;
-  testId?: string;
-  /** Use 2 when the page is embedded under another page's h1 (for example inside the Administration hub). */
-  headingLevel?: 1 | 2;
-}
-
-export function PageHeader({ title, subtitle, actions, testId, headingLevel }: PageHeaderProps) {
-  const Heading = useHeadingLevel(headingLevel) === 2 ? "h2" : "h1";
-  return (
-    <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 sm:gap-4" data-testid={testId}>
-      <div className="min-w-0">
-        <Heading className="text-2xl font-bold text-foreground truncate" data-testid="text-page-heading">
-          {title}
-        </Heading>
-        {subtitle && (
-          <p className="text-sm text-muted-foreground mt-0.5">{subtitle}</p>
-        )}
-      </div>
-      {actions && (
-        <div className="flex items-center gap-2 flex-wrap shrink-0">
-          {actions}
-        </div>
-      )}
-    </div>
-  );
 }

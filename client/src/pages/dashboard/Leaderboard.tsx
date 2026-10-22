@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { useCrmQuery as useQuery } from "@/hooks/use-crm-query";
-import { CrmDataState } from "@/components/crm/CrmPresentation";
+import { CrmDataState, CrmPage } from "@/components/crm/CrmPresentation";
 import { AgentReportsNavigation } from "@/components/crm/AgentReportsNavigation";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import { PageHeader } from "@/components/ui/page-header";
+import { PageHeader } from "@/components/crm/CrmPresentation";
 import { useAuth } from "@/hooks/use-auth";
 import { leaderboardPeriods, leaderboardMetrics } from "@/lib/crm-destination-state";
 import { useC4RetainedSelection } from "@/hooks/use-c4-retained-selection";
@@ -218,7 +218,7 @@ export default function Leaderboard() {
   }
 
   return (
-    <div className="space-y-6" data-testid="leaderboard-page">
+    <CrmPage className="space-y-6" data-testid="leaderboard-page">
       {role==="agent"&&<AgentReportsNavigation />}
       <PageHeader
         title="Team Leaderboard"
@@ -500,6 +500,6 @@ export default function Leaderboard() {
           </TabsContent>
         ))}
       </Tabs>
-    </div>
+    </CrmPage>
   );
 }

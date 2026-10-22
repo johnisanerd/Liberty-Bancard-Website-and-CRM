@@ -1,4 +1,4 @@
-import { PageTitle } from "@/components/ui/page-header";
+import { CrmPage, CrmPageHeader } from "@/components/crm/CrmPresentation";
 import { useState, useMemo, useEffect } from "react";
 import {portfolioFollowupDay,portfolioFollowupDays,portfolioFollowupCarrier} from "@/lib/portfolio-followup-date";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -377,22 +377,13 @@ export default function MerchantPortfolio() {
   const summary = data?.summary;
 
   return (
-    <div className="p-6 space-y-6">
+    <CrmPage className="p-6 space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="p-2 rounded-lg bg-primary/10">
-            <Briefcase className="w-5 h-5 text-primary" />
-          </div>
-          <div>
-            <PageTitle className="text-2xl font-bold tracking-tight">My Portfolio</PageTitle>
-            <p className="text-sm text-muted-foreground">
-              {role === "agent"
-                ? "Your assigned merchants — health signals and open actions at a glance"
-                : "All merchants — health signals and open actions across your team"}
-            </p>
-          </div>
-        </div>
+        <CrmPageHeader title="My Portfolio" icon={<Briefcase className="w-5 h-5" />}
+          description={role === "agent"
+            ? "Your assigned merchants — health signals and open actions at a glance"
+            : "All merchants — health signals and open actions across your team"} />
       </div>
 
       {/* Summary cards */}
@@ -749,6 +740,6 @@ export default function MerchantPortfolio() {
           </nav>
         </CardContent>
       </Card>
-    </div>
+    </CrmPage>
   );
 }

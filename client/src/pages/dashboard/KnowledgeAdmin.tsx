@@ -1,4 +1,3 @@
-import { PageTitle } from "@/components/ui/page-header";
 import { useState, useId } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -14,7 +13,7 @@ import { apiRequest } from "@/lib/queryClient";
 import { decodeJsonResponse, isRecord } from "@/lib/decode-json-response";
 import { readerState } from "@/lib/reader-state";
 import { ResourcesNav } from "@/components/dashboard/ResourcesNav";
-import { CrmDataState } from "@/components/crm/CrmPresentation";
+import { CrmDataState, CrmPage, CrmPageHeader } from "@/components/crm/CrmPresentation";
 import { useC4RetainedSelection } from "@/hooks/use-c4-retained-selection";
 import { knowledgeAdminViews } from "@/lib/crm-destination-state";
 import {
@@ -171,19 +170,12 @@ export default function KnowledgeAdmin() {
   const feedback = feedbackData?.feedback ?? [];
 
   return (
-    <div className="space-y-6" data-testid="knowledge-admin-page">
+    <CrmPage className="space-y-6" data-testid="knowledge-admin-page">
       <ResourcesNav current="/dashboard/knowledge-admin" />
       {/* Header */}
       <div className="flex items-center justify-between">
-        <div>
-          <PageTitle className="text-2xl font-bold flex items-center gap-2">
-            <BookOpen className="w-6 h-6 text-primary" />
-            Knowledge Base Admin
-          </PageTitle>
-          <p className="text-muted-foreground text-sm mt-0.5">
-            Manage the Liberty Bancard knowledge sources that ground the AI assistant.
-          </p>
-        </div>
+        <CrmPageHeader title="Knowledge Base Admin" icon={<BookOpen className="w-6 h-6" />}
+          description="Manage the Liberty Bancard knowledge sources that ground the AI assistant." />
         <div className="flex gap-2">
           <Button
             variant="outline"
@@ -563,6 +555,6 @@ export default function KnowledgeAdmin() {
           </DialogContent>
         </Dialog>
       )}
-    </div>
+    </CrmPage>
   );
 }

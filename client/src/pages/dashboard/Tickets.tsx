@@ -26,7 +26,7 @@ import { useAuth } from "@/hooks/use-auth";
 import SavedFilterBar from "@/components/SavedFilterBar";
 import DashboardErrorState from "@/components/DashboardErrorState";
 import { DataState } from "@/components/ui/data-state";
-import { PageHeader } from "@/components/ui/page-header";
+import { PageHeader } from "@/components/crm/CrmPresentation";
 import { toastError } from "@/lib/toast-helpers";
 import type { Ticket, Contact, TicketComment } from "@shared/schema";
 import { TICKET_CATEGORIES, SUPPORT_STAGES } from "@shared/schema";

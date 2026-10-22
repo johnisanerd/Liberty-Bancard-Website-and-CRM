@@ -1,4 +1,4 @@
-import { PageTitle } from "@/components/ui/page-header";
+import { CrmPage, CrmPageHeader } from "@/components/crm/CrmPresentation";
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
@@ -403,12 +403,9 @@ export default function PartnerOrgs() {
   );
 
   return (
-    <div className="space-y-6">
+    <CrmPage className="space-y-6">
       <div className="flex flex-col sm:flex-row justify-between gap-4">
-        <div>
-          <PageTitle className="text-2xl font-bold" data-testid="text-page-title">Partner Organizations</PageTitle>
-          <p className="text-muted-foreground text-sm mt-1">Manage white-label Sub-ISO partner portals</p>
-        </div>
+        <CrmPageHeader title="Partner Organizations" description="Manage white-label Sub-ISO partner portals" titleTestId="text-page-title" />
         <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
           <DialogTrigger asChild>
             <Button className="gap-2" data-testid="button-create-org">
@@ -565,6 +562,6 @@ export default function PartnerOrgs() {
           )}
         </DialogContent>
       </Dialog>
-    </div>
+    </CrmPage>
   );
 }

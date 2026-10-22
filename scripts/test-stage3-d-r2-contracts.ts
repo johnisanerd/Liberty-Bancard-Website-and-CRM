@@ -12,11 +12,11 @@ const walk = (dir: string): string[] => readdirSync(dir).flatMap(n => { const p 
 const layout = read("client/src/pages/DashboardLayout.tsx");
 const header = read("client/src/components/ui/page-header.tsx");
 check(!/isAdoptedPage/.test(layout), "DashboardLayout carries no hard-coded adopted-page list");
-check(/PageHeadingOwnerProvider/.test(layout) && /usePageHeadingClaimed/.test(layout), "Shell title is the fallback h1 and yields to a claiming page");
+check(/PageHeadingOwnerProvider/.test(layout) && /ShellPageTitle/.test(layout), "Shell title is the fallback h1 and yields to a claiming page");
 check(/useLayoutEffect/.test(header) && /level !== 1/.test(header), "Only level-1 headings register a claim");
 const rawH1 = walk("client/src/pages/dashboard").filter(f => f.endsWith(".tsx")).filter(f => /<h1[\s>]/.test(read(f)));
 check(rawH1.length === 0, `No raw <h1> remains in dashboard pages (${rawH1.join(", ") || "none"})`);
-check(!/<h1[\s>]/.test(read("client/src/pages/queue-holds.tsx")), "Queue Holds heading uses PageTitle");
+check(/CrmPageHeader/.test(read("client/src/pages/queue-holds.tsx")), "Queue Holds heading uses the shared page header");
 for (const hub of ["LeadOpsCenter", "OutboundCenter", "SupportHub", "GhlIntegrationHub"])
   check(/<PageHeadingLevel level=\{2\}>/.test(read(`client/src/pages/dashboard/${hub}.tsx`)), `${hub} embeds its tab content at h2`);
 check(/PageTitle level=\{embedded \? 2 : undefined\}/.test(read("client/src/pages/dashboard/CanonicalEnrichment.tsx")), "Canonical Enrichment is h2 when embedded, h1 standalone");
@@ -39,7 +39,7 @@ check(/AbortController/.test(hook) && /generation/i.test(hook), "Picker aborts a
 
 // UI-01, UI-03, UI-05, UI-06.
 const contact = read("client/src/pages/dashboard/ContactDetail.tsx");
-check(/coreRef/.test(contact) && /protectedScope\(user\)/.test(contact) && /contact-section-loading/.test(contact), "Contact core is retained only for the same actor and contact");
+check(/RetainedContactCore/.test(contact) && /protectedScope\(user\)/.test(contact) && /contact-section-loading/.test(contact), "Contact core is retained only for the same actor and contact");
 check(/today-next-actions/.test(read("client/src/pages/dashboard/Overview.tsx")), "Today has a Next actions worklist");
 const people = read("client/src/pages/dashboard/Contacts.tsx");
 check(/people-selected-filters/.test(people) && /people-quick-filters/.test(people), "People has selected chips and a filter drawer");
@@ -49,4 +49,30 @@ check(!isValidReturnUrl("people", "https://evil.example/dashboard/contacts") && 
   "Return context rejects other origins and destinations");
 check(/Back to Resources/.test(read("client/src/pages/AssetPage.tsx")) && /public library/.test(read("client/src/components/dashboard/ResourcesNav.tsx")), "Collateral is labelled as a public handoff with an authenticated return");
 check(!/crm-theme|crm-page/.test(read("client/src/pages/AssetPage.tsx")), "Public assets carry no employee CSS");
+const biz = read("client/src/pages/dashboard/LeadOps/BusinessDetailPage.tsx");
+check(/readReturnUrl\("inventory"/.test(biz) && !/history\.back/.test(biz), "Business Back reads the remembered inventory URL, not browser history");
+check(/rememberReturnUrl\("inventory"/.test(read("client/src/pages/dashboard/LeadOpsCenter.tsx")), "Inventory remembers its search, filters and page for Business Back");
+check(isValidReturnUrl("inventory", "/dashboard/lead-ops?tab=businesses&bq=acme&boffset=50") && !isValidReturnUrl("inventory", "/dashboard/lead-ops") && !isValidReturnUrl("inventory", "https://evil.example/dashboard/lead-ops?tab=businesses"),
+  "Inventory return context accepts only in-app inventory URLs");
+// UI-04: destinations adopted in this change keep the shared page, header and metric contracts.
+const adopted: Record<string, string[]> = {
+  "CoBrandedProposals": ["CrmPage", "CrmPageHeader"], "PartnerOrgs": ["CrmPage", "CrmPageHeader"], "ArbitrationLog": ["CrmPage", "CrmPageHeader"],
+  "KnowledgeAdmin": ["CrmPage", "CrmPageHeader"], "KnowledgeBase": ["CrmPage", "CrmPageHeader"], "MerchantPortfolio": ["CrmPage", "CrmPageHeader"],
+  "ReferralProgram": ["CrmPage", "CrmPageHeader"], "MyEarnings": ["CrmPage", "CrmPageHeader", "ScopedMetricStrip"], "OutreachQueue": ["CrmPage", "CrmPageHeader"],
+  "PartnerPortalAdmin": ["CrmPage", "ScopedMetricStrip"], "PartnerReferralPipeline": ["CrmPage", "ScopedMetricStrip"], "BoardingTracker": ["CrmPage"],
+  "MerchantApplicationsList": ["CrmPage"], "DocumentVault": ["CrmPage"], "Leaderboard": ["CrmPage"],
+};
+for (const [name, parts] of Object.entries(adopted)) {
+  const src = read(`client/src/pages/dashboard/${name}.tsx`);
+  check(parts.every(part => new RegExp(`<${part}\\b`).test(src)), `${name} adopts ${parts.join(", ")}`);
+}
+check(!/from "@\/components\/ui\/page-header"/.test(read("client/src/components/crm/CrmPresentation.tsx").replace(/import \{ useHeadingLevel \} from "@\/components\/ui\/page-header";/, "")), "Shared page header has a single implementation (PageHeader delegates to CrmPageHeader)");
+// A page that renders a shared presentation tag must import it (a missing import only fails at render time).
+const unresolved: string[] = [];
+for (const file of [...walk("client/src/pages"), ...walk("client/src/components")].filter(f => f.endsWith(".tsx") && !f.endsWith("CrmPresentation.tsx"))) {
+  const src = read(file);
+  for (const tag of ["CrmPage", "CrmPageHeader", "ScopedMetricStrip", "CrmDataState", "PageHeader", "PageTitle"])
+    if (new RegExp(`<${tag}[\\s>/]`).test(src) && !new RegExp(`import[^;]*\\b${tag}\\b[^;]*from`, "s").test(src)) unresolved.push(`${file}:${tag}`);
+}
+check(unresolved.length === 0, `Every shared presentation tag in use is imported (${unresolved.join(", ") || "none missing"})`);
 console.log(`PASS Stage 3 D-R2 contracts: ${checks} checks`);

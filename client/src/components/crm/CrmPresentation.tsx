@@ -14,15 +14,25 @@ export interface CrmPageHeaderProps {
   context?: ReactNode;
   primaryAction?: ReactNode;
   secondaryActions?: ReactNode;
+  /** Keeps an existing selector stable when a page adopts this header. */
+  titleTestId?: string;
+  /** Decorative leading icon; not part of the heading text. */
+  icon?: ReactNode;
+  testId?: string;
 }
 
-export function CrmPageHeader({ title, headingLevel, description, context, primaryAction, secondaryActions }: CrmPageHeaderProps) {
+/** Applies only outside the employee page theme; `.crm-page h1` sets the themed size and weight. */
+const HEADING_FALLBACK = "text-2xl font-semibold tracking-tight";
+
+export function CrmPageHeader({ title, headingLevel, description, context, primaryAction, secondaryActions, titleTestId, icon, testId }: CrmPageHeaderProps) {
   const Heading = useHeadingLevel(headingLevel) === 2 ? "h2" : "h1";
   return (
-    <header className="flex flex-wrap items-start justify-between gap-4">
+    <header className="flex flex-wrap items-start justify-between gap-4" data-testid={testId}>
       <div className="min-w-0">
         {context && <div className="mb-2 text-xs text-muted-foreground">{context}</div>}
-        <Heading>{title}</Heading>
+        {icon ? (
+          <div className="flex min-w-0 items-center gap-2"><span aria-hidden="true" className="shrink-0 text-primary">{icon}</span><Heading className={HEADING_FALLBACK} data-testid={titleTestId}>{title}</Heading></div>
+        ) : <Heading className={HEADING_FALLBACK} data-testid={titleTestId}>{title}</Heading>}
         {description && <p className="mt-1 text-sm text-muted-foreground">{description}</p>}
       </div>
       {(primaryAction || secondaryActions) && (
@@ -30,6 +40,11 @@ export function CrmPageHeader({ title, headingLevel, description, context, prima
       )}
     </header>
   );
+}
+
+/** Title, subtitle and actions header used by operational pages; same contract and markup as CrmPageHeader. */
+export function PageHeader({ title, subtitle, actions, testId, headingLevel }: { title: string; subtitle?: string; actions?: ReactNode; testId?: string; headingLevel?: 1 | 2 }) {
+  return <CrmPageHeader title={title} headingLevel={headingLevel} description={subtitle} primaryAction={actions} testId={testId} titleTestId="text-page-heading" />;
 }
 
 export interface RecordHeaderProps {
@@ -96,9 +111,10 @@ export function CrmPage({ children, className, ...props }: HTMLAttributes<HTMLDi
   return <div {...props} className={cn(employeeCrm && "crm-theme crm-page", className)}>{children}</div>;
 }
 
-export function ScopedMetricStrip({ children, className, scopeId, asOf, sourceLabel, availability = "available" }: {
+export function ScopedMetricStrip({ children, className, scopeId, asOf, sourceLabel, availability = "available", testId }: {
   children: ReactNode;
   className?: string;
+  testId?: string;
   scopeId?: string;
   asOf?: string;
   sourceLabel?: string;
@@ -106,7 +122,7 @@ export function ScopedMetricStrip({ children, className, scopeId, asOf, sourceLa
 }) {
   return (
     <section className={cn("crm-metric-rail grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5", className)}
-      data-scope-id={scopeId} data-availability={availability} aria-label="Summary metrics">
+      data-scope-id={scopeId} data-availability={availability} data-testid={testId} aria-label="Summary metrics">
       {children}
       {(sourceLabel || asOf || availability !== "available") && (
         <p className="col-span-full text-xs text-muted-foreground" role="note">

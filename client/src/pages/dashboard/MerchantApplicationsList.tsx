@@ -19,7 +19,7 @@ import {
   MapPin, Landmark, ClipboardCheck, Paperclip, ExternalLink, History, MailCheck,
   AlertTriangle, GitFork, Pencil, Save, X,
 } from "lucide-react";
-import { PageHeader } from "@/components/ui/page-header";
+import { PageHeader, CrmPage } from "@/components/crm/CrmPresentation";
 import type { MerchantApplication, MerchantProfile, Document as DocType, UnderwritingNoteEntry } from "@shared/schema";
 import { applicationStatuses } from "@/lib/crm-destination-state";
 import { useC4RetainedSelection } from "@/hooks/use-c4-retained-selection";
@@ -1015,7 +1015,7 @@ export default function MerchantApplicationsList() {
   }
 
   return (
-    <div className="space-y-6" data-testid="merchant-applications-list">
+    <CrmPage className="space-y-6" data-testid="merchant-applications-list">
       <PageHeader
         title="Merchant Applications"
         subtitle="Review and manage submitted merchant applications"
@@ -1148,6 +1148,6 @@ export default function MerchantApplicationsList() {
           )}
         </CardContent>
       </Card>
-    </div>
+    </CrmPage>
   );
 }

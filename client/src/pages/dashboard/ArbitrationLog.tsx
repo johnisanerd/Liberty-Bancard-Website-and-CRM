@@ -8,8 +8,8 @@
  * Access: admin, manager
  */
 
-import { PageTitle } from "@/components/ui/page-header";
 import { useState } from "react";
+import { CrmPage, CrmPageHeader } from "@/components/crm/CrmPresentation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -154,23 +154,14 @@ export default function ArbitrationLog() {
   }
 
   return (
-    <div className="p-6 max-w-5xl mx-auto space-y-6">
+    <CrmPage className="p-6 max-w-5xl mx-auto space-y-6">
       {/* Header */}
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2 mb-1">
-            <Shield className="h-5 w-5 text-primary" />
-            <PageTitle className="text-2xl font-semibold tracking-tight">Communication Arbitration</PageTitle>
-          </div>
-          <p className="text-sm text-muted-foreground">
-            Tracks when automation was suppressed because a rep recently touched a prospect,
-            a recent automated send was too soon, or an inbound reply is waiting for a human response.
-          </p>
-        </div>
-        <Button variant="outline" size="sm" onClick={() => refetchSupp()}>
-          <RefreshCw className="h-4 w-4 mr-2" /> Refresh
-        </Button>
-      </div>
+      <CrmPageHeader
+        title="Communication Arbitration"
+        icon={<Shield className="h-5 w-5" />}
+        description="Tracks when automation was suppressed because a rep recently touched a prospect, a recent automated send was too soon, or an inbound reply is waiting for a human response."
+        primaryAction={<Button variant="outline" size="sm" onClick={() => refetchSupp()}><RefreshCw className="h-4 w-4 mr-2" /> Refresh</Button>}
+      />
 
       {/* Suppression Windows Config */}
       <Card>
@@ -375,6 +366,6 @@ export default function ArbitrationLog() {
           )}
         </CardContent>
       </Card>
-    </div>
+    </CrmPage>
   );
 }

@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { PageHeader } from "@/components/ui/page-header";
+import { PageHeader, CrmPage, ScopedMetricStrip } from "@/components/crm/CrmPresentation";
 import {
   Users, Building2, DollarSign, Calendar, CheckCircle, Clock,
   Search, Plus, Edit, ExternalLink, Loader2, RefreshCw,
@@ -159,7 +159,7 @@ export default function PartnerReferralPipeline() {
   const activePartners = partners.filter(p => p.status === "active").length;
 
   return (
-    <div className="space-y-6" data-testid="page-partner-referral-pipeline">
+    <CrmPage className="space-y-6" data-testid="page-partner-referral-pipeline">
       <PageHeader
         title="Partner Referral Pipeline"
         subtitle="Track partners, referred merchants, commission status, and follow-up schedules"
@@ -172,7 +172,7 @@ export default function PartnerReferralPipeline() {
       />
 
       {/* KPIs */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+      <ScopedMetricStrip className="grid-cols-2 sm:grid-cols-4 md:grid-cols-4 xl:grid-cols-4" scopeId="PartnerReferralPipeline">
         <Card data-testid="kpi-total-partners">
           <CardContent className="p-4">
             <div className="flex items-center gap-3">
@@ -225,7 +225,7 @@ export default function PartnerReferralPipeline() {
             </div>
           </CardContent>
         </Card>
-      </div>
+      </ScopedMetricStrip>
 
       {/* Filters */}
       <div className="flex flex-wrap gap-3 items-center">
@@ -380,6 +380,6 @@ export default function PartnerReferralPipeline() {
           )}
         </DialogContent>
       </Dialog>
-    </div>
+    </CrmPage>
   );
 }

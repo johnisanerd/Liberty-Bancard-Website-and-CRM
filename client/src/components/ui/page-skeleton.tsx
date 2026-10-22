@@ -2,7 +2,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 export function PageSkeleton() {
   return (
-    <div className="min-h-screen bg-background flex flex-col" data-testid="page-skeleton">
+    <div className="min-h-screen bg-background flex flex-col" data-testid="page-skeleton" role="status" aria-busy="true" aria-label="Loading page">
       <div className="h-16 border-b border-border px-6 flex items-center gap-4">
         <Skeleton className="h-8 w-32" />
         <div className="flex-1" />

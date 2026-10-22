@@ -20,6 +20,8 @@ import {
   XCircle, ChevronLeft, ExternalLink, Play, RefreshCw,
 } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
+import { readReturnUrl } from "@/lib/crm-return-context";
+import { useAuth } from "@/hooks/use-auth";
 
 // ─── Types (mirror BusinessDetailPanel) ───────────────────────────────────────
 
@@ -154,6 +156,7 @@ export function BusinessDetailPage() {
   const params = useParams<{ id: string }>();
   const [, navigate] = useLocation();
   const { toast } = useToast();
+  const { user } = useAuth();
   const queryClient = useQueryClient();
   const businessId = Number(params.id);
 
@@ -226,11 +229,11 @@ export function BusinessDetailPage() {
           size="sm"
           className="gap-1.5 text-muted-foreground"
           onClick={() => {
-            // Return to the list the user came from, with its filters; fall back to the inventory.
-            if (window.history.length > 1) window.history.back();
-            else navigate("/dashboard/lead-ops?tab=businesses");
+            // Return to the inventory list with its remembered search, filters and page. A direct entrance has no
+            // remembered list and opens the default inventory; Back never depends on browser history.
+            navigate(readReturnUrl("inventory", user?.id) ?? "/dashboard/lead-ops?tab=businesses");
           }}
-          aria-label="Back to the previous list"
+          aria-label="Back to the company inventory"
         >
           <ChevronLeft className="h-4 w-4" />
           Back

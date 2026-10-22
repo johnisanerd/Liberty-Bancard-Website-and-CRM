@@ -9,12 +9,12 @@
  * cannot crash the hold ledger section.
  */
 
-import { PageTitle } from "@/components/ui/page-header";
 import React, { useEffect, useRef, useCallback, Component } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { CrmPage, CrmPageHeader } from "@/components/crm/CrmPresentation";
 import { decodeQueueHolds, reconciliationDiverges, type QueueHoldsDecoded } from "@shared/queue-holds-dto";
 import {
   RefreshCw,
@@ -600,20 +600,15 @@ function HoldLedgerSection() {
 
 export default function QueueHoldsPage() {
   return (
-    <div className="container mx-auto p-6 max-w-6xl space-y-6">
+    <CrmPage className="container mx-auto p-6 max-w-6xl space-y-6">
       {/* Header */}
-      <div>
-        <PageTitle className="text-2xl font-bold flex items-center gap-2">
-          <Database className="w-6 h-6" />
-          Queue Holds &amp; Backlog Preview
-        </PageTitle>
-        <p className="text-sm text-muted-foreground mt-1">
+      <CrmPageHeader title="Queue Holds & Backlog Preview" icon={<Database className="w-6 h-6" />}
+        description={<>
           Admin-only. Hold ledger shows active logical job holds and coordinator state.
           Backlog preview shows a per-source risk estimate of queued work — sources overlap
           and{" "}
           <strong>must not be summed</strong>.
-        </p>
-      </div>
+        </>} />
 
       {/* Two-column layout on large screens */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -625,6 +620,6 @@ export default function QueueHoldsPage() {
           <BacklogPreviewCard />
         </BacklogPreviewErrorBoundary>
       </div>
-    </div>
+    </CrmPage>
   );
 }

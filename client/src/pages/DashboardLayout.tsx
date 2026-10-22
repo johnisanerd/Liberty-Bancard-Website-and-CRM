@@ -106,7 +106,7 @@ import {
 } from "@/components/ui/sidebar";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { activeSidebarId, employeeSidebarFor, type SidebarIconKey } from "@/lib/employee-sidebar";
-import { PageHeadingOwnerProvider, usePageHeadingClaimed } from "@/components/ui/page-header";
+import { PageHeadingOwnerProvider, ShellPageTitle } from "@/components/ui/page-header";
 import { EmployeeCrmProvider } from "@/components/crm/employee-crm-context";
 import { canShowMerchantOperationsNav, MerchantOperationsLayout } from "@/components/crm/MerchantOperationsNav";
 
@@ -426,7 +426,6 @@ function DashboardLayoutInner({ children }: DashboardLayoutProps) {
     && peopleHubState(adoptedSearch).value==="people");
   // The shell title is the fallback page heading. Any mounted page or hub that renders its own level-1 heading
   // claims ownership (see PageTitle / PageHeader / CrmPageHeader), and the shell then shows plain text.
-  const pageHeadingClaimed = usePageHeadingClaimed();
 
   // Admin dev-mode toggle — persisted in localStorage; off by default
   const [devMode, setDevMode] = useState(() => {
@@ -870,15 +869,7 @@ function DashboardLayoutInner({ children }: DashboardLayoutProps) {
           <header className="h-14 bg-background border-b flex items-center justify-between gap-2 sm:gap-4 px-3 sm:px-6 sticky top-0 z-50">
             <div className="flex items-center gap-2 sm:gap-3 min-w-0">
               <SidebarTrigger data-testid="button-sidebar-toggle" className="shrink-0" />
-              {pageHeadingClaimed ? (
-                <div className="font-display font-semibold text-base sm:text-lg truncate" data-testid="text-page-title" aria-label={currentLabel}>
-                  {currentLabel}
-                </div>
-              ) : (
-                <h1 className="font-display font-semibold text-base sm:text-lg truncate" data-testid="text-page-title">
-                  {currentLabel}
-                </h1>
-              )}
+              <ShellPageTitle label={currentLabel} className="font-display font-semibold text-base sm:text-lg truncate" />
             </div>
             <div className="flex items-center gap-1 sm:gap-2 min-w-0">
               <div className="min-w-0">

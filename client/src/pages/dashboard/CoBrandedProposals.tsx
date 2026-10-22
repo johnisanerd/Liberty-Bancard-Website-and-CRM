@@ -1,4 +1,4 @@
-import { PageTitle } from "@/components/ui/page-header";
+import { CrmPage, CrmPageHeader } from "@/components/crm/CrmPresentation";
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
@@ -160,17 +160,8 @@ export default function CoBrandedProposals() {
   });
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row justify-between gap-4">
-        <div>
-          <PageTitle className="text-2xl font-bold" data-testid="text-page-title">
-            Co-Branded Proposals
-          </PageTitle>
-          <p className="text-muted-foreground text-sm mt-1">
-            Manage and track all co-branded partner proposals
-          </p>
-        </div>
-      </div>
+    <CrmPage className="space-y-6">
+      <CrmPageHeader title="Co-Branded Proposals" description="Manage and track all co-branded partner proposals" titleTestId="text-page-title" />
 
       <div className="flex items-center gap-2 max-w-sm">
         <div className="relative flex-1">
@@ -344,6 +335,6 @@ export default function CoBrandedProposals() {
           </div>
         </DialogContent>
       </Dialog>
-    </div>
+    </CrmPage>
   );
 }

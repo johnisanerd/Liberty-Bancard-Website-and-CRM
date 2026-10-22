@@ -64,7 +64,7 @@ import {
   ExternalLink,
   Shield,
 } from "lucide-react";
-import { PageHeader } from "@/components/ui/page-header";
+import { PageHeader } from "@/components/crm/CrmPresentation";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 interface BotContext {

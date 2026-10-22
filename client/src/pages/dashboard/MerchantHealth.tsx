@@ -40,7 +40,7 @@ import {
   Settings,
 } from "lucide-react";
 import type { HealthAlert, MerchantHealthScore, Agent } from "@shared/schema";
-import { PageHeader } from "@/components/ui/page-header";
+import { PageHeader } from "@/components/crm/CrmPresentation";
 
 const ALERT_TYPE_CONFIG: Record<string, { label: string; icon: typeof AlertTriangle }> = {
   volume_decline: { label: "Volume Decline", icon: TrendingDown },

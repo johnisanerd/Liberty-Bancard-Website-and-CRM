@@ -96,13 +96,22 @@ async function capture(name:string) {
       header:box('[data-testid="contact-compact-header"]'),
       navigation:box('nav[aria-label="CRM areas"]'),
       status:box('[data-testid="contact-authority-status"]'),
-      nextAction:box('[data-testid="contact-next-action"]')};
+      nextAction:box('[data-testid="contact-next-action"]'),
+      back:box('[data-testid="button-back"]'),
+      breadcrumb:box('[data-testid="contact-breadcrumb"]'),
+      h1Count:document.querySelectorAll('h1').length};
   })()`);
   await b!.screenshot(`${phase}-${name}`);
   await writeFile(`${dir}/${phase}-${name}.json`,JSON.stringify(metrics,null,2)+"\n");
   if(!before){
     assert.ok(metrics.documentWidth<=metrics.viewport.width+1,`${name}: horizontal overflow`);
     for(const fact of ["header","navigation","status","nextAction"])assert.ok(metrics[fact]?.visible,`${name}: ${fact} missing`);
+    // Orientation controls share one row so they cost one line of height, and the header owns exactly one h1.
+    for(const fact of ["back","breadcrumb"])assert.ok(metrics[fact]?.visible,`${name}: ${fact} missing`);
+    assert.ok(Math.abs(metrics.breadcrumb.top-metrics.back.top)<metrics.back.height,`${name}: breadcrumb is not on the Back row`);
+    assert.equal(metrics.h1Count,1,`${name}: exactly one h1`);
+    assert.ok(metrics.navigation.top>=metrics.header.top&&metrics.navigation.top>=metrics.status.bottom-1,`${name}: area navigation must follow the status block`);
+    assert.ok(metrics.navigation.top>=0&&metrics.navigation.bottom>metrics.navigation.top,`${name}: area navigation has no geometry`);
     if(!name.includes("200")){
       for(const fact of ["status","nextAction","navigation"])assert.ok(metrics[fact].bottom<=metrics.viewport.height,`${name}: ${fact} below fold`);
     }

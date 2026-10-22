@@ -16,7 +16,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Loader2, Plus, Trash2, Edit, Zap, Settings } from "lucide-react";
-import { PageHeader } from "@/components/ui/page-header";
+import { PageHeader } from "@/components/crm/CrmPresentation";
 import type { RetentionCampaignConfig } from "@shared/schema";
 
 const ALERT_TYPE_OPTIONS = [

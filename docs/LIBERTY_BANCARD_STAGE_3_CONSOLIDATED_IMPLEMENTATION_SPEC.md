@@ -2055,6 +2055,9 @@ D-R2 implements D06–D09 and UI-01–UI-06 as recorded in ledger Section 40. Co
 - Heading ownership is a runtime claim (`PageTitle`/`PageHeader`/`CrmPageHeader` at level 1). Do not reintroduce a route list in `DashboardLayout.tsx`; embedded children render under `PageHeadingLevel level={2}`.
 - CRM textarea floors are owned by the dedicated rule (96px ordinary, 200px `.crm-prose-editor`); danger text uses `--crm-danger-text`, separate from button surface tokens.
 - Company search is server-side and bounded (default 25, max 50), applies the actor predicate before ordering and the limit, reports the exact authorized total, and never widens agent access. Link/create command versions and `readCompanies` are unchanged.
-- Retained Contact core is keyed by protected actor scope plus contact ID and holds no section payload.
-- Return context is a per-user, pattern-validated People URL; Collateral stays a public handoff with its own return link.
+- Retained Contact core (`RetainedContactCore`) is keyed by protected actor scope, permission generation and contact ID, holds no section payload, and is dropped on error or any key change; late responses are discarded.
+- The shell title is the only `h1` while no page claims one; the error-boundary fallback is a level-1 title. No loading-time `h1` is rendered by design.
+- `PageHeader` delegates to `CrmPageHeader`; pages must import every shared presentation tag they render (checked by the D-R2 contract suite). Retained non-adopters are listed in ledger Section 40.
+- Business Back opens the remembered inventory URL (search, filters, page) or the default inventory; it never depends on browser history.
+- Return context is a per-user, pattern-validated People or inventory URL; Collateral stays a public handoff with its own return link.
 - D-V is still open: full route/control/role/action/metric/UI/performance evidence, and verification that D01's direct SQL preserves authorization, identity and lifecycle invariants. Stage 3 D is not closed.

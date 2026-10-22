@@ -1,4 +1,4 @@
-import { PageTitle } from "@/components/ui/page-header";
+import { CrmPage, CrmPageHeader } from "@/components/crm/CrmPresentation";
 import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -122,13 +122,10 @@ export default function KnowledgeBase() {
   }
 
   return (
-    <div className="space-y-6" data-testid="page-knowledge-base">
+    <CrmPage className="space-y-6" data-testid="page-knowledge-base">
       <ResourcesNav current="/dashboard/knowledge-base" />
       <div className="flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center gap-2">
-          <BookOpen className="w-6 h-6 text-primary" />
-          <PageTitle className="text-2xl font-bold" data-testid="heading-knowledge-base">Knowledge Base</PageTitle>
-        </div>
+        <CrmPageHeader title="Knowledge Base" icon={<BookOpen className="w-6 h-6" />} titleTestId="heading-knowledge-base" />
         <div className="flex items-center gap-3 flex-wrap">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
@@ -315,6 +312,6 @@ export default function KnowledgeBase() {
           })}
         </div>
       )}
-    </div>
+    </CrmPage>
   );
 }

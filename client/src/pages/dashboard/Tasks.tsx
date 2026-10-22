@@ -22,7 +22,7 @@ import Comments from "@/components/Comments";
 import SavedFilterBar from "@/components/SavedFilterBar";
 import DashboardErrorState from "@/components/DashboardErrorState";
 import { DataState } from "@/components/ui/data-state";
-import { PageHeader } from "@/components/ui/page-header";
+import { PageHeader } from "@/components/crm/CrmPresentation";
 import { toastError } from "@/lib/toast-helpers";
 import type { Task } from "@shared/schema";
 import { isSlaGeneratedTask } from "@/lib/task-source";
