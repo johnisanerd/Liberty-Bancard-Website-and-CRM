@@ -1469,8 +1469,8 @@ const GHL_SETUP_STEPS = [
   },
   {
     step: 2,
-    title: "Build workflows in GHL",
-    detail: "In GHL → Automation → Workflows, create one workflow per sequence. Copy the full email/SMS/call/voicemail content from the AI Workflow Prompts tab. Set the trigger to \"Contact Tag Added\" using the sequence's LB-* tag (e.g. LB-SEQ-COLD-AUTO). GHL then handles all delivery — email, SMS, voicemail drops, and AI calls.",
+    title: "Build only the supported handoff workflows in GHL",
+    detail: "Replit owns sequence cadence, eligibility and timing under the global outbound pause. In GHL → Automation → Workflows, build only the supported handoff workflows listed on System Readiness (for example form confirmation, booking and proposal handoffs). Sequence workflows are optional reference material and are not needed to run Liberty sequences.",
     link: "https://app.gohighlevel.com/automation/workflows",
     linkLabel: "GHL Automation",
     critical: true,
@@ -1489,8 +1489,8 @@ const GHL_SETUP_STEPS = [
   },
   {
     step: 5,
-    title: "Activate sequences in Replit",
-    detail: "Go to Dashboard → Sequences and unpause the sequences you want running. For full SDR automation, start with: SDR Cold Outbound (by vertical), SDR Reply Engaged, SDR Statement Chase, and SDR No-Show Recovery.",
+    title: "Sequences are controlled in Replit, not here",
+    detail: "Saving workflow IDs never starts sending. Sequences stay held until an administrator deliberately changes them in Dashboard → Sequences, and the global outbound pause still applies to every send. This guide does not change either control.",
     critical: false,
   },
 ];

@@ -100,9 +100,11 @@ async function checkpoint(state: DomainLocationAutomationState, token: string) {
 const bump = (m: Record<string, number>, k: string, n = 1) => { m[k] = (m[k] ?? 0) + n; };
 
 /** One bounded tick. Returns ran:false while closed, leased elsewhere, or between passes. */
-export async function processDomainLocationAutomationTick(budget: { maxDurationMs?: number } = {}) {
+export async function processDomainLocationAutomationTick(budget: { maxDurationMs?: number; maxContacts?: number } = {}) {
   const maxDurationMs = budget.maxDurationMs ?? 25_000;
   const deadline = Date.now() + maxDurationMs;
+  const maxContacts = budget.maxContacts ?? Number.POSITIVE_INFINITY;
+  let handledContacts = 0;
   const token = crypto.randomUUID();
   const claim = await pool.query(`UPDATE system_settings
     SET value=jsonb_set(jsonb_set(value,'{leaseToken}',to_jsonb($2::text)),
@@ -132,14 +134,20 @@ export async function processDomainLocationAutomationTick(budget: { maxDurationM
       const byContact = new Map<number, typeof items>();
       for (const it of items) byContact.set(it.contactId, [...(byContact.get(it.contactId) ?? []), it]);
       let stopped = false;
-      for (const [contactId, candidates] of byContact) {
-        if (Date.now() >= deadline) { stopped = true; break; }
+      let budgetStop = false;
+      // Ascending id order makes a partly processed window resumable: the durable cursor is the last contact
+      // fully handled, so the next tick starts after it instead of re-evaluating the same contacts first.
+      let lastHandledId = after;
+      const ascending = [...byContact.entries()].sort((a, b) => a[0] - b[0]);
+      for (const [contactId, candidates] of ascending) {
+        if (Date.now() >= deadline || handledContacts >= maxContacts) { stopped = true; budgetStop = true; break; }
         seen.add(contactId);
         const eligible = candidates.filter(c => c.eligible);
         // Two eligible businesses for one contact is itself a conflict: preserve it, assign neither.
         if (eligible.length !== 1) {
           state.scanned++; state.held++;
           for (const reason of eligible.length > 1 ? ["multiple_eligible_businesses"] : [...new Set(candidates.flatMap(c => c.reasons))]) bump(state.reasons, reason);
+          lastHandledId = contactId; handledContacts++;
           continue;
         }
         const live = await pool.query(`SELECT value->>'enabled' e, value->>'leaseToken' t FROM system_settings WHERE key=$1`, [DOMAIN_LOCATION_AUTOMATION_KEY]);
@@ -149,8 +157,17 @@ export async function processDomainLocationAutomationTick(budget: { maxDurationM
         if (outcome.status === "applied") { state.committed++; committedThisTick++; }
         else if (outcome.status === "replayed") state.replayed++;
         else { state.held++; bump(state.rejectedCodes, String((outcome as any).code ?? "REJECTED")); }
+        lastHandledId = contactId; handledContacts++;
       }
-      if (stopped) break;
+      if (stopped) {
+        // Persist partial progress; the lease-lost break above must not advance the cursor, so only a
+        // time or count budget stop records it.
+        if (budgetStop && lastHandledId > after) {
+          state.cursor = lastHandledId;
+          await checkpoint(state, token);
+        }
+        break;
+      }
       state.cursor = upper >= maxId ? 0 : upper;
       if (upper >= maxId) {
         state.passes++;

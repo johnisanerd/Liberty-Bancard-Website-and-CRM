@@ -49,7 +49,7 @@ const surfaces = ["server/routes/admin.ts", "client/src/pages/dashboard/SystemRe
 for (const f of surfaces) {
   const text = fs.readFileSync(f, "utf8");
   check(!/all automation (is )?silently|unconfigured → all automation|drives the entire pipeline|Paste each GHL Workflow ID next to/i.test(text), `${f}: no stale ownership claim`);
-  check(!/\b(un-?pause|resume (outbound|sending)|turn(ing)? (the )?(global )?pause off)\b/i.test(text.replace(/does not|never|nothing/gi, "")) || f.endsWith("admin.ts") || f.endsWith("GhlSequenceGuide.tsx") || f.endsWith("GhlWorkflowManager.tsx"), `${f}: no unpause guidance`);
+  check(!/\b(un-?pause|resume (outbound|sending)|turn(ing)? (the )?(global )?pause off)\b/i.test(text.replace(/does not|never|nothing/gi, "")) || f.endsWith("admin.ts"), `${f}: no unpause guidance`);
 }
 check(/global outbound pause/.test(GHL_OWNERSHIP_SUMMARY), "Ownership summary states the pause authority");
 console.log(`GHL ownership/readiness: ${checks} checks passed (registry ${registryIds.length}, supported ${Object.keys(GHL_SUPPORTED_HANDOFF_WORKFLOWS).length}, reference-only ${referenceOnly.length})`);

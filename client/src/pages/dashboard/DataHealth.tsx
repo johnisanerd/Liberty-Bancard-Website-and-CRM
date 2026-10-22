@@ -330,7 +330,7 @@ export default function DataHealth() {
                 <MetricRow
                   label="Historical diagnostic: deals missing GHL opportunity ID"
                   description={data?.populations
-                    ? `${data.populations.dealsNoGhlOpportunityId.definition} Of these, ${data.populations.dealsNoGhlOpportunityId.productionActive.toLocaleString()} are active production deals; ${data.populations.dealsNoGhlOpportunityId.archived.toLocaleString()} archived and ${data.populations.dealsNoGhlOpportunityId.nonProduction.toLocaleString()} non-production (these can overlap). Not the same population as the Pipeline board.`
+                    ? `${data.populations.dealsNoGhlOpportunityId.definition} Of these, ${data.populations.dealsNoGhlOpportunityId.productionActive.toLocaleString()} are active and not classed test, demo or synthetic (this includes deals whose record class is still unknown, which Reports does not count); ${data.populations.dealsNoGhlOpportunityId.archived.toLocaleString()} archived and ${data.populations.dealsNoGhlOpportunityId.nonProduction.toLocaleString()} non-production (these can overlap). Not the same population as the Pipeline board.`
                     : "Sales/onboarding deals over 1 hour old with no GHL opportunity ID, across all classes and archived rows."}
                   value={summary.dealsNoGhlOpportunityId}
                   warn={10}

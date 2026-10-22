@@ -167,6 +167,25 @@ try {
   check((await auto.processDomainLocationAutomationTick()).ran === false, "A completed pass is not rescanned before the rescan interval");
   const replayedTick = await svc.applyDomainLocationAssignment({ contactId: cAutoInvalid, businessId: bAuto.id, snapshotHash: "0".repeat(64) }, adminId);
   check(replayedTick.status === "rejected", "An already-assigned contact cannot be reassigned");
+  // A tick that stops on its budget keeps its place: the next tick starts after the last contact handled and
+  // no contact is evaluated twice (counters rise by at most the budget each tick).
+  const bResume = await business("resume");
+  const cResume1 = await contact("rs1", bResume);
+  const cResume2 = await contact("rs2", bResume);
+  await pool.query(`UPDATE system_settings SET value=value||'{"lastPassCompletedAt":null,"cursor":0}'::jsonb WHERE key=$1`, [auto.DOMAIN_LOCATION_AUTOMATION_KEY]);
+  let resumeTicks = 0, resumeCursorMax = 0, resumeWithinBudget = true;
+  for (let i = 0; i < 120 && (await assignedFor(cResume1) == null || await assignedFor(cResume2) == null); i++) {
+    const before = (await auto.getDomainLocationAutomationStatus())!;
+    const t = await auto.processDomainLocationAutomationTick({ maxContacts: 1 });
+    if (!t.ran) break;
+    resumeTicks++;
+    const after = (await auto.getDomainLocationAutomationStatus())!;
+    if (after.scanned - before.scanned > 1) resumeWithinBudget = false;
+    if (after.cursor !== 0) { check(after.cursor > before.cursor, `Budget-stopped tick advances the cursor (${before.cursor} -> ${after.cursor})`); resumeCursorMax = Math.max(resumeCursorMax, after.cursor); }
+  }
+  check(resumeTicks > 1 && resumeCursorMax > 0, `Partial ticks resumed across ticks: ${resumeTicks} ticks`);
+  check(resumeWithinBudget, "No contact is re-evaluated by a later tick of the same pass");
+  check(Number(await assignedFor(cResume1)) === bResume.id && Number(await assignedFor(cResume2)) === bResume.id, "Resumed ticks eventually assign every eligible contact");
   await auto.setDomainLocationAutomation(false, adminId);
   await pool.query(`UPDATE system_settings SET value=value||'{"lastPassCompletedAt":null}'::jsonb WHERE key=$1`, [auto.DOMAIN_LOCATION_AUTOMATION_KEY]);
   check((await auto.processDomainLocationAutomationTick()).ran === false, "Disabling stops the worker");

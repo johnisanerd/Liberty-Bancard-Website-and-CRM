@@ -1697,3 +1697,27 @@ Scope: CRM-D01 to CRM-D05. D-R2 (D06 heading ownership, D07 textarea specificity
 | D05 | GHL Integration, Content, Playbooks, SDR and Deliverability hubs decode `tab` once through `hubTabState` (duplicate, invalid and role-forbidden values fall back and show a notice) and change tabs through `typedTabUrl` (history push, registered context such as `contactId` and hash kept, arbitrary keys dropped). Generated route/query registry refreshed (five `tab` entries). Legacy entrances unchanged. | `test-stage3-d-hub-tabs.ts` 33 checks; C1 foundation 339; C2 contracts 286; C3 contracts 211; C4 contracts; C5 route inventory, resources, sidebar; manifest check; `api-coverage` workflow; local production build. | Reload, Back/Forward and keyboard behavior in a real browser (D-V). |
 
 No full-project TypeScript check was run (project instruction); compilation was covered by the local production build and per-file syntax checks only. Production is unchanged until the owner publishes this group; serving identity will be recorded separately below after publication.
+
+## 39.2 D-R1 publication identity and signed-in production walkthrough — 2026-10-22 UTC
+
+**Serving identity (read from `https://libertybancard.com/api/health`):** source `4e1b3788…` (the D-R1 commit), build `a8cc7afd-b8f8-4308-81c7-939a209a246e`, built 2026-10-22T09:57:50Z. Publication was performed by the owner.
+
+**Verified in a signed-in production browser (admin session, read-only actions only; no production write was made):**
+
+| Item | Observed |
+|---|---|
+| D01 | Data Health renders; "Build read-only plan" reports 0 safe actions; 5 active enrollments without a next-action time and null lifecycle (0) are reported only. The apply path was not exercised in production because there was nothing to apply. |
+| D02 | System Readiness shows supported handoff workflow IDs 0/15 with caller-specific messages; the 24 reference-only IDs are labelled as not affecting readiness or sequence sending. |
+| D03 | Reports show Win Rate "Not enough outcomes — 0 won of 0 decided", Active Pipeline 2, Chargebacks "No decided deals". |
+| D04 | Audit Log card is "Entries loaded (this view, capped at 100)"; Contacts shows "160,226 contacts matching the current filters" with an as-of time; "Active status" is labelled status only; Lead Ops SFP blocks all available with as-of and no block errors. |
+| D05 | All five hubs fall back and show the selection notice for invalid or duplicate `tab`; real tab clicks push history, keep an integer `contactId` and hash, and drop junk keys; Back/Forward/reload and keyboard arrows behave. Legacy `ghl-settings` and `ghl-workflows` entrances redirect to the right tab. |
+| General | 14 pages loaded with zero console exceptions and zero `/api` 4xx/5xx responses. |
+
+**Findings from the walkthrough:**
+
+1. **Unknown-class deals are excluded from Reports.** Only 2 sales deals are `record_class = 'production'`; 1,569 New Lead, 2 Proposal Sent and 2 onboarding deals are class `unknown` and are excluded by the existing revenue-read-authority rule. Not changed. Data Health's "active production deals" wording counted unknown-class deals (1,441), so the label now says "active and not classed test, demo or synthetic (this includes deals whose record class is still unknown, which Reports does not count)".
+2. **Stale GHL setup guide text.** The Workflow IDs tab still told operators that "GHL then handles all delivery" and to "unpause the sequences you want running". Both contradicted the ownership model and the pause. Rewritten (steps 2 and 5), and the unpause-wording check in `test-ghl-ownership-readiness.ts` no longer exempts that file (73 checks pass).
+3. **Domain/location automation makes almost no progress per tick.** It is enabled (by an administrator), has made 28 assignments, 0 paid calls, no error, but after three ticks the cursor was still 0. It runs only inside the 30-minute discovery job, and a tick that stopped on its time budget did not save its place, so each tick re-evaluated the same first contacts. The tick now saves the last contact handled when it stops on its budget and resumes after it. New certification checks (60 pass on a disposable database) prove cursor advance and no re-evaluation. This takes effect only after publication.
+4. **Serper contact-page stage** was observed enabled (25 requests per run) by someone other than this session: 41 requests/credits, 5 businesses with a staged email, 0 qualified. No setting was changed.
+
+**Not verified in this walkthrough:** D-R1 apply path in production, responsive/mobile and the non-admin role matrix (D-V), C4/C5 browser suites after publication (known baseline failures, §36.3). D-R2 and D-V remain tracked and not started. Outbound pause unchanged (paused, epoch 1); no sends, enrollments, releases or provider enabling.
