@@ -1721,3 +1721,7 @@ No full-project TypeScript check was run (project instruction); compilation was 
 4. **Serper contact-page stage** was observed enabled (25 requests per run) by someone other than this session: 41 requests/credits, 5 businesses with a staged email, 0 qualified. No setting was changed.
 
 **Not verified in this walkthrough:** D-R1 apply path in production, responsive/mobile and the non-admin role matrix (D-V), C4/C5 browser suites after publication (known baseline failures, §36.3). D-R2 and D-V remain tracked and not started. Outbound pause unchanged (paused, epoch 1); no sends, enrollments, releases or provider enabling.
+
+### 39.2.1 Follow-up publication confirmed — 2026-10-22 UTC
+
+Production `/api/health` serves source `67b6226c2f4b5d5a70306704c8b26b803b59e8d2`, build `10f68a14-6651-4f87-a6f1-2f64f7488ff9`, built 2026-10-22T11:07:26Z. First domain/location tick after publication (11:08:34Z): cursor moved from 0 to 281 (scanned 407, committed 31, no error), so resumable ticks work in production. The rest of the first window and later windows are still pending; one tick runs per 30-minute discovery job. D-R2 and D-V remain tracked and not started.
