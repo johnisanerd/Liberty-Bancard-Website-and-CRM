@@ -181,3 +181,4 @@
 - [Validation legacyInFlight hold](validation-legacy-inflight-hold.md) — retryable unknown/risky ZB ops hold addresses forever; guard left as is (paid retries).
 - [Serper discovery drop cause](serper-selector-exhaustion.md) — lookup-memory selector exhaustion, not the 50,000 counter.
 - [Domain/location automation](domain-location-automation.md) — closed-by-default worker; admin PUT enables.
+- [Domain/location tick resumability](domain-location-tick-resume.md) — budget-stopped windowed ticks must persist cursor to the last handled id; else progress stalls.
