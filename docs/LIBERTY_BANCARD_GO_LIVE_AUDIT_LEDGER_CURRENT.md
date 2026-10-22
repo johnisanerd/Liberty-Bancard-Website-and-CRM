@@ -1855,3 +1855,13 @@ Stage 3 stays open. This section records source and test dispositions only; live
 | Suites run on this source | partner response, partner browser, Data Health reconcile, cohort browser, landmarks browser, contracts, exports, role guards, API coverage: all pass. Data Health browser not rerun (UI and apply behavior unchanged). | Disposable runner output. |
 
 Pending (not claimed): publish, serving-SHA check, final authenticated smoke, outbound-pause and inbound-GHL control reads, bounded non-null exposure counts for partner credential columns, owner decision on any credential rotation.
+
+### 43.1 Live dispositions after publish (2026-10-22, serving SHA 8194202c)
+
+- `/api/health` reports production at `8194202c8c4675008999d1d574239fe57cf11cc5`.
+- Authenticated admin: `GET /api/partners`, `/api/partners/:id` and `/api/partners/referral-pipeline` return 200 with `private, no-store`, zero credential-pattern keys (23 and 27 keys), and `openPipelineVolume` as a number with no `pipelineValue`. Role-denied behavior is covered by the source role matrix; no agent or manager session was driven in production.
+- Controls (read only, never changed): `GET /api/admin/pause-state` reports `paused:true`; `GET /api/admin/ghl/inbound-contact-sync` reports `inboundEnabled:true`, `outboundPaused:true`, with its stored run in state `ready`. The webhook control is part of that response and was not separately toggled or exercised.
+- `GET /api/deals?pipeline=sales&createdLast7Days=true` total 0, matching read-only production SQL (0). Exports: deals 2 rows, tickets 8 rows, contacts about 160,700 lines streamed and counted without storing (consistent with 160,690 unique rows plus multi-line fields).
+- Data Health: no `DATA_HEALTH%` audit rows in production; nothing applied.
+- Exposure assessment (counts only, no values): 3 partners; 2 have a stored password hash; 0 reset tokens, 0 invite tokens, 0 active reset or invite tokens, 0 PayPal emails. Before this publish, the partner list, detail and pipeline routes returned the hash to every dashboard role that could call them (list and detail included agents). No bearer-style token was exposed, so no urgent token revocation is needed; whether to require those two partners to reset passwords is an owner decision. Nothing was reset.
+- Not re-driven after this publish: the Today action page in a browser and a signed-in partner-state browser walk in production (covered by the disposable browser suites on the same source).
