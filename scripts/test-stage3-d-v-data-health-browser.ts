@@ -96,7 +96,49 @@ try {
     check(Number((await q(`SELECT count(*)::int n FROM audit_logs WHERE action='DATA_HEALTH_DEAL_LINKED' AND entity_id=$1`, [dealId]))[0].n) === 1, "Recovery did not apply or audit the action a second time");
     const cancelled = (await q(`SELECT status FROM sequence_enrollments WHERE id=$1`, [enrollId]))[0].status;
     check(!orphaned || cancelled === "cancelled", `Orphan enrollment ${orphaned ? "cancelled" : "not orphaned by FK (not offered)"}`);
+    check(await admin.evaluate(`Object.keys(localStorage).filter(k=>k.startsWith('data-health-reconcile-op:')).length`) === 0, "The remembered operation is cleared once the final receipt is read");
     await admin.screenshot("data-health-receipt");
+
+    // ── Scenario 2: lost response, then a full reload. The operation is remembered per user and recovered from the server. ──
+    const email2 = `dv2.${nonce}@dv.example.test`;
+    const contact2 = Number((await q(`INSERT INTO contacts (first_name,last_name,phone,email,company_name,record_class) VALUES('Dv','Second','',$1,$2,'production') RETURNING id`, [email2, `Dv Co2 ${nonce}`]))[0].id);
+    const deal2 = Number((await q(`INSERT INTO deals (notes,pipeline,stage,record_class) VALUES($1,'sales','New Lead','production') RETURNING id`, [`Inbound lead ${email2}`]))[0].id);
+    await admin.navigate("/dashboard/data-health");
+    await until(() => tag(admin, "plan2", "Build read-only plan"), "plan button (scenario 2)");
+    await admin.click('[data-dv="plan2"]');
+    await until(async () => (await admin.evaluate(`!!document.querySelector('[data-testid="reconcile-plan"]')`)) as boolean, "plan rendered (scenario 2)");
+    await admin.evaluate(`(()=>{const b=[...document.querySelectorAll('input[type=checkbox][aria-label^="Select action"]')].find(i=>i.getAttribute('aria-label').includes(${JSON.stringify(String(deal2))}));if(b)b.setAttribute('data-dv-pick2','1')})()`);
+    await admin.click('[data-dv-pick2="1"]');
+    await until(() => tag(admin, "review2", "Review \\d+ selected"), "review button (scenario 2)");
+    await admin.click('[data-dv="review2"]');
+    await until(() => tag(admin, "confirm3", "Confirm and apply"), "confirm button (scenario 2)");
+    h.loseNextSuccessfulResponse("POST", "/api/admin/data-health/reconcile/apply", "truncate");
+    await admin.click('[data-dv="confirm3"]');
+    await until(async () => h.responseLossCount() === 2, "second response loss executed");
+    await settle(600);
+    check(await admin.evaluate(`Object.keys(localStorage).filter(k=>k.startsWith('data-health-reconcile-op:')).length`) === 1, "The unconfirmed operation is remembered for this signed-in user");
+    check(await admin.evaluate(`document.querySelectorAll('[data-testid="reconcile-pending"]').length`) === 1, "An unresolved-operation notice is shown after the lost response");
+    check(await admin.evaluate(`[...document.querySelectorAll('input[type=checkbox][aria-label^="Select action"]')].every(i=>i.disabled)`), "Selection is frozen while the operation is unresolved");
+    check(Number((await q(`SELECT contact_id FROM deals WHERE id=$1`, [deal2]))[0].contact_id) === contact2, "Scenario 2 effect is durable although the response was lost");
+    await admin.navigate("/dashboard/data-health"); // full reload: component state is gone, only the remembered identity survives
+    await until(async () => (await admin.evaluate(`document.querySelectorAll('h1').length`)) === 1, "Data Health heading after reload");
+    await until(async () => (await admin.evaluate(`!!document.querySelector('[data-testid="reconcile-receipt"]')`)) as boolean, "receipt recovered after reload");
+    const recovered = await admin.evaluate(`document.querySelector('[data-testid="reconcile-receipt"]').innerText`) as string;
+    check(/Result \(saved\)/.test(recovered) && /applied/.test(recovered), "After a reload the saved final result is read back from the server");
+    check(await admin.evaluate(`document.querySelectorAll('[data-testid="reconcile-pending"]').length`) === 0 && await admin.evaluate(`Object.keys(localStorage).filter(k=>k.startsWith('data-health-reconcile-op:')).length`) === 0, "The notice and remembered identity clear after the final receipt");
+    check(Number((await q(`SELECT count(*)::int n FROM audit_logs WHERE action='DATA_HEALTH_DEAL_LINKED' AND entity_id=$1`, [deal2]))[0].n) === 1, "Reload recovery applied and audited nothing a second time");
+
+    // ── Scenario 3: a remembered operation the server never saw is reported as not started and can be discarded. ──
+    const ghostId = randomUUID();
+    await admin.evaluate(`(()=>{const k=Object.keys(localStorage);const user=${JSON.stringify(h.userId("admin"))};localStorage.setItem('data-health-reconcile-op:'+user,JSON.stringify({operationId:${JSON.stringify(ghostId)},actionKeys:['enrollment_cancel:1']}))})()`);
+    await admin.navigate("/dashboard/data-health");
+    await until(async () => (await admin.evaluate(`!!document.querySelector('[data-testid="reconcile-pending"]')`)) as boolean, "ghost operation notice");
+    await until(async () => (await admin.evaluate(`document.querySelector('[data-testid="reconcile-pending"]').innerText.includes('no record')`)) as boolean, "not-started wording");
+    check(true, "A remembered operation unknown to the server is reported as not started (nothing applied)");
+    await until(() => tag(admin, "discard", "Discard"), "discard button");
+    await admin.click('[data-dv="discard"]');
+    await until(async () => (await admin.evaluate(`!document.querySelector('[data-testid="reconcile-pending"]')`)) as boolean, "notice cleared after discard");
+    check(Number((await q(`SELECT count(*)::int n FROM system_settings WHERE key=$1`, [`data_health_reconcile_op:${ghostId}`]))[0].n) === 0, "Discarding a not-started operation leaves no server record");
   } finally { await admin.close(); }
   const contactAfter = (await q(`SELECT lifecycle_state, updated_at FROM contacts WHERE id=$1`, [contactId]))[0];
   check(contactAfter.lifecycle_state === contactBefore.lifecycle_state && String(contactAfter.updated_at) === String(contactBefore.updated_at), "Contact lifecycle and record are unchanged by the reconcile");
@@ -112,6 +154,9 @@ try {
     check(await manager.evaluate(`!document.body.innerText.includes('Build read-only plan')`), "Manager sees no reconcile plan controls");
     const statuses = await manager.evaluate(`Promise.all([fetch('/api/admin/data-health/reconcile/plan',{credentials:'include'}).then(r=>r.status)])`) as number[];
     check(statuses[0] === 403, `Manager plan request is denied by the server (${statuses[0]})`);
+    const mApply = await h.request("manager", "POST", "/api/admin/data-health/reconcile/apply", { operationId: randomUUID(), actionKeys: ["enrollment_cancel:1"] });
+    check(mApply.status === 403, `Manager apply request (POST, valid CSRF) is denied (${mApply.status})`);
+    check((await h.request("manager", "GET", `/api/admin/data-health/reconcile/operations/${randomUUID()}`)).status === 403, "Manager cannot read operation receipts");
   } finally { await manager.close(); }
   const agent = await open("agent");
   try {
@@ -121,6 +166,8 @@ try {
     check(here !== "/dashboard/data-health" || (await agent.evaluate(`!document.body.innerText.includes('Reconcile plan')`)), `Agent cannot use Data Health (now at ${here})`);
     const st = await agent.evaluate(`fetch('/api/admin/data-health/reconcile/plan',{credentials:'include'}).then(r=>r.status)`) as number;
     check(st === 403, `Agent plan request is denied by the server (${st})`);
+    const aApply = await h.request("agent", "POST", "/api/admin/data-health/reconcile/apply", { operationId: randomUUID(), actionKeys: ["enrollment_cancel:1"] });
+    check(aApply.status === 403, `Agent apply request (POST, valid CSRF) is denied (${aApply.status})`);
   } finally { await agent.close(); }
 
   await writeFile(path.join(dir, "data-health-browser-receipt.json"), JSON.stringify({ identity, checks, responseFaultEvents: h.responseFaultEvents }, null, 2));

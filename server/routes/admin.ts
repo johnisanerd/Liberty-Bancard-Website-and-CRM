@@ -5823,11 +5823,15 @@ export function registerAdminRoutes(app: Express) {
       const body = z.object({ operationId: z.string().uuid(), actionKeys: z.array(z.string().max(60)).min(1).max(100) }).safeParse(req.body);
       if (!body.success) return res.status(400).json({ code: "INVALID_REQUEST", message: "operationId (UUID) and 1-100 actionKeys are required." });
       const { applyDataHealthReconcile, ReconcileError } = await import("../services/data-health-reconcile");
+      const { bindWorkActor } = await import("../services/work-item-command");
       try {
-        const { receipt, replayed } = await applyDataHealthReconcile({ operationId: body.data.operationId, actionKeys: body.data.actionKeys, actorId: String((req as any).user?.id ?? "") });
+        // The actor is bound to the signed-in administrator's current auth epoch and account version; every action re-pins it.
+        const { receipt, replayed } = await applyDataHealthReconcile({ operationId: body.data.operationId, actionKeys: body.data.actionKeys, actor: bindWorkActor((req as any).user) });
         res.status(receipt.status === "complete" ? 200 : 202).json({ replayed, receipt });
       } catch (err: any) {
         if (err instanceof ReconcileError) return res.status(err.httpStatus).json({ code: err.code, message: err.message });
+        const { WorkCommandError } = await import("../services/work-item-command");
+        if (err instanceof WorkCommandError) return res.status(err.status).json({ code: "ACTOR_UNAVAILABLE", message: err.message });
         throw err;
       }
     } catch (err: any) {
@@ -5838,10 +5842,11 @@ export function registerAdminRoutes(app: Express) {
   app.get("/api/admin/data-health/reconcile/operations/:operationId", requireRole("admin"), async (req, res) => {
     try {
       if (!/^[0-9a-f-]{36}$/i.test(req.params.operationId)) return res.status(400).json({ code: "INVALID_OPERATION_ID" });
-      const { readDataHealthReconcileReceipt } = await import("../services/data-health-reconcile");
-      const receipt = await readDataHealthReconcileReceipt(req.params.operationId);
+      const { readDataHealthReconcileReceipt, publicReconcileReceipt } = await import("../services/data-health-reconcile");
+      // Only the administrator who started an operation can read its receipt; anyone else gets the same 404 as an unknown id.
+      const receipt = await readDataHealthReconcileReceipt(req.params.operationId, String((req as any).user?.id ?? ""));
       if (!receipt) return res.status(404).json({ code: "OPERATION_NOT_FOUND" });
-      res.json({ receipt });
+      res.json({ receipt: publicReconcileReceipt(receipt) });
     } catch (err: any) {
       serverError(res, err);
     }

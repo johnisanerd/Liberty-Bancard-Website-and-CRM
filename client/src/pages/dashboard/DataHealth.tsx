@@ -1,5 +1,5 @@
 import { PageTitle } from "@/components/ui/page-header";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Helmet } from "react-helmet-async";
 import {
@@ -63,7 +63,7 @@ interface ReconcilePlan {
   generatedAt: string;
   window: number;
   populations: {
-    orphanedDeals: { total: number; considered: number; actionable: number; unresolved: Record<string, number> };
+    orphanedDeals: { total: number; inScope: number; outOfScope: number; considered: number; actionable: number; unresolved: Record<string, number> };
     orphanedEnrollments: { total: number; considered: number; actionable: number };
     nullLifecycleContacts: { total: number; note: string };
     activeEnrollmentsNoNextAction: { total: number; note: string };
@@ -79,6 +79,8 @@ interface ReconcileReceipt {
   requested: number;
   startedAt: string;
   completedAt: string | null;
+  stoppedReason?: string | null;
+  actionKeys?: string[];
   counts: Record<ActionOutcomeStatus, number>;
   outcomes: Array<{ key: string; status: ActionOutcomeStatus; detail: string }>;
 }
@@ -87,8 +89,25 @@ const UNRESOLVED_REASON_LABEL: Record<string, string> = {
   no_email_in_notes: "No email in the deal notes",
   no_contact_match: "No contact has that email",
   ambiguous_multiple_contacts: "More than one contact has that email (needs a person to decide)",
-  ineligible_contact: "The only match is archived or non-production",
+  ineligible_contact: "The only match is archived or not an active production contact",
 };
+
+// A submitted operation is remembered per signed-in user (id and exact selection only) until its final receipt is read,
+// so a reload or a lost response can recover the saved result instead of guessing.
+interface PendingOperation { operationId: string; actionKeys: string[] }
+const pendingKey = (userId: string) => `data-health-reconcile-op:${userId}`;
+function readPending(userId: string | undefined): PendingOperation | null {
+  if (!userId) return null;
+  try {
+    const v = JSON.parse(window.localStorage.getItem(pendingKey(userId)) ?? "null");
+    return v && typeof v.operationId === "string" && Array.isArray(v.actionKeys) ? v : null;
+  } catch { return null; }
+}
+function writePending(userId: string | undefined, op: PendingOperation | null) {
+  if (!userId) return;
+  try { op ? window.localStorage.setItem(pendingKey(userId), JSON.stringify(op)) : window.localStorage.removeItem(pendingKey(userId)); } catch { /* storage unavailable: recovery is session-only */ }
+}
+type PendingCheck = "idle" | "checking" | "not_started" | "in_progress" | "unavailable";
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -159,8 +178,32 @@ export default function DataHealth() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [confirming, setConfirming] = useState(false);
   const [receipt, setReceipt] = useState<ReconcileReceipt | null>(null);
-  // One operation id per selection; kept until the request completes so a lost response can be replayed safely.
-  const [operationId, setOperationId] = useState<string | null>(null);
+  // The submitted operation (id + exact selection) is kept until its final receipt is read; selection and plan controls
+  // are frozen while it is unresolved so a recovery can only ever re-submit the identical request.
+  const [pendingOp, setPendingOp] = useState<PendingOperation | null>(null);
+  const [pendingCheck, setPendingCheck] = useState<PendingCheck>("idle");
+  const userId = user?.id;
+  const finishOperation = (r: ReconcileReceipt) => {
+    setPendingOp(null); setPendingCheck("idle"); writePending(userId, null);
+    qc.invalidateQueries({ queryKey: ["/api/admin/data-health"] });
+    return r;
+  };
+  const checkPending = async (op: PendingOperation) => {
+    setPendingCheck("checking");
+    try {
+      const res = await apiRequest("GET", `/api/admin/data-health/reconcile/operations/${op.operationId}`);
+      const { receipt: r } = await res.json() as { receipt: ReconcileReceipt };
+      setReceipt(r);
+      if (r.status === "complete") finishOperation(r); else setPendingCheck("in_progress");
+    } catch (err: any) {
+      setPendingCheck(String(err?.message ?? "").startsWith("404") ? "not_started" : "unavailable");
+    }
+  };
+  useEffect(() => {
+    const stored = readPending(userId);
+    if (stored && !pendingOp) { setPendingOp(stored); void checkPending(stored); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId]);
 
   const { data, isLoading, isError, refetch, isFetching } = useQuery<DataHealthReport>({
     queryKey: ["/api/admin/data-health"],
@@ -169,7 +212,7 @@ export default function DataHealth() {
 
   const planMutation = useMutation<ReconcilePlan>({
     mutationFn: () => apiRequest("GET", "/api/admin/data-health/reconcile/plan").then(r => r.json()),
-    onSuccess: (result) => { setPlan(result); setSelected(new Set()); setReceipt(null); setOperationId(null); setConfirming(false); },
+    onSuccess: (result) => { setPlan(result); setSelected(new Set()); setReceipt(null); setConfirming(false); },
     onError: (err: any) => toast({ title: "Could not build the plan", description: err.message, variant: "destructive" }),
   });
 
@@ -179,26 +222,30 @@ export default function DataHealth() {
       setReceipt(r);
       setConfirming(false);
       if (r.status === "complete") {
-        setOperationId(null);
+        finishOperation(r);
         toast({ title: replayed ? "Result recovered" : "Reconcile finished",
           description: `${r.counts.applied} applied, ${r.counts.already_applied} already done, ${r.counts.not_current} no longer current, ${r.counts.failed} failed.` });
-        qc.invalidateQueries({ queryKey: ["/api/admin/data-health"] });
       } else {
+        setPendingCheck("in_progress");
         toast({ title: "Still running", description: "Another request owns this operation. Check the result again shortly." });
       }
     },
     onError: (err: any) => toast({ title: "Result not confirmed", description: `${err.message} Re-submit to recover the saved result; nothing is applied twice.`, variant: "destructive" }),
   });
 
+  const frozen = !!pendingOp || applyMutation.isPending;
   const toggle = (key: string) => {
+    if (frozen) return;
     setSelected(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; });
-    setOperationId(null); setConfirming(false);
+    setConfirming(false);
   };
   const submitApply = () => {
-    const id = operationId ?? crypto.randomUUID();
-    setOperationId(id);
-    applyMutation.mutate({ operationId: id, actionKeys: [...selected].sort() });
+    // Recovery re-submits the remembered operation exactly; a new selection gets a new id, remembered before the request leaves.
+    const op = pendingOp ?? { operationId: crypto.randomUUID(), actionKeys: [...selected].sort() };
+    if (!pendingOp) { setPendingOp(op); writePending(userId, op); }
+    applyMutation.mutate(op);
   };
+  const discardNotStarted = () => { setPendingOp(null); setPendingCheck("idle"); writePending(userId, null); };
 
   const summary = data?.summary;
   const totalIssues = summary
@@ -295,7 +342,7 @@ export default function DataHealth() {
               <div className="divide-y">
                 <MetricRow
                   label="Orphaned deals"
-                  description="Deals with no linked contact (all classes). Linked only when exactly one active production contact matches."
+                  description="Deals with no linked contact (all classes). Linked only when the deal is active and production and exactly one contact has its notes email, that contact being active and production. Unknown, test, demo and synthetic records are never linked or reclassified here."
                   value={summary.orphanedDeals}
                   warn={1}
                   error={10}
@@ -480,7 +527,25 @@ export default function DataHealth() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <Button variant="outline" onClick={() => planMutation.mutate()} disabled={planMutation.isPending || applyMutation.isPending}>
+            {pendingOp && (
+              <div className="rounded border border-amber-300 bg-amber-50 p-3 space-y-2 text-sm" role="alert" data-testid="reconcile-pending">
+                <p className="font-medium">An earlier apply ({pendingOp.operationId.slice(0, 8)}, {pendingOp.actionKeys.length} actions) has no confirmed final result.</p>
+                <p className="text-xs">
+                  {pendingCheck === "checking" ? "Checking the saved result…"
+                    : pendingCheck === "not_started" ? "The server has no record of this operation, so nothing was applied. Re-submit it unchanged, or discard it."
+                    : pendingCheck === "in_progress" ? "The operation is still running or was interrupted. Check again, or re-submit to resume it; nothing is applied twice."
+                    : pendingCheck === "unavailable" ? "The saved result could not be read. Check again, or re-submit the same operation; nothing is applied twice."
+                    : "Check the saved result or re-submit the same operation; nothing is applied twice."}
+                  {" "}Plan and selection controls stay locked until this is resolved.
+                </p>
+                <div className="flex gap-2">
+                  <Button size="sm" variant="outline" disabled={pendingCheck === "checking" || applyMutation.isPending} onClick={() => void checkPending(pendingOp)}>Check saved result</Button>
+                  <Button size="sm" disabled={applyMutation.isPending} onClick={submitApply}>Re-submit same operation</Button>
+                  {pendingCheck === "not_started" && <Button size="sm" variant="ghost" onClick={discardNotStarted}>Discard</Button>}
+                </div>
+              </div>
+            )}
+            <Button variant="outline" onClick={() => planMutation.mutate()} disabled={planMutation.isPending || frozen}>
               {planMutation.isPending ? <><Loader2 className="h-4 w-4 animate-spin mr-2" /> Building plan…</> : <><RefreshCw className="h-4 w-4 mr-2" /> {plan ? "Rebuild plan" : "Build read-only plan"}</>}
             </Button>
 
@@ -492,8 +557,8 @@ export default function DataHealth() {
                 <div className="grid gap-2 text-sm sm:grid-cols-3">
                   <div className="rounded border p-3">
                     <p className="font-medium">Unlinked deals</p>
-                    <p>{plan.populations.orphanedDeals.total.toLocaleString()} total, {plan.populations.orphanedDeals.considered.toLocaleString()} reviewed</p>
-                    <p>{plan.populations.orphanedDeals.actionable.toLocaleString()} have one clear match</p>
+                    <p>{plan.populations.orphanedDeals.total.toLocaleString()} total, {plan.populations.orphanedDeals.inScope.toLocaleString()} active production deals eligible for review ({plan.populations.orphanedDeals.outOfScope.toLocaleString()} archived or not production, never changed here)</p>
+                    <p>{plan.populations.orphanedDeals.considered.toLocaleString()} reviewed, {plan.populations.orphanedDeals.actionable.toLocaleString()} have one clear active production contact match</p>
                   </div>
                   <div className="rounded border p-3">
                     <p className="font-medium">Enrollments with a missing sequence</p>
@@ -526,8 +591,8 @@ export default function DataHealth() {
                     <div className="flex items-center justify-between">
                       <p className="text-sm font-medium">{selected.size} of {plan.actions.length} actions selected (max 100 per run)</p>
                       <div className="flex gap-2">
-                        <Button size="sm" variant="ghost" onClick={() => { setSelected(new Set(plan.actions.slice(0, 100).map(a => a.key))); setOperationId(null); }}>Select first 100</Button>
-                        <Button size="sm" variant="ghost" onClick={() => { setSelected(new Set()); setOperationId(null); setConfirming(false); }}>Clear</Button>
+                        <Button size="sm" variant="ghost" disabled={frozen} onClick={() => { setSelected(new Set(plan.actions.slice(0, 100).map(a => a.key))); }}>Select first 100</Button>
+                        <Button size="sm" variant="ghost" disabled={frozen} onClick={() => { setSelected(new Set()); setConfirming(false); }}>Clear</Button>
                       </div>
                     </div>
                     <ul className="max-h-72 overflow-y-auto divide-y rounded border">
@@ -539,7 +604,7 @@ export default function DataHealth() {
                             aria-label={`Select action: ${a.label}`}
                             checked={selected.has(a.key)}
                             onChange={() => toggle(a.key)}
-                            disabled={!selected.has(a.key) && selected.size >= 100}
+                            disabled={frozen || (!selected.has(a.key) && selected.size >= 100)}
                           />
                           <div>
                             <p className="font-medium">{a.label}</p>
@@ -549,7 +614,7 @@ export default function DataHealth() {
                       ))}
                     </ul>
                     {!confirming ? (
-                      <Button disabled={selected.size === 0 || applyMutation.isPending} onClick={() => setConfirming(true)}>
+                      <Button disabled={selected.size === 0 || frozen} onClick={() => setConfirming(true)}>
                         <Play className="h-4 w-4 mr-2" /> Review {selected.size} selected
                       </Button>
                     ) : (
@@ -575,6 +640,7 @@ export default function DataHealth() {
                 <p className="font-medium">
                   {receipt.status === "complete" ? "Result (saved)" : "In progress"} — operation {receipt.operationId.slice(0, 8)}
                 </p>
+                {receipt.stoppedReason && <p className="text-xs text-red-700">Stopped early: {receipt.stoppedReason} The remaining actions were not attempted.</p>}
                 <p>
                   {receipt.counts.applied} applied · {receipt.counts.already_applied} already done · {receipt.counts.not_current} no longer current · {receipt.counts.failed} failed (of {receipt.requested})
                 </p>
