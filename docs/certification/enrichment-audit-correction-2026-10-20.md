@@ -91,3 +91,27 @@ Read-only production sample (15 of 34 contact-id slices; ids 60,000-150,000 were
 - Gate: `serper_contact_page_stage` setting, closed unless `{enabled:true, perRunRequests:N}`; admin routes `GET/PUT /api/admin/serper/contact-page-stage` (GET also returns yield: requests, reported credits, staged, linked, qualified businesses, per-request and per-credit ratios, and whether credits were reported for every request). It shares no allowance with the unlabeled-discovery scope, and the Serper ceiling is unchanged.
 - Certification: `scripts/certification/test-serper-contact-page-stage.ts` (33 checks, no provider network attempts).
 - Not yet measured: additional qualified businesses per credit. That number only exists after the stage runs on production; it is not estimated here.
+
+## 2026-10-22 continuation (read-only production measurements; nothing below is verified against a new publish)
+
+Baseline (production, 2026-10-22 ~00:30 UTC). Units differ per row; rows overlap and must not be added.
+| Measure | Value | Unit |
+| --- | --- | --- |
+| Canonical businesses | 98,943 | businesses |
+| Mapped-vertical businesses (South Florida program verticals) | 6,046 | businesses |
+| SFP-prepared (ready_held or pending_validation) | 1,282 | businesses |
+| Ready-held | 1,137 businesses / 1,495 contacts / 1,409 unique addresses | each labeled |
+| Pending validation | 249 | contacts |
+| Verified link decisions | 8,420 | contacts |
+| Unique valid addresses (<=180 days) | 1,449 | addresses |
+| Backlog accepted verticals | 7,581 (2,007 with a supported linked contact) | businesses |
+| Open validation intents | 883 | intents |
+
+- Trace of the 961 mapped businesses with valid linked contacts: 960 are already ready-held; one (business 167865) is in `exception` (`CURRENT_RECIPIENT_FACTS_CHANGED`) and re-prepares.
+- 466 mapped linked unvalidated contacts: 207 have no preparation and all are outside the territory (127 Florida businesses with only a non-South-Florida city, 22 non-Florida); 111 are blocked `ambiguous_billing` (needs the owner-excluded paid recovery); 26 are blocked `non_positive` (provider says undeliverable); 67 wait as `shared_address_validation_in_flight`; 21 processing; 91 rejected `FRESH_ADDRESS_REJECTED`.
+- Validation finding: 58 of 63 addresses waiting as `shared_address_validation_in_flight` are held by the `legacyInFlight` guard in `canonical-address-validation.ts`. Earlier committed ZeroBounce operations whose observation is retryable (`unknown`/`risky`) no longer own the claim and count as in flight forever. Loosening the guard would trigger more paid retries; not changed.
+- Staged emails: 26,553 candidates (5,431 businesses): 15,359 never evaluated, 7,049 held, 4,145 done. Held reasons: third-party domain 5,095, shared location domain 1,530, email not clean 268, placeholder 83, suppressed 44. Never-evaluated items are mostly structurally gated (shared address 11,208; 3-usable-contact cap 4,327). All 3,000 mapped businesses with a domain and no main email were already searched.
+- Serper discovery drop (2,500-4,700 lookups/day to ~20-28/day): the official-domain selector is exhausted by lookup memory, not by the 50,000 display counter. 2,552 mapped businesses lack a domain; 2,442 have live lookup memory expiring Nov 2-20 (rejected 2,163, accepted_no_website 197, ambiguous 53, no_match 29). The Serper ceiling is unchanged; the unlabeled-discovery scope (62,225 businesses) stays closed.
+- Item 5: the 77,308 `production`-class businesses are all registry-sourced (sunbiz entity links, no discovery source, 0 contacts, 1,230 with a domain, 72 of those sharing a domain with a canonical business). Class is not changed blindly. 12,686 enriched prospects (12,556 with a website, 10,228 distinct domains; 6,881 prospect rows match a canonical business domain exactly, 330 match a production-class business). The retained Sunbiz completion path already produced 5,345 businesses; no new automatic reconciliation was added.
+- Status funnel repair (`/api/lead-ops/pilot/status-overview`): replaced the single 2.5 s statement (two full Sunbiz scans) with independent blocks, each with its own limit and availability. Current facts come from `cr04_enrollment_intents`, `validation_intents`, and paused memberships; `sfp_outreach_eligibility` and `sfp_ready_held_enrollments` are returned under `historical` and labeled frozen (production: 31 frozen ready-held versus 1,495 current ready-held contacts). Source-row count is a planner estimate; the eligible sample is no longer computed there.
+- Automatic domain/location assignment: `contact-domain-location-automation.ts` runs the existing policy and audited writer from the continuous-discovery tick. Closed by default; `GET/PUT /api/admin/contact-business-domain-location/automation` (admin) enables it and records the administrator as authorizer. Conflicts are preserved, validation and vertical never gate it, and it sends or enrolls nothing. Certified in `test-domain-location-assignment.ts` (disposable database). Measured yield remains small (about 120 new South Florida recipient businesses).

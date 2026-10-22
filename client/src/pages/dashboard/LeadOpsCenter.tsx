@@ -3646,9 +3646,9 @@ function SfpEnrichmentControlCenter() {
                 <div className="text-xs text-muted-foreground">{zerobounce?.circuitState === "closed" ? "Failure protection: healthy" : zerobounce?.circuitState === "open" ? "Failure protection: blocking calls" : zerobounce?.circuitState === "half-open" || zerobounce?.circuitState === "half_open" ? "Failure protection: testing recovery" : "Failure protection: unavailable"}</div>
               </div>
               <div className="rounded-md border p-3" data-testid="stat-ready-held">
-                <div className="text-xs text-muted-foreground">Ready-held enrollments</div>
-                <div className="text-lg font-semibold">{overview?.funnel?.ready_held_enrollments ?? "—"}</div>
-                <div className="text-xs text-muted-foreground">{overview?.funnel?.policy_eligible ?? "—"} outreach-eligible decisions (not unique recipients)</div>
+                <div className="text-xs text-muted-foreground">Ready-held businesses (current)</div>
+                <div className="text-lg font-semibold">{overview?.funnel?.current?.readyHeldBusinesses ?? "—"}</div>
+                <div className="text-xs text-muted-foreground">{overview?.funnel?.current?.readyHeldContacts ?? "—"} contacts · {overview?.funnel?.current?.readyHeldUniqueAddresses ?? "—"} unique addresses · {overview?.funnel?.current?.readyHeldPausedMemberships ?? "—"} paused memberships. Historical frozen counters: {overview?.funnel?.ready_held_enrollments ?? "—"} ready-held, {overview?.funnel?.policy_eligible ?? "—"} eligible decisions.</div>
               </div>
             </div>
 
@@ -4449,19 +4449,21 @@ function PilotStatusPanel() {
               </div>
             )}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
-              <div className="rounded border p-2"><div className="text-muted-foreground">Sunbiz source rows</div><div>{statusOverviewQuery.data.funnel.sunbiz_source_rows ?? "—"}</div></div>
+              <div className="rounded border p-2"><div className="text-muted-foreground">Sunbiz source rows (estimate)</div><div>{statusOverviewQuery.data.funnel.sunbiz_source_rows ?? "—"}</div></div>
               <div className="rounded border p-2"><div className="text-muted-foreground">Canonical businesses</div><div>{statusOverviewQuery.data.funnel.canonical_businesses ?? "—"}</div></div>
               <div className="rounded border p-2"><div className="text-muted-foreground">Contacts linked to business</div><div>{statusOverviewQuery.data.funnel.contacts_linked_to_business ?? "—"}</div></div>
               <div className="rounded border p-2"><div className="text-muted-foreground">Canonical missing domain</div><div>{statusOverviewQuery.data.funnel.canonical_missing_domain ?? "—"}</div></div>
               <div className="rounded border p-2"><div className="text-muted-foreground">Free enrichment complete</div><div>{statusOverviewQuery.data.funnel.free_enrichment_complete ?? "—"}</div></div>
               <div className="rounded border p-2"><div className="text-muted-foreground">Free enrichment queued</div><div>{statusOverviewQuery.data.funnel.free_enrichment_queued ?? "—"}</div></div>
-              <div className="rounded border p-2"><div className="text-muted-foreground">Paid discovered evidence</div><div>{statusOverviewQuery.data.funnel.paid_discovered_evidence_rows ?? "—"}</div></div>
-              <div className="rounded border p-2"><div className="text-muted-foreground">Policy eligible</div><div className="text-green-600 font-semibold">{statusOverviewQuery.data.funnel.policy_eligible ?? "—"}</div></div>
-              <div className="rounded border p-2"><div className="text-muted-foreground">Policy suppressed</div><div>{statusOverviewQuery.data.funnel.policy_suppressed ?? "—"}</div></div>
-              <div className="rounded border p-2"><div className="text-muted-foreground">Policy ineligible</div><div>{statusOverviewQuery.data.funnel.policy_ineligible ?? "—"}</div></div>
-              <div className="rounded border p-2"><div className="text-muted-foreground">Policy pending/discovery</div><div>{statusOverviewQuery.data.funnel.policy_pending ?? "—"}</div></div>
-              <div className="rounded border p-2"><div className="text-muted-foreground">Catch-all review</div><div>{statusOverviewQuery.data.funnel.policy_catch_all_review ?? "—"}</div></div>
-              <div className="rounded border p-2"><div className="text-muted-foreground">Ready-held enrollments</div><div>{statusOverviewQuery.data.funnel.ready_held_enrollments ?? "—"}</div></div>
+              <div className="rounded border p-2"><div className="text-muted-foreground">Paid discovered evidence (historical)</div><div>{statusOverviewQuery.data.funnel.paid_discovered_evidence_rows ?? "—"}</div></div>
+              <div className="rounded border p-2"><div className="text-muted-foreground">Policy eligible (historical)</div><div className="text-green-600 font-semibold">{statusOverviewQuery.data.funnel.policy_eligible ?? "—"}</div></div>
+              <div className="rounded border p-2"><div className="text-muted-foreground">Policy suppressed (historical)</div><div>{statusOverviewQuery.data.funnel.policy_suppressed ?? "—"}</div></div>
+              <div className="rounded border p-2"><div className="text-muted-foreground">Policy ineligible (historical)</div><div>{statusOverviewQuery.data.funnel.policy_ineligible ?? "—"}</div></div>
+              <div className="rounded border p-2"><div className="text-muted-foreground">Policy pending/discovery (historical)</div><div>{statusOverviewQuery.data.funnel.policy_pending ?? "—"}</div></div>
+              <div className="rounded border p-2"><div className="text-muted-foreground">Catch-all review (historical)</div><div>{statusOverviewQuery.data.funnel.policy_catch_all_review ?? "—"}</div></div>
+              <div className="rounded border p-2"><div className="text-muted-foreground">Ready-held businesses (current)</div><div className="text-green-600 font-semibold">{statusOverviewQuery.data.funnel.current?.readyHeldBusinesses ?? "—"}</div><div className="text-muted-foreground">{statusOverviewQuery.data.funnel.current?.readyHeldContacts ?? "—"} contacts · {statusOverviewQuery.data.funnel.current?.readyHeldUniqueAddresses ?? "—"} addresses · {statusOverviewQuery.data.funnel.current?.readyHeldPausedMemberships ?? "—"} paused memberships</div></div>
+              <div className="rounded border p-2"><div className="text-muted-foreground">Verified links</div><div>{statusOverviewQuery.data.funnel.current?.verifiedLinkContacts ?? "—"} contacts · {statusOverviewQuery.data.funnel.current?.verifiedLinkBusinesses ?? "—"} businesses</div></div>
+              <div className="rounded border p-2"><div className="text-muted-foreground">Ready-held enrollments (historical, frozen)</div><div>{statusOverviewQuery.data.funnel.ready_held_enrollments ?? "—"}</div></div>
               <div className="rounded border p-2"><div className="text-muted-foreground">Identity quarantined</div><div>{statusOverviewQuery.data.funnel.identity_quarantined ?? "—"}</div></div>
               <div className="rounded border p-2"><div className="text-muted-foreground">Contacts suppressed</div><div>{statusOverviewQuery.data.funnel.contacts_suppressed ?? "—"}</div></div>
             </div>

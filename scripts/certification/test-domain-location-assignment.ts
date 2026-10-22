@@ -138,6 +138,39 @@ try {
   const second = await svc.applyDomainLocationAssignment({ contactId: cOk2, businessId: bOk.id, snapshotHash: pair.find(x => x.contactId === cOk2)!.snapshotHash }, adminId);
   check(second.status === "applied", "Second contact on the same business applies independently");
   check((await pool.query(`SELECT count(*)::int n FROM sequence_enrollments`)).rows[0].n === sendsBefore, "Assignment enrolls nobody");
+  // Automatic worker: closed by default, admin-authorized, conflicts preserved, vertical/validation ignored.
+  const auto = await import("../../server/services/contact-domain-location-automation");
+  const bAuto = await business("auto");
+  const cAutoInvalid = await contact("ai", bAuto, { status: "invalid" });
+  const cAutoUnval = await contact("au", bAuto, { status: "unvalidated" });
+  const bAutoBrand = await business("autobrand");
+  const cAutoBrand = await contact("ab", bAutoBrand);
+  await contact("ab2", bAutoBrand, { company: "Unrelated Franchisee Group Inc" });
+  const assignedFor = async (id: number) => (await pool.query(`SELECT business_id FROM contacts WHERE id=$1`, [id])).rows[0].business_id;
+  check((await auto.processDomainLocationAutomationTick()).ran === false, "Automation is closed until enabled");
+  check(await assignedFor(cAutoInvalid) == null, "Nothing is assigned while closed");
+  await assert.rejects(() => auto.setDomainLocationAutomation(true, agentId), /ADMIN_REQUIRED/, "Only an administrator can enable automation");
+  await auto.setDomainLocationAutomation(true, adminId);
+  const enrollments1 = (await pool.query(`SELECT count(*)::int n FROM sequence_enrollments`)).rows[0].n;
+  const tick = await auto.processDomainLocationAutomationTick();
+  check(tick.ran === true && tick.committed >= 2, `Automatic tick commits eligible contacts: ${JSON.stringify(tick)}`);
+  check(Number(await assignedFor(cAutoInvalid)) === bAuto.id && Number(await assignedFor(cAutoUnval)) === bAuto.id,
+    "Eligible contacts are assigned regardless of email validation status");
+  const autoDecision = (await pool.query(`SELECT reviewed_by,decision FROM contact_business_link_decisions WHERE contact_id=$1 AND superseded_at IS NULL`, [cAutoInvalid])).rows[0];
+  check(autoDecision.reviewed_by === adminId && autoDecision.decision === "verified", "Automatic decision records the authorizing administrator");
+  check(await assignedFor(cAutoBrand) == null && await assignedFor(cDup) == null && await assignedFor(cContra) == null,
+    "Shared-brand, multi-business and contradictory cases are preserved, not assigned");
+  check((await pool.query(`SELECT count(*)::int n FROM contact_business_link_decisions WHERE contact_id=ANY($1::int[]) AND superseded_at IS NULL`, [[cAutoBrand, cDup, cContra]])).rows[0].n === 0,
+    "No decision exists for preserved conflicts");
+  const state = await auto.getDomainLocationAutomationStatus();
+  check(state && state.committed >= 2 && state.passes >= 1 && state.leaseToken === null && state.held > 0, "Durable progress, released lease and held reasons recorded");
+  check((await auto.processDomainLocationAutomationTick()).ran === false, "A completed pass is not rescanned before the rescan interval");
+  const replayedTick = await svc.applyDomainLocationAssignment({ contactId: cAutoInvalid, businessId: bAuto.id, snapshotHash: "0".repeat(64) }, adminId);
+  check(replayedTick.status === "rejected", "An already-assigned contact cannot be reassigned");
+  await auto.setDomainLocationAutomation(false, adminId);
+  await pool.query(`UPDATE system_settings SET value=value||'{"lastPassCompletedAt":null}'::jsonb WHERE key=$1`, [auto.DOMAIN_LOCATION_AUTOMATION_KEY]);
+  check((await auto.processDomainLocationAutomationTick()).ran === false, "Disabling stops the worker");
+  check((await pool.query(`SELECT count(*)::int n FROM sequence_enrollments`)).rows[0].n === enrollments1, "Automation enrolls nobody");
   check(getBlockedCertificationNetworkAttemptCount() === 0, "No provider network attempt");
   console.log(`Independent domain/location assignment: ${checks} checks passed`);
 } finally { await pool.end(); }

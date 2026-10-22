@@ -92,6 +92,21 @@ export function registerAdminRoutes(app: Express) {
     } catch (error) { serverError(res, error); }
   });
 
+  app.get("/api/admin/contact-business-domain-location/automation", isDashboardUser, requireRole("admin"), async (_req, res) => {
+    try {
+      const { getDomainLocationAutomationStatus } = await import("../services/contact-domain-location-automation");
+      res.json({ state: await getDomainLocationAutomationStatus(), paidProviderCalls: 0 });
+    } catch (error) { serverError(res, error); }
+  });
+  app.put("/api/admin/contact-business-domain-location/automation", isDashboardUser, requireRole("admin"), async (req, res) => {
+    const parsed = z.object({ enabled: z.boolean() }).strict().safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: "Invalid domain/location automation request" });
+    try {
+      const { setDomainLocationAutomation } = await import("../services/contact-domain-location-automation");
+      res.json({ state: await setDomainLocationAutomation(parsed.data.enabled, String((req.user as any).id)), paidProviderCalls: 0, messagesSent: 0 });
+    } catch (error) { serverError(res, error); }
+  });
+
   app.get(
     "/api/admin/contact-business-system-links/preview",
     isDashboardUser,

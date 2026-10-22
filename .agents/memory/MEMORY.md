@@ -178,3 +178,6 @@
 - [Contacts vs businesses counts](contact-vs-business-counts.md) — domain/location audit counts are contacts; always give distinct businesses separately; empty executeSql output means the query errored.
 - [Slow dashboard page causes](slow-page-causes.md) — Outreach Queue pre-filter, SFP status count snapshot, health stale-while-revalidate; entities/sunbiz stats still slow.
 - [Production audit baseline](production-audit-2026-10-21.md) — dated funnel snapshot, Serper budget exhaustion, status funnel unavailable; compare later audits against it.
+- [Validation legacyInFlight hold](validation-legacy-inflight-hold.md) — retryable unknown/risky ZB ops hold addresses forever; guard left as is (paid retries).
+- [Serper discovery drop cause](serper-selector-exhaustion.md) — lookup-memory selector exhaustion, not the 50,000 counter.
+- [Domain/location automation](domain-location-automation.md) — closed-by-default worker; admin PUT enables.

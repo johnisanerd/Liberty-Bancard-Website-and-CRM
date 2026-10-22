@@ -2802,6 +2802,15 @@ export class QueueManager {
           } catch (error: any) {
             console.error("[ContactLinkAutomation] held", safeCanonicalEnrichmentFailureDiagnostics(error));
           }
+          try {
+            // Closed unless an administrator enables it. Applies the independent domain + company + location
+            // policy through the audited writer; local only, no provider call, send or enrollment.
+            const { processDomainLocationAutomationTick } = await import("./contact-domain-location-automation");
+            const domainLinks = await processDomainLocationAutomationTick();
+            if (domainLinks.ran) console.log(`[DomainLocationAutomation] ${JSON.stringify(domainLinks)}`);
+          } catch (error: any) {
+            console.error("[DomainLocationAutomation] held", safeCanonicalEnrichmentFailureDiagnostics(error));
+          }
           if (process.env.RETAINED_SUNBIZ_BUSINESS_COMPLETION_ENABLED !== "false") try {
             // Local-only: complete legacy Sunbiz promotions that never produced a business (contactless
             // prospects, South Florida). No provider call, contact, enrollment or send.

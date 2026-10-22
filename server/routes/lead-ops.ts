@@ -2583,71 +2583,133 @@ Return maximum 5 segments, 4 recommendations, 4 outreach priorities, 3 quick win
       // reason string, never a fabricated 0 — per truthful-state-signal
       // policy for provider/pipeline telemetry.
       const funnelSnapshotAt = new Date().toISOString();
-      let funnel: Record<string, unknown> | null = null;
-      let funnelUnavailableReason: string | null = null;
-      try {
-        funnel = await db.transaction(async (tx) => {
-          await tx.execute(sql`SET LOCAL statement_timeout = '2500ms'`);
-          const result = await tx.execute(sql`
-        WITH raw_count AS MATERIALIZED (
-          SELECT COUNT(*)::bigint AS n FROM sunbiz_entities
-        ),
-        eligible_sample AS MATERIALIZED (
-          SELECT 1 FROM sunbiz_entities se
-          WHERE se.filing_number IS NOT NULL AND se.entity_name IS NOT NULL
-            AND se.score IN ('hot', 'warm')
-            AND (se.website IS NOT NULL OR se.phone IS NOT NULL
-                 OR (se.principal_city IS NOT NULL AND se.principal_state IS NOT NULL))
-            AND NOT EXISTS (
-              SELECT 1 FROM sunbiz_bootstrap_claims c WHERE c.filing_number = se.filing_number
-                AND NOT ((c.status = 'failed' AND c.retry_count < 5)
-                  OR (c.status = 'claimed' AND c.claimed_at < now() - interval '15 minutes'))
-            )
-          ORDER BY se.id LIMIT 5001
-        )
-        SELECT
-          (SELECT n FROM raw_count) AS sunbiz_source_rows,
-          (SELECT n FROM raw_count) AS sunbiz_raw_rows,
-          (SELECT COUNT(*)::bigint FROM eligible_sample) AS sunbiz_bootstrap_eligible_sample,
-          ((SELECT COUNT(*) FROM eligible_sample) = 5001) AS sunbiz_bootstrap_eligible_is_floor,
-          (SELECT COUNT(*)::bigint FROM sunbiz_bootstrap_claims) AS sunbiz_bootstrap_claim_rows,
-          (SELECT COUNT(*)::bigint FROM sunbiz_bootstrap_ledger_events) AS sunbiz_bootstrap_scanned,
-          (SELECT COUNT(*)::bigint FROM sunbiz_bootstrap_ledger_events WHERE outcome = 'created') AS sunbiz_bootstrap_created,
-          (SELECT COUNT(*)::bigint FROM sunbiz_bootstrap_ledger_events WHERE outcome = 'matched_existing') AS sunbiz_bootstrap_matched,
-          (SELECT COUNT(*)::bigint FROM sunbiz_bootstrap_ledger_events WHERE outcome IN ('deferred_collision', 'identity_review')) AS sunbiz_bootstrap_deferred,
-          (SELECT COUNT(*)::int FROM businesses WHERE record_class = 'canonical') AS canonical_businesses,
-          (SELECT COUNT(*)::int FROM contacts c JOIN businesses b ON b.id = c.business_id) AS contacts_linked_to_business,
-          (SELECT COUNT(*)::int FROM businesses WHERE record_class = 'canonical' AND (website_domain IS NULL OR trim(website_domain) = '')) AS canonical_missing_domain,
-          (SELECT COUNT(*)::int FROM businesses WHERE free_enrichment_status = 'enriched') AS free_enrichment_complete,
-          (SELECT COUNT(*)::int FROM businesses WHERE website_domain IS NOT NULL AND free_enrichment_status IS NULL) AS free_enrichment_queued,
-          (SELECT COUNT(*)::int FROM sfp_paid_candidate_evidence) AS paid_discovered_evidence_rows,
-          (SELECT COUNT(*)::int FROM sfp_outreach_eligibility WHERE status = 'validated_outreach_eligible') AS policy_eligible,
-          (SELECT COUNT(*)::int FROM sfp_outreach_eligibility WHERE status = 'validated_suppressed') AS policy_suppressed,
-          (SELECT COUNT(*)::int FROM sfp_outreach_eligibility WHERE status = 'validated_policy_ineligible') AS policy_ineligible,
-          (SELECT COUNT(*)::int FROM sfp_outreach_eligibility WHERE status IN ('validation_pending', 'discovery_required')) AS policy_pending,
-          (SELECT COUNT(*)::int FROM sfp_outreach_eligibility WHERE status = 'catch_all_review') AS policy_catch_all_review,
-          (SELECT COUNT(*)::int FROM sfp_ready_held_enrollments) AS ready_held_enrollments,
-          (SELECT COUNT(*)::int FROM sfp_identity_quarantines) AS identity_quarantined,
-          (SELECT COUNT(*)::int FROM contacts WHERE do_not_contact = true OR email_status IN ('bounced', 'invalid', 'opted_out', 'unsafe')) AS contacts_suppressed
-          `);
-          const record = rows(result)[0];
-          if (!record) return null;
-          const normalized = { ...record };
-          for (const key of [
-            "sunbiz_source_rows", "sunbiz_raw_rows", "sunbiz_bootstrap_eligible_sample",
-            "sunbiz_bootstrap_claim_rows", "sunbiz_bootstrap_scanned", "sunbiz_bootstrap_created",
-            "sunbiz_bootstrap_matched", "sunbiz_bootstrap_deferred",
-          ]) {
-            const count = Number((record as any)[key]);
-            if (!Number.isSafeInteger(count) || count < 0) throw new Error("funnel_count_out_of_range");
-            (normalized as any)[key] = count;
-          }
-          return normalized;
-        });
-      } catch (err: any) {
-        funnelUnavailableReason = String(err?.code ?? "funnel_unavailable");
-        console.error("[LeadOps] status funnel unavailable:", err?.message);
+      // The funnel was one statement with a 2.5s limit that scanned the whole Sunbiz source table twice, so any
+      // slow stage made every stage "funnel_unavailable". It is now independent blocks, each with its own limit and
+      // its own availability flag. Current facts (canonical preparation, validation intents, paused memberships)
+      // are authoritative; the frozen pilot counters are kept but returned under `historical` and labeled as such.
+      const funnelBlockErrors: Record<string, string> = {};
+      const funnelBlock = async (name: string, query: ReturnType<typeof sql>, timeoutMs = 4000) => {
+        try {
+          return await db.transaction(async (tx) => {
+            await tx.execute(sql.raw(`SET LOCAL statement_timeout = '${timeoutMs}ms'`));
+            return rows(await tx.execute(query));
+          });
+        } catch (err: any) {
+          funnelBlockErrors[name] = String(err?.code ?? "block_unavailable");
+          console.error(`[LeadOps] funnel block ${name} unavailable:`, err?.message);
+          return null;
+        }
+      };
+      const num = (v: unknown) => (v === null || v === undefined ? null : Number(v));
+      const [sunbizRows, businessRows, contactRows, preparationRows, validationRows, historicalRows] = await Promise.all([
+        // Planner estimate for the source table (labeled as an estimate); the bootstrap ledger is small.
+        funnelBlock("sunbiz", sql`
+          SELECT (SELECT GREATEST(reltuples, 0)::bigint FROM pg_class WHERE oid = 'sunbiz_entities'::regclass) AS source_rows_estimate,
+            (SELECT COUNT(*)::bigint FROM sunbiz_bootstrap_claims) AS claim_rows,
+            COUNT(*)::bigint AS scanned,
+            COUNT(*) FILTER (WHERE outcome = 'created')::bigint AS created,
+            COUNT(*) FILTER (WHERE outcome = 'matched_existing')::bigint AS matched,
+            COUNT(*) FILTER (WHERE outcome IN ('deferred_collision', 'identity_review'))::bigint AS deferred
+          FROM sunbiz_bootstrap_ledger_events`),
+        funnelBlock("businesses", sql`
+          SELECT COUNT(*) FILTER (WHERE record_class = 'canonical')::int AS canonical_businesses,
+            COUNT(*) FILTER (WHERE record_class = 'canonical' AND (website_domain IS NULL OR btrim(website_domain) = ''))::int AS canonical_missing_domain,
+            COUNT(*) FILTER (WHERE record_class = 'canonical' AND effective_vertical_status = 'mapped')::int AS canonical_mapped_vertical,
+            COUNT(*) FILTER (WHERE free_enrichment_status = 'enriched')::int AS free_enrichment_complete,
+            COUNT(*) FILTER (WHERE website_domain IS NOT NULL AND free_enrichment_status IS NULL)::int AS free_enrichment_queued
+          FROM businesses`),
+        funnelBlock("contacts", sql`
+          SELECT COUNT(*) FILTER (WHERE business_id IS NOT NULL)::int AS contacts_linked_to_business,
+            COUNT(*) FILTER (WHERE do_not_contact = true OR email_status IN ('bounced', 'invalid', 'opted_out', 'unsafe'))::int AS contacts_suppressed,
+            (SELECT COUNT(DISTINCT contact_id)::int FROM contact_business_link_decisions WHERE decision = 'verified' AND superseded_at IS NULL) AS verified_link_contacts,
+            (SELECT COUNT(DISTINCT business_id)::int FROM contact_business_link_decisions WHERE decision = 'verified' AND superseded_at IS NULL) AS verified_link_businesses
+          FROM contacts WHERE archived_at IS NULL`),
+        funnelBlock("preparation", sql`
+          SELECT i.preparation_state,
+            COUNT(DISTINCT i.contact_id)::int AS contacts, COUNT(DISTINCT i.business_id)::int AS businesses,
+            COUNT(DISTINCT i.normalized_email_hash)::int AS unique_addresses,
+            COUNT(DISTINCT i.contact_id) FILTER (WHERE e.status = 'paused')::int AS paused_memberships
+          FROM cr04_enrollment_intents i
+          LEFT JOIN sequence_enrollments e ON e.id = i.enrollment_id
+          WHERE i.program_id IS NOT NULL GROUP BY i.preparation_state`),
+        funnelBlock("validation", sql`
+          SELECT state, COUNT(*)::int AS intents, COUNT(DISTINCT contact_id)::int AS contacts
+          FROM validation_intents GROUP BY state`),
+        funnelBlock("historical", sql`
+          SELECT status, COUNT(*)::int AS n FROM sfp_outreach_eligibility GROUP BY status
+          UNION ALL SELECT '_ready_held_enrollments', COUNT(*)::int FROM sfp_ready_held_enrollments
+          UNION ALL SELECT '_paid_evidence_rows', COUNT(*)::int FROM sfp_paid_candidate_evidence
+          UNION ALL SELECT '_identity_quarantined', COUNT(*)::int FROM sfp_identity_quarantines`),
+      ]);
+      const sunbizRow: any = sunbizRows?.[0] ?? null;
+      const businessRow: any = businessRows?.[0] ?? null;
+      const contactRow: any = contactRows?.[0] ?? null;
+      const historicalByStatus: Record<string, number> = {};
+      for (const r of historicalRows ?? []) historicalByStatus[String(r.status)] = Number(r.n);
+      const historical = historicalRows ? {
+        label: "Historical frozen pilot counters (sfp_outreach_eligibility / sfp_ready_held_enrollments); not current recipient state",
+        policy_eligible: historicalByStatus["validated_outreach_eligible"] ?? 0,
+        policy_suppressed: historicalByStatus["validated_suppressed"] ?? 0,
+        policy_ineligible: historicalByStatus["validated_policy_ineligible"] ?? 0,
+        policy_pending: (historicalByStatus["validation_pending"] ?? 0) + (historicalByStatus["discovery_required"] ?? 0),
+        policy_catch_all_review: historicalByStatus["catch_all_review"] ?? 0,
+        ready_held_enrollments: historicalByStatus["_ready_held_enrollments"] ?? 0,
+        paid_discovered_evidence_rows: historicalByStatus["_paid_evidence_rows"] ?? 0,
+        identity_quarantined: historicalByStatus["_identity_quarantined"] ?? 0,
+      } : null;
+      const preparationByState: Record<string, { contacts: number; businesses: number; uniqueAddresses: number; pausedMemberships: number }> = {};
+      for (const r of preparationRows ?? []) {
+        preparationByState[String(r.preparation_state)] = {
+          contacts: Number(r.contacts), businesses: Number(r.businesses),
+          uniqueAddresses: Number(r.unique_addresses), pausedMemberships: Number(r.paused_memberships),
+        };
       }
+      const validationByState: Record<string, { intents: number; contacts: number }> = {};
+      for (const r of validationRows ?? []) validationByState[String(r.state)] = { intents: Number(r.intents), contacts: Number(r.contacts) };
+      const readyHeld = preparationByState["ready_held"];
+      const funnel: Record<string, unknown> | null = (sunbizRow || businessRow || contactRow || preparationRows || validationRows || historical) ? {
+        // Current, authoritative: canonical preparation, validation intents, paused memberships. Units are in the names.
+        current: {
+          label: "Current state (canonical recipient preparation, validation intents, paused memberships)",
+          preparationByState,
+          validationIntentsByState: validationByState,
+          readyHeldContacts: readyHeld?.contacts ?? null,
+          readyHeldBusinesses: readyHeld?.businesses ?? null,
+          readyHeldUniqueAddresses: readyHeld?.uniqueAddresses ?? null,
+          readyHeldPausedMemberships: readyHeld?.pausedMemberships ?? null,
+          verifiedLinkContacts: num(contactRow?.verified_link_contacts),
+          verifiedLinkBusinesses: num(contactRow?.verified_link_businesses),
+          canonicalMappedVerticalBusinesses: num(businessRow?.canonical_mapped_vertical),
+        },
+        historical,
+        blockErrors: funnelBlockErrors,
+        sunbiz_source_rows: sunbizRow ? num(sunbizRow.source_rows_estimate) : null,
+        sunbiz_raw_rows: sunbizRow ? num(sunbizRow.source_rows_estimate) : null,
+        sunbiz_source_rows_is_estimate: true,
+        sunbiz_bootstrap_eligible_sample: null,
+        sunbiz_bootstrap_eligible_sample_note: "Not computed here: the sample required a full source-table scan. Use the enrichment backlog page for eligibility.",
+        sunbiz_bootstrap_claim_rows: num(sunbizRow?.claim_rows),
+        sunbiz_bootstrap_scanned: num(sunbizRow?.scanned),
+        sunbiz_bootstrap_created: num(sunbizRow?.created),
+        sunbiz_bootstrap_matched: num(sunbizRow?.matched),
+        sunbiz_bootstrap_deferred: num(sunbizRow?.deferred),
+        canonical_businesses: num(businessRow?.canonical_businesses),
+        contacts_linked_to_business: num(contactRow?.contacts_linked_to_business),
+        canonical_missing_domain: num(businessRow?.canonical_missing_domain),
+        free_enrichment_complete: num(businessRow?.free_enrichment_complete),
+        free_enrichment_queued: num(businessRow?.free_enrichment_queued),
+        contacts_suppressed: num(contactRow?.contacts_suppressed),
+        // Historical counters stay at their original keys so existing readers keep working; the dashboard labels them.
+        paid_discovered_evidence_rows: historical?.paid_discovered_evidence_rows ?? null,
+        policy_eligible: historical?.policy_eligible ?? null,
+        policy_suppressed: historical?.policy_suppressed ?? null,
+        policy_ineligible: historical?.policy_ineligible ?? null,
+        policy_pending: historical?.policy_pending ?? null,
+        policy_catch_all_review: historical?.policy_catch_all_review ?? null,
+        ready_held_enrollments: historical?.ready_held_enrollments ?? null,
+        identity_quarantined: historical?.identity_quarantined ?? null,
+      } : null;
+      const funnelUnavailableReason: string | null = funnel ? null : (Object.values(funnelBlockErrors)[0] ?? "funnel_unavailable");
 
       let sourcePool: Record<string, any> | null = null;
       let throughput24h: Record<string, any> | null = null;
