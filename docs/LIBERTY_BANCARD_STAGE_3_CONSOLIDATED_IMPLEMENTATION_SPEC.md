@@ -2084,3 +2084,11 @@ Dispositions and evidence are in ledger Section 42. Contract points that later w
 - CSV exports stream bounded keyset pages (`bounded-csv-export.ts`); no `limit: 500` sample may back an export. Post-stream failures abort the transfer.
 - Pages inside `DashboardLayout` never render their own `main`; the route crawl fails on a main count other than one.
 - Performance samples must assert readiness each time; a timeout is a failure.
+
+### 32.3 D-V follow-up contract: partner responses, mailbox locking, pipeline aggregate — 2026-10-22 (source; not yet published)
+
+- Operator-facing partner responses are built only from an explicit field allowlist; storage rows are never spread into a response. Credential material (password hash, reset/invite tokens and expiries) and any future column are excluded by default. Partner responses are `private, no-store`. Database error text is never returned.
+- Any transaction that can make a contact match or stop matching a mailbox (canonical writer, storage create/update, Data Health apply) takes the per-mailbox advisory lock first, before row and graph locks; multiple mailboxes are locked in sorted order.
+- A partner pipeline figure is either a scoped aggregate over all of the partner's referrals and deals or is shown as unavailable; it is never computed from a first-N sample. "Open Pipeline Volume" is processing volume on open sales-stage production deals and is not revenue.
+- API selector for deals created in the last seven days: `createdLast7Days=true`; page selector: `created=7d`.
+- Acceptance: `scripts/test-stage3-d-v-partner-response.ts`, `scripts/test-stage3-d-v-partner-browser.ts`, the two-connection updater check in `scripts/certification/test-data-health-reconcile.ts`.

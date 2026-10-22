@@ -20,6 +20,7 @@ import { sendPartnerWelcomeEmail } from "../services/partner-welcome";
 import { isGhlConfigured, sendGhlPartnerTransactionalEmail } from "../services/ghl";
 import { sendSmtpEmail, isSmtpConfigured } from "../services/smtp-email";
 import { logOperationalDiagnostic, serverError } from "../utils/server-error";
+import { privatePartnerResponse, toPartnerOperatorRecord } from "../utils/partner-response";
 import { consumeAuthAction, issueAuthAction, setAuthActionDelivery } from "../services/auth-actions";
 import { authorizeGhlRouteMutation, requireGhlRouteMutationAllowed } from "./ghl-mutation-pause";
 
@@ -72,11 +73,12 @@ async function consumePartnerPassword(token: string, purpose: "partner_password_
     },
   });
 }
+const PARTNER_EMAIL_IN_USE = "An account with this email already exists.";
 async function createPartnerWithCredential(input: InsertPartner) {
   return db.transaction(async tx => {
     const email = input.email?.trim().toLowerCase();
     const [linked] = email ? await tx.select().from(users).where(eq(users.email, email)) : [undefined];
-    if (linked && linked.role !== "partner") throw new Error("An account with this email already exists.");
+    if (linked && linked.role !== "partner") throw new Error(PARTNER_EMAIL_IN_USE);
     const [partner] = await tx.insert(partners).values({ ...input, email }).returning();
     if (input.passwordHash && email) {
       if (linked) {
@@ -129,7 +131,8 @@ export function registerPartnersRoutes(app: Express) {
   app.get("/api/partners", isDashboardUser, async (req, res) => {
     try {
       const partnersList = await storage.getPartners();
-      res.json(partnersList);
+      privatePartnerResponse(res);
+      res.json(partnersList.map(toPartnerOperatorRecord));
     } catch (err: any) {
       serverError(res, err);
     }
@@ -139,7 +142,8 @@ export function registerPartnersRoutes(app: Express) {
     try {
       const partner = await storage.getPartner(Number(req.params.id));
       if (!partner) return res.status(404).json({ message: "Not found" });
-      res.json(partner);
+      privatePartnerResponse(res);
+      res.json(toPartnerOperatorRecord(partner));
     } catch (err: any) {
       serverError(res, err);
     }
@@ -149,10 +153,15 @@ export function registerPartnersRoutes(app: Express) {
     try {
       const input = insertPartnerSchema.parse(req.body);
       const partner = await createPartnerWithCredential(input);
-      res.status(201).json(partner);
+      privatePartnerResponse(res);
+      res.status(201).json(toPartnerOperatorRecord(partner));
     } catch (err: any) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message, field: err.errors[0].path.join(".") });
-      res.status(400).json({ message: err.message });
+      // Never echo a database error: its text can include the failed statement and its bound values.
+      if (err?.message === PARTNER_EMAIL_IN_USE) return res.status(400).json({ message: PARTNER_EMAIL_IN_USE });
+      if (err?.code === "23505" || err?.cause?.code === "23505") return res.status(409).json({ message: "A partner with these details already exists." });
+      logOperationalDiagnostic("partner_create", err, "unexpected_failure", {});
+      res.status(400).json({ message: "The partner could not be created." });
     }
   });
 
@@ -291,7 +300,8 @@ ${getEmailSignatureHtml("partners")}
         }
       }
 
-      res.json(updated);
+      privatePartnerResponse(res);
+      res.json(toPartnerOperatorRecord(updated));
     } catch (err: any) {
       serverError(res, err, "partner_update");
     }

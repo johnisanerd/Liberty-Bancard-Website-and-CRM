@@ -102,7 +102,7 @@ import {
 import { eq, desc, and, lt, isNull, ne, sql, asc, gt, gte, lte, inArray, or, ilike, count, getTableColumns } from "drizzle-orm";
 import { effectiveContactVerticalSql,effectiveContactVerticalStatusSql } from "@shared/effective-vertical";
 import { resolveContactTargetVertical } from "@shared/contact-vertical-taxonomy";
-import {selectMailboxContact,type MailboxIdentity} from "../services/contact-mailbox-identity";
+import {selectMailboxContact,lockContactMailboxes,type MailboxIdentity} from "../services/contact-mailbox-identity";
 const effectiveVertical = sql<string | null>`${sql.raw(effectiveContactVerticalSql("contacts"))}`;
 const effectiveVerticalStatus = sql<string>`${sql.raw(effectiveContactVerticalStatusSql("contacts"))}`;
 import { coerceDateFields } from "../utils/date-coerce";
@@ -198,6 +198,7 @@ import { createValidationIntent, hashEmailToken, normalizeEmailToken } from "../
     const { auditChange } = await import("../services/audit-change");
     const tokenHash = hashEmailToken((insertContact as any).email);
     const created = await db.transaction(async (tx) => {
+      await lockContactMailboxes(tx, [(insertContact as any).email]);
       const [contact] = (await tx.insert(contacts).values({
         ...insertContact,
         ...(tokenHash ? {
@@ -261,6 +262,8 @@ import { createValidationIntent, hashEmailToken, normalizeEmailToken } from "../
     );
     const [before] = await db.select().from(contacts).where(eq(contacts.id, id));
     const updated = await db.transaction(async (tx) => {
+      // Mailbox locks first (writeContact's order), for both the address being left and the address being taken.
+      if ("email" in coercedUpdates) await lockContactMailboxes(tx, [before?.email, (coercedUpdates as any).email]);
       if ("email" in coercedUpdates || "phone" in coercedUpdates) {
         const { lockCommercialGraph } = await import("../services/commercial-graph-locks");
         await lockCommercialGraph(tx, [{ type: "contact", id }], ["identity"]);

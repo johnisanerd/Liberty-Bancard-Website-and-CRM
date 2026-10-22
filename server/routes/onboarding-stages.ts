@@ -3,8 +3,9 @@ import { isDashboardUser, requireRole } from "../replit_integrations/auth";
 import { parseId } from "./helpers";
 import { storage } from "../storage";
 import { db } from "../db";
-import { merchantOnboardingStages, deals, contacts, tasks, MERCHANT_ONBOARDING_STAGE_KEYS } from "@shared/schema";
-import { eq, and, lt, isNull } from "drizzle-orm";
+import { merchantOnboardingStages, deals, contacts, tasks, MERCHANT_ONBOARDING_STAGE_KEYS, OPEN_SALES_LEAD_STAGES } from "@shared/schema";
+import { eq, and, lt, isNull, sql } from "drizzle-orm";
+import { privatePartnerResponse, toPartnerOperatorRecord, toPartnerPipelineRecord } from "../utils/partner-response";
 import { serverError } from "../utils/server-error";
 import { createAndSendNpsSurvey } from "../services/nps-email";
 import { checkGoLiveReadiness } from "../services/go-live-gate";
@@ -327,26 +328,36 @@ export function registerOnboardingStagesRoutes(app: Express) {
     try {
       const partners = await storage.getPartners();
 
-      // Enrich each partner with referred merchant info
+      // One aggregate read for every partner. Referral count is every referral of the partner. Pipeline volume is the
+      // total processing volume of open sales-stage, production, non-archived deals on the partner's referred
+      // contacts, each deal counted once per partner. This is scoped to admin/manager (all owners), like the page.
+      const aggregateRows = await db.execute(sql`
+        WITH referral_counts AS (
+          SELECT partner_id, COUNT(*)::int AS referred_count FROM referrals WHERE partner_id IS NOT NULL GROUP BY partner_id
+        ), referred_deals AS (
+          SELECT DISTINCT r.partner_id, d.id AS deal_id,
+            CASE WHEN d.total_volume ~ '^-?[0-9]+(\.[0-9]+)?$' THEN d.total_volume::numeric ELSE 0 END AS volume
+          FROM referrals r
+          JOIN deals d ON d.contact_id = r.contact_id
+          WHERE r.partner_id IS NOT NULL AND r.contact_id IS NOT NULL
+            AND d.record_class = 'production' AND d.archived_at IS NULL AND d.pipeline = 'sales'
+            AND d.stage IN (${sql.join(OPEN_SALES_LEAD_STAGES.map(stage => sql`${stage}`), sql`, `)})
+        ), deal_totals AS (
+          SELECT partner_id, COUNT(*)::int AS deal_count, COALESCE(SUM(volume), 0)::float8 AS volume FROM referred_deals GROUP BY partner_id
+        )
+        SELECT p.id AS partner_id, COALESCE(rc.referred_count, 0) AS referred_count,
+          COALESCE(dt.deal_count, 0) AS deal_count, COALESCE(dt.volume, 0) AS volume
+        FROM partners p
+        LEFT JOIN referral_counts rc ON rc.partner_id = p.id
+        LEFT JOIN deal_totals dt ON dt.partner_id = p.id`);
+      const aggregates = new Map<number, { referred: number; deals: number; volume: number }>();
+      for (const row of aggregateRows.rows as Array<Record<string, unknown>>) {
+        aggregates.set(Number(row.partner_id), { referred: Number(row.referred_count), deals: Number(row.deal_count), volume: Number(row.volume) });
+      }
+
       const enriched = await Promise.all(
         partners.map(async (p) => {
-          const partnerReferrals = await storage.getReferralsByPartner(p.id);
-          const linkedContacts = partnerReferrals
-            .filter(r => r.contactId)
-            .map(r => r.contactId as number);
-
-          // Sum pipeline value from deals linked to referred contacts
-          let pipelineValue = 0;
-          for (const cId of linkedContacts.slice(0, 10)) {
-            const cDeals = await db
-              .select({ totalVolume: deals.totalVolume })
-              .from(deals)
-              .where(eq(deals.contactId, cId))
-              .limit(5);
-            pipelineValue += cDeals.reduce((s, d) => s + (Number(d.totalVolume) || 0), 0);
-          }
-
-          // Get next follow-up task for the referral owner
+          // Next follow-up task for the referral owner
           let nextFollowupDue: Date | null = null;
           if (p.referralOwner) {
             const followupRows = await db
@@ -358,16 +369,17 @@ export function registerOnboardingStagesRoutes(app: Express) {
             const row = followupRows.find(r => r.dueDate !== null);
             nextFollowupDue = row?.dueDate ?? null;
           }
-
-          return {
-            ...p,
-            referredMerchantCount: partnerReferrals.length,
-            pipelineValue,
+          const aggregate = aggregates.get(p.id);
+          return toPartnerPipelineRecord(p, {
+            referredMerchantCount: aggregate?.referred ?? 0,
+            openPipelineVolume: aggregate?.volume ?? 0,
+            openPipelineDealCount: aggregate?.deals ?? 0,
             nextFollowupDue,
-          };
+          });
         })
       );
 
+      privatePartnerResponse(res);
       res.json(enriched);
     } catch (err: any) {
       serverError(res, err);
@@ -398,7 +410,9 @@ export function registerOnboardingStagesRoutes(app: Express) {
       if (notes !== undefined) updates.notes = notes;
 
       const updated = await storage.updatePartner(partnerId, updates as any);
-      res.json(updated);
+      if (!updated) return res.status(404).json({ message: "Partner not found" });
+      privatePartnerResponse(res);
+      res.json(toPartnerOperatorRecord(updated));
     } catch (err: any) {
       serverError(res, err);
     }
@@ -471,7 +485,8 @@ export function registerOnboardingStagesRoutes(app: Express) {
         details: { partnerId: matched.id, referralSource, referralId: referral.id },
       });
 
-      res.json({ referral, partner: matched, tasksCreated: true });
+      privatePartnerResponse(res);
+      res.json({ referral, partner: toPartnerOperatorRecord(matched), tasksCreated: true });
     } catch (err: any) {
       serverError(res, err);
     }

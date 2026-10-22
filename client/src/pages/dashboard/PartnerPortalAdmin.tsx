@@ -20,7 +20,7 @@ import {
   Users, DollarSign, TrendingUp, Building2, Search,
   RefreshCw, Loader2, CheckCircle, Clock, ArrowRight,
 } from "lucide-react";
-import type { Partner } from "@shared/schema";
+import type { PartnerPipelineRecord } from "@shared/partner-response";
 
 type PipelineRow = {
   id: number;
@@ -32,11 +32,7 @@ type PipelineRow = {
   createdAt: string | null;
 };
 
-type EnrichedPartner = Partner & {
-  referredMerchantCount: number;
-  pipelineValue: number;
-  nextFollowupDue: string | null;
-};
+type EnrichedPartner = PartnerPipelineRecord;
 
 const STAGE_COLORS: Record<string, string> = {
   pending:   "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300",
@@ -116,7 +112,7 @@ function PartnerPipelineCard({ partner }: { partner: EnrichedPartner }) {
                 {partner.referredMerchantCount || 0} merchants
               </span>
               <span className="text-primary font-semibold">
-                {fmtCurrency(partner.pipelineValue)} pipeline
+                {fmtCurrency(partner.openPipelineVolume)} open volume
               </span>
               <span className="text-muted-foreground text-xs">
                 {partner.email}
@@ -211,7 +207,7 @@ export default function PartnerPortalAdmin() {
 
   const activePartners = partners.filter(p => p.status === "active").length;
   const totalReferrals = partners.reduce((s, p) => s + (p.referredMerchantCount || 0), 0);
-  const totalPipeline = partners.reduce((s, p) => s + Number(p.pipelineValue || 0), 0);
+  const totalPipeline = partners.reduce((s, p) => s + Number(p.openPipelineVolume || 0), 0);
   const earningPartners = partners.filter(p => (p.totalConversions ?? 0) > 0).length;
 
   return (
@@ -262,7 +258,7 @@ export default function PartnerPortalAdmin() {
                 <DollarSign className="w-4 h-4 text-green-600" />
               </div>
               <div>
-                <p className="text-xs text-muted-foreground">Pipeline Value</p>
+                <p className="text-xs text-muted-foreground" title="Total processing volume on open sales deals for referred contacts. Not revenue.">Open Pipeline Volume</p>
                 <p className="text-xl font-bold">{metric(fmtCurrency(totalPipeline))}</p>
               </div>
             </div>

@@ -100,7 +100,7 @@ export function registerPermissionsAuditRoutes(app: Express) {
   });
 
   // Dashboard KPI stats. Every number is a whole-population count, and each field names its own population:
-  //   deals and contacts: production, non-archived records (agents: their own), open sales stages from OPEN_SALES_LEAD_STAGES;
+  //   deals and contacts: production, non-archived records (agents: owned or unassigned deals; contacts assigned to them, unassigned, or linked to their deals), open sales stages from OPEN_SALES_LEAD_STAGES;
   //   tickets: every ticket whose status is not Resolved or Closed. This is the same definition as /api/kpi/summary
   //   support.openTickets; tickets carry no archive or record-class predicate and are not role-scoped there either, so this
   //   route does not invent a second policy. The response states that rather than labelling the whole payload production.
@@ -119,8 +119,8 @@ export function registerPermissionsAuditRoutes(app: Express) {
         contacts: { total: contactsR.total },
         tickets: { open: openTickets[0]?.n ?? 0 },
         populations: {
-          deals: { key: "production_non_archived_whole_population", label: "Production, non-archived deals (agents: own deals); active sales = open sales stages" },
-          contacts: { key: "production_non_archived_whole_population", label: "Production, non-archived contacts (agents: own contacts)" },
+          deals: { key: "production_non_archived_whole_population", label: "Production, non-archived deals (agents: deals they own or that are unassigned); active sales = open sales stages" },
+          contacts: { key: "production_non_archived_whole_population", label: "Production, non-archived contacts (agents: contacts assigned to them, unassigned, or linked to a deal they own)" },
           tickets: { key: "all_open_tickets_not_role_scoped", label: "All tickets with a status other than Resolved or Closed; no archive, record-class or owner filter (same as /api/kpi/summary)" },
         },
         asOf: pipeline.metadata.asOf,

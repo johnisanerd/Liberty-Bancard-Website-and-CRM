@@ -148,6 +148,8 @@ export const MANDATORY_SUITES: Suite[] = [
   {name:"Stage 3 C5 Data-Bearing Panels And GHL Settings",script:"scripts/test-stage3-c5-panels.ts",timeoutSecs:600,requiresDisposableTestDatabase:true},
   {name:"Stage 3 C5 Role Negative Requests",script:"scripts/test-stage3-c5-role-negative-requests.ts",timeoutSecs:600,requiresDisposableTestDatabase:true},
   {name:"Stage 3 D-V Landmarks Browser",script:"scripts/test-stage3-d-v-landmarks-browser.ts",timeoutSecs:300,requiresDisposableTestDatabase:true},
+  {name:"Stage 3 D-V Partner Response",script:"scripts/test-stage3-d-v-partner-response.ts",timeoutSecs:300,requiresDisposableTestDatabase:true},
+  {name:"Stage 3 D-V Partner Browser",script:"scripts/test-stage3-d-v-partner-browser.ts",timeoutSecs:300,requiresDisposableTestDatabase:true},
   {name:"Stage 3 D-V Contact Core Browser",script:"scripts/test-stage3-d-v-contact-core-browser.ts",timeoutSecs:300,requiresDisposableTestDatabase:true},
   {name:"Stage 3 D-V Cohort Browser",script:"scripts/test-stage3-d-v-cohort-browser.ts",timeoutSecs:300,requiresDisposableTestDatabase:true},
   {name:"Stage 3 D-V Data Health Browser",script:"scripts/test-stage3-d-v-data-health-browser.ts",timeoutSecs:600,requiresDisposableTestDatabase:true},

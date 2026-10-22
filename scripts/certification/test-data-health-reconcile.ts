@@ -290,6 +290,36 @@ try {
     check(writerSrc.includes("`contact-mailbox:${email}`") && (await import("node:fs")).readFileSync("server/services/data-health-reconcile.ts", "utf8").includes("`contact-mailbox:${preEmail}`"),
       "Reconcile and the canonical contact writer use the same per-mailbox lock key");
   }
+  // (d2) the generic updater (storage.updateContact, reachable from the partner-org proposal send) takes the same mailbox lock.
+  {
+    const { storage } = await import("../../server/storage");
+    const emailU = `upd.${nonce}@dh.example.test`;
+    const cA = await contact("updA", { email: emailU });
+    const cB = await contact("updB", { email: `upd-old.${nonce}@dh.example.test` });
+    const dU = await orphanDeal(`email ${emailU}`);
+    const holder = await pool.connect();
+    let updP: Promise<any> | null = null, applyU: Promise<any> | null = null, updSettled = false;
+    try {
+      await holder.query("BEGIN");
+      await holder.query(`SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, [`contact-mailbox:${emailU}`]);
+      updP = storage.updateContact(cB, { email: emailU } as any).then(r => { updSettled = true; return r; });
+      applyU = svc.applyDataHealthReconcile({ operationId: randomUUID(), actionKeys: [`deal_link:${dU}:${cA}`], actor: adminActor });
+      await new Promise(r => setTimeout(r, 1500));
+      check(!updSettled && (await q(`SELECT email FROM contacts WHERE id=$1`, [cB]))[0].email.startsWith("upd-old."),
+        "The generic email updater waits on the per-mailbox lock instead of changing the mailbox underneath a reconcile");
+      await holder.query("COMMIT");
+      await updP; const res = await applyU;
+      const linked = await dealContact(dU) === cA;
+      const times = (await q(`SELECT (SELECT updated_at FROM deals WHERE id=$1) d, (SELECT updated_at FROM contacts WHERE id=$2) c`, [dU, cB]))[0];
+      check((linked && new Date(times.c) >= new Date(times.d) && res.receipt.outcomes[0].status === "applied")
+        || (!linked && res.receipt.outcomes[0].status === "not_current"),
+        "Competing updater and reconcile linearize: the link applied only before the second match existed, or was refused afterwards");
+      check((await q(`SELECT count(*)::int n FROM contacts WHERE lower(email)=$1`, [emailU]))[0].n === 2, "The generic update itself completed after the lock was released");
+    } finally { await holder.query("ROLLBACK").catch(() => undefined); holder.release(); await updP?.catch(() => undefined); await applyU?.catch(() => undefined); }
+    const src = (await import("node:fs")).readFileSync("server/storage/contacts.ts", "utf8");
+    check(src.includes("lockContactMailboxes(tx, [before?.email,") && src.includes("lockContactMailboxes(tx, [(insertContact as any).email])"),
+      "Storage update and create both take the mailbox lock before any graph or row lock");
+  }
   // (e) fenced receipts: a delayed old owner cannot overwrite or act after takeover.
   {
     const [f1, f2] = await orphanEnrollments(owner, ["active", "active"]);

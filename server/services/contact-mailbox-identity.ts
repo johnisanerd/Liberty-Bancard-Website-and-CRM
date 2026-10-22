@@ -44,3 +44,20 @@ export function selectMailboxContact<T extends MailboxIdentity>(candidates:T[],i
     supported.map(candidate=>(candidate as T&{id?:number}).id).filter((id):id is number=>Number.isInteger(id)));
   return supported[0];
 }
+
+/**
+ * Identity mutation lock protocol. Every transaction that can make a contact match, or stop matching, a mailbox
+ * (the canonical writer, storage create/update, Data Health apply) takes the per-mailbox transaction advisory lock
+ * FIRST, before any contact/deal row lock or commercial-graph lock. When several mailboxes are involved (an update
+ * from one address to another) they are taken in sorted order so two such updaters cannot deadlock.
+ * The key format must match contact-writer.ts and data-health-reconcile.ts.
+ */
+export function contactMailboxLockKey(email: unknown): string | null {
+  const normalized = String(email ?? "").trim().toLowerCase();
+  return normalized ? `contact-mailbox:${normalized}` : null;
+}
+export async function lockContactMailboxes(tx: { execute: (query: any) => Promise<unknown> }, emails: unknown[]): Promise<void> {
+  const { sql } = await import("drizzle-orm");
+  const keys = [...new Set(emails.map(contactMailboxLockKey).filter((key): key is string => key !== null))].sort();
+  for (const key of keys) await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
+}

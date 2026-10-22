@@ -97,6 +97,11 @@ try {
   const filtered = await cards();
   assert.ok(filtered.includes(fresh) && !filtered.includes(old), `created=7d shows only new deals: ${filtered}`);
   checks.push("Pipeline created=7d shows only sales deals created in the last 7 days and a clearable chip");
+  // The page selector is created=7d; the API selector is createdLast7Days=true (created=7d is a page-only selector).
+  const apiIds = async (query: string) => JSON.parse(await browser!.evaluate(`fetch('/api/deals?${query}',{credentials:'include'}).then(r=>r.json()).then(j=>JSON.stringify((Array.isArray(j)?j:(j.deals??j.data??j.items??[])).map(d=>d.id)))`) as string) as number[];
+  const apiRecent = await apiIds("pipeline=sales&createdLast7Days=true");
+  assert.ok(apiRecent.includes(fresh) && !apiRecent.includes(old), `API createdLast7Days=true returns only recent deals: ${apiRecent.length} rows`);
+  checks.push("API selector createdLast7Days=true returns the recent sales deals and excludes the old one (the page selector is created=7d)");
   await browser.screenshot("pipeline-created-7d");
   await browser.click('[data-testid="pipeline-created-cohort"]');
   await until(has(`card-deal-${old}`));

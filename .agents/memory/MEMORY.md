@@ -186,3 +186,4 @@
 - [Stale dist and import gaps](stale-dist-and-import-gaps.md) — rebuild before browser suites; scripted page migrations can miss imports that only fail at render time.
 - [Dev blank app / cold load / cert iteration](dev-app-blank-and-cold-load.md) — restart app workflow first; wait >5s on cold routes; stub-import trick to avoid rebuild per cert edit.
 - [D-V review repair patterns](dv-review-repair-patterns.md) — cohort URL selectors, in-page fetch hold tests, bounded CSV streaming, rebuild-after-scripts rule.
+- [Partner response allowlist and mailbox lock order](partner-response-allowlist.md) — explicit DTO for partner responses; mailbox lock before row/graph locks on every email mutation.
