@@ -251,7 +251,7 @@ export default function AuditLogs() {
           <Card>
             <CardContent className="pt-4 pb-4">
               <div className="text-2xl font-bold" data-testid="kpi-total">{logs.length}</div>
-              <div className="text-xs text-muted-foreground">Total Entries</div>
+              <div className="text-xs text-muted-foreground">Entries loaded (this view{logs.length >= pageLimit ? `, capped at ${pageLimit}` : ""})</div>
             </CardContent>
           </Card>
           <Card>

@@ -146,7 +146,7 @@ If you're willing to take 2 minutes to upload a statement, I'll tell you where y
       "Connect GHL calendar to AI Employee for live appointment booking",
       "Add If/Else branches for each call disposition",
       "Set workflow timezone to contact's local timezone",
-      "Register GHL Workflow ID in platform at /dashboard/ghl-workflows",
+      "Optional: record the GHL Workflow ID at /dashboard/ghl-workflows as a reference. Replit runs sequence timing, so this does not change sequence sending",
     ],
   },
   {
@@ -251,7 +251,7 @@ If now's not the right time: no problem. I'll check back in a few months.
       "Add If/Else branch after Day 8 call for each disposition outcome",
       "Add reply detection on all emails and SMS → stop sequence → enroll Workflow 3",
       "Set Day 12 as final step — auto-tag LB-COLD-EXHAUSTED after last SMS",
-      "Register GHL Workflow ID in platform at /dashboard/ghl-workflows",
+      "Optional: record the GHL Workflow ID at /dashboard/ghl-workflows as a reference. Replit runs sequence timing, so this does not change sequence sending",
     ],
   },
   {
@@ -319,7 +319,7 @@ Either way works — just let me know what's easier for you.
       "Configure Voice AI → follow_up_callback script",
       "Record and upload reply-engaged voicemail audio",
       "Set appointment booking branch → tag LB-BOOKING-READY → exit workflow",
-      "Register GHL Workflow ID in platform at /dashboard/ghl-workflows",
+      "Optional: record the GHL Workflow ID at /dashboard/ghl-workflows as a reference. Replit runs sequence timing, so this does not change sequence sending",
     ],
   },
   {
@@ -393,7 +393,7 @@ We'll be here when you're ready.
       "Configure Voice AI → statement_chase script",
       "Record and upload statement chase voicemail audio",
       "Set webhook or Zapier trigger: statement uploaded → tag LB-STATEMENT-RECEIVED → stop workflow",
-      "Register GHL Workflow ID in platform at /dashboard/ghl-workflows",
+      "Optional: record the GHL Workflow ID at /dashboard/ghl-workflows as a reference. Replit runs sequence timing, so this does not change sequence sending",
     ],
   },
   {
@@ -468,7 +468,7 @@ Questions? Reply here or call me directly.
       "Record and upload proposal follow-up voicemail audio",
       "Add disposition branches: verbal commit → LB-VERBAL-COMMIT | closed lost → LB-CLOSED-LOST",
       "Connect to onboarding workflow: LB-CLOSED-WON → enroll onboarding sequence",
-      "Register GHL Workflow ID in platform at /dashboard/ghl-workflows",
+      "Optional: record the GHL Workflow ID at /dashboard/ghl-workflows as a reference. Replit runs sequence timing, so this does not change sequence sending",
     ],
   },
   {
@@ -554,7 +554,7 @@ Most merchants finish in under 10 minutes. If you hit any questions on the form,
       "Add If/Else branches on Steps 4–6: check for LB-APP-SUBMITTED tag before sending",
       "Configure Voice AI → onboarding_assist script",
       "Set application submission webhook: when app submitted → tag LB-APP-SUBMITTED → exit workflow → enroll WF7",
-      "Register GHL Workflow ID in platform at /dashboard/ghl-workflows",
+      "Optional: record the GHL Workflow ID at /dashboard/ghl-workflows as a reference. Replit runs sequence timing, so this does not change sequence sending",
     ],
   },
   {
@@ -665,7 +665,7 @@ We're working for you every month. Let me know if you have any questions.
       "Connect shipping webhook: label created → tag LB-TERMINAL-SHIPPED → trigger Step 3",
       "Day 32 email requires statement reconciliation data — coordinate with platform data feed",
       "After Day 32 email: apply tag LB-MERCHANT-ACTIVE → auto-enroll in Workflow 8",
-      "Register GHL Workflow ID in platform at /dashboard/ghl-workflows",
+      "Optional: record the GHL Workflow ID at /dashboard/ghl-workflows as a reference. Replit runs sequence timing, so this does not change sequence sending",
     ],
   },
   {
@@ -762,7 +762,7 @@ Reply here or call (888) 555-0100.
       "Day 90 SMS: REFER reply detection → tag LB-REFERRAL-INTERESTED → rep task",
       "Churn detection: cancellation event → tag LB-MERCHANT-CHURNED → exit WF8 → enroll WF9",
       "Continue sequence on 90-day cadence after Day 180 (quarterly touch)",
-      "Register GHL Workflow ID in platform at /dashboard/ghl-workflows",
+      "Optional: record the GHL Workflow ID at /dashboard/ghl-workflows as a reference. Replit runs sequence timing, so this does not change sequence sending",
     ],
   },
   {
@@ -835,7 +835,7 @@ But if there's any chance the numbers work: [Calendar Link]
       "Step 3 If/Else: if LB-WINBACK-REPLIED exists → skip automated email (rep handles manually)",
       "After Day 30 SMS: apply LB-WINBACK-EXHAUSTED → log outcome in contact record",
       "Churn reason tracking: ensure reps complete the exit reason field before closing account",
-      "Register GHL Workflow ID in platform at /dashboard/ghl-workflows",
+      "Optional: record the GHL Workflow ID at /dashboard/ghl-workflows as a reference. Replit runs sequence timing, so this does not change sequence sending",
     ],
   },
 ];
@@ -875,8 +875,8 @@ const GLOBAL_CHECKLIST = [
   ]},
   { section: "Platform Integration", items: [
     "Go to /dashboard/ghl-workflows in this platform",
-    "Paste each GHL Workflow ID next to the matching sequence name",
-    "This enables auto-enrollment: platform detects qualifying events → calls GHL API → GHL executes",
+    "Optionally record each GHL Workflow ID next to the matching sequence name (reference only)",
+    "Sequence cadence stays in Replit. Only the supported handoff workflows listed in the ownership notice are enrolled from Replit, using their saved IDs",
     "Test each workflow: add a test contact → manually apply trigger tag → verify steps fire in GHL",
   ]},
   { section: "Compliance", items: [

@@ -2585,15 +2585,20 @@ Return maximum 5 segments, 4 recommendations, 4 outreach priorities, 3 quick win
       const funnelSnapshotAt = new Date().toISOString();
       // The funnel was one statement with a 2.5s limit that scanned the whole Sunbiz source table twice, so any
       // slow stage made every stage "funnel_unavailable". It is now independent blocks, each with its own limit and
-      // its own availability flag. Current facts (canonical preparation, validation intents, paused memberships)
+      // its own availability flag. Current facts (canonical preparation, validation intents, paused enrollments)
       // are authoritative; the frozen pilot counters are kept but returned under `historical` and labeled as such.
       const funnelBlockErrors: Record<string, string> = {};
+      // Per-block availability and read time, so a failed block is never presented as a zero and each count carries its own as-of.
+      const funnelBlockStatus: Record<string, { available: boolean; asOf: string | null }> = {};
       const funnelBlock = async (name: string, query: ReturnType<typeof sql>, timeoutMs = 4000) => {
+        funnelBlockStatus[name] = { available: false, asOf: null };
         try {
-          return await db.transaction(async (tx) => {
+          const result = await db.transaction(async (tx) => {
             await tx.execute(sql.raw(`SET LOCAL statement_timeout = '${timeoutMs}ms'`));
             return rows(await tx.execute(query));
           });
+          funnelBlockStatus[name] = { available: true, asOf: new Date().toISOString() };
+          return result;
         } catch (err: any) {
           funnelBlockErrors[name] = String(err?.code ?? "block_unavailable");
           console.error(`[LeadOps] funnel block ${name} unavailable:`, err?.message);
@@ -2628,7 +2633,8 @@ Return maximum 5 segments, 4 recommendations, 4 outreach priorities, 3 quick win
           SELECT i.preparation_state,
             COUNT(DISTINCT i.contact_id)::int AS contacts, COUNT(DISTINCT i.business_id)::int AS businesses,
             COUNT(DISTINCT i.normalized_email_hash)::int AS unique_addresses,
-            COUNT(DISTINCT i.contact_id) FILTER (WHERE e.status = 'paused')::int AS paused_memberships
+            COUNT(DISTINCT i.contact_id) FILTER (WHERE e.status = 'paused')::int AS paused_contacts,
+            COUNT(DISTINCT e.id) FILTER (WHERE e.status = 'paused')::int AS paused_enrollments
           FROM cr04_enrollment_intents i
           LEFT JOIN sequence_enrollments e ON e.id = i.enrollment_id
           WHERE i.program_id IS NOT NULL GROUP BY i.preparation_state`),
@@ -2657,32 +2663,35 @@ Return maximum 5 segments, 4 recommendations, 4 outreach priorities, 3 quick win
         paid_discovered_evidence_rows: historicalByStatus["_paid_evidence_rows"] ?? 0,
         identity_quarantined: historicalByStatus["_identity_quarantined"] ?? 0,
       } : null;
-      const preparationByState: Record<string, { contacts: number; businesses: number; uniqueAddresses: number; pausedMemberships: number }> = {};
+      const preparationByState: Record<string, { contacts: number; businesses: number; uniqueAddresses: number; pausedContacts: number; pausedEnrollments: number }> = {};
       for (const r of preparationRows ?? []) {
         preparationByState[String(r.preparation_state)] = {
           contacts: Number(r.contacts), businesses: Number(r.businesses),
-          uniqueAddresses: Number(r.unique_addresses), pausedMemberships: Number(r.paused_memberships),
+          uniqueAddresses: Number(r.unique_addresses), pausedContacts: Number(r.paused_contacts), pausedEnrollments: Number(r.paused_enrollments),
         };
       }
       const validationByState: Record<string, { intents: number; contacts: number }> = {};
       for (const r of validationRows ?? []) validationByState[String(r.state)] = { intents: Number(r.intents), contacts: Number(r.contacts) };
-      const readyHeld = preparationByState["ready_held"];
+      // An available preparation read with no ready_held group means exactly zero; only a failed read is unavailable (null).
+      const readyHeld = preparationRows ? (preparationByState["ready_held"] ?? { contacts: 0, businesses: 0, uniqueAddresses: 0, pausedContacts: 0, pausedEnrollments: 0 }) : undefined;
       const funnel: Record<string, unknown> | null = (sunbizRow || businessRow || contactRow || preparationRows || validationRows || historical) ? {
-        // Current, authoritative: canonical preparation, validation intents, paused memberships. Units are in the names.
+        // Current, authoritative: canonical preparation, validation intents, paused enrollments. Units are in the names.
         current: {
-          label: "Current state (canonical recipient preparation, validation intents, paused memberships)",
+          label: "Current state (canonical recipient preparation, validation intents, paused enrollments)",
           preparationByState,
           validationIntentsByState: validationByState,
           readyHeldContacts: readyHeld?.contacts ?? null,
           readyHeldBusinesses: readyHeld?.businesses ?? null,
           readyHeldUniqueAddresses: readyHeld?.uniqueAddresses ?? null,
-          readyHeldPausedMemberships: readyHeld?.pausedMemberships ?? null,
+          readyHeldPausedContacts: readyHeld?.pausedContacts ?? null,
+          readyHeldPausedEnrollments: readyHeld?.pausedEnrollments ?? null,
           verifiedLinkContacts: num(contactRow?.verified_link_contacts),
           verifiedLinkBusinesses: num(contactRow?.verified_link_businesses),
           canonicalMappedVerticalBusinesses: num(businessRow?.canonical_mapped_vertical),
         },
         historical,
         blockErrors: funnelBlockErrors,
+        blocks: funnelBlockStatus,
         sunbiz_source_rows: sunbizRow ? num(sunbizRow.source_rows_estimate) : null,
         sunbiz_raw_rows: sunbizRow ? num(sunbizRow.source_rows_estimate) : null,
         sunbiz_source_rows_is_estimate: true,

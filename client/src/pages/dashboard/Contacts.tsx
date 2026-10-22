@@ -815,7 +815,7 @@ export default function Contacts() {
 
   const EMAIL_HEALTH_OPTIONS = [
     { value: "", label: "All" },
-    { value: "active", label: "Active" },
+    { value: "active", label: "Active (status only, not validated)" },
     { value: "bounced", label: "Bounced" },
     { value: "invalid", label: "Invalid" },
     { value: "opted_out", label: "Opted Out" },
@@ -928,7 +928,8 @@ export default function Contacts() {
   const healthStats = [
     {
       key: "active",
-      label: "Active",
+      label: "Active status",
+      hint: "Raw status 'active': legacy, not a validated address",
       value: emailHealthSummary?.active ?? 0,
       idleColor: "text-emerald-600 dark:text-emerald-400",
       selectedBg: "bg-emerald-100 dark:bg-emerald-900/40 border-emerald-400 dark:border-emerald-600",
@@ -996,6 +997,7 @@ export default function Contacts() {
               key={stat.key}
               onClick={() => setEmailHealthFilter(isActive ? "" : stat.key)}
               data-testid={`stat-email-health-${stat.key}`}
+              title={"hint" in stat ? (stat as { hint?: string }).hint : undefined}
               className={`flex flex-col items-center justify-center px-3 py-2.5 rounded-lg border transition-all cursor-pointer ${
                 isActive
                   ? `${stat.selectedBg} shadow-sm`
@@ -1043,7 +1045,7 @@ export default function Contacts() {
                 : facetsError
                 ? "Count unavailable"
                 : totalContacts != null
-                ? `${totalContacts.toLocaleString()} ${totalContacts === 1 ? "contact" : "contacts"}`
+                ? `${totalContacts.toLocaleString()} ${totalContacts === 1 ? "contact" : "contacts"} matching the current filters${facetsResult?.asOf ? ` · as of ${new Date(facetsResult.asOf).toLocaleTimeString()}` : ""}`
                 : "— contacts"}
             </span>
           )}

@@ -824,7 +824,7 @@ export default function Chargebacks() {
   });
 
   const { data: stats } = useQuery<{
-    total: number; open: number; overdue: number; won: number; lost: number; thisMonthWinRate: number; totalAtRiskAmount: number;
+    total: number; open: number; overdue: number; won: number; lost: number; thisMonthWinRate: number | null; thisMonthWinRateBasis?: { numerator: number; denominator: number; available: boolean }; totalAtRiskAmount: number;
   }>({
     queryKey: ["/api/chargebacks/stats"],
   });
@@ -910,8 +910,11 @@ export default function Chargebacks() {
             <CheckCircle className="w-4 h-4 text-green-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-green-600 dark:text-green-400" data-testid="text-stat-winrate">{stats?.thisMonthWinRate ?? 0}%</div>
-            <p className="text-xs text-muted-foreground">{stats?.won ?? 0} won / {stats?.lost ?? 0} lost</p>
+            <div className="text-2xl font-bold text-green-600 dark:text-green-400" data-testid="text-stat-winrate">{stats?.thisMonthWinRate == null ? "No decided deals" : `${stats.thisMonthWinRate}%`}</div>
+            <p className="text-xs text-muted-foreground" data-testid="text-stat-winrate-basis">
+              {stats?.thisMonthWinRateBasis ? `${stats.thisMonthWinRateBasis.numerator} won of ${stats.thisMonthWinRateBasis.denominator} decided this month` : "This month's decided disputes"}
+              {" · "}all time: {stats?.won ?? 0} won / {stats?.lost ?? 0} lost
+            </p>
           </CardContent>
         </Card>
 

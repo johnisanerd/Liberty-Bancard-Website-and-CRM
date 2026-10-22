@@ -709,7 +709,7 @@ export interface IStorage {
   updateChargeback(id: number, updates: import("@shared/schema").UpdateChargebackRequest): Promise<import("@shared/schema").Chargeback | undefined>;
   deleteChargeback(id: number): Promise<void>;
   getOverdueChargebacks(): Promise<import("@shared/schema").Chargeback[]>;
-  getChargebackStats(): Promise<{ total: number; open: number; overdue: number; won: number; lost: number; thisMonthWinRate: number; totalAtRiskAmount: number }>;
+  getChargebackStats(): Promise<{ total: number; open: number; overdue: number; won: number; lost: number; thisMonthWinRate: number | null; thisMonthWinRateBasis: import("@shared/metric-contract").RateMetric; totalAtRiskAmount: number }>;
 
   // Residual Imports
   getResidualImports(): Promise<import("@shared/schema").ResidualImport[]>;

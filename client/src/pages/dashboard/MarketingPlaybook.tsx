@@ -641,7 +641,7 @@ export default function MarketingPlaybook() {
         <h2 className="text-2xl font-bold" data-testid="heading-marketing-playbook">Marketing Playbook</h2>
       </div>
       <p className="text-sm text-muted-foreground">
-        The 6-workflow GHL automation framework drives the entire pipeline — from first touch to closed deal. Daily actions, sequence map, content library, and call scripts all in one place.
+        Daily actions, sequence map, content library, and call scripts in one place. Replit owns sequence timing and sending; the GHL workflow designs here are a reference.
       </p>
 
       {/* ─── Rep Daily Actions ─── */}

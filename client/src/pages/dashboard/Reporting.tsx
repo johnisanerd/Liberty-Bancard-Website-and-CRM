@@ -19,7 +19,10 @@ interface PipelineData {
     active: number;
     closedWon: number;
     closedLost: number;
-    winRate: number;
+    nurture?: number;
+    unclassifiedStage?: number;
+    winRate: number | null;
+    winRateBasis?: { numerator: number; denominator: number; available: boolean };
     stageDistribution: Record<string, number>;
     newLast30Days: number;
     wonLast30Days: number;
@@ -136,17 +139,20 @@ export default function Reporting() {
           <CardContent>
             <div className="flex items-baseline gap-2">
               <span className="text-2xl font-bold" data-testid="text-win-rate">
-                 {sales.winRate}%
+                 {sales.winRate == null ? "Not enough outcomes" : `${sales.winRate}%`}
               </span>
-              <span
-                 className={`text-xs font-medium ${sales.winRate >= 50 ? "text-green-600" : "text-destructive"}`}
-                data-testid="text-win-rate-indicator"
-              >
-                 {sales.winRate >= 50 ? "On track" : "Below target"}
-              </span>
+              {sales.winRate != null && (
+                <span
+                   className={`text-xs font-medium ${sales.winRate >= 50 ? "text-green-600" : "text-destructive"}`}
+                  data-testid="text-win-rate-indicator"
+                >
+                   {sales.winRate >= 50 ? "On track" : "Below target"}
+                </span>
+              )}
             </div>
-            <p className="text-xs text-muted-foreground mt-1">
-               {sales.closedWon}W / {sales.closedLost}L
+            <p className="text-xs text-muted-foreground mt-1" data-testid="text-win-rate-basis">
+               {sales.closedWon} won of {sales.closedWon + sales.closedLost} decided deals
+               {sales.winRate == null ? " (no deal has been won or lost yet)" : ""}
             </p>
           </CardContent>
         </Card>
@@ -161,7 +167,9 @@ export default function Reporting() {
                {sales.active}
             </div>
             <p className="text-xs text-muted-foreground mt-1">
-               {sales.total} total deals
+               open pipeline stages · {sales.total} total sales deals
+               {(sales.nurture ?? 0) > 0 ? ` · ${sales.nurture} nurture` : ""}
+               {(sales.unclassifiedStage ?? 0) > 0 ? ` · ${sales.unclassifiedStage} in an unrecognized stage` : ""}
             </p>
           </CardContent>
         </Card>

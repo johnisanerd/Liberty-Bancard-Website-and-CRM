@@ -6465,6 +6465,7 @@
     "entityParameters": [],
     "queryPolicy": {
       "allowed": [
+        "tab",
         "contactId",
         "companyId",
         "businessId",
@@ -6536,6 +6537,7 @@
     "entityParameters": [],
     "queryPolicy": {
       "allowed": [
+        "tab",
         "contactId",
         "companyId",
         "businessId",
@@ -6625,6 +6627,7 @@
     "entityParameters": [],
     "queryPolicy": {
       "allowed": [
+        "tab",
         "contactId",
         "companyId",
         "businessId",
@@ -6963,6 +6966,7 @@
     "entityParameters": [],
     "queryPolicy": {
       "allowed": [
+        "tab",
         "contactId",
         "companyId",
         "businessId",
@@ -7034,6 +7038,7 @@
     "entityParameters": [],
     "queryPolicy": {
       "allowed": [
+        "tab",
         "contactId",
         "companyId",
         "businessId",

@@ -131,6 +131,12 @@ const specialQueries: Record<string,string[]> = {
   "/dashboard/training":["tab"],
   "/dashboard/knowledge-admin":["tab"],
   "/dashboard/settings/integrations":["integrationsView"],
+  // D05 hub tabs (decoded once by hubTabState in crm-destination-state.ts).
+  "/dashboard/ghl-integration":["tab"],
+  "/dashboard/content-hub":["tab"],
+  "/dashboard/playbooks":["tab"],
+  "/dashboard/sdr-hub":["tab"],
+  "/dashboard/deliverability-hub":["tab"],
 };
 const registry=rows.map(row=>{
   const declarations=routeSources.get(row.pattern)!;

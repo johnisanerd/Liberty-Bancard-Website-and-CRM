@@ -1744,6 +1744,12 @@ export function registerAdminRoutes(app: Express) {
         }
       }
       const workflowIdsConfigured = configuredWorkflows.length + dbWorkflows.length;
+      const { summarizeGhlWorkflowReadiness } = await import("@shared/ghl-ownership-guidance");
+      const configuredWorkflowIds = new Set<string>([
+        ...configuredWorkflows.map(w => w.id),
+        ...GHL_WORKFLOW_REGISTRY.filter(w => dbWorkflows.includes(w.envKey)).map(w => w.id),
+      ]);
+      const workflowReadiness = summarizeGhlWorkflowReadiness(GHL_WORKFLOW_REGISTRY.map(w => w.id), configuredWorkflowIds);
 
       // SMTP
       const smtpStatus = getSmtpStatus();
@@ -1803,8 +1809,8 @@ export function registerAdminRoutes(app: Express) {
       } else if (ghlStatus === "expired") {
         actions.push("GHL token is expired — regenerate in GHL Settings → Private Integrations and update GHL_PRIVATE_INTEGRATION_TOKEN");
       }
-      if (workflowIdsConfigured < GHL_WORKFLOW_REGISTRY.length) {
-        actions.push(`Configure ${GHL_WORKFLOW_REGISTRY.length - workflowIdsConfigured} GHL Workflow IDs in GHL Workflow ID Manager — all automation is silently failing without them`);
+      if (workflowReadiness.missingSupported.length > 0) {
+        actions.push(`Save GHL workflow IDs for ${workflowReadiness.missingSupported.length} supported handoff(s) in GHL Workflow ID Manager: ${workflowReadiness.missingSupported.map(m => m.id).join(", ")}. Each missing ID only skips that handoff; sequences are unaffected.`);
       }
       if (!openaiConfigured) {
         actions.push("Set AI_INTEGRATIONS_OPENAI_API_KEY — AI enrichment, intent classification, blueprint/proposal generation will all fail");
@@ -1826,7 +1832,7 @@ export function registerAdminRoutes(app: Express) {
       }
 
       res.json({
-        ghl: { status: ghlStatus, configured: ghlConfigured, locationName: ghlLocationName, workflowIdsConfigured, workflowIdsTotal: GHL_WORKFLOW_REGISTRY.length },
+        ghl: { status: ghlStatus, configured: ghlConfigured, locationName: ghlLocationName, workflowIdsConfigured, workflowIdsTotal: GHL_WORKFLOW_REGISTRY.length, workflowReadiness },
         smtp: { ...smtpStatus, configured: smtpConfigured },
         openai: { configured: openaiConfigured },
         redis: { real: redisReal, url: redisReal ? "configured" : "not set (BullMQ unavailable)" },
@@ -5726,8 +5732,15 @@ export function registerAdminRoutes(app: Express) {
           `SELECT COUNT(*)::text AS count FROM contacts WHERE (email IS NULL OR email = '') AND email_status = 'active' AND archived_at IS NULL`
         ),
         // Active sales/onboarding deals without a GHL opportunity ID (sync gap)
-        pgPool.query<{ count: string }>(
-          `SELECT COUNT(*)::text AS count FROM deals
+        // Historical diagnostic: every deal row regardless of class/archive, split so production work is separable.
+        pgPool.query<{ total: string; production_active: string; archived: string; nonproduction: string; sales: string; onboarding: string }>(
+          `SELECT COUNT(*)::text AS total,
+                  COUNT(*) FILTER (WHERE archived_at IS NULL AND COALESCE(record_class,'unknown') NOT IN ('test','demo','synthetic'))::text AS production_active,
+                  COUNT(*) FILTER (WHERE archived_at IS NOT NULL)::text AS archived,
+                  COUNT(*) FILTER (WHERE COALESCE(record_class,'unknown') IN ('test','demo','synthetic'))::text AS nonproduction,
+                  COUNT(*) FILTER (WHERE pipeline='sales')::text AS sales,
+                  COUNT(*) FILTER (WHERE pipeline='onboarding')::text AS onboarding
+           FROM deals
            WHERE ghl_opportunity_id IS NULL AND pipeline IN ('sales','onboarding')
              AND stage NOT IN ('Closed Lost','Declined')
              AND created_at < NOW() - INTERVAL '1 hour'`
@@ -5765,7 +5778,23 @@ export function registerAdminRoutes(app: Express) {
           contactsNullLifecycle: parseInt(nullLifecycleRow.rows[0]?.count ?? "0", 10),
           activeEnrollmentsNoNextAction: parseInt(enrollmentsNoNextActionRow.rows[0]?.count ?? "0", 10),
           contactsEmailInconsistency: parseInt(contactsEmailInconsistencyRow.rows[0]?.count ?? "0", 10),
-          dealsNoGhlOpportunityId: parseInt(dealsNoGhlRow.rows[0]?.count ?? "0", 10),
+          dealsNoGhlOpportunityId: parseInt(dealsNoGhlRow.rows[0]?.total ?? "0", 10),
+        },
+        // Population semantics, so a large historical diagnostic is not read as a production backlog.
+        populations: {
+          headlineIssueTotalIncludes: ["orphanedDeals", "orphanedEnrollments", "contactsNullLifecycle", "activeEnrollmentsNoNextAction", "contactsEmailInconsistency"],
+          headlineIssueTotalExcludes: ["dealsNoGhlOpportunityId"],
+          dealsNoGhlOpportunityId: {
+            definition: "Deals in the sales or onboarding pipelines, not Closed Lost/Declined, older than 1 hour, with no GHL opportunity ID. Includes archived and non-production rows.",
+            total: parseInt(dealsNoGhlRow.rows[0]?.total ?? "0", 10),
+            productionActive: parseInt(dealsNoGhlRow.rows[0]?.production_active ?? "0", 10),
+            archived: parseInt(dealsNoGhlRow.rows[0]?.archived ?? "0", 10),
+            nonProduction: parseInt(dealsNoGhlRow.rows[0]?.nonproduction ?? "0", 10),
+            sales: parseInt(dealsNoGhlRow.rows[0]?.sales ?? "0", 10),
+            onboarding: parseInt(dealsNoGhlRow.rows[0]?.onboarding ?? "0", 10),
+            overlap: "Archived and non-production counts can overlap; they do not sum to the total.",
+          },
+          readAt: new Date().toISOString(),
         },
         samples: {
           orphanedDeals: orphanedDealsRows.rows,
@@ -5778,16 +5807,44 @@ export function registerAdminRoutes(app: Express) {
     }
   });
 
-  app.post("/api/admin/data-health/reconcile", requireRole("admin"), async (req, res) => {
-    // Trigger reconcile-orphans script asynchronously
-    const { execFile } = await import("child_process");
-    const child = execFile("npx", ["tsx", "scripts/reconcile-orphans.ts"], {
-      env: { ...process.env },
-      cwd: process.cwd(),
-    });
-    const pid = child.pid;
-    console.log(`[DataHealth] Reconciliation script started (pid=${pid})`);
-    res.json({ started: true, pid, message: "Reconciliation running in background — check audit logs for results" });
+  // Governed reconciliation. The former one-click script runner was removed: it linked deals by first-found email,
+  // cancelled enrollments, rescheduled active enrollments and returned a PID. See services/data-health-reconcile.ts.
+  app.get("/api/admin/data-health/reconcile/plan", requireRole("admin"), async (_req, res) => {
+    try {
+      const { readDataHealthReconcilePlan } = await import("../services/data-health-reconcile");
+      res.json(await readDataHealthReconcilePlan());
+    } catch (err: any) {
+      serverError(res, err);
+    }
+  });
+
+  app.post("/api/admin/data-health/reconcile/apply", requireRole("admin"), async (req, res) => {
+    try {
+      const body = z.object({ operationId: z.string().uuid(), actionKeys: z.array(z.string().max(60)).min(1).max(100) }).safeParse(req.body);
+      if (!body.success) return res.status(400).json({ code: "INVALID_REQUEST", message: "operationId (UUID) and 1-100 actionKeys are required." });
+      const { applyDataHealthReconcile, ReconcileError } = await import("../services/data-health-reconcile");
+      try {
+        const { receipt, replayed } = await applyDataHealthReconcile({ operationId: body.data.operationId, actionKeys: body.data.actionKeys, actorId: String((req as any).user?.id ?? "") });
+        res.status(receipt.status === "complete" ? 200 : 202).json({ replayed, receipt });
+      } catch (err: any) {
+        if (err instanceof ReconcileError) return res.status(err.httpStatus).json({ code: err.code, message: err.message });
+        throw err;
+      }
+    } catch (err: any) {
+      serverError(res, err);
+    }
+  });
+
+  app.get("/api/admin/data-health/reconcile/operations/:operationId", requireRole("admin"), async (req, res) => {
+    try {
+      if (!/^[0-9a-f-]{36}$/i.test(req.params.operationId)) return res.status(400).json({ code: "INVALID_OPERATION_ID" });
+      const { readDataHealthReconcileReceipt } = await import("../services/data-health-reconcile");
+      const receipt = await readDataHealthReconcileReceipt(req.params.operationId);
+      if (!receipt) return res.status(404).json({ code: "OPERATION_NOT_FOUND" });
+      res.json({ receipt });
+    } catch (err: any) {
+      serverError(res, err);
+    }
   });
 
   app.get("/api/admin/lead-queue-stats", requireRole("admin", "manager"), async (req, res) => {

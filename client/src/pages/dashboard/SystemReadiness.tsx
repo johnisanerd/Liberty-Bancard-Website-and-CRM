@@ -35,6 +35,10 @@ interface ReadinessData {
     locationName?: string;
     workflowIdsConfigured: number;
     workflowIdsTotal: number;
+    workflowReadiness?: {
+      supportedTotal: number; supportedConfigured: number; referenceOnlyTotal: number; referenceOnlyConfigured: number;
+      missingSupported: Array<{ id: string; effect: string }>; needsAttention: boolean;
+    };
   };
   smtp: {
     configured: boolean;
@@ -346,16 +350,24 @@ export default function SystemReadiness() {
                   <p className="text-xs text-muted-foreground pl-7">📍 {data.ghl.locationName}</p>
                 )}
                 <Separator />
-                <div className="flex items-center justify-between">
-                  <span className="text-muted-foreground">Workflow IDs</span>
-                  <span className={`font-mono font-semibold text-xs ${data.ghl.workflowIdsConfigured < data.ghl.workflowIdsTotal ? "text-red-600 dark:text-red-400" : "text-green-600"}`}>
-                    {data.ghl.workflowIdsConfigured}/{data.ghl.workflowIdsTotal}
-                  </span>
-                </div>
-                {data.ghl.workflowIdsConfigured < data.ghl.workflowIdsTotal && (
-                  <p className="text-xs text-red-600 dark:text-red-400">
-                    {data.ghl.workflowIdsTotal - data.ghl.workflowIdsConfigured} workflows unconfigured → all automation silently fails
-                  </p>
+                {data.ghl.workflowReadiness ? (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">Supported handoff workflow IDs</span>
+                      <span className={`font-mono font-semibold text-xs ${data.ghl.workflowReadiness.needsAttention ? "text-amber-600 dark:text-amber-400" : "text-green-600"}`}>
+                        {data.ghl.workflowReadiness.supportedConfigured}/{data.ghl.workflowReadiness.supportedTotal}
+                      </span>
+                    </div>
+                    {data.ghl.workflowReadiness.missingSupported.map(m => (
+                      <p key={m.id} className="text-xs text-amber-700 dark:text-amber-400">{m.id}: {m.effect}</p>
+                    ))}
+                    <p className="text-xs text-muted-foreground">
+                      Reference-only workflow IDs: {data.ghl.workflowReadiness.referenceOnlyConfigured}/{data.ghl.workflowReadiness.referenceOnlyTotal} saved.
+                      These do not affect readiness or sequence sending.
+                    </p>
+                  </>
+                ) : (
+                  <p className="text-xs text-muted-foreground">Workflow ID readiness unavailable.</p>
                 )}
                 <div className="flex items-center gap-2">
                   <StatusIcon ok={data.env.ghlWebhookSecret} />

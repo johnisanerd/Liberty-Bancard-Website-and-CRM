@@ -2,6 +2,7 @@ import { pool } from "../db";
 import { projectResidualObservations } from "./residual-observation-projection";
 import {createHash} from "node:crypto";
 import { OPEN_SALES_LEAD_STAGES } from "@shared/schema";
+import { computeRate, type RateMetric } from "@shared/metric-contract";
 import { authorizeCommercialUseBatch } from "./commercial-resolution";
 import { contactTargetVerticalSql, resolveContactTargetVertical } from "@shared/contact-vertical-taxonomy";
 import { CLASSIFIER_VERSION } from "./cro03/sfp-vertical-classifier";
@@ -647,7 +648,17 @@ export async function readRevenueReconciliation(user: RevenueUser) {
 
 export type PipelineAnalytics = {
   sales: {
-    total: number; active: number; closedWon: number; closedLost: number; winRate: number;
+    total: number;
+    /** Open pipeline: stage in OPEN_SALES_LEAD_STAGES, the same definition every other pipeline surface uses. */
+    active: number;
+    closedWon: number; closedLost: number;
+    /** Stage "Nurture / Not Now": neither open pipeline nor a decided outcome. */
+    nurture: number;
+    /** Sales stage outside the open set, closed outcomes and nurture (legacy or unknown). Not hidden in any other count. */
+    unclassifiedStage: number;
+    /** Whole percent, or null when no deal has been decided. Read winRateBasis for the exact fraction. */
+    winRate: number | null;
+    winRateBasis: RateMetric;
     stageDistribution: Record<string, number>; newLast30Days: number; wonLast30Days: number; stallingDeals: number;
   };
   onboarding: { total: number; active: number; completed: number };
@@ -668,8 +679,10 @@ export async function readPipelineAnalytics(user: RevenueUser): Promise<{
       values.push(user.email ?? "");
       return `(d.owner IS NULL OR LOWER(d.owner) = LOWER($${values.length}))`;
     })();
+  values.push(OPEN_SALES_LEAD_STAGES as unknown as string[]);
+  const openParam = `$${values.length}`;
   const result = await pool.query<{
-    sales_total: string; sales_active: string; sales_closed_won: string; sales_closed_lost: string;
+    sales_total: string; sales_active: string; sales_nurture: string; sales_unclassified: string; sales_closed_won: string; sales_closed_lost: string;
     sales_stages: Record<string, number> | null; sales_new_last_30: string; sales_won_last_30: string;
     sales_stalling: string; onboarding_total: string; onboarding_active: string; onboarding_completed: string;
     observed_deal_ids: number[]; as_of: Date;
@@ -680,12 +693,14 @@ export async function readPipelineAnalytics(user: RevenueUser): Promise<{
     ), metrics AS (
       SELECT
         COUNT(*) FILTER (WHERE pipeline = 'sales')::int::text AS sales_total,
-        COUNT(*) FILTER (WHERE pipeline = 'sales' AND stage NOT IN ('Closed Won', 'Closed Lost'))::int::text AS sales_active,
+        COUNT(*) FILTER (WHERE pipeline = 'sales' AND stage = ANY($OPEN$::text[]))::int::text AS sales_active,
+        COUNT(*) FILTER (WHERE pipeline = 'sales' AND stage = 'Nurture / Not Now')::int::text AS sales_nurture,
+        COUNT(*) FILTER (WHERE pipeline = 'sales' AND NOT (stage = ANY($OPEN$::text[])) AND stage NOT IN ('Closed Won', 'Closed Lost', 'Nurture / Not Now'))::int::text AS sales_unclassified,
         COUNT(*) FILTER (WHERE pipeline = 'sales' AND stage = 'Closed Won')::int::text AS sales_closed_won,
         COUNT(*) FILTER (WHERE pipeline = 'sales' AND stage = 'Closed Lost')::int::text AS sales_closed_lost,
         COUNT(*) FILTER (WHERE pipeline = 'sales' AND created_at > CURRENT_TIMESTAMP - INTERVAL '30 days')::int::text AS sales_new_last_30,
         COUNT(*) FILTER (WHERE pipeline = 'sales' AND stage = 'Closed Won' AND updated_at > CURRENT_TIMESTAMP - INTERVAL '30 days')::int::text AS sales_won_last_30,
-        COUNT(*) FILTER (WHERE pipeline = 'sales' AND stage NOT IN ('Closed Won', 'Closed Lost') AND updated_at < CURRENT_TIMESTAMP - INTERVAL '7 days')::int::text AS sales_stalling,
+        COUNT(*) FILTER (WHERE pipeline = 'sales' AND stage = ANY($OPEN$::text[]) AND updated_at < CURRENT_TIMESTAMP - INTERVAL '7 days')::int::text AS sales_stalling,
         COUNT(*) FILTER (WHERE pipeline = 'onboarding')::int::text AS onboarding_total,
         COUNT(*) FILTER (WHERE pipeline = 'onboarding' AND stage NOT IN ('Live (First Batch)', 'Active (7 Days)', 'Active (30 Days)', 'Cancelled'))::int::text AS onboarding_active,
         COUNT(*) FILTER (WHERE pipeline = 'onboarding' AND stage IN ('Live (First Batch)', 'Active (7 Days)', 'Active (30 Days)'))::int::text AS onboarding_completed,
@@ -697,7 +712,7 @@ export async function readPipelineAnalytics(user: RevenueUser): Promise<{
       FROM (SELECT stage, COUNT(*)::int AS stage_count FROM scoped_deals WHERE pipeline = 'sales' GROUP BY stage) grouped
     )
     SELECT metrics.*, stages.sales_stages FROM metrics CROSS JOIN stages
-  `, values);
+  `.replaceAll("$OPEN$", openParam), values);
   const authoritative = result.rows[0];
   if (!authoritative) throw new Error("PIPELINE_ANALYTICS_EMPTY_AGGREGATE");
   const num = (value: string | undefined) => Number.parseInt(value ?? "0", 10);
@@ -709,7 +724,8 @@ export async function readPipelineAnalytics(user: RevenueUser): Promise<{
     data: {
       sales: {
         total: num(authoritative.sales_total), active: num(authoritative.sales_active), closedWon, closedLost,
-        winRate: closedWon + closedLost > 0 ? Math.round((closedWon / (closedWon + closedLost)) * 100) : 0,
+        nurture: num(authoritative.sales_nurture), unclassifiedStage: num(authoritative.sales_unclassified),
+        winRate: computeRate(closedWon, closedWon + closedLost).percent, winRateBasis: computeRate(closedWon, closedWon + closedLost),
         stageDistribution: authoritative.sales_stages ?? {},
         newLast30Days: num(authoritative.sales_new_last_30), wonLast30Days: num(authoritative.sales_won_last_30),
         stallingDeals: num(authoritative.sales_stalling),

@@ -111,6 +111,7 @@ const CASES: GuardCase[] = [
   { method: "GET",  path: "/api/serper/status",              anon: [401], merchant: [403], admin: [200], description: "serper status" },
   { method: "GET",  path: "/api/proxycurl/status",           anon: [401], merchant: [403], admin: [200], description: "proxycurl status" },
   { method: "POST", path: "/api/import-executions/00000000-0000-4000-8000-000000000000/replay-retained", anon: [401], merchant: [403], admin: [403], agent: [403], manager: [403], description: "retained replay (admin only; CSRF required)" },
+  { method: "POST", path: "/api/admin/data-health/reconcile/apply", anon: [401], merchant: [403], admin: [403], agent: [403], manager: [403], description: "data health reconcile apply (admin only; CSRF required; no body is sent)" },
   { method: "POST", path: "/api/contacts/999999/archive",    anon: [401], merchant: [403], admin: [403], agent: [403], manager: [403], description: "contact archive (admin/manager; CSRF required)" },
   { method: "POST", path: "/api/contacts/999999/restore",    anon: [401], merchant: [403], admin: [403], agent: [403], manager: [403], description: "contact restore (admin/manager; CSRF required)" },
 
@@ -200,6 +201,7 @@ const CASES: GuardCase[] = [
   { method: "GET",    path: "/api/admin/launch-readiness",           anon: [401], merchant: [403], admin: [200], description: "launch readiness (requireRole admin/manager)" },
   { method: "GET",    path: "/api/admin/outbound-preflight",         anon: [401], merchant: [403], admin: [200], description: "outbound preflight checklist (requireRole admin/manager)" },
   { method: "GET",    path: "/api/admin/data-health",               anon: [401], merchant: [403], admin: [200], description: "data health metrics (requireRole admin/manager)" },
+  { method: "GET",    path: "/api/admin/data-health/reconcile/plan", anon: [401], merchant: [403], admin: [200], description: "data health reconcile plan, read only (requireRole admin)" },
   { method: "GET",    path: "/api/admin/queue-metrics",              anon: [401], merchant: [403], admin: [200, 503], description: "queue metrics (requireRole admin; 503 when queue infrastructure is intentionally unavailable)" },
   { method: "GET",    path: "/api/admin/alerts",                     anon: [401], merchant: [403], admin: [200], description: "alert feed (requireRole admin/manager)" },
   { method: "GET",    path: "/api/admin/ghl/identity-conflicts",     anon: [401], merchant: [403], admin: [200], description: "GHL identity conflict queue (requireRole admin/manager)" },

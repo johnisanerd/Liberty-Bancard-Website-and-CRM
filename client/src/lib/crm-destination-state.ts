@@ -210,6 +210,19 @@ export function selectValue<T extends string>(params: URLSearchParams, key: stri
   return { value: values[0] as T, issues: [] };
 }
 
+/** D05 hub tabs. Each hub's `tab` is one registered selector decoded by hubTabState (duplicate, invalid and forbidden values
+ * fall back to the first permitted tab and say so) and changed with typedTabUrl (history push, registered context kept). */
+export const hubTabs = {
+  ghlIntegration: ["settings", "workflow-ids", "sequence-guide"],
+  content: ["content", "blog", "linkedin", "blaze"],
+  playbooks: ["marketing", "growth"],
+  sdr: ["sdr", "chatbot"],
+  deliverability: ["email-health", "inbox-health"],
+} as const;
+export function hubTabState<T extends string>(search: string, allowed: readonly T[], permitted: readonly T[]): Selection<T> {
+  return selectValue(new URLSearchParams(search), "tab", allowed, permitted[0], permitted);
+}
+
 export const safeContextKeys = ["contactId", "companyId", "businessId", "dealId", "sourceId", "from"] as const;
 const contextIdKinds = { contactId: "integer", companyId: "integer", businessId: "integer", dealId: "integer", sourceId: "integer" } as const;
 export type LocalEntityId = { kind: keyof typeof contextIdKinds; value: string };
