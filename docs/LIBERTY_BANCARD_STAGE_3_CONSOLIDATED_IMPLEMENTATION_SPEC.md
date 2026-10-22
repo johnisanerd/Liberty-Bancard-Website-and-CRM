@@ -2072,3 +2072,15 @@ D-V results and gaps are in ledger Section 41. Contract points that later work m
 - Every visible control has an accessible name; the D-R2 contract suite checks the controls repaired in D-V.
 - D01 apply keeps direct SQL with per-action transaction, row locks, same-transaction audit and unique-email identity recheck. Invariants (contact record/lifecycle, deal non-link fields, enrollment schedule, communication events, pause settings) are asserted by `test-data-health-reconcile.ts` and the D-V browser suite.
 - Stage 3 completion needs, after publish, the post-publication smoke listed in ledger Section 41.6.
+
+### 32.2 D-V review contract additions — 2026-10-22 (source; not published)
+
+Dispositions and evidence are in ledger Section 42. Contract points that later work must keep:
+
+- A failed read is never rendered as zero, empty or "available". Use `readFailureKind` and `metricAvailability`; throw on non-OK reads instead of returning `[]`.
+- A Today action opens the cohort it counts: the cohort is a registered URL selector (`due`, `taskState`, `created`), decoded at the destination each render, shown, and clearable. Count and list share one predicate (`isOverdueTask`, `createdLast7Days`).
+- A response that mixes populations names each field's population (`/api/dashboard/stats` `populations`; `/api/outreach/status` `contactsScope`).
+- Retained Contact state is the projection from `projectContactCore` only.
+- CSV exports stream bounded keyset pages (`bounded-csv-export.ts`); no `limit: 500` sample may back an export. Post-stream failures abort the transfer.
+- Pages inside `DashboardLayout` never render their own `main`; the route crawl fails on a main count other than one.
+- Performance samples must assert readiness each time; a timeout is a failure.

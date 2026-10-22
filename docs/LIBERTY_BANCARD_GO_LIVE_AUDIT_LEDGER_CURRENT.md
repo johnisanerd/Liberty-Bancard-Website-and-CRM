@@ -1807,3 +1807,36 @@ Dev, admin session: open sales pipeline = 90 in `/api/analytics/pipeline`, `/api
 - The accessibility crawl covers 45 routes at rest. `Label`-without-`htmlFor` next to `Switch` exists in other files (29 files use `Switch`); only switches reachable on the 45 routes were checked.
 - Other routes still read capped samples (`storage.getDeals/getContacts/getTickets({limit: 500})` in `server/routes/ai.ts`, `crm-operations.ts`, `deals.ts`, `conversation-ai-config.ts`). They feed AI context and operational helpers, not the metric destinations compared above, and were not changed.
 - The full pre-deploy roster was not run; only the suites listed in 41.4.
+
+## 42. D-V independent review of b0335a0b — dispositions (2026-10-22; source, not published)
+
+Code under test: commit `d584bdf7` (F01 is the preceding commit on the same branch). All suites below ran on the disposable database against a production build of that code. The final commit adds only this ledger, the spec note and regenerated receipts. Stage 3 is not closed by this section; it needs publication and the post-publication smoke in 42.4.
+
+### 42.1 Dispositions
+
+| Finding | Disposition | Evidence |
+|---|---|---|
+| F01 Data Health apply authority | Source repair. Each action re-pins ownership token and generation and admin authority in its own transaction; the deal link takes the same per-mailbox advisory lock as `writeContact`; receipts are fenced and actor-scoped; reload recovery offers check, re-submit and discard. | `test-data-health-reconcile.ts` (74 checks), `test-stage3-d-v-data-health-browser.ts` (37 checks), both re-run on d584bdf7. |
+| F02 failed reads shown as zero or empty | Source repair. Both partner pages and the expanded referral list throw on a non-OK read and render denied or unavailable with Retry; metric availability derives from the read; "Unavailable" replaces zeros, including the pipeline-value card. Overview active deals use `OPEN_SALES_LEAD_STAGES`. | `test-stage3-d-v-contracts.ts`; `test-stage3-d-v-landmarks-browser.ts` (real 501 read on both pages). Denied (403) rendering and a real successful partner read were not driven in a browser. |
+| M1 `/api/dashboard/stats` population | Source repair. The single whole-payload label is replaced by a per-field `populations` object. Tickets are labelled all tickets with a status other than Resolved or Closed, not role-scoped, matching `/api/kpi/summary`. No second ticket policy was introduced. | Contract suite. |
+| M2 contact total labels | Source repair. Outreach Command and mobile name the population (all unarchived contacts, all record classes, all owners); `/api/outreach/status` returns `contactsScope`. | Contract suite. |
+| F03 Today destinations | Source repair. Overdue and pending task actions open Tasks with `due=overdue` or `taskState=pending`; the new-leads action opens Pipeline with `created=7d`, backed by a server filter `createdLast7Days` on the same predicate as the KPI. Tasks and Pipeline derive the cohort from the URL, show it, and offer a clear control. The overdue predicate is shared by the Today figure's definition and the Tasks filter. | `test-stage3-d-v-cohort-browser.ts`: direct entry, reload, in-app change, Back and Forward on Tasks; Pipeline chip, clear and Back. |
+| F04 retained Contact core | Source repair. Only the projected contact core and capability flags are stored; section arrays, notes, deals, tickets, tasks and loaded flags never enter the retained value. | `test-stage3-d-v-contact-core-browser.ts` drives the real Contact component with deferred and failed section responses. A second signed-in actor and a permission-generation change were not driven in a browser; they rest on the protected-scope key and `test-retained-contact-core.ts`. No cross-actor disclosure is claimed. |
+| E1 capped exports | Source repair. `/api/export/{contacts,deals,tickets}` have no client consumer; they now stream bounded keyset pages by ascending id with no 500-row cap. Contacts use the People read predicate (archived excluded, role scope, optional `search`, `status`, `assignedTo`, `recordClass`); deals use the Pipeline predicate and resolve contacts by linked ids per page; tickets export all tickets. A failure after streaming starts destroys the connection instead of ending a short file. | `test-stage3-d-v-exports.ts` (18 checks): 1,250 contacts, 1,099 deals with contacts across pages, 1,010 tickets, quote/comma/newline round trip, ascending order, role denial, first-page and mid-stream failure. |
+| U1 duplicate main | Source repair. Canonical Enrichment renders a section when not embedded. The crawl tool now fails when a page has a main count other than one. | `test-stage3-d-v-landmarks-browser.ts`: one main and one h1 on the direct page and embedded in Lead Ops. The 45-route crawl was not re-run on this candidate. It forces desktop, uses bare hub URLs and heuristic control names, and is not a mobile, tab, dialog or role matrix. |
+| Performance gate | Source repair. Every sample asserts shell readiness and data readiness (no loading indicator for two consecutive polls); a timeout fails the run instead of counting as a sample. Shell and data medians are recorded separately, with candidate identity and the baseline index hash. Legitimate empty or unavailable states count as ready. | Re-run on d584bdf7, 7 alternating samples, same API, database and machine. Data-ready medians, baseline then candidate: `/dashboard` 353 → 491 ms (+138 ms, passes only through the 25% + 150 ms allowance), admin hub 502 → 297, knowledge base 393 → 478, permissions 473 → 254. The `/dashboard` regression is within the bound, not absent; its cause was not investigated. |
+
+### 42.2 Other suites on d584bdf7
+
+`test-stage3-d-r2-contracts.ts` (58), `test-retained-contact-core.ts` (10), `test-stage3-d-v-contracts.ts` (33), `smoke-role-guards.ts` (disposable), `check-api-coverage.ts`, `test-c2-postmerge-browser.ts`, `test-c2-contact-header.ts`. The new suites are registered in `scripts/pre-deploy.ts`.
+
+### 42.3 Not established
+
+- The full pre-deploy roster, the SEO audit and the public-route validation were not re-run; no public route was changed.
+- Remaining capped `limit: 500` reads in `server/routes/ai.ts` are unchanged and remain assigned to the AI readiness scope, not to D-V.
+- `/api/dashboard/stats` tickets keep the same unscoped definition as the KPI summary; role-scoping tickets would be a separate policy decision.
+- Evidence runs used a desktop viewport and an admin session unless a suite states otherwise.
+
+### 42.4 After publication (required before Stage 3 is closed)
+
+`/api/health` SHA equals the pushed commit; authenticated admin smoke of Today actions, Tasks `?due=overdue`, Pipeline `?created=7d`, a Contact section switch, both partner pages and the three exports (row counts against SQL); Data Health apply is not run against production; confirm the outbound pause and incoming GHL sync from their actual control authorities.
