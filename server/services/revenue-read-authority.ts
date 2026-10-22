@@ -345,6 +345,14 @@ function _setCachedFacet(key: string, value: FacetResult): void {
  * directly (no MATERIALIZED CTE, no window function over the full result
  * set).  observeRevenueSubjects() fires after the connection is released.
  */
+/** Exact count of the same population readPeople lists (same filters and ownership predicate, including the owned-deal branch). */
+export async function readContactPopulationCount(user: RevenueUser, filters: Partial<RevenueFilters> = {}): Promise<number> {
+  const values: unknown[] = [];
+  const predicate = contactReadPredicate(user, { limit: 1, offset: 0, ...filters }, values);
+  const result = await pool.query(`SELECT COUNT(*)::int AS n FROM contacts c WHERE ${predicate}`, values);
+  return Number(result.rows[0]?.n ?? 0);
+}
+
 export async function readPeople(user: RevenueUser, filters: RevenueFilters) {
   const values: unknown[] = [];
   const predicate = contactReadPredicate(user, filters, values);

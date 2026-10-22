@@ -15,7 +15,7 @@ import {
   Users, Building2, DollarSign, Calendar, CheckCircle, Clock,
   Search, Plus, Edit, ExternalLink, Loader2, RefreshCw,
 } from "lucide-react";
-import type { PartnerPipelineRecord } from "@shared/partner-response";
+import { formatOpenPipelineVolume, summarizeOpenPipelineVolume, type PartnerPipelineRecord } from "@shared/partner-response";
 
 const PARTNER_CATEGORIES = [
   { value: "agent", label: "Agent" },
@@ -158,7 +158,7 @@ export default function PartnerReferralPipeline() {
   });
 
   const totalReferrals = partners.reduce((s, p) => s + (p.referredMerchantCount || 0), 0);
-  const totalPipelineValue = partners.reduce((s, p) => s + Number(p.openPipelineVolume || 0), 0);
+  const pipelineSummary = summarizeOpenPipelineVolume(partners);
   const activePartners = partners.filter(p => p.status === "active").length;
 
   return (
@@ -209,8 +209,8 @@ export default function PartnerReferralPipeline() {
                 <DollarSign className="w-4 h-4 text-green-600" />
               </div>
               <div>
-                <p className="text-xs text-muted-foreground" title="Total processing volume on open sales deals for referred contacts. Not revenue.">Open Pipeline Volume</p>
-                <p className="text-xl font-bold">{metric(`$${totalPipelineValue.toLocaleString()}`)}</p>
+                <p className="text-xs text-muted-foreground" title={pipelineSummary.status === "complete" ? "Total processing volume on open sales deals for referred contacts. Not revenue." : `Total processing volume on open sales deals for referred contacts. Not revenue. ${pipelineSummary.unknownDeals} open deal(s) have no usable amount and are not included.`}>Open Pipeline Volume</p>
+                <p className="text-xl font-bold">{metric(pipelineSummary.total === null ? "Unavailable" : `$${pipelineSummary.total.toLocaleString()}${pipelineSummary.status === "partial" ? " (partial)" : ""}`)}</p>
               </div>
             </div>
           </CardContent>
@@ -315,7 +315,7 @@ export default function PartnerReferralPipeline() {
                   <div className="space-y-0.5">
                     <p className="text-muted-foreground" title="Total processing volume on open sales deals for referred contacts. Not revenue.">Open Pipeline Volume</p>
                     <p className="font-semibold text-base text-green-600">
-                      ${Number(partner.openPipelineVolume || 0).toLocaleString()}
+                      {formatOpenPipelineVolume(partner, n => `$${n.toLocaleString()}`)}
                     </p>
                   </div>
                 </div>

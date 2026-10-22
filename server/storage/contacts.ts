@@ -102,7 +102,7 @@ import {
 import { eq, desc, and, lt, isNull, ne, sql, asc, gt, gte, lte, inArray, or, ilike, count, getTableColumns } from "drizzle-orm";
 import { effectiveContactVerticalSql,effectiveContactVerticalStatusSql } from "@shared/effective-vertical";
 import { resolveContactTargetVertical } from "@shared/contact-vertical-taxonomy";
-import {selectMailboxContact,lockContactMailboxes,type MailboxIdentity} from "../services/contact-mailbox-identity";
+import {selectMailboxContact,lockContactMailboxes,contactMailboxLockKey,type MailboxIdentity} from "../services/contact-mailbox-identity";
 const effectiveVertical = sql<string | null>`${sql.raw(effectiveContactVerticalSql("contacts"))}`;
 const effectiveVerticalStatus = sql<string>`${sql.raw(effectiveContactVerticalStatusSql("contacts"))}`;
 import { coerceDateFields } from "../utils/date-coerce";
@@ -260,10 +260,17 @@ import { createValidationIntent, hashEmailToken, normalizeEmailToken } from "../
        "linkedinEnrichedAt", "archivedAt", "lastSyncedAt", "bouncedAt",
        "lastVoicemailAt", "offerRoutedAt"],
     );
-    const [before] = await db.select().from(contacts).where(eq(contacts.id, id));
     const updated = await db.transaction(async (tx) => {
       // Mailbox locks first (writeContact's order), for both the address being left and the address being taken.
-      if ("email" in coercedUpdates) await lockContactMailboxes(tx, [before?.email, (coercedUpdates as any).email]);
+      // The old address is read inside the transaction; if it changes while we wait for the lock, the new old
+      // address is locked too before anything is written.
+      const [pre] = await tx.select().from(contacts).where(eq(contacts.id, id));
+      let before = pre;
+      if ("email" in coercedUpdates) {
+        await lockContactMailboxes(tx, [pre?.email, (coercedUpdates as any).email]);
+        [before] = await tx.select().from(contacts).where(eq(contacts.id, id));
+        if (before && contactMailboxLockKey(before.email) !== contactMailboxLockKey(pre?.email)) await lockContactMailboxes(tx, [before.email]);
+      }
       if ("email" in coercedUpdates || "phone" in coercedUpdates) {
         const { lockCommercialGraph } = await import("../services/commercial-graph-locks");
         await lockCommercialGraph(tx, [{ type: "contact", id }], ["identity"]);

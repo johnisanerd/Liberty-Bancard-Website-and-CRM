@@ -5,6 +5,7 @@ import { db, pool } from "../db";
 import { contacts } from "@shared/schema";
 import type { GhlInboundSyncCounts, GhlInboundSyncRun, GhlInboundSyncStatus } from "@shared/ghl-inbound-sync";
 import { writeContact, updateContactLocalFirst, type ContactWriterHookPolicy } from "./contact-writer";
+import { lockContactMailboxes } from "./contact-mailbox-identity";
 import { parseGhlInboundCursor } from "./ghl-inbound-pagination";
 
 const PREFIX = "ghl_inbound_contact_sync";
@@ -499,6 +500,9 @@ export async function advanceGhlInboundSyncStep(id: string): Promise<{ run: GhlI
           if (plan.kind !== "create" && plan.kind !== "update") continue;
           const keys = [`ghl:${plan.source.id}`, ...(plan.source.email ? [`email:${plan.source.email}`] : [])].sort();
           for (const key of keys) await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${key},0))`);
+          // Shared mailbox protocol: take the destination mailbox lock BEFORE the identity row locks below, so a
+          // concurrent Data Health reconcile or other mailbox writer serializes with this apply.
+          await lockContactMailboxes(tx, [plan.source.email]);
           const pauseCheckResult = await tx.execute(sql`SELECT state, epoch::text AS epoch FROM outbound_pause_control ORDER BY id LIMIT 1 FOR SHARE`);
           const pauseCheck = (pauseCheckResult as any).rows?.[0];
           if (pauseCheck?.state !== "paused" || String(pauseCheck.epoch) !== run.pauseEpoch) throw new Error("GHL_INBOUND_PAUSE_EPOCH_CHANGED");

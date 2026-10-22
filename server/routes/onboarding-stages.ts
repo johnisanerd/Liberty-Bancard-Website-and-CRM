@@ -5,6 +5,8 @@ import { storage } from "../storage";
 import { db } from "../db";
 import { merchantOnboardingStages, deals, contacts, tasks, MERCHANT_ONBOARDING_STAGE_KEYS, OPEN_SALES_LEAD_STAGES } from "@shared/schema";
 import { eq, and, lt, isNull, sql } from "drizzle-orm";
+import { storedAmountNumericSql } from "../utils/amount-sql";
+import { amountAvailability } from "@shared/amount-contract";
 import { privatePartnerResponse, toPartnerOperatorRecord, toPartnerPipelineRecord } from "../utils/partner-response";
 import { serverError } from "../utils/server-error";
 import { createAndSendNpsSurvey } from "../services/nps-email";
@@ -335,24 +337,26 @@ export function registerOnboardingStagesRoutes(app: Express) {
         WITH referral_counts AS (
           SELECT partner_id, COUNT(*)::int AS referred_count FROM referrals WHERE partner_id IS NOT NULL GROUP BY partner_id
         ), referred_deals AS (
-          SELECT DISTINCT r.partner_id, d.id AS deal_id,
-            CASE WHEN d.total_volume ~ '^-?[0-9]+(\.[0-9]+)?$' THEN d.total_volume::numeric ELSE 0 END AS volume
+          SELECT DISTINCT r.partner_id, d.id AS deal_id, ${storedAmountNumericSql(sql`d.total_volume`)} AS volume
           FROM referrals r
           JOIN deals d ON d.contact_id = r.contact_id
           WHERE r.partner_id IS NOT NULL AND r.contact_id IS NOT NULL
             AND d.record_class = 'production' AND d.archived_at IS NULL AND d.pipeline = 'sales'
             AND d.stage IN (${sql.join(OPEN_SALES_LEAD_STAGES.map(stage => sql`${stage}`), sql`, `)})
         ), deal_totals AS (
-          SELECT partner_id, COUNT(*)::int AS deal_count, COALESCE(SUM(volume), 0)::float8 AS volume FROM referred_deals GROUP BY partner_id
+          SELECT partner_id, COUNT(*)::int AS deal_count,
+            COUNT(volume)::int AS known_count,
+            COALESCE(SUM(volume), 0)::float8 AS volume
+          FROM referred_deals GROUP BY partner_id
         )
         SELECT p.id AS partner_id, COALESCE(rc.referred_count, 0) AS referred_count,
-          COALESCE(dt.deal_count, 0) AS deal_count, COALESCE(dt.volume, 0) AS volume
+          COALESCE(dt.deal_count, 0) AS deal_count, COALESCE(dt.known_count, 0) AS known_count, COALESCE(dt.volume, 0) AS volume
         FROM partners p
         LEFT JOIN referral_counts rc ON rc.partner_id = p.id
         LEFT JOIN deal_totals dt ON dt.partner_id = p.id`);
-      const aggregates = new Map<number, { referred: number; deals: number; volume: number }>();
+      const aggregates = new Map<number, { referred: number; deals: number; known: number; volume: number }>();
       for (const row of aggregateRows.rows as Array<Record<string, unknown>>) {
-        aggregates.set(Number(row.partner_id), { referred: Number(row.referred_count), deals: Number(row.deal_count), volume: Number(row.volume) });
+        aggregates.set(Number(row.partner_id), { referred: Number(row.referred_count), deals: Number(row.deal_count), known: Number(row.known_count), volume: Number(row.volume) });
       }
 
       const enriched = await Promise.all(
@@ -372,8 +376,12 @@ export function registerOnboardingStagesRoutes(app: Express) {
           const aggregate = aggregates.get(p.id);
           return toPartnerPipelineRecord(p, {
             referredMerchantCount: aggregate?.referred ?? 0,
-            openPipelineVolume: aggregate?.volume ?? 0,
+            // Unknown amounts are counted, never summed as zero: all known = complete, some = partial, none = unavailable (null).
+            openPipelineVolume: (aggregate?.deals ?? 0) > 0 && amountAvailability(aggregate!.deals, aggregate!.deals - aggregate!.known) === "unavailable"
+              ? null : (aggregate?.volume ?? 0),
             openPipelineDealCount: aggregate?.deals ?? 0,
+            openPipelineVolumeUnknownDeals: aggregate ? aggregate.deals - aggregate.known : 0,
+            openPipelineVolumeStatus: amountAvailability(aggregate?.deals ?? 0, aggregate ? aggregate.deals - aggregate.known : 0),
             nextFollowupDue,
           });
         })

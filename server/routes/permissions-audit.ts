@@ -4,7 +4,7 @@ import { storage } from "../storage";
 import { db } from "../db";
 import { users, tickets } from "@shared/schema";
 import { desc, count, notInArray } from "drizzle-orm";
-import { readPipelineAnalytics } from "../services/revenue-read-authority";
+import { readPipelineAnalytics, readContactPopulationCount } from "../services/revenue-read-authority";
 import { serverError } from "../utils/server-error";
 import { extractRouteInventory } from "../services/express-route-provenance";
 
@@ -110,13 +110,13 @@ export function registerPermissionsAuditRoutes(app: Express) {
       const user = req.user as { email?: string | null; role?: string } | undefined;
       const [pipeline, contactsR, openTickets] = await Promise.all([
         readPipelineAnalytics(req.user as any),
-        storage.getContacts({ limit: 1, recordClass: "production", ...(user?.role === "agent" ? { ownerEmail: user.email ?? "" } : {}) }),
+        readContactPopulationCount(user ?? {}, { recordClass: "production" }),
         db.select({ n: count() }).from(tickets).where(notInArray(tickets.status, ["Resolved", "Closed"])),
       ]);
       const sales = pipeline.data.sales;
       res.json({
         deals: { total: sales.total + pipeline.data.onboarding.total, activeSales: sales.active, closedWon30d: sales.wonLast30Days },
-        contacts: { total: contactsR.total },
+        contacts: { total: contactsR },
         tickets: { open: openTickets[0]?.n ?? 0 },
         populations: {
           deals: { key: "production_non_archived_whole_population", label: "Production, non-archived deals (agents: deals they own or that are unassigned); active sales = open sales stages" },

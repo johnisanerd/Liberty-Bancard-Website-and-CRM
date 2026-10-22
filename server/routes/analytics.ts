@@ -1,3 +1,4 @@
+import { storedAmountNumericRawSql } from "../utils/amount-sql";
 import type { Express } from "express";
 import { readTaskMetrics, taskReadPredicate } from "../services/task-read-authority";
 import { isAuthenticated, isDashboardUser, requireRole } from "../replit_integrations/auth";
@@ -130,14 +131,9 @@ export function registerAnalyticsRoutes(app: Express, readOptions?: {
                 AND closed_at >= $1)::text                                                   AS closed_lost_30d,
               COUNT(*) FILTER (WHERE pipeline='sales' AND created_at >= $1)::text            AS new_leads_30d,
               COUNT(*) FILTER (WHERE pipeline='sales' AND created_at >= $2)::text            AS new_leads_7d,
-              COALESCE(SUM(CASE WHEN total_volume IS NOT NULL AND total_volume != ''
-                THEN CAST(REGEXP_REPLACE(total_volume,'[^0-9.]','','g') AS DECIMAL)
-                ELSE 0 END),0)::text                                                         AS total_volume,
+              COALESCE(SUM(${storedAmountNumericRawSql("total_volume")}),0)::text                  AS total_volume,
               COALESCE(SUM(0),0)::text                                                        AS total_residual,
-              COALESCE(SUM(CASE WHEN estimated_gross_profit_monthly IS NOT NULL
-                AND estimated_gross_profit_monthly != ''
-                THEN CAST(REGEXP_REPLACE(estimated_gross_profit_monthly,'[^0-9.]','','g') AS DECIMAL)
-                ELSE 0 END),0)::text                                                         AS total_profit,
+              COALESCE(SUM(${storedAmountNumericRawSql("estimated_gross_profit_monthly")}),0)::text AS total_profit,
               COUNT(*)::text                                                                  AS deal_count
             FROM deals d
             WHERE ${dealPredicate}

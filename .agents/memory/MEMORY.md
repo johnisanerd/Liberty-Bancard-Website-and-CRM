@@ -1,3 +1,4 @@
+- [Mailbox lock before row lock](mailbox-lock-before-row-lock.md) — all email-changing paths lock mailbox first; shared amount pattern uses [.] and reports partial, not zero.
 - [Canonical consolidation completion](canonical-consolidation-scope.md) — Finish independent work; owner-approved intake closure defers production acceptance rather than claiming it passed.
 - [Provider place ownership](provider-place-ownership.md) — Namespace-local source uniqueness is not global ownership; share resolver locks and audit each mirrored identity.
 - [Retained registry recovery](retained-registry-recovery.md) — Append partial-promotion completions without resetting holds; organization canonicality is not commercial production.

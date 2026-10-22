@@ -317,8 +317,17 @@ try {
       check((await q(`SELECT count(*)::int n FROM contacts WHERE lower(email)=$1`, [emailU]))[0].n === 2, "The generic update itself completed after the lock was released");
     } finally { await holder.query("ROLLBACK").catch(() => undefined); holder.release(); await updP?.catch(() => undefined); await applyU?.catch(() => undefined); }
     const src = (await import("node:fs")).readFileSync("server/storage/contacts.ts", "utf8");
-    check(src.includes("lockContactMailboxes(tx, [before?.email,") && src.includes("lockContactMailboxes(tx, [(insertContact as any).email])"),
+    check(src.includes("lockContactMailboxes(tx, [pre?.email,") && src.includes("lockContactMailboxes(tx, [(insertContact as any).email])"),
       "Storage update and create both take the mailbox lock before any graph or row lock");
+    const fs = await import("node:fs");
+    const writerSrc = fs.readFileSync("server/services/contact-writer.ts", "utf8");
+    const lfStart = writerSrc.indexOf("const updateInsideTransaction");
+    const lfBody = writerSrc.slice(lfStart, writerSrc.indexOf("if (compareAndSet) {", lfStart));
+    check(lfBody.indexOf("lockContactMailboxes(tx, [pre?.email") > 0 && lfBody.indexOf("lockContactMailboxes(tx, [pre?.email") < lfBody.indexOf('.for("update")'),
+      "updateContactLocalFirst takes the mailbox lock before its contact row lock");
+    const ghlSrc = fs.readFileSync("server/services/ghl-inbound-sync.ts", "utf8");
+    check(ghlSrc.indexOf("lockContactMailboxes(tx, [plan.source.email])") > 0 && ghlSrc.indexOf("lockContactMailboxes(tx, [plan.source.email])") < ghlSrc.indexOf("ORDER BY id FOR UPDATE"),
+      "incoming GHL apply takes the destination mailbox lock before its identity row locks");
   }
   // (e) fenced receipts: a delayed old owner cannot overwrite or act after takeover.
   {

@@ -42,6 +42,8 @@ try {
   const c = (await h.pool.query(`INSERT INTO contacts(first_name,last_name,email,phone,record_class) VALUES('Ref','Lead',$1,'','production') RETURNING id`, [`${h.prefix}-bpl@example.test`])).rows[0].id;
   await h.pool.query(`INSERT INTO referrals(partner_id,contact_id,referred_name,referred_company,status) VALUES($1,$2,'Referred Person','Referred Co','pending')`, [pid, c]);
   await h.pool.query(`INSERT INTO deals(contact_id,pipeline,stage,record_class,total_volume) VALUES($1,'sales','Negotiation / Follow-Up','production','2500')`, [c]);
+  // An unusable amount must show as a partial total, not as zero.
+  await h.pool.query(`INSERT INTO deals(contact_id,pipeline,stage,record_class,total_volume) VALUES($1,'sales','Negotiation / Follow-Up','production','1x25')`, [c]);
 
   browser = await privateStage3Browser(h.base, "", h.originalFetch, directory, { realInput: true });
   await browser.navigate("/login"); await browser.waitFor(/Sign In/);
@@ -59,6 +61,7 @@ try {
     assert.ok(m.length >= 3 && !m.includes("Unavailable") && m.some(v => v.includes("2,500") || v.includes("2500")), `${name} success metrics are real values including the 2,500 open volume: ${m}`);
     let text = await body();
     assert.ok(/Open Pipeline Volume/.test(text) && !/Pipeline Value/.test(text), `${name} labels the figure as open pipeline volume`);
+    assert.ok(/partial/i.test(text) && /1 deal without a usable amount/.test(text), `${name} marks the open volume as partial and names the deal without a usable amount`);
     assert.ok(!text.includes(SENTINEL) && !text.includes(TOKEN), `${name} page shows no credential value`);
     const received = JSON.parse(await browser.evaluate(`fetch('/api/partners/referral-pipeline',{credentials:'include'}).then(r=>r.text())`) as string) as any[];
     const keys = Object.keys(received[0]);

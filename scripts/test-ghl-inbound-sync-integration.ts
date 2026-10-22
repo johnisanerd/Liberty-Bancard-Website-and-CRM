@@ -130,7 +130,7 @@ async function main() {
   const fixtureEmails = [
     `fill-${fixtureSuffix}@example.test`, `new-${fixtureSuffix}@example.test`,
     duplicateEmail, conflictOwnedEmail, linkedLocalEmail, linkedRemoteEmail,
-    recheckEmail,
+    recheckEmail, `mbx-${fixtureSuffix}@example.test`,
   ];
   const insertedContactIds: number[] = [];
   const runIds: string[] = [];
@@ -437,6 +437,48 @@ async function main() {
     });
     assert.equal((await getFixture(lateIdentityId)).first_name, "Late Local");
     assert.equal((await pool.query("SELECT id FROM contacts WHERE ghl_contact_id=$1", [`recheck-${fixtureSuffix}`])).rowCount, 0);
+
+    // Shared mailbox protocol: an incoming apply that fills a blank email waits on the destination mailbox lock BEFORE
+    // it row-locks the contact, so a competing mailbox writer (Data Health reconcile, Contact edit) serializes with it.
+    const mbxEmail = `mbx-${fixtureSuffix}@example.test`;
+    const mbxContactId = await seedContact({ email: "", ghlContactId: `mbx-${fixtureSuffix}`, firstName: "Blank Email" });
+    const mbxReady = await scanToReady(`ghl-inbound-mbx-${fixtureSuffix}`, onePage(
+      source(`mbx-${fixtureSuffix}`, mbxEmail),
+    ));
+    assert.equal(mbxReady.counts.wouldUpdate, 1, "blank-email contact is planned as an update");
+    await execute(mbxReady.runId, mbxReady.previewHash!, `mbx-exec-${fixtureSuffix}`);
+    const mbxHolder = await pool.connect();
+    const mbxProbe = await pool.connect();
+    let mbxStep: Promise<any> | null = null;
+    let mbxSettled = false;
+    try {
+      await mbxHolder.query("BEGIN");
+      await mbxHolder.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [`contact-mailbox:${mbxEmail}`]);
+      mbxStep = sync.advanceGhlInboundSyncStep(mbxReady.runId).then(r => { mbxSettled = true; return r; });
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      let rowFreeWhileWaiting = false;
+      await mbxProbe.query("BEGIN");
+      try {
+        await mbxProbe.query("SELECT id FROM contacts WHERE id=$1 FOR UPDATE NOWAIT", [mbxContactId]);
+        rowFreeWhileWaiting = true;
+      } catch { rowFreeWhileWaiting = false; }
+      await mbxProbe.query("ROLLBACK");
+      assertNamed("incoming apply waits on the destination mailbox lock without holding the contact row lock", () => {
+        assert.equal(mbxSettled, false, "apply must wait for the mailbox holder");
+        assert.equal(rowFreeWhileWaiting, true, "mailbox lock must be taken before the row lock");
+      });
+      await mbxHolder.query("COMMIT");
+      const mbxResult = await mbxStep;
+      assertNamed("incoming apply completes after the mailbox is released and fills the blank email", () => {
+        assert.equal(mbxResult.run.state, "complete");
+        assert.equal(mbxResult.run.counts.updated, 1);
+      });
+      assert.equal((await getFixture(mbxContactId)).email, mbxEmail);
+    } finally {
+      await mbxHolder.query("ROLLBACK").catch(() => undefined); mbxHolder.release();
+      mbxProbe.release();
+      await mbxStep?.catch(() => undefined);
+    }
 
     // A no-longer-paused state must abort an entire apply transaction.
     const unpausedEmail = `unpaused-${fixtureSuffix}@example.test`;
@@ -751,7 +793,7 @@ async function main() {
         [
           emailList.map((email) => email.toLowerCase()),
           [
-            updateGhlId, createGhlId, conflictId, `recheck-${fixtureSuffix}`,
+            updateGhlId, createGhlId, conflictId, `recheck-${fixtureSuffix}`, `mbx-${fixtureSuffix}`,
             `unpaused-${fixtureSuffix}`, `epoch-${fixtureSuffix}`, `webhook-${fixtureSuffix}`,
           ],
         ],

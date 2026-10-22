@@ -36,6 +36,7 @@ try {
     [name, `${h.prefix}-${name}@example.test`, SENTINELS[0], SENTINELS[1], SENTINELS[2], SENTINELS[4], `${tag}-${name}`.toLowerCase(), extra.owner ?? null])).rows[0].id as number;
   const pA = await mk("PartnerA", { owner: h.email("admin") });
   const pB = await mk("PartnerB");
+  const pOnlyBad = await mk("PartnerOnlyBad"), pAllGood = await mk("PartnerAllGood");
 
   // Pipeline fixture: 12 referred contacts x 7 open production deals, a repeated referral, and excluded deals.
   const cIds: number[] = [];
@@ -46,12 +47,27 @@ try {
     `INSERT INTO deals(contact_id,pipeline,stage,record_class,total_volume,archived_at) VALUES($1,$2,$3,$4,$5,$6)`,
     [c, o.pipeline ?? "sales", o.stage ?? "Negotiation / Follow-Up", o.cls ?? "production", o.volume ?? "1000", o.archived ? new Date() : null]);
   for (const c of cIds) for (let k = 0; k < 7; k++) await deal(c, {});
-  await deal(cIds[0], { volume: "$1,000" });                       // open, malformed volume: counted as a deal with 0 volume
+  // Amount contract cases on open production sales deals: accepted formats add to the total; blank and invalid amounts
+  // are counted as unknown deals and never summed as zero.
+  await deal(cIds[0], { volume: "$1,000" });                       // valid: currency + comma grouping
+  await deal(cIds[0], { volume: "1,250.50" });                     // valid: grouping + decimals
+  await deal(cIds[1], { volume: "1x25" });                         // invalid (a wildcard dot would have cast this)
+  await deal(cIds[1], { volume: "1.2.3" });                        // invalid: repeated decimal separator
+  await deal(cIds[1], { volume: "1,00" });                         // invalid: malformed grouping
+  await deal(cIds[1], { volume: "" });                             // blank: unknown
   await deal(cIds[0], { archived: true, volume: "5000" });         // excluded
   await deal(cIds[0], { cls: "test", volume: "5000" });            // excluded
   await deal(cIds[0], { cls: "unknown", volume: "5000" });         // excluded
   await deal(cIds[0], { stage: "Closed Won", volume: "7000" });    // excluded (not open)
   await deal(cIds[0], { pipeline: "onboarding", stage: "New Lead", volume: "9000" }); // excluded (not sales pipeline)
+
+  const oneRef = async (partner: number, tagName: string, volumes: string[]) => {
+    const cid = (await h.pool.query(`INSERT INTO contacts(first_name,last_name,email,phone,record_class) VALUES('Ref',$1,$2,'','production') RETURNING id`, [tagName, `${h.prefix}-${tagName}@example.test`])).rows[0].id;
+    await h.pool.query(`INSERT INTO referrals(partner_id,contact_id,status) VALUES($1,$2,'pending')`, [partner, cid]);
+    for (const v of volumes) await deal(cid, { volume: v });
+  };
+  await oneRef(pOnlyBad, "onlybad", ["1x25", ""]);
+  await oneRef(pAllGood, "allgood", ["$100", "200"]);
 
   // ── Success shapes, admin ──
   const list = await adminRead("/api/partners");
@@ -84,8 +100,20 @@ try {
   assertClean(pipeline.body, "GET /api/partners/referral-pipeline");
   const pr = (pipeline.body as any[]).find(p => p.id === pA), pq = (pipeline.body as any[]).find(p => p.id === pB);
   check(pr.referredMerchantCount === 13, "referral count includes the repeated referral");
-  check(pr.openPipelineDealCount === 85 && pr.openPipelineVolume === 84000,
-    `open pipeline covers all 12 referred contacts and all deals (85 deals, 84000 volume), each deal once; excludes archived/test/unknown/closed/onboarding rows; got ${pr.openPipelineDealCount}/${pr.openPipelineVolume}`);
+  check(pr.openPipelineDealCount === 90 && pr.openPipelineVolume === 86250.5 && pr.openPipelineVolumeUnknownDeals === 4 && pr.openPipelineVolumeStatus === "partial",
+    `open pipeline covers all 12 referred contacts and all deals (90 deals: 86250.5 known volume, 4 without a usable amount, partial), each deal once; excludes archived/test/unknown/closed/onboarding rows; got ${pr.openPipelineDealCount}/${pr.openPipelineVolume}/${pr.openPipelineVolumeUnknownDeals}/${pr.openPipelineVolumeStatus}`);
+  check(pq.openPipelineVolumeStatus === "complete" && pq.openPipelineVolume === 0, "a partner with no open deals is a complete zero, not partial");
+  const pc = (pipeline.body as any[]).find(p => p.id === pOnlyBad), pd = (pipeline.body as any[]).find(p => p.id === pAllGood);
+  check(pc.openPipelineVolume === null && pc.openPipelineVolumeStatus === "unavailable" && pc.openPipelineVolumeUnknownDeals === 2 && pc.openPipelineDealCount === 2,
+    "a partner whose open deals all have unusable amounts is Unavailable (null), never a certified zero");
+  check(pd.openPipelineVolume === 300 && pd.openPipelineVolumeStatus === "complete" && pd.openPipelineVolumeUnknownDeals === 0, "a partner whose open deals all have valid amounts is complete");
+  const { parseStoredAmount, STORED_AMOUNT_PATTERN } = await import("../shared/amount-contract");
+  const samples = ["1000", "$1,000", "1,250.50", "-5", "$-5", "0.5", ".5", "1x25", "1.2.3", "1,00", "1,0000", "abc", "", "  ", "12 000", "1e5", "$", "1,000,000.00"];
+  const sqlVerdicts = (await h.pool.query(`SELECT s, btrim(s) ~ $2 AS valid FROM unnest($1::text[]) s`, [samples, STORED_AMOUNT_PATTERN])).rows;
+  check(sqlVerdicts.every((r: any) => (parseStoredAmount(r.s).state === "valid") === r.valid), "the TypeScript amount contract and the SQL pattern agree on every sample");
+  check(!STORED_AMOUNT_PATTERN.includes(String.fromCharCode(92)) && STORED_AMOUNT_PATTERN.includes("[.]"), "the shared pattern uses a bracketed literal dot and no backslash escapes");
+  const analytics = await h.pool.query(`SELECT COALESCE(SUM(CASE WHEN btrim(v) ~ $2 THEN regexp_replace(btrim(v),'[$,]','','g')::numeric END),0)::float8 t FROM unnest($1::text[]) v`, [["$1,000", "1x25", "1,250.50", ""], STORED_AMOUNT_PATTERN]);
+  check(analytics.rows[0].t === 2250.5, "the shared SQL expression totals mixed input without a cast failure");
   check(pq.referredMerchantCount === 0 && pq.openPipelineVolume === 0 && pq.openPipelineDealCount === 0, "a partner with no referrals shows empty aggregates");
   check(pr.nextFollowupDue === null || typeof pr.nextFollowupDue === "string", "next follow-up stays a plain date or null");
   check(!("pipelineValue" in pr), "the old mixed-stage sampled pipelineValue is gone");

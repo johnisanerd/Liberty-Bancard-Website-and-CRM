@@ -20,7 +20,7 @@ import {
   Users, DollarSign, TrendingUp, Building2, Search,
   RefreshCw, Loader2, CheckCircle, Clock, ArrowRight,
 } from "lucide-react";
-import type { PartnerPipelineRecord } from "@shared/partner-response";
+import { formatOpenPipelineVolume, summarizeOpenPipelineVolume, type PartnerPipelineRecord } from "@shared/partner-response";
 
 type PipelineRow = {
   id: number;
@@ -112,7 +112,7 @@ function PartnerPipelineCard({ partner }: { partner: EnrichedPartner }) {
                 {partner.referredMerchantCount || 0} merchants
               </span>
               <span className="text-primary font-semibold">
-                {fmtCurrency(partner.openPipelineVolume)} open volume
+                {formatOpenPipelineVolume(partner, fmtCurrency)} open volume
               </span>
               <span className="text-muted-foreground text-xs">
                 {partner.email}
@@ -207,7 +207,7 @@ export default function PartnerPortalAdmin() {
 
   const activePartners = partners.filter(p => p.status === "active").length;
   const totalReferrals = partners.reduce((s, p) => s + (p.referredMerchantCount || 0), 0);
-  const totalPipeline = partners.reduce((s, p) => s + Number(p.openPipelineVolume || 0), 0);
+  const pipelineSummary = summarizeOpenPipelineVolume(partners);
   const earningPartners = partners.filter(p => (p.totalConversions ?? 0) > 0).length;
 
   return (
@@ -258,8 +258,8 @@ export default function PartnerPortalAdmin() {
                 <DollarSign className="w-4 h-4 text-green-600" />
               </div>
               <div>
-                <p className="text-xs text-muted-foreground" title="Total processing volume on open sales deals for referred contacts. Not revenue.">Open Pipeline Volume</p>
-                <p className="text-xl font-bold">{metric(fmtCurrency(totalPipeline))}</p>
+                <p className="text-xs text-muted-foreground" title={pipelineSummary.status === "complete" ? "Total processing volume on open sales deals for referred contacts. Not revenue." : `Total processing volume on open sales deals for referred contacts. Not revenue. ${pipelineSummary.unknownDeals} open deal(s) have no usable amount and are not included.`}>Open Pipeline Volume</p>
+                <p className="text-xl font-bold">{metric(pipelineSummary.total === null ? "Unavailable" : `${fmtCurrency(pipelineSummary.total)}${pipelineSummary.status === "partial" ? " (partial)" : ""}`)}</p>
               </div>
             </div>
           </CardContent>

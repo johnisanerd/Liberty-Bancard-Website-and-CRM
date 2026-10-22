@@ -13,13 +13,16 @@ export function toPartnerOperatorRecord(row: object): PartnerOperatorRecord {
 }
 
 export function toPartnerPipelineRecord(row: object, aggregates: {
-  referredMerchantCount: number; openPipelineVolume: number; openPipelineDealCount: number; nextFollowupDue: Date | string | null;
+  referredMerchantCount: number; openPipelineVolume: number | null; openPipelineDealCount: number;
+  openPipelineVolumeUnknownDeals: number; openPipelineVolumeStatus: "complete" | "partial" | "unavailable"; nextFollowupDue: Date | string | null;
 }): PartnerPipelineRecord {
   return {
     ...toPartnerOperatorRecord(row),
     referredMerchantCount: aggregates.referredMerchantCount,
     openPipelineVolume: aggregates.openPipelineVolume,
     openPipelineDealCount: aggregates.openPipelineDealCount,
+    openPipelineVolumeUnknownDeals: aggregates.openPipelineVolumeUnknownDeals,
+    openPipelineVolumeStatus: aggregates.openPipelineVolumeStatus,
     nextFollowupDue: aggregates.nextFollowupDue instanceof Date ? aggregates.nextFollowupDue.toISOString() : aggregates.nextFollowupDue,
   };
 }

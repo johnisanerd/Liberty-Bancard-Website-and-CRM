@@ -2,7 +2,7 @@ import crypto from "crypto";
 import { db } from "../db";
 import { storage } from "../storage";
 import {intakeBusinessEvidence} from "../../shared/intake-business-evidence";
-import {selectMailboxContact,ContactIdentityAmbiguityError} from "./contact-mailbox-identity";
+import {selectMailboxContact,ContactIdentityAmbiguityError,lockContactMailboxes,contactMailboxLockKey} from "./contact-mailbox-identity";
 import {
   contacts,
   contactSourceEvents,
@@ -592,8 +592,22 @@ export async function updateContactLocalFirst(
   const hasReadinessChange = changedKeys.some(k => READINESS_DEPENDENT_FIELDS.includes(k as any));
   const fingerprint = crypto.createHash("sha256").update(JSON.stringify(safeUpdates)).digest("hex").slice(0, 32);
   const updateInsideTransaction = async (tx: any) => {
+    // Mailbox lock protocol: any email change takes the per-mailbox advisory lock (address being left and address
+    // being taken, sorted) BEFORE the contact row lock, the same order as writeContact, storage.updateContact and
+    // Data Health apply. The current address is read without a lock first; if it changed while we waited, the new
+    // current address is locked as well before any write (a rare extra lock after the row lock is protected by
+    // deadlock detection rather than silently unlocked).
+    let lockedPreEmail: string | null = null;
+    if ("email" in safeUpdates) {
+      const [pre] = await tx.select({ email: contacts.email }).from(contacts).where(eq(contacts.id, contactId)).limit(1);
+      lockedPreEmail = pre?.email ?? null;
+      await lockContactMailboxes(tx, [pre?.email, (safeUpdates as any).email]);
+    }
     const [before] = await tx.select().from(contacts).where(eq(contacts.id, contactId)).limit(1).for("update");
     if (!before) return null;
+    if ("email" in safeUpdates && contactMailboxLockKey(before.email) !== contactMailboxLockKey(lockedPreEmail)) {
+      await lockContactMailboxes(tx, [before.email]);
+    }
     if (compareAndSet) {
       if (compareAndSet.authorityCheck && !(await compareAndSet.authorityCheck(tx))) {
         throw new ContactWriteConflictError();
