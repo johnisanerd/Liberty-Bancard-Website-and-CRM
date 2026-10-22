@@ -1,3 +1,4 @@
+import { PageHeadingLevel } from "@/components/ui/page-header";
 import { useLocation, useSearch } from "wouter";
 import { useAuth } from "@/hooks/use-auth";
 import { hubTabs, hubTabState, typedTabUrl } from "@/lib/crm-destination-state";
@@ -22,6 +23,7 @@ export default function GhlIntegrationHub() {
     {selector.issues.length > 0 && (
       <p role="status" className="rounded-md border bg-muted/40 px-3 py-2 text-sm" data-testid="hub-selection-issue">{selector.issues[0].reason}</p>
     )}
+    <PageHeadingLevel level={2}>
     <Tabs value={tab} onValueChange={goTab} className="space-y-4">
       <TabsList>
         {isAdmin && <TabsTrigger value="settings" data-testid="tab-ghl-settings">Settings</TabsTrigger>}
@@ -32,6 +34,7 @@ export default function GhlIntegrationHub() {
       {isAdmin && <TabsContent value="workflow-ids"><GhlWorkflowManager /></TabsContent>}
       <TabsContent value="sequence-guide"><GhlSequenceGuide /></TabsContent>
     </Tabs>
+    </PageHeadingLevel>
     </>
   );
 }

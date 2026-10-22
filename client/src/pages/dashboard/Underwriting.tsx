@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { useState, useEffect } from "react";
 import { useSearch, useLocation } from "wouter";
 import { selectValue, safeParams, safeContextKeys, destinationUrl, underwritingViews } from "@/lib/crm-destination-state";
@@ -190,7 +191,7 @@ export default function UnderwritingPage() {
     <div className="space-y-6" data-testid="page-underwriting">
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight" data-testid="heading-underwriting">Underwriting</h1>
+          <PageTitle className="text-2xl font-bold tracking-tight" data-testid="heading-underwriting">Underwriting</PageTitle>
           <p className="text-muted-foreground text-sm mt-0.5">
             Auto-approval engine · Risk threshold configuration · Manual overrides
           </p>

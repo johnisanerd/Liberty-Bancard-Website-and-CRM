@@ -64,7 +64,7 @@ assert.equal(active("admin", "/dashboard/no-such-page"), null);
 // Layout wiring: employees get the final nav; merchants and Dev Mode keep the legacy entrances.
 const layout = fs.readFileSync("client/src/pages/DashboardLayout.tsx", "utf8");
 assert.ok(layout.includes("renderEmployeeNav()"));
-assert.ok(layout.includes("isAdoptedPage") && layout.includes("isMerchantOperationsPath(location)"), "C3/C4 adoption preserved");
+assert.ok(layout.includes("PageHeadingOwnerProvider") && layout.includes("canShowMerchantOperationsNav"), "C3/C4 adoption preserved");
 assert.ok(layout.includes('"LEGACY: DAILY WORK"') && layout.includes("button-sidebar-dev-mode"), "legacy entrances retained behind Dev Mode");
 for (const id of ["link-sidebar-ai-advisor", "link-sidebar-security", "button-logout"]) assert.ok(layout.includes(id), `${id} stays reachable`);
 console.log("Stage 3 C5 sidebar: PASS");

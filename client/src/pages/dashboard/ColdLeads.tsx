@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
@@ -130,7 +131,7 @@ export default function ColdLeads() {
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Cold Lead Re-engagement</h1>
+          <PageTitle className="text-2xl font-bold tracking-tight">Cold Lead Re-engagement</PageTitle>
           <p className="text-sm text-muted-foreground mt-1">
             Contacts who submitted a form but went dormant with no active deal — your warmest untapped pipeline.
           </p>

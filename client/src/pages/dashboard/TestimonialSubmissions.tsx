@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { useState,useEffect } from "react";
 import {useSearch,useLocation} from "wouter";
 import {c4WorkspaceSelection,testimonialViews,testimonialUrl} from "@/lib/crm-destination-state";
@@ -106,7 +107,7 @@ export default function TestimonialSubmissions() {
     <div className="space-y-6" data-testid="page-testimonial-submissions">
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-2xl font-bold" data-testid="text-page-title">Testimonial Submissions</h1>
+          <PageTitle className="text-2xl font-bold" data-testid="text-page-title">Testimonial Submissions</PageTitle>
           <p className="text-sm text-muted-foreground mt-1">
             Review merchant stories submitted from /testimonials/submit. Approve and toggle publish to feature them on the public testimonials page.
           </p>

@@ -13,7 +13,7 @@ export function ResourcesNav({ current }: { current: string }) {
     <CrmAreaNav
       current={current}
       entries={resourcesDestinations.map(d => ({
-        label: d.label, href: d.href, allowed: !d.managerOnly || manager,
+        label: d.href === "/assets" ? "Collateral (public library)" : d.label, href: d.href, allowed: !d.managerOnly || manager,
         reason: d.managerOnly && !manager ? "Available to managers and administrators." : undefined,
       }))}
     />

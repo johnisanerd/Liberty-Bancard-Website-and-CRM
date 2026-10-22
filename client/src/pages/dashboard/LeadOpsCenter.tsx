@@ -1,3 +1,5 @@
+import { PageHeadingLevel } from "@/components/ui/page-header";
+import { PageTitle } from "@/components/ui/page-header";
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useCrmQuery } from "@/hooks/use-crm-query";
 import { CrmAreaNav } from "@/components/crm/CrmPresentation";
@@ -2480,7 +2482,7 @@ export default function LeadOpsCenter() {
       {/* ── Page header ──────────────────────────────────────────────────── */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Lead Operations Center</h1>
+          <PageTitle className="text-2xl font-bold tracking-tight">Lead Operations Center</PageTitle>
           <p className="text-muted-foreground text-sm mt-0.5">
             Enrich, segment, and route your entire lead pool — no code required.
           </p>
@@ -2537,6 +2539,7 @@ export default function LeadOpsCenter() {
       />
 
       {/* ── MI-08: Unified Lead Ops Workspace Tabs ───────────────────────────── */}
+      <PageHeadingLevel level={2}>
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
         {/* inArea: leaf tabs shown for the active area. Hidden tabs stay valid compatibility URLs. */}
         <TabsList className="flex-wrap h-auto gap-1" aria-label="Lead Ops workspace tabs">
@@ -3555,6 +3558,7 @@ export default function LeadOpsCenter() {
           <ProgramHealthPanel />
         </TabsContent>
       </Tabs>
+      </PageHeadingLevel>
     </div>
   );
 }

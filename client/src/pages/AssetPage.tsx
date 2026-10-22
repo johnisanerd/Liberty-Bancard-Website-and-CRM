@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { SEO } from "@/components/SEO";
 import { useLocation } from "wouter";
+import { useAuth } from "@/hooks/use-auth";
 import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/Footer";
 import { Button } from "@/components/ui/button";
@@ -1148,6 +1149,8 @@ function NotFoundAsset() {
 
 export default function AssetPage() {
   const [location] = useLocation();
+  const { user } = useAuth();
+  const isEmployee = user?.role === "admin" || user?.role === "manager" || user?.role === "agent";
 
   const path = location.replace(/\/$/, "") || "/assets";
   const content = contentMap[path];
@@ -1158,6 +1161,11 @@ export default function AssetPage() {
       <Navbar />
       <main className="flex-grow pt-28 pb-16">
         <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
+          {isEmployee && (
+            <p className="mb-4 text-sm text-muted-foreground" data-testid="link-assets-return-to-crm">
+              This is the public sales library. <Link href="/dashboard/knowledge-base" className="underline underline-offset-2">Back to Resources</Link>
+            </p>
+          )}
           {!content && <NotFoundAsset />}
           {content?.type === "standard" && <StandardPage content={content} />}
           {content?.type === "case-study" && <CaseStudyPage content={content} />}

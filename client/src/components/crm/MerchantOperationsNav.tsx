@@ -101,8 +101,9 @@ export function MerchantOperationsLayout({
         {groups.map((group) => {
           const permitted = group.entries.filter((entry) => entry.roles.includes(role));
           if (!permitted.length) return null;
+          const currentGroup = permitted.some((entry) => path === entry.href);
           return (
-            <section key={group.label} className="crm-merchant-ops-group" aria-label={group.label}>
+            <section key={group.label} className={`crm-merchant-ops-group${currentGroup ? " is-current-group" : ""}`} aria-label={group.label} data-current-group={currentGroup ? "true" : undefined}>
               <h2>{group.label}</h2>
               <nav>
                 {permitted.map((entry) => {

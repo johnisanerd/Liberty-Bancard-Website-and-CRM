@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { formatDistanceToNow } from "date-fns";
 import { useSearch, useLocation } from "wouter";
@@ -2476,12 +2477,12 @@ function PipelineWorkspace() {
       {/* #190 — Sticky header on scroll */}
       <div className="sticky top-0 z-10 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80 -mx-2 px-2 pb-3">
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-          <h1 className="text-2xl font-semibold" data-testid="text-pipeline-title">
+          <PageTitle className="text-2xl font-semibold" data-testid="text-pipeline-title">
             Sales Pipeline
             {dealsResult?.total != null && (
               <span className="ml-2 text-base font-normal text-muted-foreground" data-testid="text-pipeline-total-count">({dealsResult.total})</span>
             )}
-          </h1>
+          </PageTitle>
         <div className="flex items-center gap-3 flex-wrap">
           <div className="flex items-center gap-2" data-testid="toggle-show-archived-deals">
             <Switch

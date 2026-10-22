@@ -1,9 +1,12 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { useCrmQuery as useQuery } from "@/hooks/use-crm-query";
 import { useState, useEffect, useRef } from "react";
 import { useParams, useLocation, Link, useSearch } from "wouter";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useUpdateContact } from "@/hooks/use-contacts";
-import { apiRequest, getCsrfToken, protectedContextToken } from "@/lib/queryClient";
+import { readReturnUrl } from "@/lib/crm-return-context";
+import { useCompanySearch, type CompanySearchItem } from "@/hooks/use-company-search";
+import { apiRequest, getCsrfToken, protectedContextToken, protectedScope } from "@/lib/queryClient";
 import { useOwnedToast as useToast } from "@/hooks/use-owned-toast";
 import { useAuth } from "@/hooks/use-auth";
 import {useRetainedLocalIntent} from "@/hooks/use-retained-local-intent";
@@ -1267,6 +1270,17 @@ function DocumentAccessHistory({ contactId }: { contactId: number }) {
   );
 }
 
+const contactAreaLabels: Record<ContactArea, string> = {
+  overview: "Overview",
+  "sales-work": "Sales work",
+  conversations: "Conversations",
+  lifecycle: "Lifecycle",
+  "service-performance": "Service & performance",
+};
+
+/** `/api/contacts/:id/companies` returns the authorized company row with each association. */
+type ContactCompanyRow = ContactCompany & { company?: Pick<Company, "legalName" | "dba"> | null };
+
 export default function ContactDetail() {
   const params = useParams<{ id: string }>();
   useAuth();
@@ -1405,6 +1419,11 @@ function ContactDetailRecord() {
     enabled: !!contactId,
   });
   const detailAuthorized = Boolean(data?.contact && !error);
+  // Contact core retained across section reads. Keyed by actor scope + entity, so another actor or contact never reuses it.
+  const coreKey = `${JSON.stringify(protectedScope(user))}:${contactId}`;
+  const coreRef = useRef<{ key: string; data: ContactDetailData } | null>(null);
+  if (data?.contact && !error) coreRef.current = { key: coreKey, data };
+  const retainedCore = coreRef.current?.key === coreKey ? { contact: coreRef.current.data.contact, capabilities: coreRef.current.data.capabilities } : null;
   const sectionReadAllowed = (section: ContactSection) => {
     if (!detailAuthorized || requestedSection !== section) return false;
     if (section === "company-intelligence") return !!data?.contact?.isParentAccount;
@@ -1423,7 +1442,7 @@ function ContactDetailRecord() {
     enabled: detailAuthorized && requestedDrawer === "activity",
   });
 
-  const { data: contactCompanies, isLoading: contactCompaniesLoading, isError: contactCompaniesError, refetch: retryContactCompanies } = useQuery<ContactCompany[]>({
+  const { data: contactCompanies, isLoading: contactCompaniesLoading, isError: contactCompaniesError, refetch: retryContactCompanies } = useQuery<ContactCompanyRow[]>({
     queryKey: ["/api/contacts", contactId, "companies"],
     queryFn: async ({ signal }) => {
       const res = await fetch(`/api/contacts/${contactId}/companies`, { credentials: "include", signal });
@@ -1478,10 +1497,18 @@ function ContactDetailRecord() {
     },
   });
 
-  const { data: allCompanies = [], isLoading: companiesLoading, isError: companiesError, refetch: retryCompanies } = useQuery<Company[]>({
-    queryKey: ["/api/companies"],
-    enabled: detailAuthorized && showCompanyDialog,
+  // Bounded, server-authorized search (25 per page); the full company list is never loaded into the browser.
+  const companySearchState = useCompanySearch({
+    enabled: detailAuthorized && showCompanyDialog && companyMode === "existing",
+    query: companySearch,
+    contactId: Number(contactId),
   });
+  // The chosen company is kept as the exact authorized record that was clicked, so it survives new searches/pages.
+  const [selectedCompany, setSelectedCompany] = useState<CompanySearchItem | null>(null);
+  useEffect(() => {
+    if (showCompanyDialog) return;
+    setCompanySearch(""); setSelectedCompany(null); setSelectedCompanyId("");
+  }, [showCompanyDialog]);
 
   const { data: confirmationResult } = useQuery<{
     latestStatus: SubmissionStatus | null;
@@ -1506,6 +1533,7 @@ function ContactDetailRecord() {
       queryClient.invalidateQueries({ queryKey: ["/api/contacts", contactId, "companies"] });
       setShowCompanyDialog(false);
       setSelectedCompanyId("");
+      setSelectedCompany(null);
       setCompanyRole("");
       setCompanyIsPrimary(false);
       setNewCompanyForm({ legalName: "", dba: "", vertical: "", website: "" });
@@ -1610,6 +1638,7 @@ function ContactDetailRecord() {
       queryClient.invalidateQueries({ queryKey: ["/api/companies"] });
       setShowCompanyDialog(false);
       setSelectedCompanyId("");
+      setSelectedCompany(null);
       setCompanyRole("");
       setCompanyIsPrimary(false);
       setNewCompanyForm({ legalName: "", dba: "", vertical: "", website: "" });
@@ -1620,10 +1649,72 @@ function ContactDetailRecord() {
     },
   });
 
+  if (isLoading && retainedCore) {
+    // Section change for the same actor, permission generation and contact: keep the identity, owner, pause state
+    // and area links in place. The retained value is the contact core only; no section payload is reused, so the
+    // body below is an explicit loading state until this section's own authorized read returns.
+    const core = retainedCore.contact;
+    const coreSections = contactSections.filter((section) => {
+      if (section === "activity" || section === "history") return true;
+      if (section === "call-assist") return user?.role === "agent" || user?.role === "manager" || user?.role === "admin";
+      if (section === "company-intelligence") return !!core.isParentAccount;
+      if (section === "sales-prep") return retainedCore.capabilities?.sdrSourced === true;
+      if (section === "onboarding-stages") return retainedCore.capabilities?.hasOnboarding === true;
+      return true;
+    });
+    const retainedWorkspace = contactWorkspaceState(search, coreSections);
+    const retainedAreaEntries = contactAreas.map((area) => {
+      const first = contactAreaSections[area].find(section => coreSections.includes(section));
+      return {
+        label: contactAreaLabels[area],
+        href: first ? buildContactWorkspaceHref(window.location.href, { area, section: first, drawer: null }) : "#",
+        allowed: !!first,
+        reason: "No sections are available for this Contact.",
+      };
+    });
+    const retainedAreaFirst = retainedWorkspace.area ? contactAreaSections[retainedWorkspace.area].find(section => coreSections.includes(section)) : undefined;
+    const retainedCurrentHref = retainedWorkspace.area && retainedAreaFirst
+      ? buildContactWorkspaceHref(window.location.href, { area: retainedWorkspace.area, section: retainedAreaFirst, drawer: null }) : "";
+    return (
+      <div className={`${employeeCrm ? "crm-page" : ""} space-y-4 pb-6`} data-testid="contact-detail-page" aria-busy="true">
+        <RecordHeader className="flex flex-col gap-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+            <Button variant="ghost" className="self-start" onClick={() => setLocation(readReturnUrl("people", user?.id) ?? "/dashboard/contacts")} data-testid="button-back">
+            <ArrowLeft className="h-4 w-4 mr-2" /> Back to Contacts
+            </Button>
+            <nav aria-label="Breadcrumb" className="text-xs text-muted-foreground" data-testid="contact-breadcrumb">
+            <Link href={readReturnUrl("people", user?.id) ?? "/dashboard/contacts"} className="underline-offset-2 hover:underline">Records</Link>
+            <span aria-hidden="true"> / </span><span aria-current="page">Contact</span>
+            </nav>
+          </div>
+          <div className="min-w-0 space-y-2" data-testid="contact-compact-header">
+            <PageTitle className="break-words text-2xl font-semibold tracking-tight" data-testid="text-contact-name">
+              {core.companyName || `${core.firstName || ""} ${core.lastName || ""}`.trim() || core.email || core.phone || "Unnamed Contact"}
+            </PageTitle>
+            <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
+              <span className="inline-flex items-center gap-1.5" data-testid="text-assigned-rep"><UserCheck className="h-4 w-4 shrink-0" />Owner: {(core as any).assignedTo || "Unassigned"}</span>
+              <Badge variant={statusColor(core.status)} data-testid="badge-status">{core.status}</Badge>
+            </div>
+            <span className="inline-flex flex-wrap items-center gap-x-2 text-sm" data-testid="outbound-pause-status" role="status">
+              <span className="font-medium">
+                {outbound.isLoading ? "Checking outbound pause state" : outbound.isError ? "Outbound pause state unavailable"
+                  : outbound.data?.state === "paused" ? "Outbound paused" : outbound.data?.state === "activating" ? "Outbound pause is changing"
+                  : "Outbound send eligibility still required"}
+              </span>
+              {outbound.reason && <span className="break-words text-muted-foreground">{outbound.reason}</span>}
+            </span>
+          </div>
+        </RecordHeader>
+        <CrmAreaNav entries={retainedAreaEntries} current={retainedCurrentHref} className="crm-contact-area-nav" />
+        <div role="status" className="rounded-md border p-4 text-sm text-muted-foreground" data-testid="contact-section-loading">Loading this section…</div>
+      </div>
+    );
+  }
+
   if (isLoading) {
     return (
       <div className={`${employeeCrm ? "crm-page" : "p-4 md:p-6"} space-y-6`} data-testid="contact-detail-loading">
-        <h1>Contact record</h1>
+        <PageTitle>Contact record</PageTitle>
         <Skeleton className="h-8 w-48" />
         <Skeleton className="h-6 w-32" />
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1637,7 +1728,7 @@ function ContactDetailRecord() {
   if (error || !data?.contact) {
     return (
       <div className={`${employeeCrm ? "crm-page" : "p-4 md:p-6"} space-y-4`} data-testid="contact-detail-error">
-        <h1>Contact record unavailable</h1>
+        <PageTitle>Contact record unavailable</PageTitle>
         <Button variant="ghost" onClick={() => setLocation("/dashboard/contacts")} data-testid="button-back-error">
           <ArrowLeft className="h-4 w-4 mr-2" /> Back to Contacts
         </Button>
@@ -1931,13 +2022,6 @@ function ContactDetailRecord() {
   const setDrawer = (drawer: "activity" | "history" | null) => {
     setLocation(buildContactWorkspaceHref(window.location.href, { drawer }));
   };
-  const areaLabels: Record<ContactArea, string> = {
-    overview: "Overview",
-    "sales-work": "Sales work",
-    conversations: "Conversations",
-    lifecycle: "Lifecycle",
-    "service-performance": "Service & performance",
-  };
   const sectionLabels: Record<ContactSection, string> = {
     overview: "Summary", relationships: "Relationships", locations: "Locations", "company-intelligence": "Company intelligence",
     deals: "Deals", tasks: "Tasks", "call-logs": "Calls & VMs", "call-assist": "Call assist",
@@ -1950,7 +2034,7 @@ function ContactDetailRecord() {
   const areaEntries = contactAreas.map((area) => {
     const first = contactAreaSections[area].find(section => workspace.permittedSections.includes(section));
     return {
-      label: areaLabels[area],
+      label: contactAreaLabels[area],
       href: first ? buildContactWorkspaceHref(window.location.href, { area, section: first, drawer: null }) : "#",
       allowed: !!first,
       reason: "No sections are available for this Contact.",
@@ -1967,21 +2051,27 @@ function ContactDetailRecord() {
     <div className={`${employeeCrm ? "crm-page" : ""} space-y-4 pb-6`} data-testid="contact-detail-page">
       {/* Header */}
       <RecordHeader className="flex flex-col gap-3">
-        <Button variant="ghost" className="self-start" onClick={() => setLocation("/dashboard/contacts")} data-testid="button-back">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+          <Button variant="ghost" className="self-start" onClick={() => setLocation(readReturnUrl("people", user?.id) ?? "/dashboard/contacts")} data-testid="button-back">
           <ArrowLeft className="h-4 w-4 mr-2" /> Back to Contacts
-        </Button>
+          </Button>
+          <nav aria-label="Breadcrumb" className="text-xs text-muted-foreground" data-testid="contact-breadcrumb">
+          <Link href={readReturnUrl("people", user?.id) ?? "/dashboard/contacts"} className="underline-offset-2 hover:underline">Records</Link>
+          <span aria-hidden="true"> / </span><span aria-current="page">Contact</span>
+          </nav>
+        </div>
 
         {!isEditing && (
           <div className="min-w-0 space-y-3" data-testid="contact-compact-header">
             <div className="flex min-w-0 flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div className="min-w-0 space-y-2">
-                <h1 className="break-words text-2xl font-semibold tracking-tight" data-testid="text-contact-name">
+                <PageTitle className="break-words text-2xl font-semibold tracking-tight" data-testid="text-contact-name">
                   {contact.companyName ||
                     `${contact.firstName || ""} ${contact.lastName || ""}`.trim() ||
                     contact.email ||
                     contact.phone ||
                     "Unnamed Contact"}
-                </h1>
+                </PageTitle>
                 <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
                   {contact.companyName && <span className="inline-flex min-w-0 items-center gap-1.5" data-testid="text-company"><Building2 className="h-4 w-4 shrink-0" /><span className="break-words">{contact.companyName}</span></span>}
                   {contact.email && (
@@ -2126,7 +2216,7 @@ function ContactDetailRecord() {
           <div className="space-y-1">
             {isEditing ? (
               <>
-              <h1 className="sr-only">Editing contact: {contact.firstName} {contact.lastName}</h1>
+              <PageTitle className="sr-only">Editing contact: {contact.firstName} {contact.lastName}</PageTitle>
               <div className="flex flex-wrap gap-2 items-center">
                 <Input
                   value={editFields.firstName ?? ""}
@@ -2143,14 +2233,14 @@ function ContactDetailRecord() {
               </div>
               </>
             ) : (
-              <h1 className="text-2xl font-bold" data-testid="text-contact-name">
+              <PageTitle className="text-2xl font-bold" data-testid="text-contact-name">
                 {/* #1475 — Best identifier: company → full name → email → phone */}
                 {contact.companyName ||
                   `${contact.firstName || ""} ${contact.lastName || ""}`.trim() ||
                   contact.email ||
                   contact.phone ||
                   "Unnamed Contact"}
-              </h1>
+              </PageTitle>
             )}
 
             <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
@@ -2778,7 +2868,7 @@ function ContactDetailRecord() {
           ) : (
             <div className="space-y-2">
               {contactCompanies.map(cc => {
-                const company = allCompanies.find(c => c.id === cc.companyId);
+                const company = cc.company;
                 return (
                   <div
                     key={cc.id}
@@ -3080,10 +3170,9 @@ function ContactDetailRecord() {
           setCompanyRole={setCompanyRole}
           companyIsPrimary={companyIsPrimary}
           setCompanyIsPrimary={setCompanyIsPrimary}
-          allCompanies={allCompanies}
-          companiesLoading={companiesLoading}
-          companiesError={companiesError}
-          retryCompanies={() => void retryCompanies()}
+          companySearchState={companySearchState}
+          selectedCompany={selectedCompany}
+          selectCompany={(c: CompanySearchItem | null) => { setSelectedCompany(c); setSelectedCompanyId(c ? String(c.id) : ""); }}
           contactCompanies={contactCompanies ?? []}
           addCompanyAssociation={addCompanyAssociation}
           createAndLinkCompany={createAndLinkCompany}

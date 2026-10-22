@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { useState } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import { useQuery, useMutation } from "@tanstack/react-query";
@@ -1704,10 +1705,10 @@ export default function GhlWorkflowManager() {
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-foreground flex items-center gap-2">
+          <PageTitle className="text-2xl font-bold text-foreground flex items-center gap-2">
             <Workflow className="w-6 h-6 text-primary" />
             GHL Workflow Reference &amp; Sequence Blueprints
-          </h1>
+          </PageTitle>
           <p className="text-muted-foreground text-sm mt-1">
             Replit controls all sequences, cadences, enrollment, and suppression. GHL is the transport and conversation layer.
           </p>

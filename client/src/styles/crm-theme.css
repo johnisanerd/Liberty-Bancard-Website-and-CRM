@@ -102,6 +102,8 @@
   --crm-chart-5: 215 16% 47%;
   --crm-control-border: 215 16% 47%;
   --crm-danger-surface: var(--brand-red);
+  /* Text-only danger colour (6.95:1 on white, 6.35:1 on muted). Separate from the button/surface tokens. */
+  --crm-danger-text: 0 72% 40%;
   color-scheme: light;
   font-family: var(--font-body);
   color: hsl(var(--foreground));
@@ -150,6 +152,8 @@
   --crm-control-border: 215 20.2% 65.1%;
   --crm-danger-surface: var(--destructive);
   --crm-danger-foreground: 0 0% 100%;
+  /* 6.34:1 on the dark background, 5.18:1 on the dark muted surface; the old dark destructive token measured 1.82:1 as text. */
+  --crm-danger-text: 0 86% 70%;
   color-scheme: dark;
 }
 
@@ -258,8 +262,14 @@
 .crm-page .crm-worklist-table td { padding: 10px 12px; }
 .crm-page [data-testid="contacts-pagination"] { flex-wrap: wrap; gap: 12px; padding: 16px; }
 .crm-page [data-testid="contacts-pagination"] > div { flex-wrap: wrap; }
-.crm-theme :is(button, [role="button"], input, select, textarea, [role="tab"], [role="combobox"]) {
+/* Control target height. Textareas are editors, not tap targets: their floor is owned below, because the
+   attribute arms of this :is() list out-specify any plain `.crm-page textarea` rule. */
+.crm-theme :is(button, [role="button"], input, select, [role="tab"], [role="combobox"]) {
   min-height: var(--crm-target-height);
+}
+.crm-theme textarea:not(.crm-prose-editor),
+.crm-portal textarea:not(.crm-prose-editor) {
+  min-height: 96px;
 }
 .crm-theme :is(button, [role="button"], [role="tab"], [role="combobox"]) {
   min-width: var(--crm-target-height);
@@ -270,6 +280,7 @@
 .crm-theme [data-sidebar="menu-button"] { min-height: 44px; }
 .crm-theme [data-sidebar="sidebar"] { font-family: var(--font-body); }
 .crm-theme [role="checkbox"] { min-width: 44px; min-height: 44px; }
+.crm-theme .text-destructive { color: hsl(var(--crm-danger-text)); }
 .crm-theme .bg-destructive { background-color: hsl(var(--crm-danger-surface)); color: hsl(var(--crm-danger-foreground)); }
 .crm-theme [toast-close] { display: grid; min-width: 44px; height: 44px; place-items: center; }
 .crm-theme.crm-portal {
@@ -417,6 +428,8 @@
   text-transform: uppercase;
 }
 .crm-merchant-ops-group nav { display: grid; gap: 2px; }
+.crm-merchant-ops-group.is-current-group h2 { color: hsl(var(--foreground)); font-weight: 700; }
+.crm-merchant-ops-group.is-current-group nav { border-left: 2px solid hsl(var(--primary)); padding-left: 2px; }
 .crm-merchant-ops-link {
   display: flex;
   min-height: 44px;
@@ -494,3 +507,6 @@
   .crm-theme textarea.crm-prose-editor,
   .crm-portal textarea.crm-prose-editor { font-size: 16px; }
 }
+
+/* UI-04: metric values are Sans with tabular figures; Mono is reserved for IDs (.crm-record-id). */
+.crm-page .crm-metric-rail, .crm-page .crm-metric-rail * { font-family: var(--font-body, inherit); font-variant-numeric: tabular-nums; }

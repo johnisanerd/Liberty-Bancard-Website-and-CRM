@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Brain, Wand2 } from "lucide-react";
 import LeadIntelligence from "./LeadIntelligence";
@@ -6,7 +7,7 @@ import LeadGenCleaner from "./LeadGenCleaner";
 export default function LeadEngine() {
   return (
     <div className="p-6 space-y-4" data-testid="page-lead-engine">
-      <h1 className="text-2xl font-bold" data-testid="text-lead-engine-heading">Lead Engine</h1>
+      <PageTitle className="text-2xl font-bold" data-testid="text-lead-engine-heading">Lead Engine</PageTitle>
       <Tabs defaultValue="intelligence" className="w-full" data-testid="tabs-lead-engine">
         <TabsList data-testid="tabslist-lead-engine">
           <TabsTrigger value="intelligence" data-testid="tab-intelligence">

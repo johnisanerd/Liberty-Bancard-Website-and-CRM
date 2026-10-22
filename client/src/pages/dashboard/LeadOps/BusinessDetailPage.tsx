@@ -6,6 +6,7 @@
  * Left column: Provenance, Operating Status, Evidence & Enrichment, Duplicate Check, Staging
  * Right column: Qualification, Next Provider Plan, Email Status, Safe Next Action, Field Activity
  */
+import { PageTitle } from "@/components/ui/page-header";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
 import { Badge } from "@/components/ui/badge";
@@ -242,7 +243,7 @@ export function BusinessDetailPage() {
             <Skeleton className="h-6 w-48" />
           ) : (
             <div className="flex items-center gap-2 flex-wrap">
-              <h1 className="text-base font-semibold truncate">{b?.canonical_name ?? `Business #${businessId}`}</h1>
+              <PageTitle className="text-base font-semibold truncate">{b?.canonical_name ?? `Business #${businessId}`}</PageTitle>
               {b?.vertical && (
                 <Badge variant="outline" className="text-[11px] shrink-0">{b.vertical}</Badge>
               )}

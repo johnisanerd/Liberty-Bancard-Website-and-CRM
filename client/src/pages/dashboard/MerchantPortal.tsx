@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient, getCsrfToken } from "@/lib/queryClient";
@@ -2621,7 +2622,7 @@ export default function MerchantPortal() {
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-2xl font-bold" data-testid="text-portal-title">Merchant Portal</h1>
+        <PageTitle className="text-2xl font-bold" data-testid="text-portal-title">Merchant Portal</PageTitle>
         <p className="text-sm text-muted-foreground mt-1" data-testid="text-portal-subtitle">
           {user ? `Welcome, ${user.firstName || user.email}` : "Manage your merchant account"}
         </p>

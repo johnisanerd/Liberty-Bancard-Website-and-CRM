@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { useState, useRef, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -63,7 +64,7 @@ export default function WidgetGenerator() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-foreground">Widget Generator</h1>
+        <PageTitle className="text-2xl font-bold text-foreground">Widget Generator</PageTitle>
         <p className="text-muted-foreground mt-1">
           Generate an embeddable savings calculator widget for partner websites. Partners paste one script tag and the widget appears automatically.
         </p>

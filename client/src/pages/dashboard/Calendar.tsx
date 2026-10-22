@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { useState, useMemo } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCrmQuery as useQuery } from "@/hooks/use-crm-query";
@@ -390,7 +391,7 @@ export default function CalendarPage({ embedded = false }: { embedded?: boolean 
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-2">
           <CalendarIcon className="h-6 w-6 text-muted-foreground" />
-          {embedded ? <h2 className="text-lg font-semibold" data-testid="text-calendar-title">Calendar</h2> : <h1 className="text-2xl font-bold" data-testid="text-calendar-title">Calendar</h1>}
+          {embedded ? <h2 className="text-lg font-semibold" data-testid="text-calendar-title">Calendar</h2> : <PageTitle className="text-2xl font-bold" data-testid="text-calendar-title">Calendar</PageTitle>}
         </div>
         <Button onClick={() => { setEventForm(f => ({ ...f, date: selectedDate })); setShowAddDialog(true); }} data-testid="button-add-event">
           <Plus className="h-4 w-4 mr-1" /> Add Event

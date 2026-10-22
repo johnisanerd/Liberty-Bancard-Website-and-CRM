@@ -182,3 +182,4 @@
 - [Serper discovery drop cause](serper-selector-exhaustion.md) — lookup-memory selector exhaustion, not the 50,000 counter.
 - [Domain/location automation](domain-location-automation.md) — closed-by-default worker; admin PUT enables.
 - [Domain/location tick resumability](domain-location-tick-resume.md) — budget-stopped windowed ticks must persist cursor to the last handled id; else progress stalls.
+- [Heading ownership claims](heading-ownership-claims.md) — one h1 per page via runtime claim; hubs embed children at h2; verify by settled-h1 crawl.

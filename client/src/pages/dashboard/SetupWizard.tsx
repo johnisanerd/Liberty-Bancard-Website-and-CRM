@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { useState, useRef, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/use-auth";
@@ -1237,7 +1238,7 @@ export default function SetupWizard() {
       <div className="flex items-center gap-3 mb-6">
         <FlaskConical className="w-6 h-6 text-primary" />
         <div>
-          <h1 className="text-xl font-bold">Setup & Activation Wizard</h1>
+          <PageTitle className="text-xl font-bold">Setup & Activation Wizard</PageTitle>
           <p className="text-sm text-muted-foreground">
             Step through each phase to verify your platform is ready for live operations.
           </p>

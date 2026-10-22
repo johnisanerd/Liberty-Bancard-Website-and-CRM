@@ -411,6 +411,7 @@ export default function Prospects() {
           <Checkbox
             checked={allPageSelected}
             onCheckedChange={toggleAll}
+            aria-label="Select all prospects on this page"
             className="shrink-0"
           />
           <span className="text-sm font-medium text-blue-800 dark:text-blue-300">

@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { useState, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, getCsrfToken, queryClient } from "@/lib/queryClient";
@@ -277,10 +278,10 @@ export default function OutreachQueue() {
       {/* ── Page header ──────────────────────────────────────────────────── */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
+          <PageTitle className="text-2xl font-bold tracking-tight flex items-center gap-2">
             <Rocket className="h-6 w-6 text-primary" />
             Ready for Outreach
-          </h1>
+          </PageTitle>
           <p className="text-muted-foreground text-sm mt-0.5">
             Channel-qualified leads from policy v{queueQuery.data?.policyVersion ?? "—"}.
             {total != null && total > 0 && (
@@ -349,7 +350,7 @@ export default function OutreachQueue() {
       {/* ── Bulk action bar ───────────────────────────────────────────────── */}
       {false && someSelected && (
         <div className="flex items-center gap-3 px-4 py-2.5 bg-primary/5 rounded-lg border border-primary/20">
-          <Checkbox checked={allPageSelected} onCheckedChange={toggleAll} className="shrink-0" />
+          <Checkbox checked={allPageSelected} onCheckedChange={toggleAll} aria-label="Select all leads on this page" className="shrink-0" />
           <span className="text-sm font-medium">
             {selectedIds.size} lead{selectedIds.size !== 1 ? "s" : ""} selected
           </span>

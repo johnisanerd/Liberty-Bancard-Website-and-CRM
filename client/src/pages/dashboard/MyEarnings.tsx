@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { useCrmQuery as useQuery } from "@/hooks/use-crm-query";
 import { CrmDataState } from "@/components/crm/CrmPresentation";
 import { AgentReportsNavigation } from "@/components/crm/AgentReportsNavigation";
@@ -85,7 +86,7 @@ export default function MyEarnings() {
     <div className="space-y-6" data-testid="page-my-earnings">
       <AgentReportsNavigation />
       <div>
-        <h1 className="text-2xl leading-8 font-semibold" data-testid="text-page-title">My Earnings</h1>
+        <PageTitle className="text-2xl leading-8 font-semibold" data-testid="text-page-title">My Earnings</PageTitle>
         <p className="text-muted-foreground mt-1 text-sm">
           Your residual commission history — period by period
         </p>

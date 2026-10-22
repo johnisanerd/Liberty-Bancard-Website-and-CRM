@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { useState } from "react";
 import type { SequenceRuntimeStatus } from "@shared/sequence-runtime-status";
 import { SequenceRuntimeFacts } from "@/components/dashboard/SequenceRuntimeFacts";
@@ -288,7 +289,7 @@ export default function SequenceReport() {
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold">Sequence & Sending Report</h1>
+            <PageTitle className="text-2xl font-bold">Sequence & Sending Report</PageTitle>
             <p className="text-sm text-muted-foreground mt-0.5">
               Full audit of all sequences, sending infrastructure, and enrollment status.
               {dataUpdatedAt ? ` Last loaded ${new Date(dataUpdatedAt).toLocaleTimeString()}.` : ""}

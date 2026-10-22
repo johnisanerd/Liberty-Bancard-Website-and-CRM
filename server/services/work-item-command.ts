@@ -8,7 +8,7 @@ import { legacyTaskStatusToAuthorityState, authorityStateToLegacyTaskStatus, leg
 import { ticketStatusMessage } from "./ticket-status-message";
 
 export class WorkCommandError extends Error {
-  constructor(message: string, readonly status: 404 | 409) { super(message); }
+  constructor(message: string, readonly status: 400 | 404 | 409) { super(message); }
 }
 export type WorkActor = { id: string; authEpoch: number;accountVersion?:number };
 export function bindWorkActor(user: any, expectedActorId?: string, expectedAccountVersion?:number): WorkActor {

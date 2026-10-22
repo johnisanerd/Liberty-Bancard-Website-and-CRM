@@ -9,6 +9,7 @@
  * cannot crash the hold ledger section.
  */
 
+import { PageTitle } from "@/components/ui/page-header";
 import React, { useEffect, useRef, useCallback, Component } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -602,10 +603,10 @@ export default function QueueHoldsPage() {
     <div className="container mx-auto p-6 max-w-6xl space-y-6">
       {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold flex items-center gap-2">
+        <PageTitle className="text-2xl font-bold flex items-center gap-2">
           <Database className="w-6 h-6" />
           Queue Holds &amp; Backlog Preview
-        </h1>
+        </PageTitle>
         <p className="text-sm text-muted-foreground mt-1">
           Admin-only. Hold ledger shows active logical job holds and coordinator state.
           Backlog preview shows a per-source risk estimate of queued work — sources overlap

@@ -7,6 +7,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/use-auth";
 import { countUnreadSessions } from "@/lib/chatNotifications";
 import logoBlue from "@assets/logo-blue.png";
+import logoWhite from "@assets/logo-white.png";
 import UniversalSearch from "@/components/UniversalSearch";
 import { InternalSidebarChat } from "@/components/InternalSidebarChat";
 import { DashboardDataAgent } from "@/components/DashboardDataAgent";
@@ -105,8 +106,9 @@ import {
 } from "@/components/ui/sidebar";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { activeSidebarId, employeeSidebarFor, type SidebarIconKey } from "@/lib/employee-sidebar";
+import { PageHeadingOwnerProvider, usePageHeadingClaimed } from "@/components/ui/page-header";
 import { EmployeeCrmProvider } from "@/components/crm/employee-crm-context";
-import { canShowMerchantOperationsNav, isMerchantOperationsPath, MerchantOperationsLayout } from "@/components/crm/MerchantOperationsNav";
+import { canShowMerchantOperationsNav, MerchantOperationsLayout } from "@/components/crm/MerchantOperationsNav";
 
 export interface DashboardLayoutProps {
   children: ReactNode;
@@ -117,7 +119,9 @@ export interface DashboardLayoutProps {
 export function DashboardLayout({ children }: DashboardLayoutProps) {
   return (
     <TourProvider>
-      <DashboardLayoutInner>{children}</DashboardLayoutInner>
+      <PageHeadingOwnerProvider>
+        <DashboardLayoutInner>{children}</DashboardLayoutInner>
+      </PageHeadingOwnerProvider>
     </TourProvider>
   );
 }
@@ -420,18 +424,9 @@ function DashboardLayoutInner({ children }: DashboardLayoutProps) {
   const adoptedSearch=useSearch();
   const isPeopleRoute = location === "/dashboard/contacts" || (location === "/dashboard/contacts-leads"
     && peopleHubState(adoptedSearch).value==="people");
-  const isAdoptedPage = isContactRecordRoute || isPeopleRoute ||
-    ["/dashboard","/dashboard/my-day","/dashboard/pipeline","/dashboard/comms-hub",
-      "/dashboard/tasks-appointments","/dashboard/contacts-leads","/dashboard/my-leads","/dashboard/nba",
-      "/dashboard/chat","/dashboard/call-outcome","/dashboard/review-complete","/dashboard/bin-lookup","/dashboard/stage-rules",
-      "/dashboard/reporting","/dashboard/my-earnings","/dashboard/leaderboard",
-      "/dashboard/lead-ops","/dashboard/canonical-enrichment","/dashboard/outbound-center",
-      // C5 pages render their own page h1 (CrmPageHeader / PageHeader); the layout title must not add a second one.
-      "/dashboard/admin-hub","/dashboard/permissions","/dashboard/queue-holds","/dashboard/knowledge-base",
-      "/dashboard/knowledge-admin","/dashboard/training"].includes(location) ||
-    /^\/dashboard\/lead-ops\/business\/[^/]+$/.test(location) ||
-    isMerchantOperationsPath(location) ||
-    /^\/dashboard\/companies\/[^/]+$/.test(location);
+  // The shell title is the fallback page heading. Any mounted page or hub that renders its own level-1 heading
+  // claims ownership (see PageTitle / PageHeader / CrmPageHeader), and the shell then shows plain text.
+  const pageHeadingClaimed = usePageHeadingClaimed();
 
   // Admin dev-mode toggle — persisted in localStorage; off by default
   const [devMode, setDevMode] = useState(() => {
@@ -759,7 +754,15 @@ function DashboardLayoutInner({ children }: DashboardLayoutProps) {
         <Sidebar>
           <SidebarHeader className="p-4 border-b">
             <Link href="/" data-testid="link-sidebar-logo">
-              <img src={logoBlue} alt="Liberty Bancard" className="h-8 w-auto" />
+              {isEmployeeCrm ? (
+                <>
+                  {/* Approved inverse wordmark for the dark employee sidebar; the navy one disappears on navy. */}
+                  <img src={logoBlue} alt="Liberty Bancard" className="h-8 w-auto dark:hidden" data-testid="img-sidebar-logo-light" />
+                  <img src={logoWhite} alt="Liberty Bancard" className="hidden h-8 w-auto dark:block" data-testid="img-sidebar-logo-dark" />
+                </>
+              ) : (
+                <img src={logoBlue} alt="Liberty Bancard" className="h-8 w-auto" />
+              )}
             </Link>
           </SidebarHeader>
 
@@ -867,7 +870,7 @@ function DashboardLayoutInner({ children }: DashboardLayoutProps) {
           <header className="h-14 bg-background border-b flex items-center justify-between gap-2 sm:gap-4 px-3 sm:px-6 sticky top-0 z-50">
             <div className="flex items-center gap-2 sm:gap-3 min-w-0">
               <SidebarTrigger data-testid="button-sidebar-toggle" className="shrink-0" />
-              {isAdoptedPage ? (
+              {pageHeadingClaimed ? (
                 <div className="font-display font-semibold text-base sm:text-lg truncate" data-testid="text-page-title" aria-label={currentLabel}>
                   {currentLabel}
                 </div>

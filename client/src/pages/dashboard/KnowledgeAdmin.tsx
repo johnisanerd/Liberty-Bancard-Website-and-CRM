@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { useState, useId } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -175,10 +176,10 @@ export default function KnowledgeAdmin() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold flex items-center gap-2">
+          <PageTitle className="text-2xl font-bold flex items-center gap-2">
             <BookOpen className="w-6 h-6 text-primary" />
             Knowledge Base Admin
-          </h1>
+          </PageTitle>
           <p className="text-muted-foreground text-sm mt-0.5">
             Manage the Liberty Bancard knowledge sources that ground the AI assistant.
           </p>

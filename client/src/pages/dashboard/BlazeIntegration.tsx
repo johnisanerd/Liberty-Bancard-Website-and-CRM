@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -127,9 +128,9 @@ export default function BlazeIntegration() {
     <div className="p-6 space-y-6 max-w-5xl mx-auto" data-testid="page-blaze-integration">
       <div className="flex flex-col gap-2">
         <div className="flex items-center gap-3">
-          <h1 className="text-2xl font-bold" data-testid="text-blaze-title">
+          <PageTitle className="text-2xl font-bold" data-testid="text-blaze-title">
             Blaze.ai Marketing Integration
-          </h1>
+          </PageTitle>
           <Badge variant={settingsState !== "unavailable" && settings?.enabled ? "default" : "outline"} className="gap-1" data-testid="badge-blaze-status">
             {settingsState === "loading" ? (
               <><Loader2 className="w-3 h-3 animate-spin" /> Checking…</>

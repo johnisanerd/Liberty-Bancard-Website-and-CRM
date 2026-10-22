@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation } from "wouter";
@@ -2091,10 +2092,10 @@ export default function Training() {
     <div className="p-6 max-w-7xl mx-auto space-y-4">
       <ResourcesNav current="/dashboard/training" />
       <div className="mb-6">
-        <h1 className="text-2xl font-bold flex items-center gap-2" data-testid="text-training-title">
+        <PageTitle className="text-2xl font-bold flex items-center gap-2" data-testid="text-training-title">
           <BookOpen className="w-7 h-7 text-primary" />
           Sales Training Hub
-        </h1>
+        </PageTitle>
         <p className="text-muted-foreground mt-1">
           Structured training guides and AI-powered roleplay practice for every stage of the sales process.
         </p>

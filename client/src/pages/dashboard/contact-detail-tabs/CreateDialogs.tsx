@@ -5,7 +5,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Building2 } from "lucide-react";
 import type { ComponentPropsWithoutRef, Dispatch, SetStateAction } from "react";
-import type { Company, ContactCompany } from "@shared/schema";
+import type { ContactCompany } from "@shared/schema";
+import type { CompanySearchItem, CompanySearchState } from "@/hooks/use-company-search";
 import { VERTICALS } from "@shared/schema";
 
 type DealForm = { pipeline: string; stage: string; offerPath: string; notes: string };
@@ -54,16 +55,16 @@ interface Props {
   setCompanyRole: Dispatch<SetStateAction<string>>;
   companyIsPrimary: boolean;
   setCompanyIsPrimary: Dispatch<SetStateAction<boolean>>;
-  allCompanies: Company[];
-  companiesLoading: boolean;
-  companiesError: boolean;
-  retryCompanies: () => void;
+  companySearchState: CompanySearchState;
+  selectedCompany: CompanySearchItem | null;
+  selectCompany: (company: CompanySearchItem | null) => void;
   contactCompanies: ContactCompany[];
   addCompanyAssociation: { mutate: (v: { companyId: number; role?: string; isPrimary: boolean }) => void; isPending: boolean };
   createAndLinkCompany: { mutate: () => void; isPending: boolean };
 }
 
 export function CreateDialogs(p: Props) {
+  const cs = p.companySearchState;
   return (
     <>
       {/* Create Deal Dialog */}
@@ -256,49 +257,72 @@ export function CreateDialogs(p: Props) {
 
             {p.companyMode === "existing" ? (
               <div className="space-y-2">
-                <label className="text-sm font-medium">Search Company</label>
+                <label htmlFor="input-company-search" className="text-sm font-medium">Search Company</label>
                 <Input
+                  id="input-company-search"
                   value={p.companySearch}
                   onChange={e => p.setCompanySearch(e.target.value)}
-                  placeholder="Search by name..."
+                  placeholder="Search by name or DBA..."
+                  autoComplete="off"
+                  maxLength={100}
+                  onKeyDown={e => {
+                    if (e.key !== "ArrowDown") return;
+                    const first = document.querySelector<HTMLButtonElement>('[data-testid="company-results"] button[data-company-option]');
+                    if (first) { e.preventDefault(); first.focus(); }
+                  }}
                   data-testid="input-company-search"
                 />
-                <div className="max-h-48 overflow-y-auto border rounded-md" aria-live="polite">
-                  {p.companiesLoading ? <p className="p-3 text-sm text-muted-foreground" role="status">Loading authorized companies…</p> : null}
-                  {p.companiesError ? <p className="p-3 text-sm text-destructive" role="alert">Company list unavailable. <button type="button" className="underline" onClick={p.retryCompanies}>Retry</button></p> : null}
-                  {p.allCompanies
-                    .filter(c => {
-                      if (!p.companySearch) return true;
-                      const q = p.companySearch.toLowerCase();
-                      return (
-                        c.legalName.toLowerCase().includes(q) ||
-                        (c.dba && c.dba.toLowerCase().includes(q))
-                      );
-                    })
-                    .filter(c => !p.contactCompanies.some(cc => cc.companyId === c.id))
-                    .map(c => (
-                      <button
-                        type="button"
-                        key={c.id}
-                        className={`flex min-h-11 w-full items-center gap-2 p-2 text-left hover-elevate ${p.selectedCompanyId === String(c.id) ? "bg-accent" : ""}`}
-                        onClick={() => p.setSelectedCompanyId(String(c.id))}
-                        aria-pressed={p.selectedCompanyId === String(c.id)}
-                        data-testid={`company-option-${c.id}`}
-                      >
-                        <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium truncate">{c.legalName}</p>
-                          {c.dba && <p className="text-xs text-muted-foreground truncate">DBA: {c.dba}</p>}
-                        </div>
-                      </button>
-                    ))}
-                  {!p.companiesError && !p.companiesLoading && p.allCompanies.filter(c => {
-                    if (!p.companySearch) return true;
-                    const q = p.companySearch.toLowerCase();
-                    return c.legalName.toLowerCase().includes(q) || (c.dba && c.dba.toLowerCase().includes(q));
-                  }).filter(c => !p.contactCompanies.some(cc => cc.companyId === c.id)).length === 0 && (
-                    <p className="text-sm text-muted-foreground p-3 text-center">No companies found</p>
-                  )}
+                {p.selectedCompany && (
+                  <p className="flex items-center justify-between gap-2 rounded-md border bg-accent/40 px-3 py-2 text-sm" data-testid="company-selected-summary">
+                    <span className="min-w-0 truncate">Selected: <strong>{p.selectedCompany.legalName}</strong>{p.selectedCompany.dba ? ` (DBA: ${p.selectedCompany.dba})` : ""} <span className="text-muted-foreground">· ID {p.selectedCompany.id}</span></span>
+                    <button type="button" className="shrink-0 underline" onClick={() => p.selectCompany(null)} data-testid="button-clear-company">Clear</button>
+                  </p>
+                )}
+                <p className="text-xs text-muted-foreground" role="status" aria-live="polite" data-testid="company-search-status">
+                  {cs.status === "loading" ? "Searching authorized companies…"
+                    : cs.status === "error" ? ""
+                    : cs.status === "ready" ? (cs.total === 0 ? "No match" : `Showing ${cs.items.length} of ${cs.total} authorized ${cs.total === 1 ? "company" : "companies"}${cs.settledQuery ? ` matching “${cs.settledQuery}”` : ""}`)
+                    : ""}
+                </p>
+                <div className="max-h-48 overflow-y-auto border rounded-md" data-testid="company-results"
+                  onKeyDown={e => {
+                    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+                    const options = [...e.currentTarget.querySelectorAll<HTMLButtonElement>("button[data-company-option]")];
+                    const at = options.indexOf(document.activeElement as HTMLButtonElement);
+                    if (at < 0) return;
+                    e.preventDefault();
+                    if (e.key === "ArrowDown") options[Math.min(at + 1, options.length - 1)]?.focus();
+                    else if (at === 0) document.getElementById("input-company-search")?.focus();
+                    else options[at - 1]?.focus();
+                  }}>
+                  {cs.status === "error" ? <p className="p-3 text-sm text-destructive" role="alert">Company search unavailable. <button type="button" className="underline" onClick={cs.retry} data-testid="button-company-search-retry">Retry</button></p> : null}
+                  {cs.status === "ready" && cs.items.length === 0 ? <p className="text-sm text-muted-foreground p-3 text-center" data-testid="company-no-match">No companies found</p> : null}
+                  {cs.items.map(c => (
+                    <button
+                      type="button"
+                      key={c.id}
+                      className={`flex min-h-11 w-full items-center gap-2 p-2 text-left hover-elevate ${p.selectedCompanyId === String(c.id) ? "bg-accent" : ""}`}
+                      onClick={() => p.selectCompany(c)}
+                      aria-pressed={p.selectedCompanyId === String(c.id)}
+                      data-company-option
+                      aria-label={`${c.legalName}${c.dba ? `, DBA ${c.dba}` : ""}, company ID ${c.id}`}
+                      data-testid={`company-option-${c.id}`}
+                    >
+                      <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate">{c.legalName}</p>
+                        {c.dba && <p className="text-xs text-muted-foreground truncate">DBA: {c.dba}</p>}
+                      </div>
+                    </button>
+                  ))}
+                  {cs.hasMore ? (
+                    <div className="p-2 text-center">
+                      <Button type="button" variant="outline" size="sm" onClick={cs.loadMore} disabled={cs.loadingMore} data-testid="button-company-load-more">
+                        {cs.loadingMore ? "Loading…" : "Show more"}
+                      </Button>
+                      {cs.moreError ? <p className="pt-1 text-sm text-destructive" role="alert">Could not load more. Try again.</p> : null}
+                    </div>
+                  ) : null}
                 </div>
               </div>
             ) : (

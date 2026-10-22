@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { useState, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient, getCsrfToken } from "@/lib/queryClient";
@@ -247,7 +248,7 @@ export default function LeadGenCleaner() {
     <div className="space-y-4 p-4 md:p-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold" data-testid="text-page-title">Lead Gen Cleaner</h1>
+          <PageTitle className="text-2xl font-bold" data-testid="text-page-title">Lead Gen Cleaner</PageTitle>
           <p className="text-sm text-muted-foreground">Upload Sunbiz files, enrich with contact data, push to sequences</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">

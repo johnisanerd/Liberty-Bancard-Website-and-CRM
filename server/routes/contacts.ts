@@ -1438,6 +1438,27 @@ export function registerContactsRoutes(app: Express, creationDependencies: Parti
     }
   });
 
+  // Bounded, authorized search used by the Link Company picker. Registered before `/api/companies/:id` so the
+  // literal segment is never read as an id.
+  app.get("/api/companies/search", isDashboardUser, async (req, res) => {
+    try {
+      const q = z.object({
+        q: z.string().max(100).optional(),
+        limit: z.coerce.number().int().min(1).max(50).optional(),
+        cursor: z.string().max(400).optional(),
+        excludeContactId: z.coerce.number().int().positive().optional(),
+      }).strict().safeParse(req.query);
+      if (!q.success) return res.status(400).json({ message: "Invalid company search request" });
+      const {searchCompanies}=await import("../services/company-authority");
+      const {bindWorkActor}=await import("../services/work-item-command");
+      res.json(await searchCompanies(bindWorkActor(req.user), q.data));
+    } catch (err: any) {
+      const {WorkCommandError}=await import("../services/work-item-command");
+      if (err instanceof WorkCommandError) return res.status(err.status).json({ message: err.message });
+      serverError(res, err);
+    }
+  });
+
   app.post("/api/companies", isDashboardUser, async (req, res) => {
     try {
       const input = insertCompanySchema.parse(req.body);

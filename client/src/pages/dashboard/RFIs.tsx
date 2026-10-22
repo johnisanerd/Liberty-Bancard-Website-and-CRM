@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { useState,useEffect } from "react";
 import {useCrmQuery as useQuery,useCrmActorIdentity} from "@/hooks/use-crm-query";
 import {c4WorkspaceSelection,rfiViews,rfiUrl} from "@/lib/crm-destination-state";
@@ -177,7 +178,7 @@ export default function RFIs() {
       </Dialog>
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-2xl font-bold" data-testid="text-rfis-title">Requests for Information</h1>
+          <PageTitle className="text-2xl font-bold" data-testid="text-rfis-title">Requests for Information</PageTitle>
           <p className="text-sm text-muted-foreground">Track and manage information requests across teams</p>
         </div>
         <Dialog open={createOpen} onOpenChange={setCreateOpen}>

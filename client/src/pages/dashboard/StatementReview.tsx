@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { useState,useEffect } from "react";
 import { useMutation } from "@tanstack/react-query";
 import {useCrmQuery as useQuery,useCrmActorIdentity} from "@/hooks/use-crm-query";
@@ -704,9 +705,9 @@ export default function StatementReview() {
   return (
     <div className="p-6 space-y-6 max-w-7xl mx-auto" data-testid="page-statement-review">
       <div className="flex flex-col gap-2">
-        <h1 className="text-2xl font-bold" data-testid="text-statement-review-title">
+        <PageTitle className="text-2xl font-bold" data-testid="text-statement-review-title">
           Statement Review & Savings Proposals
-        </h1>
+        </PageTitle>
         <p className="text-muted-foreground">
           Analyze merchant statements and generate competitive pricing proposals with real savings breakdowns.
         </p>

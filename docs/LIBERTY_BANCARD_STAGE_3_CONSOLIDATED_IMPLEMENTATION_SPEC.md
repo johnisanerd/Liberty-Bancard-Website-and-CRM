@@ -2047,3 +2047,14 @@ D01–D05 are implemented in source with the proof listed in ledger Section 39.1
 ### 31.2 D-R1 published and walked through — 2026-10-22
 
 D-R1 is published (source `4e1b3788`) and D01–D05 were verified in a signed-in production browser; the follow-up `67b6226c` is also published and serving (build `10f68a14-6651-4f87-a6f1-2f64f7488ff9`). Exact observations and findings are in ledger Sections 39.2 and 39.2.1. Spec changes from the walkthrough: the GHL setup guide no longer says GHL handles delivery or tells operators to unpause (the ownership test no longer exempts that file); the Data Health "active" deal wording states that unknown-class deals are included while Reports excludes them; the domain/location automation tick saves its place when it stops on its time budget and resumes after the last contact handled. Still open: D06–D09 and UI-01–UI-06 (D-R2), then D-V (responsive, role matrix, public-site regression, final live smoke). The D-R1 apply path was not exercised in production.
+
+## 32. D-R2 contract — 2026-10-22 (source; not published)
+
+D-R2 implements D06–D09 and UI-01–UI-06 as recorded in ledger Section 40. Contract points that later work must keep:
+
+- Heading ownership is a runtime claim (`PageTitle`/`PageHeader`/`CrmPageHeader` at level 1). Do not reintroduce a route list in `DashboardLayout.tsx`; embedded children render under `PageHeadingLevel level={2}`.
+- CRM textarea floors are owned by the dedicated rule (96px ordinary, 200px `.crm-prose-editor`); danger text uses `--crm-danger-text`, separate from button surface tokens.
+- Company search is server-side and bounded (default 25, max 50), applies the actor predicate before ordering and the limit, reports the exact authorized total, and never widens agent access. Link/create command versions and `readCompanies` are unchanged.
+- Retained Contact core is keyed by protected actor scope plus contact ID and holds no section payload.
+- Return context is a per-user, pattern-validated People URL; Collateral stays a public handoff with its own return link.
+- D-V is still open: full route/control/role/action/metric/UI/performance evidence, and verification that D01's direct SQL preserves authorization, identity and lifecycle invariants. Stage 3 D is not closed.

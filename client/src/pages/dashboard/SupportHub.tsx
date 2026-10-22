@@ -1,3 +1,4 @@
+import { PageHeadingLevel } from "@/components/ui/page-header";
 import { useLocation, useSearch } from "wouter";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import Tickets from "./Tickets";
@@ -15,6 +16,7 @@ export default function SupportHub() {
   };
 
   return (
+    <PageHeadingLevel level={2}>
     <Tabs value={state.value} onValueChange={goTab} className="min-w-0 space-y-4">
       {state.issues.length > 0 && <p className="rounded-md border-l-2 border-destructive bg-muted px-3 py-2 text-sm" role="status">{state.issues[0].reason}</p>}
       <TabsList>
@@ -26,5 +28,6 @@ export default function SupportHub() {
       <TabsContent value="rfis"><RFIs /></TabsContent>
       <TabsContent value="review-queue"><ReviewQueue /></TabsContent>
     </Tabs>
+    </PageHeadingLevel>
   );
 }

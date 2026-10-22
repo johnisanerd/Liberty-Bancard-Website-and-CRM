@@ -821,6 +821,7 @@ export default function Tickets() {
                       <Checkbox
                         checked={selectedTicketIds.has(ticket.id)}
                         onCheckedChange={() => toggleTicketSelect(ticket.id)}
+                        aria-label={`Select ticket #${ticket.id}`}
                         data-testid={`checkbox-ticket-${ticket.id}`}
                       />
                     </TableCell>

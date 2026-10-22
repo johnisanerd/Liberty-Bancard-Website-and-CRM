@@ -10,7 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Search, Plus, MoreHorizontal, UserPlus, Mail, MessageSquare, Zap, AlertTriangle, Sparkles, Activity, ArrowRight, Clock, TrendingUp, Ticket, Download, CheckSquare, ExternalLink, Users, Merge, ChevronRight, Archive, RotateCcw, Star, UserCheck, Filter, Calendar, RefreshCw, BellOff, PhoneMissed, Trash2, ShieldAlert } from "lucide-react";
+import { Search, Plus, MoreHorizontal, UserPlus, Mail, MessageSquare, Zap, AlertTriangle, Sparkles, Activity, ArrowRight, Clock, TrendingUp, Ticket, Download, CheckSquare, ExternalLink, Users, Merge, ChevronRight, Archive, RotateCcw, Star, UserCheck, Filter, Calendar, RefreshCw, BellOff, PhoneMissed, Trash2, ShieldAlert, X } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { useLocation, useSearch } from "wouter";
 import { useForm } from "react-hook-form";
@@ -26,6 +26,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { exportToCSV } from "@/lib/export-csv";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
+import { rememberReturnUrl } from "@/lib/crm-return-context";
 import { destinationUrl, peopleState } from "@/lib/crm-destination-state";
 import { CrmPage, CrmPageHeader, CrmFilterPanel, CrmDataTable } from "@/components/crm/CrmPresentation";
 import DashboardErrorState from "@/components/DashboardErrorState";
@@ -398,6 +399,10 @@ export default function Contacts() {
   const assignmentFilterSupported = user?.role === "agent";
   const parsedPeople = peopleState(search,isManagerOrAdmin,assignmentFilterSupported);
   const peopleParams = parsedPeople.params;
+  // A Contact opened from this list returns here, with the same filters, search and page.
+  useEffect(() => {
+    rememberReturnUrl("people", user?.id, `${location}${search ? `?${search.replace(/^\?/, "")}` : ""}`);
+  }, [location, search, user?.id]);
   useEffect(()=>{
     if(!parsedPeople.issues.length && peopleParams.toString()!==new URLSearchParams(search).toString())
       setLocation(destinationUrl(location,peopleParams,window.location.hash),{replace:true});
@@ -1065,238 +1070,9 @@ export default function Contacts() {
               <SelectItem value="alpha">A → Z (name)</SelectItem>
             </SelectContent>
           </Select>
-          <div className="flex items-center gap-1 flex-wrap" data-testid="email-health-filter">
-            {EMAIL_HEALTH_OPTIONS.map((opt) => {
-              const isActive = emailHealthFilter === opt.value;
-              const count = opt.value
-                ? emailHealthSummary?.[opt.value as "active" | "bounced" | "invalid" | "opted_out"] ?? 0
-                : summaryTotal;
-              return (
-                <button
-                  key={opt.value || "all"}
-                  onClick={() => setEmailHealthFilter(opt.value)}
-                  data-testid={`chip-email-health-${opt.value || "all"}`}
-                  className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
-                    isActive
-                      ? opt.value === "bounced" || opt.value === "invalid"
-                        ? "bg-red-100 border-red-300 text-red-700 dark:bg-red-900/40 dark:border-red-700 dark:text-red-300"
-                        : opt.value === "opted_out"
-                        ? "bg-slate-200 border-slate-400 text-slate-700 dark:bg-slate-700 dark:border-slate-500 dark:text-slate-200"
-                        : "bg-primary/10 border-primary/30 text-primary"
-                      : "bg-background border-border text-muted-foreground hover:bg-muted"
-                  }`}
-                >
-                  {opt.label}
-                  {count !== undefined && count > 0 && (
-                    <span className={`px-1 py-0.5 rounded text-[10px] font-semibold ${
-                      isActive ? "bg-white/30 dark:bg-black/20" : "bg-muted-foreground/10"
-                    }`} data-testid={`count-email-health-${opt.value || "all"}`}>
-                      {count}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          <button
-            onClick={() => setAssignedToMe(!assignedToMe)}
-            data-testid="chip-assigned-to-me"
-            disabled={!assignmentFilterSupported}
-            title={!assignmentFilterSupported ? "Assigned-to-me filtering is unavailable for this role" : undefined}
-            aria-describedby={!assignmentFilterSupported ? "people-assignment-filter-support" : undefined}
-            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
-              assignedToMe
-                ? "bg-primary/10 border-primary/30 text-primary"
-                : "bg-background border-border text-muted-foreground hover:bg-muted"
-            }`}
-          >
-            <UserCheck className="h-3 w-3" />
-            Assigned to me
-          </button>
-          {/* #462 — Never contacted filter chip */}
-          <button
-            onClick={() => setNeverContactedOnly(!neverContactedOnly)}
-            data-testid="chip-never-contacted"
-            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
-              neverContactedOnly
-                ? "bg-amber-50 border-amber-300 text-amber-700 dark:bg-amber-900/30 dark:border-amber-700 dark:text-amber-300"
-                : "bg-background border-border text-muted-foreground hover:bg-muted"
-            }`}
-          >
-            <Clock className="h-3 w-3" />
-            Never contacted
-          </button>
-          {/* #383 — Contacted today chip */}
-          <button
-            onClick={() => setContactedTodayOnly(!contactedTodayOnly)}
-            data-testid="chip-contacted-today"
-            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
-              contactedTodayOnly
-                ? "bg-teal-50 border-teal-300 text-teal-700 dark:bg-teal-900/30 dark:border-teal-700 dark:text-teal-300"
-                : "bg-background border-border text-muted-foreground hover:bg-muted"
-            }`}
-          >
-            <UserCheck className="h-3 w-3" />
-            Contacted today
-          </button>
-          {/* #482 — Created this week filter chip */}
-          <button
-            onClick={() => setCreatedThisWeekOnly(!createdThisWeekOnly)}
-            data-testid="chip-created-this-week"
-            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
-              createdThisWeekOnly
-                ? "bg-green-50 border-green-300 text-green-700 dark:bg-green-900/30 dark:border-green-700 dark:text-green-300"
-                : "bg-background border-border text-muted-foreground hover:bg-muted"
-            }`}
-          >
-            <Calendar className="h-3 w-3" />
-            This week
-          </button>
-          {/* #398 — Stale contacts chip (no activity in 30+ days) */}
-          <button
-            onClick={() => setStaleContactsOnly(!staleContactsOnly)}
-            data-testid="chip-stale-contacts"
-            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
-              staleContactsOnly
-                ? "bg-orange-50 border-orange-300 text-orange-700 dark:bg-orange-900/30 dark:border-orange-700 dark:text-orange-300"
-                : "bg-background border-border text-muted-foreground hover:bg-muted"
-            }`}
-          >
-            <Clock className="h-3 w-3" />
-            Stale (30d)
-          </button>
-          {/* #543 — Recently updated chip (last 7 days) */}
-          <button
-            onClick={() => setRecentlyUpdated(!recentlyUpdated)}
-            data-testid="chip-recently-updated"
-            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
-              recentlyUpdated
-                ? "bg-blue-50 border-blue-300 text-blue-700 dark:bg-blue-900/30 dark:border-blue-700 dark:text-blue-300"
-                : "bg-background border-border text-muted-foreground hover:bg-muted"
-            }`}
-          >
-            <RefreshCw className="h-3 w-3" />
-            Updated this week
-          </button>
-          {/* #1245 — Not contacted in 30 days chip */}
-          <button
-            onClick={() => setNotContactedIn30Only(!notContactedIn30Only)}
-            data-testid="chip-not-contacted-30d"
-            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
-              notContactedIn30Only
-                ? "bg-red-50 border-red-300 text-red-700 dark:bg-red-900/30 dark:border-red-700 dark:text-red-300"
-                : "bg-background border-border text-muted-foreground hover:bg-muted"
-            }`}
-          >
-            <PhoneMissed className="h-3 w-3" />
-            No call (30d)
-          </button>
-          {/* #1443 — Blocked contacts chip */}
-          <button
-            onClick={() => setBlockedOnly(!blockedOnly)}
-            data-testid="chip-blocked-contacts"
-            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
-              blockedOnly
-                ? "bg-red-50 border-red-300 text-red-700 dark:bg-red-900/30 dark:border-red-700 dark:text-red-300"
-                : "bg-background border-border text-muted-foreground hover:bg-muted"
-            }`}
-          >
-            <BellOff className="h-3 w-3" />
-            Blocked
-          </button>
-          {/* #1443 — Churn risk chip */}
-          <button
-            onClick={() => setChurnRiskOnly(!churnRiskOnly)}
-            data-testid="chip-churn-risk"
-            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
-              churnRiskOnly
-                ? "bg-amber-50 border-amber-300 text-amber-700 dark:bg-amber-900/30 dark:border-amber-700 dark:text-amber-300"
-                : "bg-background border-border text-muted-foreground hover:bg-muted"
-            }`}
-          >
-            <TrendingUp className="h-3 w-3" />
-            Churn Risk
-          </button>
-          {/* #1443 — No-outreach 24h chip */}
-          <button
-            onClick={() => setNoOutreach24hOnly(!noOutreach24hOnly)}
-            data-testid="chip-no-outreach-24h"
-            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
-              noOutreach24hOnly
-                ? "bg-amber-50 border-amber-300 text-amber-700 dark:bg-amber-900/30 dark:border-amber-700 dark:text-amber-300"
-                : "bg-background border-border text-muted-foreground hover:bg-muted"
-            }`}
-          >
-            <Clock className="h-3 w-3" />
-            No outreach (24h)
-          </button>
-          {/* #1784 — Record class filter chips (admin only) */}
-          {user?.role === "admin" && (
-            <div className="flex items-center gap-1 flex-wrap" data-testid="record-class-filter">
-              {(["production", "test", "demo", "synthetic", "unknown", "all"] as const).map((cls) => {
-                const isActive = recordClassFilter === cls || (cls === "production" && recordClassFilter === "production");
-                const label = cls === "all" ? "All classes" : cls.charAt(0).toUpperCase() + cls.slice(1);
-                const count = cls !== "all" ? (classCounts?.[cls] ?? 0) : undefined;
-                const isDangerous = cls === "test" || cls === "demo" || cls === "synthetic";
-                return (
-                  <button
-                    key={cls}
-                    onClick={() => {
-                      // Clear frozen snapshot when filter changes
-                      if (snapshotId) { setSnapshotId(null); setSelectedIds(new Set()); }
-                      updatePeopleParam("recordClass", cls === "production" ? "" : cls);
-                    }}
-                    data-testid={`chip-record-class-${cls}`}
-                    className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
-                      isActive
-                        ? isDangerous
-                          ? "bg-amber-50 border-amber-300 text-amber-700 dark:bg-amber-900/30 dark:border-amber-700 dark:text-amber-300"
-                          : cls === "unknown"
-                          ? "bg-slate-100 border-slate-400 text-slate-700 dark:bg-slate-800 dark:border-slate-500 dark:text-slate-200"
-                          : "bg-primary/10 border-primary/30 text-primary"
-                        : "bg-background border-border text-muted-foreground hover:bg-muted"
-                    }`}
-                  >
-                    {isDangerous && <ShieldAlert className="h-2.5 w-2.5" />}
-                    {label}
-                    {count !== undefined && count > 0 && (
-                      <span className="px-1 py-0.5 rounded text-[10px] font-semibold bg-muted-foreground/10">
-                        {count}
-                      </span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          )}
-          {/* #835 — No-deal contacts chip */}
-          <button
-            onClick={() => setNoDealOnly(!noDealOnly)}
-            data-testid="chip-no-deal"
-            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
-              noDealOnly
-                ? "bg-slate-100 border-slate-400 text-slate-700 dark:bg-slate-800 dark:border-slate-500 dark:text-slate-200"
-                : "bg-background border-border text-muted-foreground hover:bg-muted"
-            }`}
-          >
-            No deal
-          </button>
-          {/* #619 — Has assignee chip */}
-          <button
-            onClick={() => setHasAssigneeOnly(!hasAssigneeOnly)}
-            data-testid="chip-has-assignee"
-            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
-              hasAssigneeOnly
-                ? "bg-indigo-50 border-indigo-300 text-indigo-700 dark:bg-indigo-900/30 dark:border-indigo-700 dark:text-indigo-300"
-                : "bg-background border-border text-muted-foreground hover:bg-muted"
-            }`}
-          >
-            <UserCheck className="h-3 w-3" />
-            Assigned
-          </button>
           <div className="flex items-center gap-2" data-testid="toggle-show-archived-contacts">
             <Switch
               checked={showArchived}
@@ -1316,7 +1092,7 @@ export default function Contacts() {
             data-testid="button-advanced-filters"
           >
             <Activity className="w-3.5 h-3.5" />
-            Filters {(verticalFilter || tagFilter || leadSourceFilter || hasAssigneeOnly) ? "•" : ""}
+            Filters
           </Button>
           {/* #1784 — Select-all-matching button for eligible classes */}
           {user?.role === "admin" && ["test", "demo", "synthetic"].includes(recordClassFilter) && (
@@ -1704,6 +1480,33 @@ export default function Contacts() {
         </div>
       </div>
 
+      {(() => {
+        const labels: Record<string, string> = { emailHealth: "Email health", assignedToMe: "Assigned to me", vertical: "Industry", tag: "Tag", neverContacted: "Never contacted",
+          createdThisWeek: "Created this week", leadSource: "Lead source", hasAssignee: "Has assignee", contactedToday: "Contacted today", lifecycle: "Lifecycle",
+          status: "Status", churnRisk: "Churn risk", noOutreach: "No outreach", blocked: "Blocked", recentlyUpdated: "Recently updated", noDeal: "No deal",
+          stale: "Stale", recordClass: "Record class" };
+        const active = Object.keys(labels).filter(key => {
+          const value = peopleParams.get(key);
+          return !!value && value !== "false" && !(key === "recordClass" && value === "production");
+        });
+        if (active.length === 0) return null;
+        return (
+          <ul className="flex flex-wrap items-center gap-2" aria-label="Selected filters" data-testid="people-selected-filters">
+            {active.map(key => {
+              const value = peopleParams.get(key) ?? "";
+              return (
+                <li key={key}>
+                  <button type="button" onClick={() => updatePeopleParam(key, "")} aria-label={`Remove filter ${labels[key]}${value === "true" ? "" : `: ${value}`}`}
+                    className="inline-flex min-h-8 items-center gap-1 rounded-full border bg-muted/40 px-3 text-xs" data-testid={`selected-filter-${key}`}>
+                    {labels[key]}{value === "true" ? "" : `: ${value}`}<X className="h-3 w-3" aria-hidden="true" />
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        );
+      })()}
+
       {selectedContacts.length > 0 && (
         <div className="flex items-center gap-3 p-3 bg-primary/5 rounded-md flex-wrap" data-testid="bulk-actions-toolbar">
           <span className="text-sm font-medium" data-testid="text-selected-count">
@@ -1762,6 +1565,240 @@ export default function Contacts() {
       {/* #236 — Advanced filter drawer with #238 vertical filter */}
       <CrmFilterPanel open={showAdvancedFilters} onOpenChange={setShowAdvancedFilters}>
         <div className="p-3 border rounded-lg bg-muted/30 space-y-3 animate-in fade-in-0 slide-in-from-top-2 duration-150" data-testid="advanced-filters-panel">
+        <div className="space-y-3 border-b pb-3" data-testid="people-quick-filters">
+          <span className="text-sm font-medium">Quick filters</span>
+          <div className="flex items-center gap-1 flex-wrap" data-testid="email-health-filter">
+            {EMAIL_HEALTH_OPTIONS.map((opt) => {
+              const isActive = emailHealthFilter === opt.value;
+              const count = opt.value
+                ? emailHealthSummary?.[opt.value as "active" | "bounced" | "invalid" | "opted_out"] ?? 0
+                : summaryTotal;
+              return (
+                <button
+                  key={opt.value || "all"}
+                  onClick={() => setEmailHealthFilter(opt.value)}
+                  data-testid={`chip-email-health-${opt.value || "all"}`}
+                  className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+                    isActive
+                      ? opt.value === "bounced" || opt.value === "invalid"
+                        ? "bg-red-100 border-red-300 text-red-700 dark:bg-red-900/40 dark:border-red-700 dark:text-red-300"
+                        : opt.value === "opted_out"
+                        ? "bg-slate-200 border-slate-400 text-slate-700 dark:bg-slate-700 dark:border-slate-500 dark:text-slate-200"
+                        : "bg-primary/10 border-primary/30 text-primary"
+                      : "bg-background border-border text-muted-foreground hover:bg-muted"
+                  }`}
+                >
+                  {opt.label}
+                  {count !== undefined && count > 0 && (
+                    <span className={`px-1 py-0.5 rounded text-[10px] font-semibold ${
+                      isActive ? "bg-white/30 dark:bg-black/20" : "bg-muted-foreground/10"
+                    }`} data-testid={`count-email-health-${opt.value || "all"}`}>
+                      {count}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+          <button
+            onClick={() => setAssignedToMe(!assignedToMe)}
+            data-testid="chip-assigned-to-me"
+            disabled={!assignmentFilterSupported}
+            title={!assignmentFilterSupported ? "Assigned-to-me filtering is unavailable for this role" : undefined}
+            aria-describedby={!assignmentFilterSupported ? "people-assignment-filter-support" : undefined}
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+              assignedToMe
+                ? "bg-primary/10 border-primary/30 text-primary"
+                : "bg-background border-border text-muted-foreground hover:bg-muted"
+            }`}
+          >
+            <UserCheck className="h-3 w-3" />
+            Assigned to me
+          </button>
+          {/* #462 — Never contacted filter chip */}
+          <button
+            onClick={() => setNeverContactedOnly(!neverContactedOnly)}
+            data-testid="chip-never-contacted"
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+              neverContactedOnly
+                ? "bg-amber-50 border-amber-300 text-amber-700 dark:bg-amber-900/30 dark:border-amber-700 dark:text-amber-300"
+                : "bg-background border-border text-muted-foreground hover:bg-muted"
+            }`}
+          >
+            <Clock className="h-3 w-3" />
+            Never contacted
+          </button>
+          {/* #383 — Contacted today chip */}
+          <button
+            onClick={() => setContactedTodayOnly(!contactedTodayOnly)}
+            data-testid="chip-contacted-today"
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+              contactedTodayOnly
+                ? "bg-teal-50 border-teal-300 text-teal-700 dark:bg-teal-900/30 dark:border-teal-700 dark:text-teal-300"
+                : "bg-background border-border text-muted-foreground hover:bg-muted"
+            }`}
+          >
+            <UserCheck className="h-3 w-3" />
+            Contacted today
+          </button>
+          {/* #482 — Created this week filter chip */}
+          <button
+            onClick={() => setCreatedThisWeekOnly(!createdThisWeekOnly)}
+            data-testid="chip-created-this-week"
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+              createdThisWeekOnly
+                ? "bg-green-50 border-green-300 text-green-700 dark:bg-green-900/30 dark:border-green-700 dark:text-green-300"
+                : "bg-background border-border text-muted-foreground hover:bg-muted"
+            }`}
+          >
+            <Calendar className="h-3 w-3" />
+            This week
+          </button>
+          {/* #398 — Stale contacts chip (no activity in 30+ days) */}
+          <button
+            onClick={() => setStaleContactsOnly(!staleContactsOnly)}
+            data-testid="chip-stale-contacts"
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+              staleContactsOnly
+                ? "bg-orange-50 border-orange-300 text-orange-700 dark:bg-orange-900/30 dark:border-orange-700 dark:text-orange-300"
+                : "bg-background border-border text-muted-foreground hover:bg-muted"
+            }`}
+          >
+            <Clock className="h-3 w-3" />
+            Stale (30d)
+          </button>
+          {/* #543 — Recently updated chip (last 7 days) */}
+          <button
+            onClick={() => setRecentlyUpdated(!recentlyUpdated)}
+            data-testid="chip-recently-updated"
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+              recentlyUpdated
+                ? "bg-blue-50 border-blue-300 text-blue-700 dark:bg-blue-900/30 dark:border-blue-700 dark:text-blue-300"
+                : "bg-background border-border text-muted-foreground hover:bg-muted"
+            }`}
+          >
+            <RefreshCw className="h-3 w-3" />
+            Updated this week
+          </button>
+          {/* #1245 — Not contacted in 30 days chip */}
+          <button
+            onClick={() => setNotContactedIn30Only(!notContactedIn30Only)}
+            data-testid="chip-not-contacted-30d"
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+              notContactedIn30Only
+                ? "bg-red-50 border-red-300 text-red-700 dark:bg-red-900/30 dark:border-red-700 dark:text-red-300"
+                : "bg-background border-border text-muted-foreground hover:bg-muted"
+            }`}
+          >
+            <PhoneMissed className="h-3 w-3" />
+            No call (30d)
+          </button>
+          {/* #1443 — Blocked contacts chip */}
+          <button
+            onClick={() => setBlockedOnly(!blockedOnly)}
+            data-testid="chip-blocked-contacts"
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+              blockedOnly
+                ? "bg-red-50 border-red-300 text-red-700 dark:bg-red-900/30 dark:border-red-700 dark:text-red-300"
+                : "bg-background border-border text-muted-foreground hover:bg-muted"
+            }`}
+          >
+            <BellOff className="h-3 w-3" />
+            Blocked
+          </button>
+          {/* #1443 — Churn risk chip */}
+          <button
+            onClick={() => setChurnRiskOnly(!churnRiskOnly)}
+            data-testid="chip-churn-risk"
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+              churnRiskOnly
+                ? "bg-amber-50 border-amber-300 text-amber-700 dark:bg-amber-900/30 dark:border-amber-700 dark:text-amber-300"
+                : "bg-background border-border text-muted-foreground hover:bg-muted"
+            }`}
+          >
+            <TrendingUp className="h-3 w-3" />
+            Churn Risk
+          </button>
+          {/* #1443 — No-outreach 24h chip */}
+          <button
+            onClick={() => setNoOutreach24hOnly(!noOutreach24hOnly)}
+            data-testid="chip-no-outreach-24h"
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+              noOutreach24hOnly
+                ? "bg-amber-50 border-amber-300 text-amber-700 dark:bg-amber-900/30 dark:border-amber-700 dark:text-amber-300"
+                : "bg-background border-border text-muted-foreground hover:bg-muted"
+            }`}
+          >
+            <Clock className="h-3 w-3" />
+            No outreach (24h)
+          </button>
+          {/* #1784 — Record class filter chips (admin only) */}
+          {user?.role === "admin" && (
+            <div className="flex items-center gap-1 flex-wrap" data-testid="record-class-filter">
+              {(["production", "test", "demo", "synthetic", "unknown", "all"] as const).map((cls) => {
+                const isActive = recordClassFilter === cls || (cls === "production" && recordClassFilter === "production");
+                const label = cls === "all" ? "All classes" : cls.charAt(0).toUpperCase() + cls.slice(1);
+                const count = cls !== "all" ? (classCounts?.[cls] ?? 0) : undefined;
+                const isDangerous = cls === "test" || cls === "demo" || cls === "synthetic";
+                return (
+                  <button
+                    key={cls}
+                    onClick={() => {
+                      // Clear frozen snapshot when filter changes
+                      if (snapshotId) { setSnapshotId(null); setSelectedIds(new Set()); }
+                      updatePeopleParam("recordClass", cls === "production" ? "" : cls);
+                    }}
+                    data-testid={`chip-record-class-${cls}`}
+                    className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+                      isActive
+                        ? isDangerous
+                          ? "bg-amber-50 border-amber-300 text-amber-700 dark:bg-amber-900/30 dark:border-amber-700 dark:text-amber-300"
+                          : cls === "unknown"
+                          ? "bg-slate-100 border-slate-400 text-slate-700 dark:bg-slate-800 dark:border-slate-500 dark:text-slate-200"
+                          : "bg-primary/10 border-primary/30 text-primary"
+                        : "bg-background border-border text-muted-foreground hover:bg-muted"
+                    }`}
+                  >
+                    {isDangerous && <ShieldAlert className="h-2.5 w-2.5" />}
+                    {label}
+                    {count !== undefined && count > 0 && (
+                      <span className="px-1 py-0.5 rounded text-[10px] font-semibold bg-muted-foreground/10">
+                        {count}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {/* #835 — No-deal contacts chip */}
+          <button
+            onClick={() => setNoDealOnly(!noDealOnly)}
+            data-testid="chip-no-deal"
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+              noDealOnly
+                ? "bg-slate-100 border-slate-400 text-slate-700 dark:bg-slate-800 dark:border-slate-500 dark:text-slate-200"
+                : "bg-background border-border text-muted-foreground hover:bg-muted"
+            }`}
+          >
+            No deal
+          </button>
+          {/* #619 — Has assignee chip */}
+          <button
+            onClick={() => setHasAssigneeOnly(!hasAssigneeOnly)}
+            data-testid="chip-has-assignee"
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+              hasAssigneeOnly
+                ? "bg-indigo-50 border-indigo-300 text-indigo-700 dark:bg-indigo-900/30 dark:border-indigo-700 dark:text-indigo-300"
+                : "bg-background border-border text-muted-foreground hover:bg-muted"
+            }`}
+          >
+            <UserCheck className="h-3 w-3" />
+            Assigned
+          </button>
+          </div>
+        </div>
           <div className="flex items-center justify-between">
             <span className="text-sm font-medium">Advanced Filters</span>
             {(verticalFilter || statusFilter || tagFilter || leadSourceFilter || hasAssigneeOnly) && (

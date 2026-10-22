@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { GhlOwnershipNotice } from "@/components/dashboard/GhlOwnershipNotice";
 import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -2059,7 +2060,7 @@ export default function GhlSequenceGuide() {
       {/* Page header */}
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">GHL Workflow Build Guide</h1>
+          <PageTitle className="text-2xl font-bold tracking-tight">GHL Workflow Build Guide</PageTitle>
           <p className="text-muted-foreground mt-1 text-sm">
             The complete customer journey — 9 workflows covering prospecting, qualifying, closing, onboarding, go-live, retention, and win-back.
             This is a reference design for the GHL side. Replit owns cadence and execution; sequence workflow IDs are reference-only (IDs for supported handoff workflows are separate and are used at enrollment).

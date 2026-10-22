@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
@@ -1874,7 +1875,7 @@ export default function ContactCensus() {
       <div className="flex items-start gap-3">
         <BarChart3 className="h-7 w-7 text-primary mt-0.5" />
         <div>
-          <h1 className="text-xl font-bold">Contact Census &amp; Reconciliation</h1>
+          <PageTitle className="text-xl font-bold">Contact Census &amp; Reconciliation</PageTitle>
           <p className="text-sm text-muted-foreground">
             Census classifies every active contact into remediation lanes. Reconciliation generates
             proposals for name, phone, and company name corrections — each approved individually.

@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -61,9 +62,9 @@ export default function DataRequests() {
     <div className="space-y-6 p-4 md:p-6" data-testid="page-data-requests">
       <div className="flex flex-wrap items-center gap-3">
         <Database className="w-6 h-6 text-foreground" />
-        <h1 className="text-2xl font-bold text-foreground" data-testid="text-data-requests-heading">
+        <PageTitle className="text-2xl font-bold text-foreground" data-testid="text-data-requests-heading">
           Data Requests
-        </h1>
+        </PageTitle>
         <Badge variant="secondary" data-testid="badge-data-requests-count">
           {requests?.length || 0} total
         </Badge>

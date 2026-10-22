@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { useState, useMemo, useEffect } from "react";
 import {portfolioFollowupDay,portfolioFollowupDays,portfolioFollowupCarrier} from "@/lib/portfolio-followup-date";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -384,7 +385,7 @@ export default function MerchantPortfolio() {
             <Briefcase className="w-5 h-5 text-primary" />
           </div>
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">My Portfolio</h1>
+            <PageTitle className="text-2xl font-bold tracking-tight">My Portfolio</PageTitle>
             <p className="text-sm text-muted-foreground">
               {role === "agent"
                 ? "Your assigned merchants — health signals and open actions at a glance"

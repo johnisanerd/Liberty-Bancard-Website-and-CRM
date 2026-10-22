@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -130,7 +131,7 @@ export default function ReviewRequests() {
   return (
     <div className="space-y-8" data-testid="page-review-requests">
       <div className="flex items-center justify-between gap-4 flex-wrap">
-        <h1 className="text-2xl font-bold" data-testid="text-page-title">Review & Testimonial Requests</h1>
+        <PageTitle className="text-2xl font-bold" data-testid="text-page-title">Review & Testimonial Requests</PageTitle>
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger asChild>
             <Button data-testid="button-send-review-request">

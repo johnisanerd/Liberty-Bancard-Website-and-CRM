@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation, useSearch } from "wouter";
@@ -579,7 +580,6 @@ export default function CanonicalEnrichment({ embedded = false }: { embedded?: b
   ) : null;
 
   const Shell = embedded ? "div" : "main";
-  const Title = embedded ? "h2" : "h1";
   return (
     <Shell className={embedded ? "text-foreground" : "min-h-[100dvh] bg-background px-4 py-6 text-foreground sm:px-6 lg:px-8"} data-testid="canonical-enrichment">
       {!embedded && (
@@ -602,7 +602,7 @@ export default function CanonicalEnrichment({ embedded = false }: { embedded?: b
                   <span className="rounded-md bg-primary/10 p-1.5 text-primary"><GitBranch className="h-4 w-4" /></span>
                   <span className="text-xs font-bold uppercase tracking-[0.17em] text-primary">Liberty Bancard · Record intelligence</span>
                 </div>
-                <Title className="text-2xl font-semibold tracking-tight">Canonical Enrichment</Title>
+                <PageTitle level={embedded ? 2 : undefined} className="text-2xl font-semibold tracking-tight">Canonical Enrichment</PageTitle>
                 <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground sm:text-base">
                   One place to orient across merchant records, source evidence, and exceptions—without blending discovery, validation, enrollment, or sending.
                 </p>
@@ -629,7 +629,7 @@ export default function CanonicalEnrichment({ embedded = false }: { embedded?: b
             </div>
           </div>
 
-          <nav aria-label="Canonical enrichment views" className="flex gap-1 overflow-x-auto px-3 py-2 sm:px-5">
+          <nav aria-label="Canonical enrichment views" className="flex gap-1 overflow-x-auto px-3 py-1 sm:px-5" data-testid="canonical-view-rail">
             {views.map((view) => {
               const selected = activeView === view.key;
               return (
@@ -638,16 +638,14 @@ export default function CanonicalEnrichment({ embedded = false }: { embedded?: b
                   type="button"
                   onClick={() => setActiveView(view.key)}
                   aria-current={selected ? "page" : undefined}
-                  className={`shrink-0 rounded-lg px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                  title={view.eyebrow}
+                  className={`inline-flex min-h-11 shrink-0 items-center rounded-lg px-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                     selected
                       ? "bg-primary text-primary-foreground"
                       : "text-muted-foreground hover:bg-muted hover:text-foreground"
                   }`}
                 >
                   <span className="block text-sm font-semibold">{view.label}</span>
-                  <span className={`mt-0.5 hidden text-[10px] uppercase tracking-[0.11em] sm:block ${selected ? "text-primary-foreground/75" : "text-muted-foreground"}`}>
-                    {view.eyebrow}
-                  </span>
                 </button>
               );
             })}

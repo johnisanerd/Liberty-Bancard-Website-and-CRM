@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Helmet } from "react-helmet-async";
@@ -225,10 +226,10 @@ export default function DataHealth() {
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold flex items-center gap-2">
+            <PageTitle className="text-2xl font-bold flex items-center gap-2">
               <Database className="h-6 w-6 text-primary" />
               Data Health
-            </h1>
+            </PageTitle>
             <p className="text-sm text-muted-foreground mt-1">
               Detect orphaned records, missing lifecycle states, and enrollment gaps.
               {data && (

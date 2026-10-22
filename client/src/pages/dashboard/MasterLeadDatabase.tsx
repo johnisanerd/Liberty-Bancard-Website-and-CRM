@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, getCsrfToken } from "@/lib/queryClient";
@@ -734,10 +735,10 @@ export default function MasterLeadDatabase() {
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold flex items-center gap-2">
+          <PageTitle className="text-2xl font-bold flex items-center gap-2">
             <Database className="h-6 w-6 text-blue-600" />
             Master Lead Database
-          </h1>
+          </PageTitle>
           <p className="text-sm text-muted-foreground mt-1">
             Manual-import &amp; CRO-03 pipeline staging pool — deduped, suppressed, and status-tracked.
           </p>

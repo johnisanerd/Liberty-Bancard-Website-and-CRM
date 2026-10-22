@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { useState, useRef, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -189,7 +190,7 @@ export default function OnboardingKickoff() {
     return (
       <div className="crm-page max-w-2xl mx-auto space-y-4" data-testid="onboardingkickoff-loading">
         <header>
-          <h1 data-testid="text-onboardingkickoff-title">Onboarding Kickoff</h1>
+          <PageTitle data-testid="text-onboardingkickoff-title">Onboarding Kickoff</PageTitle>
           <p className="mt-1 text-sm text-muted-foreground">Prepare the selected Closed Won deal for local onboarding.</p>
         </header>
         <div className="flex items-center justify-center h-64">
@@ -202,7 +203,7 @@ export default function OnboardingKickoff() {
   return (
     <div className="crm-page max-w-2xl mx-auto" data-testid="onboardingkickoff-page">
       <header className="mb-4">
-        <h1 data-testid="text-onboardingkickoff-title">Onboarding Kickoff</h1>
+        <PageTitle data-testid="text-onboardingkickoff-title">Onboarding Kickoff</PageTitle>
         <p className="mt-1 text-sm text-muted-foreground">Prepare the selected Closed Won deal for local onboarding.</p>
       </header>
       <p className="text-sm mb-4">Closed Won Sales → linked Onboarding preparation. Sales stays unchanged. Only missing local checklist/task preparation is retried; completed work is never reset. No native, sending, enrollment or activation effects are requested.</p>

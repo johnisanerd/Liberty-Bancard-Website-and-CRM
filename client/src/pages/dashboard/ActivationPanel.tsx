@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -1071,7 +1072,7 @@ export default function ActivationPanel() {
     <div className="space-y-6" data-testid="activation-panel">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold" data-testid="text-page-title">Activation Control Panel</h1>
+          <PageTitle className="text-2xl font-bold" data-testid="text-page-title">Activation Control Panel</PageTitle>
           <p className="text-muted-foreground">Day 1 Go-Live Command Center</p>
         </div>
         <div className="flex gap-2">

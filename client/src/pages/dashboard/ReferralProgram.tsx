@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
@@ -583,7 +584,7 @@ export default function ReferralProgram() {
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row justify-between gap-4">
-        <h1 className="text-2xl font-bold" data-testid="text-page-title">Referral & Partner Program</h1>
+        <PageTitle className="text-2xl font-bold" data-testid="text-page-title">Referral & Partner Program</PageTitle>
         <div className="flex items-center gap-2 flex-wrap">
           <Dialog open={isPartnerDialogOpen} onOpenChange={setIsPartnerDialogOpen}>
             <DialogTrigger asChild>

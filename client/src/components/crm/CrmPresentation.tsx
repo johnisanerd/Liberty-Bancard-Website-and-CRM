@@ -4,6 +4,7 @@ import DashboardErrorState from "@/components/DashboardErrorState";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { useEmployeeCrm } from "@/components/crm/employee-crm-context";
 import { cn } from "@/lib/utils";
+import { useHeadingLevel } from "@/components/ui/page-header";
 import {useIsMobile} from "@/hooks/use-mobile";
 
 export interface CrmPageHeaderProps {
@@ -15,8 +16,8 @@ export interface CrmPageHeaderProps {
   secondaryActions?: ReactNode;
 }
 
-export function CrmPageHeader({ title, headingLevel = 1, description, context, primaryAction, secondaryActions }: CrmPageHeaderProps) {
-  const Heading = headingLevel === 2 ? "h2" : "h1";
+export function CrmPageHeader({ title, headingLevel, description, context, primaryAction, secondaryActions }: CrmPageHeaderProps) {
+  const Heading = useHeadingLevel(headingLevel) === 2 ? "h2" : "h1";
   return (
     <header className="flex flex-wrap items-start justify-between gap-4">
       <div className="min-w-0">

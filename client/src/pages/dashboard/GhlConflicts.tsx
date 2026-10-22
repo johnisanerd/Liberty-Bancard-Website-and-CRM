@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -75,7 +76,7 @@ export default function GhlConflicts() {
     <div className="p-6 space-y-6 max-w-5xl mx-auto">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">GHL Identity Conflict Queue</h1>
+          <PageTitle className="text-2xl font-bold tracking-tight">GHL Identity Conflict Queue</PageTitle>
           <p className="text-muted-foreground mt-1">
             Contacts where a GHL contact ID is claimed by more than one local record.
             Review each conflict and choose which side to keep.

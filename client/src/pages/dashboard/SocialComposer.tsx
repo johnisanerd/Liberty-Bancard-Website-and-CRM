@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -151,9 +152,9 @@ export default function SocialComposer() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold flex items-center gap-2" data-testid="text-social-heading">
+        <PageTitle className="text-2xl font-bold flex items-center gap-2" data-testid="text-social-heading">
           <Linkedin className="w-6 h-6 text-[#0A66C2]" /> LinkedIn Composer
-        </h1>
+        </PageTitle>
         <p className="text-muted-foreground mt-1">Draft, schedule, and track LinkedIn posts. Approved posts can be copied to clipboard or auto-published when LinkedIn API is enabled.</p>
       </div>
 

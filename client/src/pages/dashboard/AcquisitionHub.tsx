@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
@@ -1033,10 +1034,10 @@ export default function AcquisitionHub() {
       {/* Page header */}
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-2xl font-bold flex items-center gap-2">
+          <PageTitle className="text-2xl font-bold flex items-center gap-2">
             <Target className="w-6 h-6 text-primary" />
             Acquisition Command Center
-          </h1>
+          </PageTitle>
           <p className="text-sm text-muted-foreground mt-1">
             Google Ads · UTM Attribution · Vertical ROI · Lead Quality · Readiness Audit
           </p>

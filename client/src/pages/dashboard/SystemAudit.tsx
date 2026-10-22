@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Helmet } from "react-helmet-async";
@@ -268,10 +269,10 @@ export default function SystemAuditPage() {
         {/* Header */}
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <div>
-            <h1 className="text-2xl font-bold flex items-center gap-2">
+            <PageTitle className="text-2xl font-bold flex items-center gap-2">
               <Activity className="h-6 w-6 text-primary" />
               Weekly AI System Audit
-            </h1>
+            </PageTitle>
             <p className="text-muted-foreground text-sm mt-1">
               Automated health check across all 18 major subsystems. Scheduled Monday 8 AM UTC — delivers Slack summary with AI narrative.
             </p>

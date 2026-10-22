@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { useState, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient, getCsrfToken } from "@/lib/queryClient";
@@ -873,7 +874,7 @@ export default function Chargebacks() {
     <div className="space-y-6" data-testid="page-chargebacks">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold" data-testid="text-page-title">Chargebacks</h1>
+          <PageTitle className="text-2xl font-bold" data-testid="text-page-title">Chargebacks</PageTitle>
           <p className="text-muted-foreground mt-1">Track disputes, manage deadlines, and win more chargebacks</p>
         </div>
         <Button onClick={() => setShowCreate(true)} data-testid="button-log-chargeback">

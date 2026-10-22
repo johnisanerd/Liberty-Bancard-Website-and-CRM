@@ -8,6 +8,7 @@
  * Access: admin, manager
  */
 
+import { PageTitle } from "@/components/ui/page-header";
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -159,7 +160,7 @@ export default function ArbitrationLog() {
         <div>
           <div className="flex items-center gap-2 mb-1">
             <Shield className="h-5 w-5 text-primary" />
-            <h1 className="text-2xl font-semibold tracking-tight">Communication Arbitration</h1>
+            <PageTitle className="text-2xl font-semibold tracking-tight">Communication Arbitration</PageTitle>
           </div>
           <p className="text-sm text-muted-foreground">
             Tracks when automation was suppressed because a rep recently touched a prospect,

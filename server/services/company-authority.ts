@@ -49,6 +49,43 @@ export async function readCompanies(actor:WorkActor,id?:number) {
     return id===undefined?rows:rows[0];
   });
 }
+export const COMPANY_SEARCH_DEFAULT_LIMIT=25;
+export const COMPANY_SEARCH_MAX_LIMIT=50;
+export const COMPANY_SEARCH_MAX_QUERY=100;
+const likeEscape=(v:string)=>v.replace(/[\\%_]/g,m=>`\\${m}`);
+export function encodeCompanyCursor(name:string,id:number) {
+  return Buffer.from(JSON.stringify({n:name,i:id}),"utf8").toString("base64url");
+}
+export function decodeCompanyCursor(raw:string):{n:string;i:number} {
+  try {
+    const v=JSON.parse(Buffer.from(raw,"base64url").toString("utf8"));
+    if(typeof v?.n!=="string" || !Number.isSafeInteger(v?.i) || v.i<1) throw new Error("shape");
+    return {n:v.n,i:v.i};
+  } catch { throw new WorkCommandError("Company search cursor is invalid",400); }
+}
+/** Bounded, authorized company search. The actor predicate is applied in SQL before ordering and the page limit,
+ * so an agent can never receive (or page into) a company outside readCompanies' policy. Stable order is
+ * lower(legal_name), id; the cursor is that pair. `total` is the exact authorized match count for the same filter. */
+export async function searchCompanies(actor:WorkActor,input:{q?:string;limit?:number;cursor?:string;excludeContactId?:number}) {
+  const q=(input.q ?? "").trim().slice(0,COMPANY_SEARCH_MAX_QUERY);
+  const limit=Math.min(Math.max(Math.trunc(input.limit ?? COMPANY_SEARCH_DEFAULT_LIMIT),1),COMPANY_SEARCH_MAX_LIMIT);
+  const cursor=input.cursor?decodeCompanyCursor(input.cursor):null;
+  return db.transaction(async tx=>{
+    const principal=await pinActor(tx,actor);
+    if(input.excludeContactId!==undefined) await pinContact(tx,principal,input.excludeContactId);
+    const pattern=q?`%${likeEscape(q.toLowerCase())}%`:null;
+    const filter=sql`${companyPredicate(principal)}
+      ${pattern?sql`AND (lower(${companies.legalName}) LIKE ${pattern} ESCAPE '\\' OR lower(coalesce(${companies.dba},'')) LIKE ${pattern} ESCAPE '\\')`:sql``}
+      ${input.excludeContactId!==undefined?sql`AND NOT EXISTS (SELECT 1 FROM contact_companies x WHERE x.company_id=${companies.id} AND x.contact_id=${input.excludeContactId})`:sql``}`;
+    const totalRow=await tx.select({n:sql<number>`count(*)::int`}).from(companies).where(filter);
+    const page=await tx.select({id:companies.id,legalName:companies.legalName,dba:companies.dba}).from(companies)
+      .where(cursor?sql`${filter} AND (lower(${companies.legalName}),${companies.id}) > (${cursor.n.toLowerCase()},${cursor.i})`:filter)
+      .orderBy(sql`lower(${companies.legalName}) ASC`,asc(companies.id)).limit(limit+1);
+    const items=page.slice(0,limit);
+    const last=items[items.length-1];
+    return {items,total:totalRow[0]?.n ?? 0,limit,nextCursor:page.length>limit&&last?encodeCompanyCursor(last.legalName,last.id):null};
+  });
+}
 export async function createOwnedCompany(actor:WorkActor,input:InsertCompany) {
   return db.transaction(async tx=>{
     const principal=await pinActor(tx,actor);

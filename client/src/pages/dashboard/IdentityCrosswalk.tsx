@@ -4,6 +4,7 @@
  * Access: admin only
  */
 
+import { PageTitle } from "@/components/ui/page-header";
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -708,9 +709,9 @@ export default function IdentityCrosswalk() {
       {/* ── Page header ─────────────────────────────────────────────────── */}
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-2xl font-bold flex items-center gap-2">
+          <PageTitle className="text-2xl font-bold flex items-center gap-2">
             <GitMerge className="h-6 w-6" /> Identity Crosswalk
-          </h1>
+          </PageTitle>
           <p className="text-sm text-muted-foreground mt-0.5">
             Gen-1 read-only evidence sweep — cross-system identity matching across sunbiz, prospects, and master leads.
             No canonical fields are written. All evidence is HMAC-fingerprinted; no raw PII stored.

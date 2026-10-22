@@ -443,6 +443,25 @@ export default function Overview() {
           <div className="mt-1 text-xs text-muted-foreground">{metric.label}</div>
         </div>)}
       </ScopedMetricStrip>
+      {/* UI-03: action queue. Each row is a fact from the scoped reads above; a missing read is stated, never shown as zero. */}
+      <section aria-labelledby="today-next-actions-heading" className="rounded-lg border bg-card p-4" data-testid="today-next-actions">
+        <h2 id="today-next-actions-heading" className="text-base font-semibold">Next actions</h2>
+        <ul className="mt-2 divide-y">
+          {[
+            { key: "overdue", label: "Overdue tasks", value: kpi?.tasks?.overdue, href: "/dashboard/tasks-appointments?tab=tasks", cta: "Review overdue" },
+            { key: "pending", label: "Pending tasks", value: kpi?.tasks?.pending, href: "/dashboard/tasks-appointments?tab=tasks", cta: "Open tasks" },
+            { key: "leads", label: "New leads in the last 7 days", value: kpi?.pipeline?.newLeads7d, href: "/dashboard/contacts", cta: "Open People" },
+            { key: "tickets", label: "Open tickets", value: kpi?.support?.openTickets, href: "/dashboard/support-hub?tab=tickets", cta: "Open tickets" },
+          ].map(item => (
+            <li key={item.key} className="flex min-h-11 flex-wrap items-center justify-between gap-2 py-2" data-testid={`today-next-action-${item.key}`}>
+              <span className="text-sm">
+                <span className="font-semibold tabular-nums">{Number.isFinite(item.value) ? item.value : "Unavailable"}</span>{" "}{item.label}
+              </span>
+              <Link href={item.href} className="inline-flex min-h-11 items-center text-sm font-medium underline underline-offset-2">{item.cta}</Link>
+            </li>
+          ))}
+        </ul>
+      </section>
       {/* #319 — Personalized time-of-day greeting */}
       {user?.firstName && (
         <p className="text-lg font-medium text-muted-foreground" data-testid="text-overview-greeting">
@@ -480,6 +499,12 @@ export default function Overview() {
         </Alert>
       )}
 
+      <div className="space-y-1 text-sm" data-testid="today-ai-notices">
+        <p role="status" data-testid="today-ai-capability-reason">{aiCapability.reason}</p>
+        <p role="status" data-testid="today-digest-pause-reason">{pause.reason}</p>
+      </div>
+      <details data-testid="section-ai-copilot-details">
+        <summary className="min-h-11 cursor-pointer text-sm font-medium">AI copilot and digest settings</summary>
       <Card className="bg-primary/5 dark:bg-primary/10" data-testid="card-ai-copilot">
         <CardHeader className="flex flex-row items-center justify-between gap-2 flex-wrap">
           <div className="flex items-center gap-2">
@@ -522,8 +547,6 @@ export default function Overview() {
           </div>
         </CardHeader>
         <CardContent>
-          <p role="status" data-testid="today-ai-capability-reason">{aiCapability.reason}</p>
-          <p role="status" data-testid="today-digest-pause-reason">{pause.reason}</p>
           {insightsMutation.isPending && !insights && (
             <div className="flex items-center gap-2 text-muted-foreground py-4">
               <Loader2 className="w-4 h-4 animate-spin" />
@@ -559,6 +582,7 @@ export default function Overview() {
           )}
         </CardContent>
       </Card>
+      </details>
 
       {/* ── SECTION 1: ACTUAL PERFORMANCE ── */}
       <details data-testid="section-actual-performance">

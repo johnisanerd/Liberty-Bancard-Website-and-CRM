@@ -1,3 +1,5 @@
+import { PageHeadingLevel } from "@/components/ui/page-header";
+import { PageTitle } from "@/components/ui/page-header";
 import { useLocation, useSearch } from "wouter";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { CrmAreaNav, CrmPage } from "@/components/crm/CrmPresentation";
@@ -54,7 +56,7 @@ export default function OutboundCenter() {
 
   return (
     <CrmPage className="space-y-4" data-testid="page-campaigns">
-      <h1 className="text-2xl font-semibold" data-testid="text-page-title">Campaigns</h1>
+      <PageTitle className="text-2xl font-semibold" data-testid="text-page-title">Campaigns</PageTitle>
       {selector.issues.length > 0 && (
         <p role="status" className="rounded-md border bg-muted/40 px-3 py-2 text-sm" data-testid="outbound-selection-issue">{selector.issues[0].reason}</p>
       )}
@@ -62,6 +64,7 @@ export default function OutboundCenter() {
         current={AREA_HREF[area]}
         entries={campaignAreas.map(a => ({ label: AREA_LABEL[a], href: AREA_HREF[a], allowed: true }))}
       />
+      <PageHeadingLevel level={2}>
       <Tabs value={tab} onValueChange={handleTabChange}>
         <TabsList className="h-auto flex-wrap gap-1" aria-label="Campaign tools">
           <TabsTrigger value="command" className={inArea("command") ? "gap-2" : "hidden"} data-testid="tab-outbound-command">
@@ -114,6 +117,7 @@ export default function OutboundCenter() {
           <OutreachAnalyticsPage />
         </TabsContent>
       </Tabs>
+      </PageHeadingLevel>
     </CrmPage>
   );
 }

@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
@@ -162,9 +163,9 @@ export default function CoBrandedProposals() {
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold" data-testid="text-page-title">
+          <PageTitle className="text-2xl font-bold" data-testid="text-page-title">
             Co-Branded Proposals
-          </h1>
+          </PageTitle>
           <p className="text-muted-foreground text-sm mt-1">
             Manage and track all co-branded partner proposals
           </p>

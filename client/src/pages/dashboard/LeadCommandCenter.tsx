@@ -1,3 +1,4 @@
+import { PageTitle } from "@/components/ui/page-header";
 import { useState, useCallback, useMemo, Fragment } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient, getCsrfToken } from "@/lib/queryClient";
@@ -809,7 +810,7 @@ export default function LeadCommandCenter() {
   return (
     <div className="space-y-4 p-4 md:p-6">
       <div>
-        <h1 className="text-2xl font-bold" data-testid="text-page-title">Lead Command Center</h1>
+        <PageTitle className="text-2xl font-bold" data-testid="text-page-title">Lead Command Center</PageTitle>
         <p className="text-sm text-muted-foreground">Unified view of all leads, enrichment, and conversion pipeline</p>
       </div>
 
