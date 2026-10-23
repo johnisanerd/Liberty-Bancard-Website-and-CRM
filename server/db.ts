@@ -1,4 +1,5 @@
-import { drizzle } from "drizzle-orm/node-postgres";
+import { drizzle, NodePgSession, NodePgTransaction } from "drizzle-orm/node-postgres";
+import { sql as drizzleSql } from "drizzle-orm";
 import pg from "pg";
 import {createHash} from "node:crypto";
 import * as schema from "@shared/schema";
@@ -145,3 +146,35 @@ pool.query = function observedPoolQuery(...args: any[]): any {
 };
 
 export const db = drizzle(pool, { schema });
+
+// drizzle-orm 0.45 node-postgres runs `begin` before its try/finally, so a failed BEGIN (for example a connection
+// terminated while the client is checked out) never releases the client. The leaked checkout stays out of the pool and the
+// connection observer reports it as db:long_checkout every few seconds until restart. This keeps drizzle's transaction
+// semantics (commit, rollback, error propagation) and adds the missing release; a client whose BEGIN failed is destroyed.
+{
+  const poolSession = (db as any).session as InstanceType<typeof NodePgSession>;
+  (poolSession as any).transaction = async function releasingTransaction(transaction: (tx: any) => Promise<unknown>, config?: any) {
+    const client = await pool.connect();
+    let destroyClient = false;
+    try {
+      const session = new NodePgSession(client, (poolSession as any).dialect, (poolSession as any).schema, (poolSession as any).options);
+      const tx = new NodePgTransaction((poolSession as any).dialect, session, (poolSession as any).schema);
+      try {
+        await tx.execute(drizzleSql`begin${config ? drizzleSql` ${tx.getTransactionConfigSQL(config)}` : undefined}`);
+      } catch (error) {
+        destroyClient = true;
+        throw error;
+      }
+      try {
+        const result = await transaction(tx);
+        await tx.execute(drizzleSql`commit`);
+        return result;
+      } catch (error) {
+        await tx.execute(drizzleSql`rollback`);
+        throw error;
+      }
+    } finally {
+      client.release(destroyClient ? true : undefined);
+    }
+  };
+}
