@@ -15,6 +15,9 @@ import type { InsertPartner } from "@shared/schema";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import { createContactLocalFirst } from "../services/contact-writer";
+import { claimPublicInbound } from "../services/public-inbound-intake";
+import { orchestrateInboundRequest, setInboundRequestLifecycle } from "../services/inbound-request-authority";
+import { describeAckReceiptState } from "../services/inbound-acknowledgement";
 import { syncFormSubmissionToGhl, syncAffiliateSignupToGhl } from "../services/ghl-form-sync";
 import { sendPartnerWelcomeEmail } from "../services/partner-welcome";
 import { isGhlConfigured, sendGhlPartnerTransactionalEmail } from "../services/ghl";
@@ -328,14 +331,23 @@ ${getEmailSignatureHtml("partners")}
         return res.status(400).json({ message: "Password must be at least 6 characters." });
       }
 
+      // Claim the occurrence before any write. The password is never part of the fingerprint input.
+      const { password: _omitPassword, ...claimPayload } = req.body;
+      const inbound = await claimPublicInbound(req, res, ["website_form", "partner_application"], claimPayload);
+      if (!inbound) return;
+      const failApplication = async (status: number, body: Record<string, unknown>) => {
+        await setInboundRequestLifecycle(inbound.id, "failed", `HTTP_${status}`).catch(() => undefined);
+        return res.status(status).json(body);
+      };
+
       const existing = await storage.getPartnerByEmail(email.toLowerCase());
       if (existing) {
-        return res.status(409).json({ message: "A partner account with this email already exists." });
+        return failApplication(409, { message: "A partner account with this email already exists." });
       }
 
       const existingAuthUser = await authStorage.getUserByEmail(email.toLowerCase());
       if (existingAuthUser && existingAuthUser.role !== "partner") {
-        return res.status(409).json({ message: "An account with this email already exists. Please use a different email address." });
+        return failApplication(409, { message: "An account with this email already exists. Please use a different email address." });
       }
 
       let code = "";
@@ -393,28 +405,44 @@ ${getEmailSignatureHtml("partners")}
         contactRecorded = !!partnerContact;
       } catch (err) {
         logOperationalDiagnostic("partner_application_sync", err, "contact_create_failed", { partnerId: partner.id });
+        // An existing CRM contact with this exact address is the same mailbox: link it, never modify it.
+        try {
+          const existingContact = await storage.getContactByEmail(email.toLowerCase());
+          if (existingContact) { localContactId = existingContact.id; contactRecorded = true; }
+        } catch (lookupErr) {
+          logOperationalDiagnostic("partner_application_sync", lookupErr, "contact_lookup_failed", { partnerId: partner.id });
+        }
       }
 
-      // Review ownership: a system-wide in-app notification (visible to every admin) linked to the exact record.
-      // commandKey makes a replay create exactly one. No deadline is promised because no partner-review policy exists.
+      // Review ownership: an admin-audience in-app notification linked to this request occurrence. The commandKey makes
+      // a replay create exactly one. No deadline is promised because no partner-review policy exists.
       let reviewNotified = false;
+      let emailReceipt: "queued" | "not_enabled" = "not_enabled";
       try {
-        await storage.createNotification({
+        const notification = await storage.createNotification({
           channel: "internal",
           title: "New partner application to review",
           message: `${(companyName || `${firstName} ${lastName || ""}`).toString().trim().slice(0, 120)} applied as ${mappedType.replace(/_/g, " ")}.`,
           type: "alert",
-          commandKey: `partner-application-review:${partner.id}`,
+          inboundRequestId: inbound.id,
+          commandKey: `inbound:${inbound.id}:review-notification`,
           metadata: {
             partnerId: partner.id,
-            contactId: localContactId ?? undefined,
             link: "/dashboard/referral-program",
             eventType: "partner_application_received",
+            audienceRoles: ["admin"],
           },
         } as any);
-        reviewNotified = true;
+        const orchestrated = await orchestrateInboundRequest({
+          requestId: inbound.id,
+          contactId: localContactId,
+          notificationId: notification.id,
+        });
+        reviewNotified = orchestrated.lifecycleState !== "review_required";
+        emailReceipt = await describeAckReceiptState(inbound.id);
       } catch (err) {
         logOperationalDiagnostic("partner_application_review", err, "review_notification_failed", { partnerId: partner.id });
+        await setInboundRequestLifecycle(inbound.id, "review_required", "REVIEW_NOTIFICATION_FAILED").catch(() => undefined);
       }
 
       if (localContactId) {
@@ -446,8 +474,9 @@ ${getEmailSignatureHtml("partners")}
           applicationRecorded: true,
           reviewQueued: reviewNotified,
           contactRecorded,
-          // No acknowledgement email is sent for partner applications yet; the page must not claim one.
-          emailReceipt: "not_sent",
+          // "queued" = the receipt owner will attempt a receipt email; "not_enabled" = none will be sent.
+          emailReceipt,
+          requestReceipt: inbound.id,
         },
       });
     } catch (err: any) {

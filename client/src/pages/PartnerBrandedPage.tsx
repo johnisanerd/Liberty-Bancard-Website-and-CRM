@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useParams } from "wouter";
 import { SEO } from "@/components/SEO";
 import { Button } from "@/components/ui/button";
@@ -87,16 +87,19 @@ export default function PartnerBrandedPage() {
     return { currentFees, libertyFees, monthly, annual: monthly * 12, effectiveRate, txns };
   }, [calcVolume, calcRate, calcTicket, calcIndustry]);
 
+  // One key per attempt; kept across network errors so a retry is a replay, rotated after any server answer.
+  const submissionKey = useRef<string | null>(null);
   const handleSubmit = async () => {
     if (!form.firstName || !form.email || !form.phone) {
       toast({ title: "Please fill in the required fields", variant: "destructive" });
       return;
     }
+    submissionKey.current ??= crypto.randomUUID();
     setSubmitting(true);
     try {
       const res = await fetch("/api/contacts/public", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "Idempotency-Key": submissionKey.current },
         body: JSON.stringify({
           ...form,
           utmSource: "partner_portal",
@@ -107,6 +110,7 @@ export default function PartnerBrandedPage() {
           status: "New",
         }),
       });
+      submissionKey.current = null;
       if (res.ok) {
         setView("success");
       } else {

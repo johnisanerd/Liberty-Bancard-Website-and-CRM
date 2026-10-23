@@ -50,6 +50,7 @@ const VALID_SOURCE_COMBOS: ReadonlySet<string> = new Set([
   "website_form|integration_request",
   "website_form|testimonial_submit",
   "website_form|newsletter_signup",
+  "website_form|partner_portal_form",
   "manual_crm|dashboard",
   "ghl_sync|inbound",
   "csv_import|csv_contact",

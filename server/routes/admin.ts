@@ -1,4 +1,7 @@
 import type { Express } from "express";
+import { claimPublicInbound } from "../services/public-inbound-intake";
+import { orchestrateInboundRequest, setInboundRequestLifecycle } from "../services/inbound-request-authority";
+import { describeAckReceiptState } from "../services/inbound-acknowledgement";
 import { publicUser } from "@shared/public-user";
 import { commandAccount, AccountCommandError } from "../services/account-lifecycle";
 import { isAuthenticated, isDashboardUser, requireRole } from "../replit_integrations/auth";
@@ -1178,25 +1181,43 @@ export function registerAdminRoutes(app: Express) {
     if (req.query.probe === "1") return res.json({ probe: true, endpoint: "/api/data-requests" });
     try {
       const input = insertDataDeleteRequestSchema.parse(req.body);
-      const request = await storage.createDataDeleteRequest(input);
-      // Restricted review ownership: a system-wide in-app notification for admins, linked to the exact request. The
-      // commandKey makes a replay create one. No marketing contact or provider record is created for a privacy request.
-      let reviewNotified = false;
+      const inbound = await claimPublicInbound(req, res, ["website_form", "privacy_request"], input);
+      if (!inbound) return;
+      let request;
       try {
-        await storage.createNotification({
+        request = await storage.createDataDeleteRequest(input);
+      } catch (createErr) {
+        await setInboundRequestLifecycle(inbound.id, "failed", "DATA_REQUEST_CREATE_FAILED").catch(() => undefined);
+        throw createErr;
+      }
+      // Restricted review ownership: an admin-audience in-app notification linked to this request occurrence. No
+      // marketing contact or provider record is created for a privacy request; the receipt (when enabled) goes to the
+      // submitted mailbox only, with no contact binding.
+      let reviewNotified = false;
+      let emailReceipt: "queued" | "not_enabled" = "not_enabled";
+      try {
+        const notification = await storage.createNotification({
           channel: "internal",
           title: "Privacy request needs review",
           message: `A ${String(request.requestType).slice(0, 60)} request was received. Open the restricted queue to review it.`,
           type: "alert",
-          commandKey: `privacy-request-review:${request.id}`,
-          metadata: { dataRequestId: request.id, link: "/dashboard/data-requests", eventType: "privacy_request_received" },
+          inboundRequestId: inbound.id,
+          commandKey: `inbound:${inbound.id}:review-notification`,
+          metadata: { dataRequestId: request.id, link: "/dashboard/data-requests", eventType: "privacy_request_received", audienceRoles: ["admin"] },
         } as any);
-        reviewNotified = true;
+        const orchestrated = await orchestrateInboundRequest({
+          requestId: inbound.id,
+          notificationId: notification.id,
+          submittedEmail: input.email,
+        });
+        reviewNotified = orchestrated.lifecycleState !== "review_required";
+        emailReceipt = await describeAckReceiptState(inbound.id);
       } catch (notifyErr) {
         console.error("[DataRequests] review notification failed:", notifyErr instanceof Error ? notifyErr.name : "error");
+        await setInboundRequestLifecycle(inbound.id, "review_required", "REVIEW_NOTIFICATION_FAILED").catch(() => undefined);
       }
       // Public response is a receipt only: no submitted personal details are echoed back.
-      res.status(201).json({ id: request.id, status: request.status, received: true, reviewQueued: reviewNotified, emailReceipt: "not_sent" });
+      res.status(201).json({ id: request.id, status: request.status, received: true, reviewQueued: reviewNotified, emailReceipt, requestReceipt: inbound.id });
     } catch (err: any) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
       serverError(res, err);

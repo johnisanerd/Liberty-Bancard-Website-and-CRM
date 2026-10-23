@@ -40,6 +40,8 @@ export type InboundSourceClass =
   | "sales_request"
   | "support_request"
   | "fulfillment_request"
+  | "partner_application_request"
+  | "privacy_request"
   | "marketing_opt_in"
   | "content_reputation"
   | "lifecycle_event"
@@ -89,6 +91,15 @@ const FULFILLMENT_EFFECTS: readonly EffectDefinition[] = [
   { key: "transactional_ack", type: "transactional_ack", required: true, external: true },
 ];
 
+// Partner applications and privacy requests are owned by their own records (partners / data_delete_requests). The
+// inbound envelope adds the durable occurrence, an admin-only review notification, and the single receipt owner. No
+// deadline is promised: no review policy exists for either source, so neither class has an SLA effect.
+const REVIEW_QUEUE_EFFECTS: readonly EffectDefinition[] = [
+  { key: "review_notification", type: "internal_notification", required: true, external: false },
+  { key: "transactional_ack", type: "transactional_ack", required: true, external: true },
+];
+const REVIEW_QUEUE_FORBIDDEN = ["sales_assignment", "cr05_task", "deal_create", "promotional_enrollment", "proposal_send"] as const;
+
 export const INBOUND_SOURCE_POLICIES: readonly SourcePolicy[] = [
   { sourceCategory: "website_form", sourceType: "estimate_form", sourceClass: "sales_request", effects: SALES_EFFECTS, forbiddenEffects: ["promotional_enrollment", "proposal_send"] },
   { sourceCategory: "website_form", sourceType: "get_started_form", sourceClass: "sales_request", effects: SALES_EFFECTS, forbiddenEffects: ["promotional_enrollment", "proposal_send"] },
@@ -110,6 +121,10 @@ export const INBOUND_SOURCE_POLICIES: readonly SourcePolicy[] = [
   { sourceCategory: "csv_import", sourceType: "apollo", sourceClass: "imported_provider_event", effects: [{ key: "acquisition", type: "acquisition_evidence", required: true, external: false }], forbiddenEffects: ["sales_assignment", "cr05_task", "deal_create", "consent_evidence"] },
   { sourceCategory: "discovery", sourceType: "apollo", sourceClass: "imported_provider_event", effects: [{ key: "acquisition", type: "acquisition_evidence", required: true, external: false }], forbiddenEffects: ["sales_assignment", "cr05_task", "deal_create", "consent_evidence"] },
   { sourceCategory: "partner_referral", sourceType: "partner_form", sourceClass: "sales_request", effects: SALES_EFFECTS, forbiddenEffects: ["promotional_enrollment", "proposal_send"] },
+  // Co-branded partner portal lead form: a sales request like any other website lead.
+  { sourceCategory: "partner_referral", sourceType: "partner_portal", sourceClass: "sales_request", effects: SALES_EFFECTS, forbiddenEffects: ["promotional_enrollment", "proposal_send"] },
+  { sourceCategory: "website_form", sourceType: "partner_application", sourceClass: "partner_application_request", effects: REVIEW_QUEUE_EFFECTS, forbiddenEffects: REVIEW_QUEUE_FORBIDDEN },
+  { sourceCategory: "website_form", sourceType: "privacy_request", sourceClass: "privacy_request", effects: REVIEW_QUEUE_EFFECTS, forbiddenEffects: REVIEW_QUEUE_FORBIDDEN },
   // A verified provider event is an occurrence, but is not itself permission
   // to create sales work.  The provider handler remains the owner of its
   // projection/lifecycle transition; this envelope only records the event.
@@ -296,6 +311,11 @@ export async function linkInboundRequest(requestId: string, refs: {
   /** Opaque protected_objects.object_ref; never the internal row id. */
   protectedObjectRef?: string | null;
   slaDueAt?: Date | null;
+  /**
+   * For sources with no contact (privacy requests): the mailbox captured with the occurrence. Same immutability
+   * rule as the contact snapshot; the first captured value wins.
+   */
+  submittedEmail?: string | null;
   lifecycleState?: "claimed" | "processing" | "accepted" | "completed" | "failed" | "cancelled" | "review_required";
 }): Promise<InboundRequest | null> {
   const [updated] = await db.update(inboundRequests).set({
@@ -303,7 +323,9 @@ export async function linkInboundRequest(requestId: string, refs: {
     // First link snapshots the submitted mailbox; COALESCE keeps it immutable on every later link.
     ...(refs.contactId
       ? { submittedEmail: sql`COALESCE(${inboundRequests.submittedEmail}, (SELECT NULLIF(lower(btrim(email)), '') FROM contacts WHERE id = ${refs.contactId}))` }
-      : {}),
+      : refs.submittedEmail
+        ? { submittedEmail: sql`COALESCE(${inboundRequests.submittedEmail}, ${refs.submittedEmail.trim().toLowerCase()})` }
+        : {}),
     dealId: refs.dealId,
     ticketId: refs.ticketId,
     protectedObjectRef: refs.protectedObjectRef,
@@ -463,7 +485,9 @@ export async function evaluateInboundAssignment(input: {
     // It never admits the contact/deal into rep production work or assigns it.
     const occurrenceKey=request.sourceCategory==="website_form"
       ? `form:${request.sourceType}:${request.id}`
-      : request.sourceCategory==="manual_crm" && request.sourceType==="dashboard"
+      : request.sourceCategory==="partner_referral" && request.sourceType==="partner_portal"
+        ? `form:partner_portal:${request.id}`
+        : request.sourceCategory==="manual_crm" && request.sourceType==="dashboard"
         ? `manual:${request.id}` : null;
     const occurrenceEvidence=contact && contact.recordClass==="unknown" && occurrenceKey
       ? await tx.select({id:contactSourceEvents.id}).from(contactSourceEvents).where(and(
@@ -644,6 +668,8 @@ export async function orchestrateInboundRequest(input: {
   equipmentOrderIds?: number[];
   notificationId?: number | null;
   territory?: string | null;
+  /** Contactless sources only (privacy requests). */
+  submittedEmail?: string | null;
 }): Promise<InboundRequest> {
   const request = await getInboundRequestById(input.requestId);
   if (!request) throw new Error("INBOUND_REQUEST_NOT_FOUND");
@@ -659,6 +685,7 @@ export async function orchestrateInboundRequest(input: {
       dealId: input.dealId ?? request.dealId,
       ticketId: input.ticketId ?? request.ticketId,
       slaDueAt: slaDueAt ?? request.slaDueAt,
+      submittedEmail: input.submittedEmail,
       lifecycleState: "processing",
     });
     if (!initialLink) throw new Error("INBOUND_REQUEST_LINK_FAILED");
@@ -783,6 +810,21 @@ export async function orchestrateInboundRequest(input: {
           "fulfillment_sla",
           "internal_notification",
         ]);
+      }
+    } else if (policy.sourceClass === "partner_application_request" || policy.sourceClass === "privacy_request") {
+      // The review notification is the only internal effect. It completes only when the admin-audience notification
+      // created for THIS request is durably linked to it; otherwise it stays held and the request needs review.
+      if (!input.notificationId) throw new Error("REVIEW_QUEUE_NOTIFICATION_HANDOFF_REQUIRED");
+      const [ownedNotification] = await db.select({ id: notifications.id }).from(notifications).where(and(
+        eq(notifications.id, input.notificationId),
+        eq(notifications.inboundRequestId, request.id),
+        eq(notifications.commandKey, `inbound:${request.id}:review-notification`),
+      )).limit(1);
+      if (!ownedNotification) {
+        await holdInternalEffects(request.id, ["review_notification"], "REVIEW_NOTIFICATION_EVIDENCE_MISSING");
+        reviewRequired = true;
+      } else {
+        await completeInternalEffects(request.id, ["review_notification"]);
       }
     } else {
       // No competing fulfillment, moderation, marketing, or import authority

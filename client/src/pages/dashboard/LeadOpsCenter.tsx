@@ -2761,6 +2761,8 @@ export default function LeadOpsCenter() {
                 <SelectItem value="sales_request">Sales request</SelectItem>
                 <SelectItem value="support_request">Support request</SelectItem>
                 <SelectItem value="fulfillment_request">Fulfillment request</SelectItem>
+                <SelectItem value="partner_application_request">Partner application</SelectItem>
+                <SelectItem value="privacy_request">Privacy request</SelectItem>
                 <SelectItem value="content_reputation">Content &amp; reputation</SelectItem>
                 <SelectItem value="marketing_opt_in">Marketing opt-in</SelectItem>
                 <SelectItem value="imported_provider_event">Imported provider event</SelectItem>

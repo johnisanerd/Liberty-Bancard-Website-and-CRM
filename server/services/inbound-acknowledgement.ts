@@ -31,8 +31,17 @@ export const ACK_CAPABILITY_KEY = "inbound_ack_delivery_capability";
 export const ACK_OWNER_STARTED_KEY = "inbound_ack_owner_started_at";
 export const ACK_PRESENTATION_VERSION = "ack-receipt-v1";
 export const ACK_MAX_SEND_ATTEMPTS = 3;
-export const ACK_SOURCE_CLASSES = ["sales_request", "support_request", "fulfillment_request"] as const;
+export const ACK_SOURCE_CLASSES = [
+  "sales_request", "support_request", "fulfillment_request", "partner_application_request", "privacy_request",
+] as const;
 export type AckSourceClass = (typeof ACK_SOURCE_CLASSES)[number];
+
+/**
+ * A privacy request has no CRM contact by design (no marketing or provider record is created for it). Its receipt goes
+ * to the mailbox captured on the request itself, with no contact binding. Every other class requires a contact.
+ */
+export const ACK_CONTACTLESS_SOURCE_CLASSES: readonly string[] = ["privacy_request"];
+const isContactless = (sourceClass: string) => ACK_CONTACTLESS_SOURCE_CLASSES.includes(sourceClass);
 
 /**
  * Block reasons that can never clear: eligibility only moves forward (activation is never backdated) and the
@@ -41,7 +50,7 @@ export type AckSourceClass = (typeof ACK_SOURCE_CLASSES)[number];
 export const ACK_TERMINAL_BLOCK_REASONS = [
   "capability_closed", "capability_expired", "source_class_not_enabled", "request_before_eligibility_window",
   "eligibility_window_missing", "no_recipient_on_request", "no_submitted_email_on_request",
-  "recipient_changed_since_submission", "request_missing",
+  "recipient_changed_since_submission", "request_missing", "unexpected_contact_on_contactless_request",
 ] as const;
 
 export interface AckCapability {
@@ -148,6 +157,9 @@ const SOURCE_LABELS: Record<string, string> = {
   integration_request: "integration request",
   support_form: "support request",
   equipment_request: "equipment request",
+  partner_application: "partner application",
+  privacy_request: "privacy request",
+  partner_portal: "request",
 };
 
 export function ackReference(requestId: string): string {
@@ -171,7 +183,11 @@ export async function buildAckContent(input: {
       ? "A member of our support team will review it and reply to this email."
       : input.sourceClass === "fulfillment_request"
         ? "Our team will review the details and follow up using this email address."
-        : "A member of our team will review it and follow up using the email address you provided.";
+        : input.sourceClass === "partner_application_request"
+          ? "Our team will review your application and contact you at the email address you provided."
+          : input.sourceClass === "privacy_request"
+            ? "Our team will review it and respond to this email address. Please do not reply with sensitive personal information."
+            : "A member of our team will review it and follow up using the email address you provided.";
   const templateKey = `ack.${input.sourceClass}`;
   const subject = `We received your ${label} (ref ${ref})`;
   const lines = [greeting, `We received your ${label}. Your reference is ${ref}.`, next];
@@ -219,19 +235,22 @@ export async function prepareAcknowledgement(effectId: string): Promise<AckRow |
   // The recipient is the mailbox captured with the occurrence, never the current CRM value. If the CRM address has
   // since changed, the receipt is not sent at all (it would disclose request details to an unsubmitted address).
   const email = row.submittedEmail?.trim().toLowerCase() || null;
+  const contactless = isContactless(row.sourceClass);
   let firstName: string | null = null;
   let currentEmail: string | null = null;
-  if (row.contactId) {
+  if (row.contactId && !contactless) {
     const [c] = await db.select({ email: contacts.email, firstName: contacts.firstName }).from(contacts).where(eq(contacts.id, row.contactId)).limit(1);
     currentEmail = c?.email?.trim().toLowerCase() || null;
     firstName = c?.firstName ?? null;
   }
   const templateKey = `ack.${row.sourceClass}`;
-  const unusable = !row.contactId ? "no_recipient_on_request"
-    : !email ? "no_submitted_email_on_request"
-    : currentEmail !== email ? "recipient_changed_since_submission"
-    : null;
-  if (unusable || !email || !row.contactId) {
+  const unusable = contactless
+    ? (row.contactId ? "unexpected_contact_on_contactless_request" : !email ? "no_submitted_email_on_request" : null)
+    : !row.contactId ? "no_recipient_on_request"
+      : !email ? "no_submitted_email_on_request"
+      : currentEmail !== email ? "recipient_changed_since_submission"
+      : null;
+  if (unusable || !email) {
     const [created] = await db.insert(inboundAcknowledgements).values({
       effectId, requestId: row.requestId, sourceClass: row.sourceClass, templateKey,
       presentationVersion: ACK_PRESENTATION_VERSION, state: "blocked", blockedReason: unusable ?? "no_recipient_on_request",
@@ -241,7 +260,7 @@ export async function prepareAcknowledgement(effectId: string): Promise<AckRow |
   const content = await buildAckContent({ sourceClass: row.sourceClass, sourceType: row.sourceType, requestId: row.requestId, firstName });
   const [created] = await db.insert(inboundAcknowledgements).values({
     effectId, requestId: row.requestId, sourceClass: row.sourceClass,
-    recipientEmail: email, recipientContactId: row.contactId,
+    recipientEmail: email, recipientContactId: contactless ? null : row.contactId,
     templateKey: content.templateKey, presentationVersion: ACK_PRESENTATION_VERSION,
     subject: content.subject, htmlBody: content.html, textBody: content.text,
     contentHash: ackContentHash({ to: email, subject: content.subject, html: content.html, text: content.text }),
@@ -269,7 +288,6 @@ export async function verifyAckTransportCapability(
   const deny = (error: string) => ({ ok: false as const, error });
   if (message.commercialPurpose !== "transactional_response") return deny("ACK_PURPOSE_MISMATCH");
   if (message.category !== "support") return deny("ACK_CATEGORY_MISMATCH");
-  if (!message.contactId || message.intendedRecipientContactId !== message.contactId) return deny("ACK_RECIPIENT_UNBOUND");
   const [row] = await db
     .select({
       ack: inboundAcknowledgements,
@@ -288,15 +306,26 @@ export async function verifyAckTransportCapability(
     .limit(1);
   if (!row) return deny("ACK_NOT_PREPARED");
   const { ack } = row;
+  const contactless = isContactless(row.sourceClass);
+  // A contact-bound class must carry its contact binding; a contactless class must carry none (so a privacy receipt
+  // can never be re-aimed at a CRM contact, and a sales receipt can never be sent unbound).
+  if (contactless) {
+    if (message.contactId != null || message.intendedRecipientContactId != null) return deny("ACK_CONTACT_NOT_ALLOWED");
+    if (row.requestContactId != null || ack.recipientContactId != null) return deny("ACK_CONTACT_MISMATCH");
+  } else if (!message.contactId || message.intendedRecipientContactId !== message.contactId) {
+    return deny("ACK_RECIPIENT_UNBOUND");
+  }
   if (row.effectType !== "transactional_ack" || row.effectState !== "attempting") return deny("ACK_EFFECT_NOT_ATTEMPTING");
   if (ack.state !== "attempting" || !ack.attemptToken || ack.attemptToken !== claim.attemptToken) return deny("ACK_CLAIM_MISMATCH");
   if (message.inboundRequestId !== row.requestId) return deny("ACK_REQUEST_MISMATCH");
-  if (row.requestContactId !== message.contactId || ack.recipientContactId !== message.contactId) return deny("ACK_CONTACT_MISMATCH");
   if (!ack.recipientEmail || ack.recipientEmail !== message.to.trim().toLowerCase()) return deny("ACK_RECIPIENT_MISMATCH");
-  // Authority is the mailbox captured with the occurrence; the contact must still hold that same address.
+  // Authority is the mailbox captured with the occurrence; the contact (when the class has one) must still hold it.
   if (!row.submittedEmail || row.submittedEmail !== ack.recipientEmail) return deny("ACK_RECIPIENT_NOT_SUBMITTED");
-  const [liveContact] = await db.select({ email: contacts.email }).from(contacts).where(eq(contacts.id, message.contactId)).limit(1);
-  if (liveContact?.email?.trim().toLowerCase() !== row.submittedEmail) return deny("ACK_RECIPIENT_CHANGED");
+  if (!contactless) {
+    if (row.requestContactId !== message.contactId || ack.recipientContactId !== message.contactId) return deny("ACK_CONTACT_MISMATCH");
+    const [liveContact] = await db.select({ email: contacts.email }).from(contacts).where(eq(contacts.id, message.contactId!)).limit(1);
+    if (liveContact?.email?.trim().toLowerCase() !== row.submittedEmail) return deny("ACK_RECIPIENT_CHANGED");
+  }
   if (!ack.contentHash || ack.contentHash !== ackContentHash(message)) return deny("ACK_CONTENT_MISMATCH");
   const cap = await getAckCapability();
   const verdict = ackCapabilityAllows(cap, {
@@ -352,7 +381,8 @@ export async function dispatchAcknowledgement(effectId: string, deps?: { send?: 
     return { state: "blocked", reason };
   };
   if (!req) return block("request_missing");
-  if (!ack.recipientEmail || !ack.recipientContactId) return block(ack.blockedReason ?? "no_recipient_on_request");
+  const contactless = isContactless(req.sourceClass);
+  if (!ack.recipientEmail || (!contactless && !ack.recipientContactId)) return block(ack.blockedReason ?? "no_recipient_on_request");
 
   let cap: AckCapability;
   try { cap = await readAckCapability(); } catch { return block("capability_unreadable"); }
@@ -391,10 +421,10 @@ export async function dispatchAcknowledgement(effectId: string, deps?: { send?: 
       to: ack.recipientEmail,
       subject: ack.subject!, html: ack.htmlBody!, text: ack.textBody ?? undefined,
       category: "support",
-      contactId: ack.recipientContactId,
+      contactId: contactless ? undefined : ack.recipientContactId,
       commercialPurpose: "transactional_response",
       inboundRequestId: ack.requestId,
-      intendedRecipientContactId: ack.recipientContactId,
+      intendedRecipientContactId: contactless ? undefined : ack.recipientContactId,
       inboundAck: { effectId, attemptToken: token },
     });
   } catch {
@@ -447,12 +477,79 @@ export async function dispatchAcknowledgement(effectId: string, deps?: { send?: 
   return exhausted ? { state: "failed", reason } : { state: "blocked", reason };
 }
 
+/**
+ * What a public response may truthfully say about the receipt at the moment of the request. `queued` means the
+ * capability currently permits this request, so the receipt worker will attempt it; it is not delivery. `not_enabled`
+ * means no receipt email will be sent for it. Unreadable capability is reported as not enabled.
+ */
+export async function describeAckReceiptState(requestId: string): Promise<"queued" | "not_enabled"> {
+  const [req] = await db.select({ sourceClass: inboundRequests.sourceClass, sourceReceivedAt: inboundRequests.sourceReceivedAt })
+    .from(inboundRequests).where(eq(inboundRequests.id, requestId)).limit(1);
+  if (!req) return "not_enabled";
+  try {
+    const verdict = ackCapabilityAllows(await readAckCapability(), {
+      sourceClass: req.sourceClass, sourceReceivedAt: req.sourceReceivedAt, ownerStartedAt: await getOwnerStartedAt(),
+    });
+    return verdict.ok ? "queued" : "not_enabled";
+  } catch {
+    return "not_enabled";
+  }
+}
+
+// ── Crash recovery ────────────────────────────────────────────────────────
+
+/** Longer than any SMTP attempt; an attempt older than this has no live owner. */
+export const ACK_STALE_ATTEMPT_MS = 10 * 60_000;
+
+/**
+ * A process that dies mid-attempt leaves rows `attempting` forever. Two shapes, both resolved without resending:
+ *  - ack `attempting` (the transport may or may not have transmitted): becomes `uncertain / attempt_interrupted`;
+ *    the effect keeps `attempting` with `delivery_uncertain`, exactly like any other uncertain outcome.
+ *  - effect `attempting` while its ack never reached `attempting` (crash between the two claims, so nothing was
+ *    sent): the effect returns to `held` and the normal sweep decides again.
+ * A late settle from a slow original attempt may still overwrite `uncertain` with the true outcome.
+ */
+export async function recoverStaleAcknowledgementAttempts(now: Date = new Date()): Promise<{ uncertain: number; released: number }> {
+  const cutoff = new Date(now.getTime() - ACK_STALE_ATTEMPT_MS);
+  const interrupted = await db.update(inboundAcknowledgements)
+    .set({ state: "uncertain", blockedReason: "attempt_interrupted", settledAt: now, updatedAt: now })
+    .where(and(
+      eq(inboundAcknowledgements.state, "attempting"),
+      sql`COALESCE(${inboundAcknowledgements.attemptedAt}, ${inboundAcknowledgements.updatedAt}) < ${cutoff}`,
+    ))
+    .returning({ id: inboundAcknowledgements.id, effectId: inboundAcknowledgements.effectId, requestId: inboundAcknowledgements.requestId });
+  for (const row of interrupted) {
+    await db.update(inboundRequestEffects)
+      .set({ terminalReason: "delivery_uncertain", updatedAt: now })
+      .where(and(eq(inboundRequestEffects.id, row.effectId), eq(inboundRequestEffects.state, "attempting")));
+    await storage.createAuditLog({
+      action: "inbound_ack_attempt_interrupted",
+      entityType: "inbound_acknowledgement",
+      entityId: 0,
+      details: { acknowledgementId: row.id, effectId: row.effectId, requestId: row.requestId, resolvedAs: "uncertain", resent: false },
+    } as any);
+  }
+  const released = await db.update(inboundRequestEffects)
+    .set({ state: "held", updatedAt: now })
+    .where(and(
+      eq(inboundRequestEffects.effectType, "transactional_ack"),
+      eq(inboundRequestEffects.state, "attempting"),
+      sql`${inboundRequestEffects.updatedAt} < ${cutoff}`,
+      sql`NOT EXISTS (SELECT 1 FROM inbound_acknowledgements a WHERE a.effect_id = ${inboundRequestEffects.id}
+            AND a.state NOT IN ('prepared','blocked'))`,
+    ))
+    .returning({ id: inboundRequestEffects.id });
+  return { uncertain: interrupted.length, released: released.length };
+}
+
 // ── Sweep (the single ongoing processor; no browser or operator action needed) ──
 
 export async function runAcknowledgementSweep(opts?: { limit?: number; deps?: { send?: SendFn; now?: Date } }): Promise<{
   examined: number; accepted: number; blocked: number; uncertain: number; failed: number; suppressed: number; skipped: number;
+  recoveredUncertain: number; releasedEffects: number;
 }> {
   const limit = Math.min(Math.max(opts?.limit ?? 25, 1), 100);
+  const recovered = await recoverStaleAcknowledgementAttempts(opts?.deps?.now);
   const ownerStartedAt = await getOwnerStartedAt();
   const rows = await db
     .select({ effectId: inboundRequestEffects.id })
@@ -472,7 +569,10 @@ export async function runAcknowledgementSweep(opts?: { limit?: number; deps?: { 
     ))
     .orderBy(sql`COALESCE(${inboundAcknowledgements.updatedAt}, ${inboundRequests.sourceReceivedAt})`)
     .limit(limit);
-  const tally = { examined: rows.length, accepted: 0, blocked: 0, uncertain: 0, failed: 0, suppressed: 0, skipped: 0 };
+  const tally = {
+    examined: rows.length, accepted: 0, blocked: 0, uncertain: 0, failed: 0, suppressed: 0, skipped: 0,
+    recoveredUncertain: recovered.uncertain, releasedEffects: recovered.released,
+  };
   for (const r of rows) {
     const out = await dispatchAcknowledgement(r.effectId, opts?.deps);
     tally[out.state] += 1;

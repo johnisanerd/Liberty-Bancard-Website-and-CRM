@@ -19,6 +19,8 @@ const REQUEST_TYPES: Array<{ value: string; label: string }> = [
   { value: "sales_request", label: "Sales requests (estimate, get started, callback, analysis, statement upload)" },
   { value: "support_request", label: "Support requests" },
   { value: "fulfillment_request", label: "Equipment orders" },
+  { value: "partner_application_request", label: "Partner applications" },
+  { value: "privacy_request", label: "Privacy requests (receipt goes only to the submitted email)" },
 ];
 
 const STATE_LABELS: Record<string, string> = {

@@ -21,7 +21,8 @@ export type PublicFormType =
   | "callback_form"
   | "equipment_order"
   | "testimonial_submit"
-  | "newsletter_signup";
+  | "newsletter_signup"
+  | "partner_portal_form";
 
 export interface PublicContactProfilePayload {
   firstName?: string;
@@ -110,6 +111,10 @@ const FORM_PROFILE_ALLOWLISTS: Record<PublicFormType, ReadonlySet<string>> = {
   ]),
   newsletter_signup: new Set([
     "firstName", "email",
+  ]),
+  partner_portal_form: new Set([
+    "firstName", "lastName", "email", "phone", "companyName",
+    "utmSource", "utmMedium", "utmCampaign", "landingPage",
   ]),
 };
 

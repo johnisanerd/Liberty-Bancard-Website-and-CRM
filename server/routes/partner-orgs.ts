@@ -23,10 +23,12 @@ import fs from "fs";
 import { addNote, addTag, isSdrGhlConfigured } from "../services/sdr/ghl-client";
 import { enrollInGhlWorkflow, enrollInGhlWorkflowCompliant } from "../services/ghl-workflows";
 import { createContactLocalFirst } from "../services/contact-writer";
-import { scoreContact } from "../services/lead-scoring";
-import { autoEnrollFromTrigger } from "../services/sequence-worker";
-import { triggerWorkflowsByEvent } from "../services/workflow-executor";
-import { routeContact } from "../services/smart-router";
+import { writeContact, upsertContactSourceEvent } from "../services/contact-writer";
+import { claimPublicInbound } from "../services/public-inbound-intake";
+import { orchestrateInboundRequest, setInboundRequestLifecycle } from "../services/inbound-request-authority";
+import { describeAckReceiptState } from "../services/inbound-acknowledgement";
+import { processExistingPublicFormSubmission } from "../services/public-form-submission";
+import { buildPublicContactPayload } from "../services/public-form-payload";
 import {
   createCoBrandedProposal,
   sendCoBrandedProposalEmail,
@@ -103,54 +105,99 @@ export function registerPartnerOrgsRoutes(app: Express) {
         return res.status(400).json({ message: "First name and email are required." });
       }
 
-      // Resolve partnerOrgId server-side from slug (utmCampaign holds the slug); ignore client-supplied id
-      let resolvedOrgId: number | null = null;
-      if (utmCampaign) {
-        const org = await storage.getPartnerOrgBySlug(utmCampaign);
-        if (org && org.status === "active") resolvedOrgId = org.id;
-      }
-
-      const contact = await createContactLocalFirst({
-        firstName: String(firstName).slice(0, 200),
-        lastName: lastName ? String(lastName).slice(0, 200) : "",  // eslint-disable-line
-        email: String(email).toLowerCase().slice(0, 300),
-        phone: phone ? String(phone).slice(0, 50) : "",
-        companyName: companyName ? String(companyName).slice(0, 300) : null,
-        status: "New",
-        utmSource: utmSource || "partner_portal",
-        utmMedium: utmMedium || "white_label",
-        utmCampaign: utmCampaign || null,
-        landingPage: "/partner/" + (utmCampaign || ""),
-        partnerOrgId: resolvedOrgId,
-        tags: ["partner_portal", utmCampaign ? `partner_${utmCampaign}` : "partner"].filter(Boolean),
-        notes: monthlyVolume ? `Monthly volume estimate: ${monthlyVolume}` : null,
+      // Canonical inbound path: claim the occurrence before any write (UUIDv4 Idempotency-Key required).
+      const inbound = await claimPublicInbound(req, res, ["partner_referral", "partner_portal"], {
+        firstName, lastName, email, phone, companyName, monthlyVolume, utmCampaign,
       });
+      if (!inbound) return;
 
-      // Fire standard lead pipeline (non-blocking)
-      scoreContact(contact!.id).catch(err => logOperationalDiagnostic("partner_portal_lead_pipeline", err, "lead_scoring_failed", { contactId: contact!.id }));
-      routeContact(contact!.id).catch(err => logOperationalDiagnostic("partner_portal_lead_pipeline", err, "smart_routing_failed", { contactId: contact!.id }));
-      autoEnrollFromTrigger("contact_created", { contactId: contact!.id }).catch(err => logOperationalDiagnostic("partner_portal_lead_pipeline", err, "auto_enrollment_failed", { contactId: contact!.id }));
-      triggerWorkflowsByEvent("contact_created", { entityType: "contact", entityId: contact!.id, contactId: contact!.id }).catch(err => logOperationalDiagnostic("partner_portal_lead_pipeline", err, "workflow_trigger_failed", { contactId: contact!.id }));
+      try {
+        // Resolve partnerOrgId server-side from slug (utmCampaign holds the slug); ignore client-supplied id
+        let resolvedOrgId: number | null = null;
+        if (utmCampaign) {
+          const org = await storage.getPartnerOrgBySlug(utmCampaign);
+          if (org && org.status === "active") resolvedOrgId = org.id;
+        }
 
-      // Derive warning from actual operation outcome: ghlContactId being set is
-      // proof the GHL upsert succeeded at runtime (not just that GHL is configured).
-      const { isSmtpConfigured } = await import("../services/smtp-email");
-      const ghlUpsertSucceeded = !!contact!.ghlContactId;
-      const smtpAvailable = isSmtpConfigured();
-      const notificationsAvailable = ghlUpsertSucceeded || smtpAvailable;
-      if (!notificationsAvailable) {
-        logOperationalDiagnostic("partner_portal_notification", new Error("delivery unavailable"), "outbound_delivery_unavailable", { contactId: contact!.id });
+        const normalizedEmail = String(email).trim().toLowerCase().slice(0, 300);
+        const profile = {
+          firstName: String(firstName).slice(0, 200),
+          lastName: lastName ? String(lastName).slice(0, 200) : "",
+          email: normalizedEmail,
+          phone: phone ? String(phone).slice(0, 50) : "",
+          companyName: companyName ? String(companyName).slice(0, 300) : null,
+          notes: monthlyVolume ? `Monthly volume estimate: ${monthlyVolume}` : null,
+        };
+        const existingContact = await storage.getContactByEmail(normalizedEmail);
+        const contact = existingContact
+          ? await processExistingPublicFormSubmission({
+              existingContact,
+              permittedProfileUpdates: buildPublicContactPayload("partner_portal_form", {
+                ...profile,
+                companyName: profile.companyName ?? undefined,
+                notes: undefined,
+                utmSource: utmSource || "partner_portal",
+                utmMedium: utmMedium || "white_label",
+                utmCampaign: utmCampaign || undefined,
+                landingPage: "/partner/" + (utmCampaign || ""),
+              }),
+              incomingConsent: {},
+              submissionId: inbound.id,
+              formType: "partner_portal_form",
+              requestEvidence: {
+                ipAddress: req.ip || req.socket.remoteAddress || "unknown",
+                userAgent: req.headers["user-agent"] || "unknown",
+              },
+            })
+          : await writeContact({
+              mode: "local_first",
+              mutation: {
+                ...profile,
+                status: "New",
+                utmSource: utmSource || "partner_portal",
+                utmMedium: utmMedium || "white_label",
+                utmCampaign: utmCampaign || null,
+                landingPage: "/partner/" + (utmCampaign || ""),
+                partnerOrgId: resolvedOrgId,
+                tags: ["partner_portal", utmCampaign ? `partner_${utmCampaign}` : "partner"].filter(Boolean),
+              },
+              provenance: {
+                sourceCategory: "partner_referral",
+                sourceType: "partner_portal",
+                eventKey: `form:partner_portal:${inbound.id}`,
+                actorType: "public",
+              },
+              actor: { actorType: "public" },
+            });
+
+        // This occurrence's own provenance (awaited): the inbound authority admits an unclassified contact into the
+        // management review path only with exact evidence for this request.
+        await upsertContactSourceEvent({
+          contactId: contact.id,
+          provenance: {
+            eventKey: `form:partner_portal:${inbound.id}`,
+            sourceCategory: "partner_referral",
+            sourceType: "partner_portal",
+            actorType: "public",
+          },
+        });
+
+        // Assignment, the follow-up task, and the receipt belong to the inbound authority. This handler no longer
+        // scores, routes, enrolls, or fires workflows directly, and it promises no response time.
+        const orchestrated = await orchestrateInboundRequest({ requestId: inbound.id, contactId: contact.id });
+        const emailReceipt = await describeAckReceiptState(inbound.id);
+
+        res.status(201).json({
+          message: "Thank you. Your request has been received.",
+          requestReceipt: inbound.id,
+          status: orchestrated.lifecycleState,
+          emailReceipt,
+        });
+      } catch (err) {
+        await setInboundRequestLifecycle(inbound.id, "failed", "PARTNER_PORTAL_INTAKE_FAILED").catch(() => undefined);
+        throw err;
       }
-
-      res.status(201).json({
-        id: contact!.id,
-        message: "Thank you! We'll be in touch within 24 hours.",
-        ...(notificationsAvailable ? {} : { warning: "Contact saved. Outbound notification may be delayed — communications not yet configured." }),
-      });
     } catch (err: any) {
-      if (err?.code === "23505" || err?.message?.includes("unique")) {
-        return res.status(409).json({ message: "A contact with this email already exists." });
-      }
       serverError(res, err);
     }
   });

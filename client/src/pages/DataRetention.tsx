@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { SEO } from "@/components/SEO";
 import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/Footer";
@@ -39,6 +39,7 @@ const RETENTION_DATA = [
 export default function DataRetention() {
   const { toast } = useToast();
   const [submitted, setSubmitted] = useState(false);
+  const requestKey = useRef<string | null>(null);
 
   const form = useForm<DeleteRequestForm>({
     resolver: zodResolver(deleteRequestSchema),
@@ -52,9 +53,18 @@ export default function DataRetention() {
 
   const mutation = useMutation({
     mutationFn: async (data: DeleteRequestForm) => {
-      await apiRequest("POST", "/api/data-requests", data);
+      requestKey.current ??= crypto.randomUUID();
+      try {
+        await apiRequest("POST", "/api/data-requests", data, { "Idempotency-Key": requestKey.current });
+      } catch (error) {
+        // apiRequest throws on a server answer (rotate: the next submit is a new request) and on network failure
+        // (keep: the retry replays). A server answer carries an HTTP status prefix.
+        if (error instanceof Error && /^\d{3}:/.test(error.message)) requestKey.current = null;
+        throw error;
+      }
     },
     onSuccess: () => {
+      requestKey.current = null;
       setSubmitted(true);
       toast({ title: "Request received", description: "Our team will review it and contact you at the email address provided." });
     },

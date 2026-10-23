@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Link } from "wouter";
 import { SEO } from "@/components/SEO";
 import { Navbar } from "@/components/Navbar";
@@ -238,6 +238,7 @@ export default function ISOPartnerProgram() {
   const { toast } = useToast();
   const [view, setView] = useState<FormView>("form");
   const [submitting, setSubmitting] = useState(false);
+  const applyKey = useRef<string | null>(null);
   const [affiliateCode, setAffiliateCode] = useState("");
   const [form, setForm] = useState({
     firstName: "",
@@ -259,13 +260,15 @@ export default function ISOPartnerProgram() {
       toast({ title: "Password must be at least 6 characters", variant: "destructive" });
       return;
     }
+    applyKey.current ??= crypto.randomUUID();
     setSubmitting(true);
     try {
       const res = await fetch("/api/partner-apply", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "Idempotency-Key": applyKey.current },
         body: JSON.stringify(form),
       });
+      applyKey.current = null;
       const data = await res.json();
       if (!res.ok) {
         toast({ title: data.message || "Submission failed", variant: "destructive" });

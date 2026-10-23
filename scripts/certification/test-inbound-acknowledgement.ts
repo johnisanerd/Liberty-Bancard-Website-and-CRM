@@ -250,6 +250,185 @@ const late = await request("late", { contactId: await contact("l"), receivedAt: 
   check(snap === `ack-${id}-sw@fixture.invalid`, "Submitted-mailbox snapshot is not overwritten by a later link after an edit");
 }
 
+
+// 7. Partner-application and privacy-request classes, contactless privacy receipt, stale-attempt recovery,
+//    and admin-only review-notification visibility.
+{
+  const later = { now: new Date(Date.now() + 30000) };
+  const { INBOUND_SOURCE_POLICIES } = await import("../../server/services/inbound-request-authority");
+  for (const [type, cls] of [["partner_application", "partner_application_request"], ["privacy_request", "privacy_request"]] as const) {
+    const pol = INBOUND_SOURCE_POLICIES.find((p) => p.sourceCategory === "website_form" && p.sourceType === type);
+    check(pol?.sourceClass === cls && pol.effects.some((e) => e.type === "transactional_ack") && !pol.effects.some((e) => e.type === "sla"),
+      `${type} has a receipt effect and no SLA or timing promise`);
+  }
+  check((ack.ACK_SOURCE_CLASSES as readonly string[]).includes("partner_application_request") && (ack.ACK_SOURCE_CLASSES as readonly string[]).includes("privacy_request"),
+    "New classes are acknowledgement source classes");
+
+  // Existing enabled capability (sales only) leaves the new classes closed.
+  const partner = await request("partner", { contactId: await contact("pa"), receivedAt: new Date(Date.now() + 5000), sourceType: "partner_application", sourceClass: "partner_application_request" });
+  const closed = await ack.dispatchAcknowledgement(partner.effectId, { ...later, send: okSend });
+  check(closed.state === "blocked" && (closed as any).reason === "source_class_not_enabled", "Partner applications stay closed until an admin enables that class");
+
+  const privacyRequest = async (label: string, email: string | null) => {
+    const r = (await pool.query(
+      `INSERT INTO inbound_requests(idempotency_key,occurrence_key,request_fingerprint,source_category,source_type,source_class,caller_scope,actor_type,
+         source_received_at,contact_id,submitted_email,manifest_version,manifest_hash)
+       VALUES($1,$1,$2,'website_form','privacy_request','privacy_request','public','visitor',$3,NULL,$4,'v1',$5) RETURNING id`,
+      [`ack-${id}-${label}`, sha(`fp-${id}-${label}`), new Date(Date.now() + 5000), email, sha("manifest")])).rows[0].id as string;
+    const e = (await pool.query(
+      `INSERT INTO inbound_request_effects(request_id,effect_key,effect_type,state,required,external_side_effect)
+       VALUES($1,'transactional_ack','transactional_ack','held',true,true) RETURNING id`, [r])).rows[0].id as string;
+    return { requestId: r, effectId: e };
+  };
+  const { linkInboundRequest } = await import("../../server/services/inbound-request-authority");
+  await ack.setAckCapability({ enabled: true, sourceClasses: ["sales_request", "partner_application_request", "privacy_request"], actor: "cert" });
+  await new Promise((r) => setTimeout(r, 20));
+
+  // Contactless privacy receipt: goes to the submitted mailbox only, with no contact binding anywhere.
+  const mailbox = `privacy-${id}@fixture.invalid`;
+  const priv = await privacyRequest("privacy", mailbox);
+  await linkInboundRequest(priv.requestId, { submittedEmail: "attacker@fixture.invalid" });
+  check((await pool.query(`SELECT submitted_email FROM inbound_requests WHERE id=$1`, [priv.requestId])).rows[0].submitted_email === mailbox,
+    "Submitted mailbox on a contactless request is immutable once captured");
+  let seen: any; let verdict: any;
+  const sendsBefore = sends.length;
+  const out = await ack.dispatchAcknowledgement(priv.effectId, { ...later, send: async (p: any) => {
+    seen = p; verdict = await ack.verifyAckTransportCapability(p, p.inboundAck);
+    sends.push(p); return { success: true, messageId: "fake-priv" };
+  } });
+  check(out.state === "accepted" && sends.length === sendsBefore + 1, "Enabled privacy class sends exactly one receipt");
+  check(seen.to === mailbox && seen.contactId === undefined && seen.intendedRecipientContactId === undefined && seen.category === "support" && seen.commercialPurpose === "transactional_response",
+    "Privacy receipt is addressed to the submitted mailbox only, with no contact binding, as a transactional support send");
+  check(verdict?.ok === true, "Transport verification accepts the exact contactless privacy message");
+  check(!/within \d|business day|guarantee/i.test(seen.text) && !seen.html.includes(mailbox), "Privacy receipt makes no timing promise and echoes no personal detail");
+  const repriv = await ack.dispatchAcknowledgement(priv.effectId, { ...later, send: okSend });
+  check(repriv.state === "accepted" && sends.length === sendsBefore + 1, "A privacy receipt is never sent twice");
+
+  // The same effect cannot be re-aimed at a CRM contact or another recipient.
+  const priv2 = await privacyRequest("privacy2", `privacy2-${id}@fixture.invalid`);
+  let v2: any; let v3: any;
+  await ack.dispatchAcknowledgement(priv2.effectId, { ...later, send: async (p: any) => {
+    const cid = await contact("rebind");
+    v2 = await ack.verifyAckTransportCapability({ ...p, contactId: cid, intendedRecipientContactId: cid }, p.inboundAck);
+    v3 = await ack.verifyAckTransportCapability({ ...p, to: `other-${id}@fixture.invalid` }, p.inboundAck);
+    return { success: false, outcome: "unsent", error: "refused" };
+  } });
+  check(v2?.ok === false && v2.error === "ACK_CONTACT_NOT_ALLOWED", "Privacy receipt cannot be bound to a CRM contact at the transport boundary");
+  check(v3?.ok === false && v3.error === "ACK_RECIPIENT_MISMATCH", "Privacy receipt cannot be redirected to another address");
+
+  // A privacy request with no captured mailbox is blocked, never guessed.
+  const none = await privacyRequest("privacy-none", null);
+  const nout = await ack.dispatchAcknowledgement(none.effectId, { ...later, send: okSend });
+  check(nout.state === "blocked" && (await ackRow(none.effectId)).blocked_reason === "no_submitted_email_on_request", "Privacy request without a submitted mailbox is blocked with its own reason");
+
+  // Partner application (contact-bound) still requires the contact binding and sends once.
+  const bound = await ack.dispatchAcknowledgement(partner.effectId, { ...later, send: okSend });
+  check(bound.state === "accepted", "Enabled partner application receipt is sent once to the submitted mailbox");
+
+  // Stale-attempt recovery: crash left rows attempting. Nothing is resent.
+  const crashed = await request("crashed", { contactId: await contact("cr"), receivedAt: new Date(Date.now() + 6000) });
+  await pool.query(`UPDATE inbound_request_effects SET state='attempting', attempt_count=1 WHERE id=$1`, [crashed.effectId]);
+  const crashedAck = await ack.prepareAcknowledgement(crashed.effectId);
+  await pool.query(`UPDATE inbound_acknowledgements SET state='attempting', attempt_token=$2, attempt_count=1, attempted_at=$3 WHERE id=$1`,
+    [crashedAck!.id, randomUUID(), new Date(Date.now() - 3600_000)]);
+  const half = await request("half", { contactId: await contact("hf"), receivedAt: new Date(Date.now() + 6100) });
+  await pool.query(`UPDATE inbound_request_effects SET state='attempting', updated_at=$2 WHERE id=$1`, [half.effectId, new Date(Date.now() - 3600_000)]);
+  const fresh = await request("freshattempt", { contactId: await contact("fa"), receivedAt: new Date(Date.now() + 6200) });
+  await pool.query(`UPDATE inbound_request_effects SET state='attempting' WHERE id=$1`, [fresh.effectId]);
+  const faAck = await ack.prepareAcknowledgement(fresh.effectId);
+  await pool.query(`UPDATE inbound_acknowledgements SET state='attempting', attempt_token=$2, attempted_at=now() WHERE id=$1`, [faAck!.id, randomUUID()]);
+
+  const beforeRecovery = sends.length;
+  const rec = await ack.runAcknowledgementSweep({ limit: 25, deps: { send: okSend } });
+  const ca = await ackRow(crashed.effectId);
+  check(ca.state === "uncertain" && ca.blocked_reason === "attempt_interrupted", "Crash-left attempting acknowledgement becomes uncertain/attempt_interrupted");
+  check((await effectRow(crashed.effectId)).state === "attempting" && (await effectRow(crashed.effectId)).terminal_reason === "delivery_uncertain", "Its effect keeps attempting with delivery_uncertain (not sent, not retried)");
+  check((await effectRow(half.effectId)).state !== "attempting", "Effect claimed without an acknowledgement claim is released back to the sweep");
+  check((await ackRow(fresh.effectId)).state === "attempting", "A recent in-flight attempt is not touched by recovery");
+  check(rec.recoveredUncertain >= 1 && rec.releasedEffects >= 1, "Sweep reports what recovery resolved");
+  await ack.runAcknowledgementSweep({ limit: 25, deps: { send: okSend } });
+  check((await ackRow(crashed.effectId)).state === "uncertain", "Uncertain recovered acknowledgement is never resent by later sweeps");
+  check(!sends.slice(beforeRecovery).some((m: any) => m.inboundRequestId === crashed.requestId), "No send was made for the interrupted attempt");
+
+  // Review notifications are readable by admins and hidden from managers and agents.
+  const { listActorNotifications } = await import("../../server/services/notification-authority");
+  const uid = (role: string) => `ack-${id}-${role}`;
+  for (const role of ["admin", "manager", "agent"]) {
+    await pool.query(`INSERT INTO users(id,email,role) VALUES($1,$2,$3)`, [uid(role), `${uid(role)}@fixture.invalid`, role]);
+  }
+  const mk = async (key: string, title: string, metadata: any) => storage.createNotification({ channel: "internal", title, message: "m", type: "alert", commandKey: `ack-cert-${id}-${key}`, metadata } as any);
+  await mk("partner", `Partner ${id}`, { partnerId: 1, link: "/dashboard/referral-program", eventType: "partner_application_received", audienceRoles: ["admin"] });
+  await mk("privacy", `Privacy ${id}`, { dataRequestId: 1, link: "/dashboard/data-requests", eventType: "privacy_request_received", audienceRoles: ["admin"] });
+  await mk("forged", `Forged ${id}`, { link: "/dashboard/data-requests", eventType: "something_else", audienceRoles: ["admin"] });
+  const adminList = (await listActorNotifications({ userId: uid("admin"), limit: 200, offset: 0 })).data.filter((n: any) => String(n.title).endsWith(id));
+  const byTitle = (t: string) => adminList.find((n: any) => n.title === `${t} ${id}`);
+  check(byTitle("Partner")?.target.state === "available" && byTitle("Partner").target.url === "/dashboard/referral-program", "Admins see the partner application review notification with its review page");
+  check(byTitle("Privacy")?.target.state === "available" && byTitle("Privacy").target.url === "/dashboard/data-requests", "Admins see the privacy request review notification with its review page");
+  check(!byTitle("Forged"), "A review-page link on any other event type stays hidden");
+  for (const role of ["manager", "agent"]) {
+    const other = (await listActorNotifications({ userId: uid(role), limit: 200, offset: 0 })).data.filter((n: any) => String(n.title).endsWith(id));
+    check(other.length === 0, `${role} accounts never see admin-only review notifications`);
+  }
+}
+
+
+// 8. The three public adapters' authority path: claim -> write -> orchestrate completes the internal effect only
+//    with request-owned evidence, and leaves the receipt held.
+{
+  const auth = await import("../../server/services/inbound-request-authority");
+  const { writeContact } = await import("../../server/services/contact-writer");
+  const claimIt = async (cat: string, type: string, label: string) => {
+    const c = await auth.claimInboundRequest({ idempotencyKey: randomUUID(), sourceCategory: cat, sourceType: type, callerScope: "public:cert", actorType: "public", payload: { label } });
+    assert.equal(c.outcome, "claimed");
+    return (c as any).request.id as string;
+  };
+  const effects = async (rid: string) => (await pool.query(`SELECT effect_key,state FROM inbound_request_effects WHERE request_id=$1`, [rid])).rows as Array<{ effect_key: string; state: string }>;
+  const notify = async (rid: string, ok = true) => (await storage.createNotification({
+    channel: "internal", title: "t", message: "m", type: "alert", inboundRequestId: ok ? rid : undefined,
+    commandKey: ok ? `inbound:${rid}:review-notification` : `ack-cert-wrong-${rid}`, metadata: { audienceRoles: ["admin"] },
+  } as any)).id;
+
+  // Partner application: contact-linked.
+  const pr = await claimIt("website_form", "partner_application", "pa");
+  const pc = await contact("pa2");
+  const pDone = await auth.orchestrateInboundRequest({ requestId: pr, contactId: pc, notificationId: await notify(pr) });
+  const pe = await effects(pr);
+  check(pe.find((e) => e.effect_key === "review_notification")?.state === "sent" && pe.find((e) => e.effect_key === "transactional_ack")?.state === "held" && pDone.lifecycleState === "accepted",
+    "Partner application: review effect completes on request-owned evidence; receipt stays held for the receipt owner");
+  check(pDone.slaDueAt == null, "Partner application has no SLA due date (no timing promise)");
+
+  // Wrong or foreign notification does not complete the review effect.
+  const pr2 = await claimIt("website_form", "partner_application", "pa-wrong");
+  const bad = await auth.orchestrateInboundRequest({ requestId: pr2, contactId: await contact("pa3"), notificationId: await notify(pr2, false) });
+  check((await effects(pr2)).find((e) => e.effect_key === "review_notification")?.state === "held" && bad.lifecycleState === "review_required",
+    "A notification not owned by the request leaves the review effect held and the request in review_required");
+
+  // Privacy request: no contact, mailbox captured on the request.
+  const vr = await claimIt("website_form", "privacy_request", "pv");
+  const email = `priv-route-${id}@Fixture.invalid`;
+  const vDone = await auth.orchestrateInboundRequest({ requestId: vr, notificationId: await notify(vr), submittedEmail: email });
+  const row = (await pool.query(`SELECT contact_id, submitted_email FROM inbound_requests WHERE id=$1`, [vr])).rows[0];
+  check(row.contact_id === null && row.submitted_email === email.toLowerCase(), "Privacy request creates no contact and captures the lowercase submitted mailbox");
+  check((await effects(vr)).find((e) => e.effect_key === "review_notification")?.state === "sent" && vDone.lifecycleState === "accepted", "Privacy request: review effect completes, receipt stays held");
+
+  // Co-branded form: sales authority with partner_portal provenance.
+  const cr = await claimIt("partner_referral", "partner_portal", "cb");
+  const contactRow = await writeContact({
+    mode: "local_first",
+    mutation: { firstName: "Co", lastName: "Brand", email: `cobrand-${id}@fixture.invalid`, phone: "", status: "New", tags: ["partner_portal"] },
+    provenance: { sourceCategory: "partner_referral", sourceType: "partner_portal", eventKey: `form:partner_portal:${cr}`, actorType: "public" },
+    actor: { actorType: "public" },
+  });
+  const cDone = await auth.orchestrateInboundRequest({ requestId: cr, contactId: contactRow.id });
+  const ce = await effects(cr);
+  check(ce.some((e) => e.effect_key === "transactional_ack" && e.state === "held") && cDone.slaDueAt != null && cDone.contactId === contactRow.id,
+    "Co-branded lead form runs on the canonical sales authority with a request-owned task and a held receipt");
+  check(Number((await pool.query(`SELECT count(*) FROM sequence_enrollments WHERE contact_id=$1`, [contactRow.id])).rows[0].count) === 0, "Co-branded lead form creates no sequence enrollment");
+  check(await ack.describeAckReceiptState(cr) === "queued", "Receipt state is queued only while the capability permits the request");
+  await ack.setAckCapability({ enabled: false, actor: "cert" });
+  check(await ack.describeAckReceiptState(cr) === "not_enabled", "Receipt state is not_enabled once the capability is closed");
+}
+
 console.log(`\nALL CHECKS PASSED — ${checks}/${checks} checks`);
 await pool.end();
 process.exit(0);

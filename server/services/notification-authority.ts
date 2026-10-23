@@ -52,6 +52,15 @@ const legacyPatterns:Record<string,string>={
   task:"^/dashboard/tasks\\?id=([1-9][0-9]*)$",
   rfi:"^/dashboard/rfis\\?id=([1-9][0-9]*)$",
 };
+/**
+ * Admin-only review queues. A notification may link to one of these pages only when its event type is the one that
+ * owns the page AND the reader is an active admin (the queue routes themselves are admin-only). Any other link that is
+ * not a recognized resource detail URL stays hidden.
+ */
+const adminQueueLinks:Record<string,string>={
+  partner_application_received:"/dashboard/referral-program",
+  privacy_request_received:"/dashboard/data-requests",
+};
 function readExpression(actor:Actor) {
   return sql<boolean>`COALESCE((SELECT s.read_at IS NOT NULL FROM notification_actor_states s
     WHERE s.actor_id=${actor.id} AND s.notification_id=${notifications.id}),FALSE)
@@ -82,6 +91,8 @@ function scope(actor:Actor,category="all") {
     ...targetKinds.map(kind=>sql`(${typed} IS DISTINCT FROM ${kind} OR ${value("entityId")} IS NULL
       OR ${value(`${kind}Id`)} IS NULL OR ${positive(value(`${kind}Id`))}=${entity})`),
     sql`(${value("link")} IS NULL OR ${value("link")}='/dashboard' OR
+      (${actor.role==="admin"} AND (${sql.join(Object.entries(adminQueueLinks).map(([event,link])=>
+        sql`(${value("eventType")}=${event} AND ${value("link")}=${link})`),sql` OR `)})) OR
       (${sql.join(targetKinds.map(kind=>{
         const linkedId=positive(sql`substring(${value("link")} from ${legacyPatterns[kind]})`);
         return sql`(${linkedId} IS NOT NULL AND ${resourceAllowed(actor,kind,linkedId)})`;
@@ -121,6 +132,8 @@ function typedTarget(metadata:any):{kind:string;id:number}|null {
 }
 function destination(metadata:any) {
   const target=typedTarget(metadata);
+  if(!target && metadata?.eventType && adminQueueLinks[metadata.eventType]===metadata?.link)
+    return {state:"available",url:metadata.link};
   if(!target) return metadata?.link==="/dashboard" || ["daily","weekly"].includes(metadata?.digestType)
     ? {state:"available",url:"/dashboard"}:{state:"unavailable",url:null};
   if(target.kind==="task") return {state:"available",url:"/dashboard/tasks-appointments?tab=tasks",...target,

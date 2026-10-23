@@ -105,6 +105,8 @@ check("all CRO-05A source classes are frozen in the source policy", () => {
     "sales_request",
     "support_request",
     "fulfillment_request",
+    "partner_application_request",
+    "privacy_request",
     "marketing_opt_in",
     "content_reputation",
     "lifecycle_event",
