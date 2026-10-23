@@ -15,6 +15,7 @@ import type { GhlActivityLog, MessageTemplate, SlaConfig } from "@shared/schema"
 import { GhlSyncControlCard } from "@/components/dashboard/GhlSyncControlCard";
 import { GhlInboundSyncCard } from "@/components/dashboard/GhlInboundSyncCard";
 import { GhlCommandAction } from "@/components/dashboard/GhlCommandAction";
+import { InboundAcknowledgementCard } from "@/components/dashboard/InboundAcknowledgementCard";
 
 interface PipelineStagesResult {
   matchingPolicy: "explicit_ids_only";
@@ -901,6 +902,8 @@ export default function GhlSettings() {
           )}
         </CardContent>
       </Card>
+
+      <InboundAcknowledgementCard canControl={user?.role === "admin"} />
 
       <Card data-testid="card-ghl-backfill">
         <CardHeader>

@@ -190,3 +190,4 @@
 - [Partner response allowlist and mailbox lock order](partner-response-allowlist.md) — explicit DTO for partner responses; mailbox lock before row/graph locks on every email mutation.
 - [Drizzle begin failure leaks client](drizzle-begin-leak.md) — failed BEGIN never released in drizzle 0.45; override in server/db.ts; db:long_checkout floods mean a leak.
 - [Actor-change browser trigger](actor-change-browser-trigger.md) — auth revalidation via Date.now skew + offline/online; hold strips abort signal; release old before fresh.
+- [Inbound acknowledgement owner](inbound-ack-owner.md) — default-closed per-message lease re-verified from durable rows; capability is not unpause; no historical catch-up.
