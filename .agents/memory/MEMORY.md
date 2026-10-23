@@ -189,3 +189,4 @@
 - [D-V review repair patterns](dv-review-repair-patterns.md) — cohort URL selectors, in-page fetch hold tests, bounded CSV streaming, rebuild-after-scripts rule.
 - [Partner response allowlist and mailbox lock order](partner-response-allowlist.md) — explicit DTO for partner responses; mailbox lock before row/graph locks on every email mutation.
 - [Drizzle begin failure leaks client](drizzle-begin-leak.md) — failed BEGIN never released in drizzle 0.45; override in server/db.ts; db:long_checkout floods mean a leak.
+- [Actor-change browser trigger](actor-change-browser-trigger.md) — auth revalidation via Date.now skew + offline/online; hold strips abort signal; release old before fresh.
