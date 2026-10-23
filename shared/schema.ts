@@ -7242,6 +7242,40 @@ export const inboundRequestEffects = pgTable("inbound_request_effects", {
   check("inbound_request_effects_state_chk", sql`state IN ('held', 'ready', 'attempting', 'sent', 'failed', 'suppressed')`),
 ]);
 
+/**
+ * One durable, purpose-bound acknowledgement per inbound `transactional_ack` effect. The row binds the
+ * recipient, purpose, presentation version and exact content BEFORE dispatch; the SMTP transport re-verifies
+ * this row (not a caller flag) before any pause-lease is granted. `uncertain` is terminal for automation.
+ */
+export const inboundAcknowledgements = pgTable("inbound_acknowledgements", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  effectId: uuid("effect_id").notNull().references(() => inboundRequestEffects.id, { onDelete: "cascade" }),
+  requestId: uuid("request_id").notNull().references(() => inboundRequests.id, { onDelete: "cascade" }),
+  purpose: text("purpose").notNull().default("inbound_transactional_acknowledgement"),
+  sourceClass: text("source_class").notNull(),
+  recipientEmail: text("recipient_email"),
+  recipientContactId: integer("recipient_contact_id").references(() => contacts.id),
+  templateKey: text("template_key").notNull(),
+  presentationVersion: text("presentation_version").notNull(),
+  subject: text("subject"),
+  htmlBody: text("html_body"),
+  textBody: text("text_body"),
+  contentHash: text("content_hash"),
+  state: text("state").notNull().default("prepared"),
+  blockedReason: text("blocked_reason"),
+  attemptToken: uuid("attempt_token"),
+  attemptCount: integer("attempt_count").notNull().default(0),
+  transportMessageId: text("transport_message_id"),
+  attemptedAt: timestamp("attempted_at", { withTimezone: true }),
+  settledAt: timestamp("settled_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("inbound_acknowledgements_effect_uidx").on(table.effectId),
+  index("inbound_acknowledgements_state_idx").on(table.state, table.createdAt),
+  check("inbound_acknowledgements_state_chk", sql`state IN ('prepared','blocked','attempting','accepted','uncertain','failed','suppressed')`),
+]);
+
 export const inboundAssignmentDecisions = pgTable("inbound_assignment_decisions", {
   id: uuid("id").primaryKey().defaultRandom(),
   requestId: uuid("request_id").notNull().references(() => inboundRequests.id, { onDelete: "cascade" }),

@@ -480,10 +480,36 @@ export async function runStatementUploadChain(
   // ────────────────────────────────────────────────────────────────────────────
   // STEP 7 — GHL projection requested for statement metadata
   // ────────────────────────────────────────────────────────────────────────────
-  steps.push(makeStep(7, "GHL projection held", true, undefined, {
-    state: "held",
-    statementStatusProjectionRequested: false,
-  }));
+  // Records the durable handoff identity for the statement metadata. It does not enqueue or perform a provider
+  // write: projection claims, retries and provider results belong to the GHL projection owner, and this step is
+  // never reported as provider-complete. Replays reuse the same handoff identity.
+  try {
+    const handoffKey = `statement-projection:${input.contactId}:${documentId ?? input.inboundRequestId ?? "no-document"}`;
+    const existing = await db.execute(sql`
+      SELECT 1 FROM audit_logs
+      WHERE action = 'statement_projection_handoff_recorded' AND details->>'handoffKey' = ${handoffKey}
+      LIMIT 1`);
+    const alreadyRecorded = (((existing as any).rows ?? []) as unknown[]).length > 0;
+    if (!alreadyRecorded) {
+      await storage.createAuditLog({
+        action: "statement_projection_handoff_recorded",
+        entityType: "contact",
+        entityId: input.contactId,
+        actorType: "system",
+        details: { handoffKey, documentId: documentId ?? null, dealId, providerWriteAttempted: false, state: "handed_off_not_enqueued" },
+      } as any);
+    }
+    steps.push(makeStep(7, "Projection handoff recorded", true, undefined, {
+      state: "handed_off",
+      handoffKey,
+      reused: alreadyRecorded,
+      providerWriteAttempted: false,
+      providerComplete: false,
+    }));
+  } catch (err: any) {
+    steps.push(makeStep(7, "Projection handoff recorded", false, err.message));
+    await logStepFailure(dealId, 7, "Projection handoff recorded", err.message);
+  }
 
   // ────────────────────────────────────────────────────────────────────────────
   // STEP 8 — Pipeline stage confirmed "Statement Received"
@@ -536,10 +562,29 @@ export async function runStatementUploadChain(
   //   "unknown"         → FAILURE  (no definitive outcome; recoverable)
   //   thrown error      → FAILURE  (unexpected exception)
   // ────────────────────────────────────────────────────────────────────────────
-  steps.push(makeStep(9, "Merchant inbound confirmation held", true, undefined, {
-    outcome: "held",
-    externalAttempted: false,
-  }));
+  // The chain never sends and never enrolls. The single acknowledgement owner (inbound-acknowledgement.ts) prepares,
+  // dispatches and settles the request's `transactional_ack` effect; this step only reports its current state.
+  try {
+    let ackState: string = "no_inbound_request";
+    if (input.inboundRequestId) {
+      const rows = await db.execute(sql`
+        SELECT e.state AS effect_state, a.state AS ack_state, a.blocked_reason
+        FROM inbound_request_effects e
+        LEFT JOIN inbound_acknowledgements a ON a.effect_id = e.id
+        WHERE e.request_id = ${input.inboundRequestId} AND e.effect_type = 'transactional_ack'
+        LIMIT 1`);
+      const row = (((rows as any).rows ?? []) as Array<{ effect_state: string; ack_state: string | null; blocked_reason: string | null }>)[0];
+      ackState = row ? (row.ack_state ?? `effect_${row.effect_state}`) + (row.blocked_reason ? `:${row.blocked_reason}` : "") : "no_acknowledgement_effect";
+    }
+    steps.push(makeStep(9, "Acknowledgement owned by inbound effect", true, undefined, {
+      owner: "inbound_acknowledgement",
+      state: ackState,
+      externalAttempted: false,
+    }));
+  } catch (err: any) {
+    steps.push(makeStep(9, "Acknowledgement owned by inbound effect", false, err.message));
+    await logStepFailure(dealId, 9, "Acknowledgement owned by inbound effect", err.message);
+  }
 
   // ────────────────────────────────────────────────────────────────────────────
   // STEP 10 — Proposal draft entity created (statement_proposals table)

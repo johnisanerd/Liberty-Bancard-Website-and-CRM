@@ -1179,7 +1179,24 @@ export function registerAdminRoutes(app: Express) {
     try {
       const input = insertDataDeleteRequestSchema.parse(req.body);
       const request = await storage.createDataDeleteRequest(input);
-      res.status(201).json(request);
+      // Restricted review ownership: a system-wide in-app notification for admins, linked to the exact request. The
+      // commandKey makes a replay create one. No marketing contact or provider record is created for a privacy request.
+      let reviewNotified = false;
+      try {
+        await storage.createNotification({
+          channel: "internal",
+          title: "Privacy request needs review",
+          message: `A ${String(request.requestType).slice(0, 60)} request was received. Open the restricted queue to review it.`,
+          type: "alert",
+          commandKey: `privacy-request-review:${request.id}`,
+          metadata: { dataRequestId: request.id, link: "/dashboard/data-requests", eventType: "privacy_request_received" },
+        } as any);
+        reviewNotified = true;
+      } catch (notifyErr) {
+        console.error("[DataRequests] review notification failed:", notifyErr instanceof Error ? notifyErr.name : "error");
+      }
+      // Public response is a receipt only: no submitted personal details are echoed back.
+      res.status(201).json({ id: request.id, status: request.status, received: true, reviewQueued: reviewNotified, emailReceipt: "not_sent" });
     } catch (err: any) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
       serverError(res, err);

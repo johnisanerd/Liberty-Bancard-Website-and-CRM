@@ -56,7 +56,7 @@ export default function DataRetention() {
     },
     onSuccess: () => {
       setSubmitted(true);
-      toast({ title: "Request submitted", description: "We will process your request within 30 days." });
+      toast({ title: "Request received", description: "Our team will review it and contact you at the email address provided." });
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -152,10 +152,10 @@ export default function DataRetention() {
                   <CardContent className="pt-6 flex flex-col items-center gap-3 text-center">
                     <CheckCircle className="w-10 h-10 text-green-600" />
                     <h3 className="text-lg font-semibold text-foreground" data-testid="text-request-success">
-                      Request Submitted Successfully
+                      Request received
                     </h3>
                     <p className="text-muted-foreground" data-testid="text-request-success-desc">
-                      Your data request has been received. We will process it within 30 days and contact you at the email address provided.
+                      We have recorded your data request. It is received, not yet verified or completed. Our team will review it and contact you at the email address provided; we may ask you to confirm your identity first.
                     </p>
                     <Button variant="outline" onClick={() => { setSubmitted(false); form.reset(); }} data-testid="button-submit-another">
                       Submit Another Request

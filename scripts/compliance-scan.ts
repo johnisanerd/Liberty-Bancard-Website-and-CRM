@@ -76,6 +76,14 @@ const CALL_SITE_ALLOWLIST: Array<{
   reviewDate: string;
 }> = [
   {
+    file: "server/services/inbound-acknowledgement.ts",
+    lineContains: "sendSmtpEmail",
+    channel: "email",
+    category: "transactional_merchant",
+    reason: "Single owner of inbound request receipts. Factual receipt to the mailbox the visitor submitted, category support, transactional_response purpose; the SMTP boundary and pause authority re-verify the prepared recipient/content/claim from durable state and the delivery capability ships closed. No enrollment, no promotional content.",
+    reviewDate: "2026-10-23",
+  },
+  {
     file: "server/routes/activation.ts",
     lineContains: "sendSmtpEmail",
     channel: "email",

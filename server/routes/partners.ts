@@ -375,27 +375,59 @@ ${getEmailSignatureHtml("partners")}
         notes: notesText || null,
       });
 
-      createContactLocalFirst({
-        firstName,
-        lastName: lastName || "",
-        email: email.toLowerCase(),
-        phone,
-        companyName: companyName || undefined,
-        status: "Active",
-        tags: ["src_website", "iso_partner_application", mappedType],
-      }).then(partnerContact => {
-        if (partnerContact) {
-          syncFormSubmissionToGhl({
-            contactId: partnerContact.id,
-            leadSource: "iso_partner" as any,
-            formData: {
-              lb_referral_code: partner.affiliateCode || "",
-              partner_type: referralType || mappedType,
-              number_of_clients: numberOfClients || "",
-            },
-          }).catch(err => logOperationalDiagnostic("partner_application_sync", err, "form_sync_failed", { partnerId: partner.id }));
-        }
-      }).catch(err => logOperationalDiagnostic("partner_application_sync", err, "contact_create_failed", { partnerId: partner.id }));
+      // Local outcomes are awaited so the response reflects what is durably recorded. The partner row above is the
+      // application of record; the contact record and the review notification below are local-only writes.
+      let localContactId: number | null = null;
+      let contactRecorded = false;
+      try {
+        const partnerContact = await createContactLocalFirst({
+          firstName,
+          lastName: lastName || "",
+          email: email.toLowerCase(),
+          phone,
+          companyName: companyName || undefined,
+          status: "Active",
+          tags: ["src_website", "iso_partner_application", mappedType],
+        });
+        localContactId = partnerContact?.id ?? null;
+        contactRecorded = !!partnerContact;
+      } catch (err) {
+        logOperationalDiagnostic("partner_application_sync", err, "contact_create_failed", { partnerId: partner.id });
+      }
+
+      // Review ownership: a system-wide in-app notification (visible to every admin) linked to the exact record.
+      // commandKey makes a replay create exactly one. No deadline is promised because no partner-review policy exists.
+      let reviewNotified = false;
+      try {
+        await storage.createNotification({
+          channel: "internal",
+          title: "New partner application to review",
+          message: `${(companyName || `${firstName} ${lastName || ""}`).toString().trim().slice(0, 120)} applied as ${mappedType.replace(/_/g, " ")}.`,
+          type: "alert",
+          commandKey: `partner-application-review:${partner.id}`,
+          metadata: {
+            partnerId: partner.id,
+            contactId: localContactId ?? undefined,
+            link: "/dashboard/referral-program",
+            eventType: "partner_application_received",
+          },
+        } as any);
+        reviewNotified = true;
+      } catch (err) {
+        logOperationalDiagnostic("partner_application_review", err, "review_notification_failed", { partnerId: partner.id });
+      }
+
+      if (localContactId) {
+        syncFormSubmissionToGhl({
+          contactId: localContactId,
+          leadSource: "iso_partner" as any,
+          formData: {
+            lb_referral_code: partner.affiliateCode || "",
+            partner_type: referralType || mappedType,
+            number_of_clients: numberOfClients || "",
+          },
+        }).catch(err => logOperationalDiagnostic("partner_application_sync", err, "form_sync_failed", { partnerId: partner.id }));
+      }
 
       syncAffiliateSignupToGhl({
         firstName,
@@ -407,9 +439,16 @@ ${getEmailSignatureHtml("partners")}
       }).catch(err => logOperationalDiagnostic("partner_application_sync", err, "affiliate_sync_failed", { partnerId: partner.id }));
 
       return res.status(201).json({
-        message: "Application submitted! We will review and contact you within 1 business day.",
+        message: "Application received. Our team will review it and contact you at the email you provided.",
         affiliateCode: partner.affiliateCode,
         partnerType: mappedType,
+        receipt: {
+          applicationRecorded: true,
+          reviewQueued: reviewNotified,
+          contactRecorded,
+          // No acknowledgement email is sent for partner applications yet; the page must not claim one.
+          emailReceipt: "not_sent",
+        },
       });
     } catch (err: any) {
       serverError(res, err);

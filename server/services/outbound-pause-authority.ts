@@ -42,7 +42,8 @@ export type AuthorizationReasonCode =
   | "db_error"
   | "timeout"
   | "exception_registered"
-  | "seed_lease";
+  | "seed_lease"
+  | "ack_lease";
 
 export interface AuthorizedSendDecision {
   allowed: boolean;
@@ -385,6 +386,37 @@ export async function authorizeSeedSend(request: SeedLeaseRequest): Promise<Auth
     return deny("db_error", epoch, source, "SEED_AUTHORITY_UNAVAILABLE");
   }
   return { allowed: true, epoch, reasonCode: state === "paused" ? "seed_lease" : "allowed", stateSource: source, grantedAt };
+}
+
+// ---------------------------------------------------------------------------
+// Inbound acknowledgement lease
+// ---------------------------------------------------------------------------
+// A narrow per-message lease for ONE factual receipt to the mailbox the visitor submitted on a request that was
+// already durably recorded. The lease is granted only when durable state proves the exact message was prepared and
+// claimed by the acknowledgement owner AND the default-closed delivery capability is open for that source class.
+// It never unpauses anything and never covers any other purpose, recipient, or content. The ordinary final epoch
+// recheck (recheckSeedLeaseEpoch) applies immediately before provider I/O.
+export async function authorizeInboundAckSend(
+  message: Parameters<typeof import("./inbound-acknowledgement").verifyAckTransportCapability>[0],
+  claim: { effectId: string; attemptToken: string },
+): Promise<AuthorizedSendDecision & { error?: string }> {
+  const grantedAt = new Date();
+  const deny = (reasonCode: AuthorizationReasonCode, epoch: bigint, source: StateSource, error?: string) =>
+    ({ allowed: false, epoch, reasonCode, stateSource: source, grantedAt, ...(error ? { error } : {}) });
+  let stateResult: OutboundPauseStateResult;
+  try { stateResult = await getPauseState(); }
+  catch { return deny("db_error", 0n, "safe_default"); }
+  const { state, epoch, source } = stateResult;
+  if (source !== "database") return deny("safe_default", epoch, source);
+  if (state === "activating") return deny("activating", epoch, source);
+  try {
+    const { verifyAckTransportCapability } = await import("./inbound-acknowledgement");
+    const verdict = await verifyAckTransportCapability(message, claim);
+    if (!verdict.ok) return deny(state === "paused" ? "global_paused" : "allowed", epoch, source, verdict.error);
+  } catch {
+    return deny("db_error", epoch, source, "ACK_AUTHORITY_UNAVAILABLE");
+  }
+  return { allowed: true, epoch, reasonCode: state === "paused" ? "ack_lease" : "allowed", stateSource: source, grantedAt };
 }
 
 /** Final recheck before provider I/O for a seed lease: same epoch, still database-sourced, not activating. */

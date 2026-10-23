@@ -175,6 +175,12 @@ async function sendSmtpEmailCore(params: {
    * suppress or unsubscribe a prospect. The global pause authority below still applies.
    */
   seedTest?: { receiptKey: string; occurrenceId: string };
+  /**
+   * Inbound acknowledgement owner only. Never a bypass: the pause authority re-verifies from durable state that this
+   * exact message was prepared for this recipient and claimed under this token, and that the default-closed delivery
+   * capability is open. Cannot be combined with a seed or marketing purpose.
+   */
+  inboundAck?: { effectId: string; attemptToken: string };
 }): Promise<SmtpSendResult> {
   // CRO-03C initial-batch continuations are evidence-only. This is a canonical
   // SMTP boundary, so an inherited fence records and terminalizes the attempt.
@@ -241,13 +247,18 @@ async function sendSmtpEmailCore(params: {
   // Every SMTP send must clear the canonical pause authority BEFORE any
   // network I/O. This is the final enforcement boundary.
   try {
-    const { authorize, recheckEpoch, authorizeSeedSend, recheckSeedLeaseEpoch } = await import("./outbound-pause-authority");
+    const { authorize, recheckEpoch, authorizeSeedSend, authorizeInboundAckSend, recheckSeedLeaseEpoch } = await import("./outbound-pause-authority");
     const { registerInflight, deregisterInflight } = await import("./outbound-control-service");
     // An operator seed message asks the authority for a per-message seed lease (see outbound-pause-authority.ts). Every
     // other caller gets the ordinary decision, which a paused system always refuses.
+    if (params.inboundAck && (params.seedTest || isCommercial)) {
+      return { success: false, error: "ACK_PURPOSE_MISMATCH", outcome: "unsent" };
+    }
     const seedDecision = params.seedTest
       ? await authorizeSeedSend({ ...params, ...params.seedTest, receiptKey: params.seedTest.receiptKey })
-      : null;
+      : params.inboundAck
+        ? await authorizeInboundAckSend(params, params.inboundAck)
+        : null;
     const decision = seedDecision ?? await authorize({});
     if (seedDecision && !seedDecision.allowed) {
       return { success: false, error: seedDecision.error ?? `Outbound paused: ${seedDecision.reasonCode}`, outcome: "unsent" };
