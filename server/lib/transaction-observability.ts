@@ -153,6 +153,11 @@ export function observeTransactionConnections(pool: any, options: {
     for (const client of checkedOut) {
       const state = active.get(client);
       if (!state || performance.now() - state.acquiredAt < slowMs) continue;
+      // A checkout that is never released would otherwise log an error every sample forever. Report it when first
+      // seen, then at most once per minute for the same checkout.
+      const now = performance.now();
+      if (state.lastLongReportAt !== undefined && now - state.lastLongReportAt < 60_000) continue;
+      state.lastLongReportAt = now;
       report("db:long_checkout", state, {acquireWaitMs: state.acquireWaitMs,
         checkoutDurationMs: performance.now() - state.acquiredAt,
         transactionOpen: state.transaction, inFlight: state.inFlight,
