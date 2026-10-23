@@ -14,7 +14,7 @@ export const COPY_RULES: Array<{ id: string; test: RegExp; why: string }> = [
   { id: "attachment_ask", test: /(reply|respond)[^.]{0,60}attach|attach[^.]{0,60}(voided check|driver'?s? licen[sc]e|photo id|identification)|email[^.]{0,40}(voided check|photo id|driver'?s? licen[sc]e)/gi, why: "Asks the recipient to email sensitive documents; use the secure upload journey" },
   { id: "unsupported_timing", test: /within\s+(1|one)\s+business\s+day|in\s+(just\s+)?5\s+minutes|same[- ]day|guaranteed/gi, why: "Timing or guarantee not backed by a recorded policy" },
   { id: "unsupported_proof", test: /\b(thousands of merchants|trusted by \d|saved (our|my) clients|average (savings|saving) of)\b/gi, why: "Social-proof or savings claim without a stored source" },
-  { id: "exists_claim", test: /(your analysis (is|has been) saved|your application (is|has been) approved|agreement (is|was) sent)/gi, why: "States a record exists without a recorded event" },
+  { id: "exists_claim", test: /(your (statement |processing |savings )?analysis (is|has been|was) (saved|on file|stored)|the numbers (haven'?t|have not) changed|your application (is|has been) approved|agreement (is|was) sent)/gi, why: "States a record exists without a recorded event" },
 ];
 
 export interface CopyFinding { rule: string; match: string; why: string }

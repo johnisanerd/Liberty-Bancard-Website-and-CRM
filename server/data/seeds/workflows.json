@@ -610,7 +610,7 @@
       "category": "nurture",
       "channel": "email",
       "subject": "Still thinking about your processing?",
-      "body": "<p>Hi {{contact.firstName}},</p>\n<p>We know switching processors is a big decision. No rush - but we wanted to check in.</p>\n<p>Your statement analysis is saved and the numbers haven't changed. When you're ready, we're here.</p>\n<p><a href=\"{{calendarLink}}\">Book a 5-minute recap</a> whenever it works for you.</p>\n<p>Best,<br/>Liberty Bancard Team</p>\n<p style=\"font-size:11px;color:#999;\">Eligibility, underwriting, card brand rules, and applicable laws apply.</p>",
+      "body": "<p>Hi {{contact.firstName}},</p>\n<p>We know switching processors is a big decision. No rush - but we wanted to check in.</p>\n<p>If you would like us to review your statement, we can pick it up whenever you are ready.</p>\n<p><a href=\"{{calendarLink}}\">Book a 5-minute recap</a> whenever it works for you.</p>\n<p>Best,<br/>Liberty Bancard Team</p>\n<p style=\"font-size:11px;color:#999;\">Eligibility, underwriting, card brand rules, and applicable laws apply.</p>",
       "mergeFields": [
         "contact.firstName",
         "calendarLink"

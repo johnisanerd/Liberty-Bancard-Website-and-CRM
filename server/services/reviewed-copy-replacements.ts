@@ -57,6 +57,10 @@ const REMOVED_ACTIONS: Record<string, (a: any) => boolean> = {
 };
 
 const TEMPLATE_EDITS: Record<string, Edit[]> = {
+  "30-Day Nurture Email": [{
+    from: "<p>Your statement analysis is saved and the numbers haven't changed. When you're ready, we're here.</p>",
+    to: "<p>If you would like us to review your statement, we can pick it up whenever you are ready.</p>",
+  }],
   "Day 7 Review Request": [{
     from: `<p>Would you take 30 seconds to share your experience? <a href="[GOOGLE_REVIEW_LINK]">Leave a Review</a></p>\n<p>Your feedback helps other business owners make better processing decisions.</p>`,
     to: `<p>If anything needs attention, just reply to this email and we will help.</p>`,

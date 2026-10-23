@@ -82,6 +82,9 @@ for (const name of targeted) {
 }
 const dayTpl = seed.DEFAULT_MESSAGE_TEMPLATES.find((x: any) => x.name === "Day 7 Review Request");
 check(lintCopy(dayTpl.body).length === 0, "Seed Day 7 template has no audited findings");
+const nurtureTpl = seed.DEFAULT_MESSAGE_TEMPLATES.find((x: any) => x.name === "30-Day Nurture Email");
+check(lintCopy(nurtureTpl.body).length === 0, "Seed 30-Day Nurture template has no audited findings");
+check(lintCopy("<p>Your statement analysis is saved and the numbers haven't changed.</p>").some((f) => f.rule === "exists_claim"), "Broadened rule flags the statement-analysis claim");
 
 const OLD: Record<string, any[]> = {
   "B. Estimate Request Intake": [{ type: "send_ghl_email", subject: "Thanks", body: "<p>Hi</p><p>You can upload it here: [UPLOAD_LINK]</p><p>Or reply to this email with the statement attached. Once we review it, we'll have real numbers.</p>" }],
