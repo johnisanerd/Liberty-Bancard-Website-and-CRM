@@ -327,7 +327,8 @@ export async function processCanonicalImportRecoveryTick(
      throw error;
    } finally {
      if(processingStarted===null) authorityAcquisitionMs=Date.now()-tickStarted;
-     console.warn(JSON.stringify({event:"canonical_import_recovery_tick",outcome,
+     // Routine summaries (including protective held rows) are informational; stderr counts as an error on the platform.
+      (fatalError || failed>0 || cleanupFailed>0 ? console.warn : console.info)(JSON.stringify({event:"canonical_import_recovery_tick",outcome,
        fulfilled,held,attempted,failed,cleanupFailed,abandoned,zeroFulfillment:fulfilled===0,
        authorityAcquisitionMs,rowProcessingMs:processingStarted===null ? 0 : Date.now()-processingStarted,
        totalMs:Date.now()-tickStarted,failure:fatalError ? safeDatabaseFailure(fatalError) : null,
