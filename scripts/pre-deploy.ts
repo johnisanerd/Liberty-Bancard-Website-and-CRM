@@ -126,6 +126,8 @@ export const CERTIFICATION_FIXTURE_SUITES: Suite[] = [
     timeoutSecs:900,requiresDisposableTestDatabase:true},
   {name:"Workflow email wording",script:"scripts/certification/test-workflow-email-wording.ts",
     timeoutSecs:900,requiresDisposableTestDatabase:true},
+  {name:"Workflow SMS wording",script:"scripts/certification/test-workflow-sms-wording.ts",
+    timeoutSecs:900,requiresDisposableTestDatabase:true},
 ];
 export const MANDATORY_SUITES: Suite[] = [
   {name:"Stage 3 C3 Destination Codec and Source Contracts",script:"scripts/test-stage3-c3-contracts.ts",timeoutSecs:60},

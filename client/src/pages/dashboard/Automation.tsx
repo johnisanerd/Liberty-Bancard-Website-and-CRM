@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Loader2, Zap, Package, Workflow, ChevronDown, ChevronRight, Mail, MessageSquare, Clock, ListChecks, Bell, FileText, Tag, Shield, ArrowRight, ExternalLink, Sparkles, Play, BarChart3, Route, Ticket, Brain, FileSearch, Activity, CheckCircle2, AlertCircle, Pause, RefreshCw, AlertTriangle, DollarSign, Power } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { WorkflowSmsStepEditor, type WorkflowSmsStepTarget } from "@/components/dashboard/WorkflowSmsStepEditor";
 import { WorkflowEmailStepEditor, type WorkflowEmailStepTarget } from "@/components/dashboard/WorkflowEmailStepEditor";
 import type { CollateralPacket, Workflow as WorkflowType, MessageTemplate } from "@shared/schema";
 
@@ -531,7 +532,7 @@ function formatHours(hours: number): string {
   return `${days} day${days !== 1 ? "s" : ""}`;
 }
 
-function ActionDetail({ action, index, onEditEmail }: { action: any; index: number; onEditEmail?: () => void }) {
+function ActionDetail({ action, index, onEditEmail, onEditSms }: { action: any; index: number; onEditEmail?: () => void; onEditSms?: () => void }) {
   const config = ACTION_LABELS[action.type] || { label: action.type, icon: ArrowRight };
   const Icon = config.icon;
 
@@ -579,6 +580,14 @@ function ActionDetail({ action, index, onEditEmail }: { action: any; index: numb
             <div className="text-sm text-muted-foreground bg-muted/50 rounded-md p-3 whitespace-pre-wrap" data-testid={`action-sms-body-${index}`}>
               {action.body || ""}
             </div>
+            {onEditSms && !action.templateId && (
+              <Button variant="outline" size="sm" className="mt-2" onClick={onEditSms} data-testid={`button-edit-sms-wording-${index}`}>
+                Edit wording
+              </Button>
+            )}
+            {action.templateId && (
+              <p className="text-xs text-muted-foreground mt-1">Sends a stored template. Edit its wording from the message templates.</p>
+            )}
           </div>
         )}
 
@@ -642,6 +651,7 @@ function ActionDetail({ action, index, onEditEmail }: { action: any; index: numb
 function WorkflowCard({ workflow }: { workflow: WorkflowType }) {
   const [expanded, setExpanded] = useState(false);
   const [emailTarget, setEmailTarget] = useState<WorkflowEmailStepTarget | null>(null);
+  const [smsTarget, setSmsTarget] = useState<WorkflowSmsStepTarget | null>(null);
   const actions = Array.isArray(workflow.actions) ? workflow.actions : [];
   const actionTypeCounts: Record<string, number> = {};
   actions.forEach((a: any) => {
@@ -712,10 +722,15 @@ function WorkflowCard({ workflow }: { workflow: WorkflowType }) {
                   onEditEmail={workflow.retiredAt ? undefined : () => setEmailTarget({
                     workflowId: workflow.id, workflowName: workflow.name, workflowVersion: workflow.version,
                     workflowEnabled: workflow.enabled, stepIndex: i, subject: action.subject ?? null, body: action.body ?? "",
+                  })}
+                  onEditSms={workflow.retiredAt ? undefined : () => setSmsTarget({
+                    workflowId: workflow.id, workflowName: workflow.name, workflowVersion: workflow.version,
+                    workflowEnabled: workflow.enabled, stepIndex: i, body: action.body ?? "",
                   })} />
               ))}
             </div>
             <WorkflowEmailStepEditor target={emailTarget} onClose={() => setEmailTarget(null)} />
+            <WorkflowSmsStepEditor target={smsTarget} onClose={() => setSmsTarget(null)} />
           </div>
         </CardContent>
       )}
