@@ -55,3 +55,23 @@ export const merchantAuthRateLimit = rateLimit({
     return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
   },
 });
+
+/**
+ * Visitor messages inside an already-open live chat session. Higher ceiling than
+ * the lead limiter because a real conversation sends many short messages, but
+ * still bounded so one IP cannot flood the agent inbox or notifications.
+ */
+export const publicChatMessageRateLimit = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    message: "You are sending messages too quickly. Please wait a moment and try again.",
+  },
+  skip: (req) => {
+    if (process.env.NODE_ENV === "production") return false;
+    const ip = req.ip ?? "";
+    return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
+  },
+});

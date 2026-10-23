@@ -52,7 +52,7 @@ const whoIsItFor = [
 ];
 
 const programSteps = [
-  { num: "01", title: "Apply", desc: "Complete the partner application. We review and onboard you within 1 business day." },
+  { num: "01", title: "Apply", desc: "Complete the partner application. Our team reviews it and follows up with next steps." },
   { num: "02", title: "Get Your Referral Link & Code", desc: "Your unique tracking link automatically attributes every merchant you refer, so you get credit every time." },
   { num: "03", title: "Refer Merchants", desc: "Share your link, co-branded materials, or make direct introductions. Our team handles the sales process and statement review." },
   { num: "04", title: "Earn Residuals", desc: "When merchants activate, you earn a share of the processing revenue — every month, for the life of the account." },
@@ -124,7 +124,7 @@ const isoFaqJsonLd = {
     {
       "@type": "Question",
       name: "How long does the approval process take?",
-      acceptedAnswer: { "@type": "Answer", text: "Most partner applications are reviewed within 1 business day. Once approved, you receive your referral link and partner portal access immediately." },
+      acceptedAnswer: { "@type": "Answer", text: "Our team reviews each partner application. After approval, your referral link and partner portal access are activated for your account." },
     },
   ],
 };
@@ -161,10 +161,10 @@ function ResidualCalculator() {
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 mb-8">
         <div>
-          <label className="block text-sm font-medium text-foreground mb-2">
+          <label htmlFor="partner-input-calc-merchants" className="block text-sm font-medium text-foreground mb-2">
             Number of Merchants
           </label>
-          <Input
+          <Input className="min-h-11" id="partner-input-calc-merchants"
             type="number"
             min={1}
             max={500}
@@ -175,10 +175,10 @@ function ResidualCalculator() {
           <p className="text-xs text-muted-foreground mt-1">How many merchant accounts you refer</p>
         </div>
         <div>
-          <label className="block text-sm font-medium text-foreground mb-2">
+          <label htmlFor="partner-input-calc-volume" className="block text-sm font-medium text-foreground mb-2">
             Avg Monthly Volume ($)
           </label>
-          <Input
+          <Input className="min-h-11" id="partner-input-calc-volume"
             type="number"
             min={1000}
             max={500000}
@@ -190,11 +190,11 @@ function ResidualCalculator() {
           <p className="text-xs text-muted-foreground mt-1">Per merchant, average monthly card sales</p>
         </div>
         <div>
-          <label className="block text-sm font-medium text-foreground mb-2">
+          <label htmlFor="partner-select-calc-split" className="block text-sm font-medium text-foreground mb-2">
             Your Revenue Share (%)
           </label>
           <Select value={String(splitPercent)} onValueChange={v => setSplitPercent(Number(v))}>
-            <SelectTrigger data-testid="select-calc-split">
+            <SelectTrigger className="min-h-11" id="partner-select-calc-split" data-testid="select-calc-split">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -417,7 +417,7 @@ export default function ISOPartnerProgram() {
                           variant={tier.type === "iso" ? "default" : "outline"}
                           className="w-full gap-2"
                         >
-                          Get My Free Analysis <ChevronRight className="w-3.5 h-3.5" />
+                          Apply as this partner type <ChevronRight className="w-3.5 h-3.5" />
                         </Button>
                       </a>
                     </div>
@@ -494,9 +494,9 @@ export default function ISOPartnerProgram() {
                 <div className="w-16 h-16 rounded-full bg-green-100 dark:bg-green-900/30 flex items-center justify-center mx-auto mb-6">
                   <CheckCircle className="w-8 h-8 text-green-600" />
                 </div>
-                <h2 className="text-2xl font-display font-bold text-foreground mb-3">Application Submitted!</h2>
+                <h2 className="text-2xl font-display font-bold text-foreground mb-3">Application received</h2>
                 <p className="text-muted-foreground mb-6">
-                  Thank you for applying. We'll review your application and reach out within 1 business day. In the meantime, you can log in to your partner portal.
+                  Thank you for applying. Our team will review your application and follow up using the email you provided. Portal access depends on that review.
                 </p>
                 {affiliateCode && (
                   <div className="bg-background border border-border rounded-xl p-5 mb-6 text-left">
@@ -525,77 +525,77 @@ export default function ISOPartnerProgram() {
                     Become a Partner
                   </h2>
                   <p className="text-muted-foreground">
-                    Fill out the form below. We'll review your application and follow up within 1 business day.
+                    Fill out the form below. Our team reviews each application and follows up.
                   </p>
                 </div>
                 <Card>
                   <CardContent className="p-6 space-y-4">
                     <div className="grid grid-cols-2 gap-4">
                       <div>
-                        <label className="block text-sm font-medium text-foreground mb-1.5">
+                        <label htmlFor="partner-input-first-name" className="block text-sm font-medium text-foreground mb-1.5">
                           First Name <span className="text-red-500">*</span>
                         </label>
-                        <Input
+                        <Input className="min-h-11" id="partner-input-first-name"
                           value={form.firstName}
                           onChange={e => setForm(f => ({ ...f, firstName: e.target.value }))}
                           placeholder="Jane"
-                          data-testid="input-first-name"
+                          autoComplete="given-name" data-testid="input-first-name"
                         />
                       </div>
                       <div>
-                        <label className="block text-sm font-medium text-foreground mb-1.5">Last Name</label>
-                        <Input
+                        <label htmlFor="partner-input-last-name" className="block text-sm font-medium text-foreground mb-1.5">Last Name</label>
+                        <Input className="min-h-11" id="partner-input-last-name"
                           value={form.lastName}
                           onChange={e => setForm(f => ({ ...f, lastName: e.target.value }))}
                           placeholder="Smith"
-                          data-testid="input-last-name"
+                          autoComplete="family-name" data-testid="input-last-name"
                         />
                       </div>
                     </div>
                     <div>
-                      <label className="block text-sm font-medium text-foreground mb-1.5">
+                      <label htmlFor="partner-input-company" className="block text-sm font-medium text-foreground mb-1.5">
                         Company Name
                       </label>
-                      <Input
+                      <Input className="min-h-11" id="partner-input-company"
                         value={form.companyName}
                         onChange={e => setForm(f => ({ ...f, companyName: e.target.value }))}
                         placeholder="Smith Financial Group"
-                        data-testid="input-company"
+                        autoComplete="organization" data-testid="input-company"
                       />
                     </div>
                     <div className="grid grid-cols-2 gap-4">
                       <div>
-                        <label className="block text-sm font-medium text-foreground mb-1.5">
+                        <label htmlFor="partner-input-email" className="block text-sm font-medium text-foreground mb-1.5">
                           Email <span className="text-red-500">*</span>
                         </label>
-                        <Input
+                        <Input className="min-h-11" id="partner-input-email"
                           type="email"
                           value={form.email}
                           onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
                           placeholder="jane@example.com"
-                          data-testid="input-email"
+                          autoComplete="email" data-testid="input-email"
                         />
                       </div>
                       <div>
-                        <label className="block text-sm font-medium text-foreground mb-1.5">
+                        <label htmlFor="partner-input-phone" className="block text-sm font-medium text-foreground mb-1.5">
                           Phone <span className="text-red-500">*</span>
                         </label>
-                        <Input
+                        <Input className="min-h-11" id="partner-input-phone"
                           type="tel"
                           value={form.phone}
                           onChange={e => setForm(f => ({ ...f, phone: e.target.value }))}
                           placeholder="(555) 000-0000"
-                          data-testid="input-phone"
+                          autoComplete="tel" data-testid="input-phone"
                         />
                       </div>
                     </div>
                     <div className="grid grid-cols-2 gap-4">
                       <div>
-                        <label className="block text-sm font-medium text-foreground mb-1.5">
+                        <label htmlFor="partner-select-clients" className="block text-sm font-medium text-foreground mb-1.5">
                           Number of Business Clients
                         </label>
                         <Select value={form.numberOfClients} onValueChange={v => setForm(f => ({ ...f, numberOfClients: v }))}>
-                          <SelectTrigger data-testid="select-clients">
+                          <SelectTrigger className="min-h-11" id="partner-select-clients" data-testid="select-clients">
                             <SelectValue placeholder="Select range" />
                           </SelectTrigger>
                           <SelectContent>
@@ -608,11 +608,11 @@ export default function ISOPartnerProgram() {
                         </Select>
                       </div>
                       <div>
-                        <label className="block text-sm font-medium text-foreground mb-1.5">
+                        <label htmlFor="partner-select-partner-type" className="block text-sm font-medium text-foreground mb-1.5">
                           Partner Type <span className="text-red-500">*</span>
                         </label>
                         <Select value={form.referralType} onValueChange={v => setForm(f => ({ ...f, referralType: v }))}>
-                          <SelectTrigger data-testid="select-partner-type">
+                          <SelectTrigger className="min-h-11" id="partner-select-partner-type" data-testid="select-partner-type">
                             <SelectValue placeholder="Select type" />
                           </SelectTrigger>
                           <SelectContent>
@@ -627,15 +627,15 @@ export default function ISOPartnerProgram() {
                       </div>
                     </div>
                     <div>
-                      <label className="block text-sm font-medium text-foreground mb-1.5">
+                      <label htmlFor="partner-input-password" className="block text-sm font-medium text-foreground mb-1.5">
                         Create Password <span className="text-red-500">*</span>
                       </label>
-                      <Input
+                      <Input className="min-h-11" id="partner-input-password"
                         type="password"
                         value={form.password}
                         onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
                         placeholder="Minimum 6 characters"
-                        data-testid="input-password"
+                        autoComplete="new-password" data-testid="input-password"
                       />
                       <p className="text-xs text-muted-foreground mt-1">Used to access your partner dashboard after approval.</p>
                     </div>
@@ -739,7 +739,7 @@ export default function ISOPartnerProgram() {
                 className="gap-2"
                 data-testid="button-cta-apply"
               >
-                Get My Free Analysis <ArrowRight className="w-4 h-4" />
+                Apply to become a partner <ArrowRight className="w-4 h-4" />
               </Button>
             </a>
           </div>

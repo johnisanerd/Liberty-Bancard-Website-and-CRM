@@ -493,7 +493,9 @@ function ApplicationDetailView({
               {getStatusLabel(application.status)}
             </Badge>
             <span className="text-xs text-muted-foreground">
-              Submitted {formatDate(application.submittedAt || application.createdAt)}
+              {application.submittedAt
+                ? `Submitted ${formatDate(application.submittedAt)}`
+                : `Draft started ${formatDate(application.createdAt)} · not submitted`}
             </span>
             {application.id && (
               <span className="text-xs text-muted-foreground font-mono" data-testid="text-app-id">
@@ -1086,7 +1088,7 @@ export default function MerchantApplicationsList() {
                   <TableHead>Business</TableHead>
                   <TableHead>Contact</TableHead>
                   <TableHead>Status</TableHead>
-                  <TableHead>Submitted</TableHead>
+                  <TableHead>Submitted / draft started</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
@@ -1127,7 +1129,9 @@ export default function MerchantApplicationsList() {
                       <TableCell>
                         <span className="text-sm text-muted-foreground flex items-center gap-1" data-testid={`text-submitted-${app.id}`}>
                           <Calendar className="w-3 h-3" />
-                          {formatDate(app.submittedAt || app.createdAt)}
+                          {app.submittedAt
+                            ? formatDate(app.submittedAt)
+                            : `Draft · started ${formatDate(app.createdAt)}`}
                         </span>
                       </TableCell>
                       <TableCell className="text-right">

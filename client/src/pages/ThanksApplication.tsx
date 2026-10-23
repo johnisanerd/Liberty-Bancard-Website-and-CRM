@@ -5,10 +5,7 @@ import { Footer } from "@/components/Footer";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Link } from "wouter";
-import {
-  CheckCircle, FileCheck, Phone, Mail, Clock,
-  ArrowRight, Calendar, Shield, User
-} from "lucide-react";
+import { CheckCircle, FileCheck, Phone, Mail, Calendar, User } from "lucide-react";
 import { trackCalendarBooking, trackThankYouPageView } from "@/lib/tracking";
 import { trackPhoneCallClick } from "@/lib/analytics";
 import { CALENDAR_URL } from "@/lib/constants";
@@ -36,46 +33,43 @@ export default function ThanksApplication() {
     }
   }, []);
 
+  // A receipt exists only when this browser session just finalized an
+  // application (the confirmation is written after the server accepted it).
+  // A context-free visit must not claim that anything was submitted or sent.
+  const hasReceipt = Boolean(applicationId);
+
   const nextSteps = [
     {
       step: 1,
       title: "Sign your Merchant Processing Agreement",
       description: esignStatus === "sent"
-        ? `Your agreement has been sent to ${contactEmail || "your email"}. Check your inbox and complete the e-signature.`
-        : `Our team will email your Merchant Processing Agreement to ${contactEmail || "you"} shortly. Complete the e-signature to move forward.`,
-      icon: FileCheck,
-      timeframe: "Today",
+        ? `A signature request was sent to ${contactEmail || "the email on your application"}. Check your inbox and spam folder and complete the e-signature.`
+        : `We have not confirmed that an agreement was sent yet. Our team will follow up using the email on your application. If you do not hear from us, contact support below.`,
       urgent: true,
     },
     {
       step: 2,
-      title: "Application review & underwriting",
-      description: "Our underwriting team will review your application within 1 business day and may contact you for any additional information.",
-      icon: Shield,
-      timeframe: "1–2 business days",
+      title: "Application review and underwriting",
+      description: "Our underwriting team reviews your application and may contact you for additional information.",
       urgent: false,
     },
     {
       step: 3,
-      title: "Account setup & equipment",
-      description: "Once approved, we'll assign your Merchant ID (MID), configure your gateway, and ship any equipment you requested.",
-      icon: CheckCircle,
-      timeframe: "3–5 business days",
+      title: "Account setup and equipment",
+      description: "After approval, we assign your Merchant ID (MID), configure your gateway, and arrange any equipment you requested.",
       urgent: false,
     },
     {
       step: 4,
       title: "Go live",
-      description: "Your new processing begins. You'll see your first batch settlement within 24–48 hours after your first transaction.",
-      icon: ArrowRight,
-      timeframe: "5–7 business days",
+      description: "Processing begins once your account is set up and you run your first transaction.",
       urgent: false,
     },
   ];
 
   return (
     <div className="min-h-screen flex flex-col font-body overflow-x-hidden">
-      <SEO title="Application Received" description="We received your Liberty Bancard merchant application. Our underwriting team will reach out within one business day with next steps." path="/thanks/application" noindex />
+      <SEO title="Application Received" description="Confirmation page for a Liberty Bancard merchant application." path="/thanks/application" noindex />
       <Navbar />
       <main className="flex-grow pt-28">
         <section
@@ -92,8 +86,13 @@ export default function ThanksApplication() {
               className="text-3xl md:text-4xl font-display font-bold text-white mb-3"
               data-testid="text-thanks-application-heading"
             >
-              Application Submitted
+              {hasReceipt ? "Application received" : "No recent application to show"}
             </h1>
+            {!hasReceipt && (
+              <p className="text-white/70 max-w-md mx-auto" data-testid="text-thanks-application-no-context">
+                This page shows a receipt right after you submit an application in this browser. Nothing has been submitted from this visit.
+              </p>
+            )}
             {applicationId && (
               <p className="text-white/70 mb-2" data-testid="text-thanks-application-id">
                 Reference #<span className="font-semibold text-white">{applicationId}</span>
@@ -111,7 +110,7 @@ export default function ThanksApplication() {
 
         <section className="bg-muted/30 py-12" data-testid="section-thanks-application-esign">
           <div className="max-w-2xl mx-auto px-4 sm:px-6 lg:px-8 space-y-6">
-            {esignStatus === "sent" && (
+            {hasReceipt && esignStatus === "sent" && (
               <Card className="border-emerald-200 dark:border-emerald-800 bg-emerald-50/50 dark:bg-emerald-950/20" data-testid="card-esign-sent">
                 <CardContent className="p-6 flex items-start gap-4">
                   <div className="w-10 h-10 rounded-full bg-emerald-100 dark:bg-emerald-900 flex items-center justify-center shrink-0">
@@ -131,7 +130,7 @@ export default function ThanksApplication() {
               </Card>
             )}
 
-            {(!esignStatus || esignStatus === "email_pending") && (
+            {hasReceipt && esignStatus !== "sent" && (
               <Card className="border-primary/20 bg-primary/5" data-testid="card-esign-pending">
                 <CardContent className="p-6 flex items-start gap-4">
                   <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
@@ -139,18 +138,33 @@ export default function ThanksApplication() {
                   </div>
                   <div>
                     <h2 className="font-semibold text-foreground mb-1" data-testid="text-esign-pending-heading">
-                      Agreement Coming Shortly
+                      Agreement not sent yet
                     </h2>
                     <p className="text-sm text-muted-foreground">
-                      Your application is submitted. Our team will send your Merchant Processing Agreement to{" "}
-                      <span className="font-medium text-foreground">{contactEmail || "your email"}</span>{" "}
-                      shortly. Watch your inbox.
+                      Your application was received. We have not confirmed that an agreement email went to{" "}
+                      <span className="font-medium text-foreground">{contactEmail || "the email on your application"}</span>.{" "}
+                      Our team will follow up; contact support below if you do not hear from us.
                     </p>
                   </div>
                 </CardContent>
               </Card>
             )}
 
+            {!hasReceipt && (
+              <Card data-testid="card-no-receipt">
+                <CardContent className="p-6 sm:p-8 space-y-4">
+                  <h2 className="text-xl font-display font-bold text-foreground">Start or resume an application</h2>
+                  <p className="text-sm text-muted-foreground">
+                    If you began an application earlier, you can continue it. If you already submitted one, contact us with the business name and we will look it up.
+                  </p>
+                  <Link href="/merchant-application">
+                    <Button size="sm" data-testid="link-thanks-application-start">Go to the application</Button>
+                  </Link>
+                </CardContent>
+              </Card>
+            )}
+
+            {hasReceipt && (
             <Card data-testid="card-next-steps">
               <CardContent className="p-6 sm:p-8">
                 <h2
@@ -161,7 +175,6 @@ export default function ThanksApplication() {
                 </h2>
                 <div className="space-y-5">
                   {nextSteps.map((item) => {
-                    const Icon = item.icon;
                     return (
                       <div
                         key={item.step}
@@ -178,10 +191,6 @@ export default function ThanksApplication() {
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 flex-wrap mb-1">
                             <p className="text-sm font-semibold text-foreground">{item.title}</p>
-                            <span className="text-xs text-muted-foreground flex items-center gap-1">
-                              <Clock className="w-3 h-3" />
-                              {item.timeframe}
-                            </span>
                           </div>
                           <p className="text-sm text-muted-foreground leading-relaxed">
                             {item.description}
@@ -193,6 +202,7 @@ export default function ThanksApplication() {
                 </div>
               </CardContent>
             </Card>
+            )}
 
             <Card data-testid="card-contact-info">
               <CardContent className="p-6">
@@ -229,7 +239,7 @@ export default function ThanksApplication() {
                   >
                     <Button size="sm" className="gap-2 w-full sm:w-auto">
                       <Calendar className="w-4 h-4" />
-                      Book a 10-Minute Walkthrough
+                      Book a call
                     </Button>
                   </a>
                   <Link href="/dashboard/merchant-portal">

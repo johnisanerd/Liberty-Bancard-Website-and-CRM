@@ -11,6 +11,7 @@ import { and, eq, ilike, isNull, or } from "drizzle-orm";
 import { createContactLocalFirst } from "../services/contact-writer";
 import { sendCriticalEmailNotification } from "../services/digest-service";
 import { serverError } from "../utils/server-error";
+import { publicLeadRateLimit, publicChatMessageRateLimit } from "../middleware/public-rate-limit";
 
 interface AuthUser {
   role?: string;
@@ -30,7 +31,7 @@ function isBusinessHours(): boolean {
 export function registerLiveChatRoutes(app: Express) {
 
   // === PUBLIC: Start a new chat session ===
-  app.post("/api/public/chat/session", async (req, res) => {
+  app.post("/api/public/chat/session", publicLeadRateLimit, async (req, res) => {
     if (req.query.probe === "1") return res.json({ probe: true, endpoint: "/api/public/chat/session" });
     try {
       const schema = z.object({
@@ -100,7 +101,7 @@ export function registerLiveChatRoutes(app: Express) {
   });
 
   // === PUBLIC: Send a visitor message ===
-  app.post("/api/public/chat/session/:sessionId/message", async (req, res) => {
+  app.post("/api/public/chat/session/:sessionId/message", publicChatMessageRateLimit, async (req, res) => {
     try {
       const schema = z.object({ content: z.string().min(1).max(2000) });
       const { content } = schema.parse(req.body);
@@ -147,7 +148,7 @@ export function registerLiveChatRoutes(app: Express) {
   });
 
   // === PUBLIC: Identify visitor (set email/name → creates/matches CRM contact) ===
-  app.post("/api/public/chat/session/:sessionId/identify", async (req, res) => {
+  app.post("/api/public/chat/session/:sessionId/identify", publicLeadRateLimit, async (req, res) => {
     try {
       const schema = z.object({
         name: z.string().min(1),
@@ -229,7 +230,7 @@ export function registerLiveChatRoutes(app: Express) {
   });
 
   // === PUBLIC: Offline form capture ===
-  app.post("/api/public/chat/offline", async (req, res) => {
+  app.post("/api/public/chat/offline", publicLeadRateLimit, async (req, res) => {
     try {
       const schema = z.object({
         name: z.string().min(1),

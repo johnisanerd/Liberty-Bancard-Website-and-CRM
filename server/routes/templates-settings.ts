@@ -1,5 +1,5 @@
 import type { Express } from "express";
-import { isAuthenticated } from "../replit_integrations/auth";
+import { isAuthenticated, requireRole } from "../replit_integrations/auth";
 import { storage } from "../storage";
 import { z } from "zod";
 import { insertMessageTemplateSchema, insertSavedFilterSchema, insertSlaConfigSchema } from "@shared/schema";
@@ -31,7 +31,7 @@ export function registerTemplatesSettingsRoutes(app: Express) {
     }
   });
 
-  app.post("/api/message-templates", isAuthenticated, async (req, res) => {
+  app.post("/api/message-templates", requireRole("admin", "manager"), async (req, res) => {
     try {
       const input = insertMessageTemplateSchema.parse(req.body);
       const template = await storage.createMessageTemplate(input);
@@ -42,7 +42,7 @@ export function registerTemplatesSettingsRoutes(app: Express) {
     }
   });
 
-  app.put("/api/message-templates/:id", isAuthenticated, async (req, res) => {
+  app.put("/api/message-templates/:id", requireRole("admin", "manager"), async (req, res) => {
     try {
       const updated = await storage.updateMessageTemplate(Number(req.params.id), req.body);
       if (!updated) return res.status(404).json({ message: "Not found" });

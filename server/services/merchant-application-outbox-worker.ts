@@ -29,6 +29,26 @@ const BASE_BACKOFF_MS = 30_000;
 let started = false;
 let running = false;
 
+/**
+ * A prerequisite wait (outbound paused, contact not linked yet, GHL id not yet
+ * populated) is not a failed attempt. It must not consume the retry budget or
+ * reach dead_letter; the row stays pending and is re-checked on a fixed, bounded
+ * interval. Genuine failures keep the exponential backoff and attempt budget.
+ */
+export class OutboxWaitError extends Error {
+  constructor(public readonly reason: "outbound_paused" | "contact_not_linked" | "ghl_contact_pending") {
+    super(`outbox wait: ${reason}`);
+    this.name = "OutboxWaitError";
+  }
+}
+const WAIT_RECHECK_MS = 5 * 60 * 1000;
+
+async function assertOutboundNotPaused(): Promise<void> {
+  const { authorize } = await import("./outbound-pause-authority");
+  const decision = await authorize({});
+  if (!decision.allowed) throw new OutboxWaitError("outbound_paused");
+}
+
 function backoffMs(attempts: number): number {
   return Math.min(BASE_BACKOFF_MS * Math.pow(2, attempts), 30 * 60 * 1000);
 }
@@ -121,6 +141,21 @@ async function markDelivered(id: string): Promise<void> {
 }
 
 async function markRetryOrDeadLetter(id: string, attempts: number, err: unknown): Promise<void> {
+  if (err instanceof OutboxWaitError) {
+    // Give back the attempt consumed by claimOne(); a wait is not a failure.
+    await db
+      .update(merchantApplicationProtectedOutbox)
+      .set({
+        status: "pending",
+        lockedAt: null,
+        attempts: sql`GREATEST(${merchantApplicationProtectedOutbox.attempts} - 1, 0)`,
+        lastError: `waiting:${err.reason}`,
+        availableAt: new Date(Date.now() + WAIT_RECHECK_MS),
+        updatedAt: new Date(),
+      })
+      .where(eq(merchantApplicationProtectedOutbox.id, id));
+    return;
+  }
   const safeErr = scrubError(err);
   const terminal = attempts >= MAX_ATTEMPTS;
   await db
@@ -216,7 +251,7 @@ async function handleConsentRecord(row: OutboxRow): Promise<void> {
     .from(merchantApplications)
     .where(eq(merchantApplications.id, appId))
     .limit(1);
-  if (!appRow?.contactId) throw new Error(`No contactId on application #${appId} — contact_link must precede consent_record`);
+  if (!appRow?.contactId) throw new OutboxWaitError("contact_not_linked");
 
   const contactId = appRow.contactId;
   // Check contact-scoped evidence.
@@ -249,9 +284,7 @@ async function handleGhlSync(row: OutboxRow): Promise<void> {
   // Using the canonical authority so the static scanner detects this gate.
   // contact_link / consent_record / risk_scan do NOT call this check — they
   // are pure DB operations and must run regardless of pause state.
-  const { authorize } = await import("./outbound-pause-authority");
-  const decision = await authorize({});
-  if (!decision.allowed) throw new Error("outbox:ghl_sync deferred — outbound paused");
+  await assertOutboundNotPaused();
 
   const appId = row.applicationId;
   const [appRow] = await db
@@ -259,7 +292,7 @@ async function handleGhlSync(row: OutboxRow): Promise<void> {
     .from(merchantApplications)
     .where(eq(merchantApplications.id, appId))
     .limit(1);
-  if (!appRow?.contactId) throw new Error(`No contactId on application #${appId} — contact_link must precede ghl_sync`);
+  if (!appRow?.contactId) throw new OutboxWaitError("contact_not_linked");
 
   const { syncMerchantApplicationToGhl } = await import("./ghl-form-sync");
   const result = await syncMerchantApplicationToGhl(appId, appRow.contactId);
@@ -276,13 +309,13 @@ async function handleWorkflowEnroll(row: OutboxRow): Promise<void> {
     .from(merchantApplications)
     .where(eq(merchantApplications.id, appId))
     .limit(1);
-  if (!appRow?.contactId) throw new Error(`No contactId on application #${appId} — contact_link must precede workflow_enroll`);
+  if (!appRow?.contactId) throw new OutboxWaitError("contact_not_linked");
 
   const ghlContact = await storage.getContact(appRow.contactId);
   const ghlContactId = ghlContact?.ghlContactId ?? "";
   if (!ghlContactId) {
-    // GHL ID not yet populated — leave retryable.
-    throw new Error(`GHL contact ID not populated for contact #${appRow.contactId}`);
+    // GHL ID not yet populated — durable wait, not a failed attempt.
+    throw new OutboxWaitError("ghl_contact_pending");
   }
 
   const { enrollInGhlWorkflowCompliant } = await import("./ghl-workflows");
@@ -301,7 +334,7 @@ async function handleRiskScan(row: OutboxRow): Promise<void> {
     .from(merchantApplications)
     .where(eq(merchantApplications.id, appId))
     .limit(1);
-  if (!appRow?.contactId) throw new Error(`No contactId on application #${appId} — contact_link must precede risk_scan`);
+  if (!appRow?.contactId) throw new OutboxWaitError("contact_not_linked");
 
   const { scanApplicationRisk } = await import("./relationship-extractor");
   await scanApplicationRisk(appRow.contactId, appId);
@@ -339,6 +372,7 @@ async function handleApprovalEmail(row: OutboxRow): Promise<void> {
   if (await hasAuditEvidence("merchant_application_approved_email_sent", "merchant_application", appId)) return;
   if (await hasAuditEvidence("merchant_application_approved_email_skipped", "merchant_application", appId)) return;
 
+  await assertOutboundNotPaused();
   const input = await loadStatusEmailInput(appId);
 
   const { sendApplicationApprovedEmail } = await import("./merchant-application-status");
@@ -387,6 +421,7 @@ async function handleDeclineEmail(row: OutboxRow): Promise<void> {
   if (await hasAuditEvidence("merchant_application_declined_email_sent", "merchant_application", appId)) return;
   if (await hasAuditEvidence("merchant_application_declined_email_skipped", "merchant_application", appId)) return;
 
+  await assertOutboundNotPaused();
   const input = await loadStatusEmailInput(appId);
 
   const { sendApplicationDeclinedEmail } = await import("./merchant-application-status");
@@ -448,6 +483,7 @@ async function handleEsignSend(row: OutboxRow): Promise<void> {
     return;
   }
 
+  await assertOutboundNotPaused();
   const { sendDocumentForEsign } = await import("./ghl");
   const result = await sendDocumentForEsign({ documentTemplateId: templateId, recipientName, recipientEmail, applicationId: appId });
 
