@@ -12,6 +12,7 @@ import { requireInternalWebhookSecret } from "../middleware/internal-webhook-aut
 import { serverError } from "../utils/server-error";
 import { authorizeContactAccess, authorizeDealAccess } from "../services/crm-object-access";
 import { WorkflowCommandError } from "../services/workflow-command-error";
+import { WorkflowEmailWordingError, getWorkflowEmailWorkspace, previewWorkflowEmail, publishWorkflowEmailStep } from "../services/workflow-email-wording";
 
 const positiveId = z.coerce.number().int().positive().safe();
 
@@ -119,6 +120,44 @@ export function registerWorkflowsRoutes(app: Express) {
       if (err instanceof WorkflowCommandError) return res.status(err.status).json({ message: err.message });
       serverError(res, err);
     }
+  });
+
+  // Inline email wording: preview, then lint-gated publish through the versioned workflow command.
+  // Publishing replaces one step's subject/body only and never changes the workflow's enabled state.
+  const emailWordingError = (res: any, err: unknown) => {
+    if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
+    if (err instanceof WorkflowEmailWordingError) return res.status(err.status).json({ message: err.message, findings: err.findings });
+    return serverError(res, err);
+  };
+
+  app.get("/api/workflows/:id/email-steps", requireRole("admin", "manager"), async (req, res) => {
+    try {
+      const id = positiveId.safeParse(req.params.id);
+      if (!id.success) return res.status(400).json({ message: "Invalid workflow id" });
+      res.json(await getWorkflowEmailWorkspace(id.data));
+    } catch (err) { emailWordingError(res, err); }
+  });
+
+  app.post("/api/workflows/:id/email-steps/preview", requireRole("admin", "manager"), async (req, res) => {
+    try {
+      const id = positiveId.safeParse(req.params.id);
+      if (!id.success) return res.status(400).json({ message: "Invalid workflow id" });
+      const input = z.object({ subject: z.string().nullable().optional(), body: z.string() }).strict().parse(req.body);
+      res.json(previewWorkflowEmail(input));
+    } catch (err) { emailWordingError(res, err); }
+  });
+
+  app.post("/api/workflows/:id/email-steps/publish", requireRole("admin", "manager"), async (req, res) => {
+    try {
+      const id = positiveId.safeParse(req.params.id);
+      if (!id.success) return res.status(400).json({ message: "Invalid workflow id" });
+      const input = z.object({
+        stepIndex: z.number().int().min(0), subject: z.string().nullable(), body: z.string().min(1, "Email body is required"),
+        expectedVersion: z.number().int().positive(),
+      }).strict().parse(req.body);
+      const workflow = await publishWorkflowEmailStep(id.data, input, String((req.user as any).id));
+      res.json({ workflow, published: true, enabled: workflow.enabled });
+    } catch (err) { emailWordingError(res, err); }
   });
 
   app.delete("/api/workflows/:id", requireRole("admin", "manager"), async (req, res) => {
