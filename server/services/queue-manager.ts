@@ -1539,6 +1539,10 @@ export class QueueManager {
           attempts: job.attemptsMade,
           maxAttempts: job.opts.attempts ?? 1,
           failureCode,
+          // Message text can carry SQL or contact data, so log only the error class name and a
+          // short code (e.g. a Postgres SQLSTATE). This makes "unknown" failures traceable.
+          errorName: /^[A-Za-z0-9_]{1,60}$/.test(String(err?.name ?? "")) ? String(err.name) : null,
+          errorCode: /^[A-Za-z0-9_]{2,40}$/.test(String((err as any)?.code ?? "")) ? String((err as any).code) : null,
         }));
         this.recordHistoryEvent(config.name, "failed");
         this.processLastFailedAt.set(config.name, Date.now());
