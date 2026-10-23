@@ -153,6 +153,7 @@ export const MANDATORY_SUITES: Suite[] = [
   {name:"Stage 3 D-V Mailbox Protocol and Stats Parity",script:"scripts/test-stage3-d-v-mailbox-and-stats.ts",timeoutSecs:300,requiresDisposableTestDatabase:true},
   {name:"Stage 3 D-V Partner Browser",script:"scripts/test-stage3-d-v-partner-browser.ts",timeoutSecs:300,requiresDisposableTestDatabase:true},
   {name:"Stage 3 D-V Contact Core Browser",script:"scripts/test-stage3-d-v-contact-core-browser.ts",timeoutSecs:300,requiresDisposableTestDatabase:true},
+  {name:"Stage 3 D-V Contact Actor Browser",script:"scripts/test-stage3-d-v-contact-actor-browser.ts",timeoutSecs:300,requiresDisposableTestDatabase:true},
   {name:"Stage 3 D-V Cohort Browser",script:"scripts/test-stage3-d-v-cohort-browser.ts",timeoutSecs:300,requiresDisposableTestDatabase:true},
   {name:"Stage 3 D-V Data Health Browser",script:"scripts/test-stage3-d-v-data-health-browser.ts",timeoutSecs:600,requiresDisposableTestDatabase:true},
   {name:"Stage 3 D-V Exports",script:"scripts/test-stage3-d-v-exports.ts",timeoutSecs:300,requiresDisposableTestDatabase:true},

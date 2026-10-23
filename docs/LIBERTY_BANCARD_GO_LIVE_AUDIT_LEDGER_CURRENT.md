@@ -1886,3 +1886,35 @@ Original 95-finding lineage and the three completed `debf0ded` repairs (§44) ar
 | `/api/analytics/lifecycle-distribution` filtered only `record_class='production'` and non-archived. It omitted the synthetic-QA exclusion and the role/ownership predicate used by People and dashboard stats. | Source repaired. A shared reader `readLifecycleDistribution` in `server/services/revenue-read-authority.ts` builds its population from `contactReadPredicate` with the same actor and production/non-archived filters as `readContactPopulationCount`. The route keeps its 2,500 ms statement timeout, the 503 unavailable body (`distribution:null`, `total:null`, `available:false`, `error`), the existing fields (`distribution`, `total`, `available`, `sampledAt`) and the `unknown` bucket for null lifecycle state; it adds a `population` field. The Overview chart now states its population, total and as-of time, and a failed read shows an unavailable message instead of vanishing or showing zero. | Disposable actual-handler suite `scripts/test-stage3-d-v-mailbox-and-stats.ts` (now 30 checks): admin, manager and agent distributions sum to their returned totals; totals equal dashboard stats and the canonical count reader for the same actor; admin/manager add exactly the five production non-archived non-QA fixtures; agent adds assigned, unassigned and foreign-assigned contacts linked to an owned non-archived deal, and excludes forbidden, archived-deal, archived, nonproduction and legacy-QA rows; per-state counts move only by in-scope fixtures; merchant denied; a real statement timeout under a table lock returns 503 with null distribution and total, and the next read recovers. Role guards (162/162), API coverage and the static classification check pass. |
 
 These are disposable role-test results; no production write, Data Health apply, contact deletion or reclassification, outbound change or GHL change was made. Pending (not claimed): publish, serving-SHA check, and a production comparison of lifecycle total, People production facets and dashboard stats at matching scope and time.
+
+## 46. D-V Contact verification gaps closed: actor change and authority change during a delayed section read (2026-10-23; test and evidence only)
+
+Closes the two gaps stated in §42.1 F04 ("a second signed-in actor and a permission-generation change were not driven in a browser"). No application, production, account, provider, outbound or GHL change was made. The serving version tested is `cafc77ab1ba7c5a834a84fa000299524516aa626`.
+
+### 46.1 What was added (test-only; not part of the serving application)
+
+- `scripts/test-stage3-d-v-contact-actor-browser.ts` (new), registered in `scripts/pre-deploy.ts` as "Stage 3 D-V Contact Actor Browser". Receipts and screenshots: `docs/certification/stage3-d-v/contact-actor-browser/`.
+- Test-only instrumentation inside the page: a fetch hold on `/detail?section=` reads that sends the real request at once under the current session and delays delivery (it strips the abort signal so a late response is genuinely delivered); a `Date.now` skew plus synthetic offline/online events, which make the application's own reconnect rule re-read `/api/auth/user`. The fixture changes the database directly for the account-version, permission and fixture-row changes. Everything that clears, fences or recovers the header, capabilities and section content is the unmodified application.
+
+### 46.2 Binding to the serving version
+
+The receipt records: `client/`, `shared/`, `migrations/`, `package.json`, `package-lock.json`, `vite.config.ts` and `tsconfig.json` have no difference from `cafc77ab` (the run fails if they do); the 13 route, auth, access and storage files the suite loads have identical blob hashes to `cafc77ab`. Six other server files differ from `cafc77ab` (`server/db.ts`, `server/index.ts`, `server/lib/lock-trace.ts`, `server/lib/transaction-observability.ts`, `server/services/canonical-import-recovery-worker.ts`, `server/services/queue-manager.ts`). They come from earlier, separate work (database client BEGIN-failure release, timing and summary logging) and are loaded by the fixture only as infrastructure. The client bundle was built from this workspace by `script/build.ts` and verified by the candidate integrity check; it was not rebuilt from a separate checkout of `cafc77ab`, so "same client source as `cafc77ab`" is established by the source comparison, not by a byte comparison with the published bundle. The candidate identity (`outputHash`, `inputHash`, workspace `sourceHead`) is in the receipt.
+
+### 46.3 Result (disposable PostgreSQL and Redis, persisted Passport sessions, provider transports denied, private Chromium)
+
+Final run: passed, 43 checks, `receipt.json` status `passed`. Each case holds a section response produced for the old actor, changes the actor, shows that the old header, capability tab and section content are gone while the new actor's read is pending, then releases the late old response and shows it does not restore anything, then releases the new actor's read and shows the correct result.
+
+| Case | Change while the section response is held | Recovery observed |
+|---|---|---|
+| 1 | A different persisted user (agent to another agent) signs in; the open page re-reads `/api/auth/user`. | The new user's own read of the first record is denied and shown as unavailable; a record that user may read shows its own header and content, and its own capability set (no onboarding tab). |
+| 2a | The same user's `account_version` is incremented (session stays valid). | The fresh read shows the changed record name and note, and the onboarding tab is absent because the fresh read reports no onboarding deal. |
+| 2b | The same user's `permissions` array changes (session stays valid). | Same as 2a. |
+
+Controls in the same run: the held response is shown to contain the old actor's name and section content (so a restore would be visible); the cleared-state predicate is shown to be false while the old header is on screen; no uncaught page exceptions in any case.
+
+### 46.4 Not established
+
+- This is not a full CRM pass. It does not cover a role matrix (only agent to agent, and one user's own changes), production, a real second browser tab, a network-level abort race (the hold removes the abort signal on purpose), or any other page.
+- Until the application re-reads `/api/auth/user`, the page keeps showing the previous user's retained header after a session cookie swap made elsewhere. The server authorizes every data read under the new session, and the page fences as soon as the actor is re-read. This is the existing revalidation design and is recorded as an observation, not as a pass or a defect.
+- The run used the working tree at `bd22a22b` plus the new test, not a checkout of `cafc77ab`.
+- The independent production walkthrough is separate and is not claimed here.

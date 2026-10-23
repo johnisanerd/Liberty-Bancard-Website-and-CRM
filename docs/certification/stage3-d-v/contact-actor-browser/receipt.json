@@ -1,0 +1,266 @@
+{
+  "status": "passed",
+  "asOf": "2026-10-23T10:35:48.911Z",
+  "binding": {
+    "servingVersion": "cafc77ab1ba7c5a834a84fa000299524516aa626",
+    "workspaceHead": "bd22a22b0365ee3092264db09d8f92921667a33f",
+    "clientSharedMigrationsPackageChangedSinceServing": [],
+    "exercisedServerAndAuthFilesIdenticalToServing": {
+      "server/routes/contacts.ts": true,
+      "server/routes/crm-operations.ts": true,
+      "server/routes/activity.ts": true,
+      "server/routes/tickets-tasks.ts": true,
+      "server/routes/notifications.ts": true,
+      "server/routes/deals.ts": true,
+      "server/services/crm-object-access.ts": true,
+      "server/middleware/csrf.ts": true,
+      "server/replit_integrations/auth/replitAuth.ts": true,
+      "server/replit_integrations/auth/routes.ts": true,
+      "server/replit_integrations/auth/storage.ts": true,
+      "server/replit_integrations/auth/index.ts": true,
+      "server/storage.ts": true
+    },
+    "otherServerFilesChangedSinceServing": [
+      "server/db.ts",
+      "server/index.ts",
+      "server/lib/lock-trace.ts",
+      "server/lib/transaction-observability.ts",
+      "server/services/canonical-import-recovery-worker.ts",
+      "server/services/queue-manager.ts"
+    ],
+    "scriptsAndDocsChangedSinceServing": [
+      "docs/certification/stage3-d-v/contact-actor-browser/case-1-actor-changed-fresh-pending.jpg",
+      "docs/certification/stage3-d-v/contact-actor-browser/case-1-new-user-denied.jpg",
+      "docs/certification/stage3-d-v/contact-actor-browser/case-1-new-user-recovered.jpg",
+      "docs/certification/stage3-d-v/contact-actor-browser/case-two-a-authority-changed-fresh-pending.jpg",
+      "docs/certification/stage3-d-v/contact-actor-browser/case-two-a-recovered.jpg",
+      "docs/certification/stage3-d-v/contact-actor-browser/case-two-b-authority-changed-fresh-pending.jpg",
+      "docs/certification/stage3-d-v/contact-actor-browser/case-two-b-recovered.jpg",
+      "docs/certification/stage3-d-v/contact-actor-browser/receipt.json",
+      "scripts/pre-deploy.ts",
+      "scripts/test-db-transaction-begin-release.ts",
+      "scripts/test-stage3-d-v-contact-actor-browser.ts"
+    ],
+    "thisChangeIsTestAndEvidenceOnly": [
+      "scripts/test-stage3-d-v-contact-actor-browser.ts (new)",
+      "scripts/pre-deploy.ts (one roster line)",
+      "docs/certification/stage3-d-v/contact-actor-browser/** (receipts)",
+      "ledger and specification notes"
+    ],
+    "note": "client/shared/migrations/package inputs and every exercised route/auth file must equal the serving commit; other server files (listed) changed after the serving commit by earlier unrelated work (database client BEGIN-failure release, timing/summary logging) and are loaded by the fixture only as infrastructure; test-db-transaction-begin-release.ts in the scripts list is that earlier work, not part of this change"
+  },
+  "candidate": {
+    "version": 2,
+    "inputHash": "2b3c58ca2a4cb6ca4320bab8ef656f8951930e31ce74b2a3657dd83c37c7bce2",
+    "sourceHead": "bd22a22b0365ee3092264db09d8f92921667a33f",
+    "sourceInputHash": "46f5e4e2409e90598866ff99b66344cf8eafc097bd51a7a3641794bc5c0134f6",
+    "outputHash": "1d7d8e72c6575393ca38e6176a55ef2feca66c1a32a76828844e20d717d3b784",
+    "buildRecipe": {
+      "version": 1,
+      "mode": "production",
+      "nodeEnv": "production",
+      "node": "v22.23.4",
+      "npm": "10.9.9",
+      "entryPoint": "script/build.ts",
+      "client": "vite:production",
+      "server": "esbuild:production"
+    },
+    "recipe": "Node22.22/npm10.9.4 locked install; script/build.ts; Vite client and bundled server",
+    "qualification": "Compiled client plus registered source handlers in isolated preview; NOT deployed bundled-server parity"
+  },
+  "checks": [
+    {
+      "case": "case-1 user change",
+      "claim": "old actor sees the onboarding capability tab"
+    },
+    {
+      "case": "case-1 user change",
+      "claim": "old actor sees header and section content before the change"
+    },
+    {
+      "case": "case-1 user change",
+      "claim": "section pending: old header retained for the unchanged actor, no section content"
+    },
+    {
+      "case": "case-1 user change",
+      "claim": "detector sensitivity: the cleared-state predicate is false while the old header is on screen"
+    },
+    {
+      "case": "case-1 user change",
+      "claim": "the held response was produced by the server for the old actor and carries its header and section content"
+    },
+    {
+      "case": "case-1 user change",
+      "claim": "the second persisted user is now the server-side signed-in user"
+    },
+    {
+      "case": "case-1 user change",
+      "claim": "the app re-read /api/auth/user and re-issued the section read for the new actor"
+    },
+    {
+      "case": "case-1 user change",
+      "claim": "after the user change (new read pending) the old header, capability tab and section content are gone"
+    },
+    {
+      "case": "case-1 user change",
+      "claim": "the late response for the previous user cannot restore its header, capabilities or content"
+    },
+    {
+      "case": "case-1 user change",
+      "claim": "the late response really contained the previous user's content"
+    },
+    {
+      "case": "case-1 user change",
+      "claim": "the new user's own read (denied for this record) is shown and nothing of the previous user remains"
+    },
+    {
+      "case": "case-1 user change",
+      "claim": "a permitted fresh read recovers: the new user's own header and section content render"
+    },
+    {
+      "case": "case-1 user change",
+      "claim": "the previous user's content is still absent after recovery"
+    },
+    {
+      "case": "case-1 user change",
+      "claim": "capabilities follow the new user's own read (no onboarding tab on this record)"
+    },
+    {
+      "case": "case-1 user change",
+      "claim": "no uncaught page exceptions"
+    },
+    {
+      "case": "case-2a account version",
+      "claim": "old actor sees the onboarding capability tab"
+    },
+    {
+      "case": "case-2a account version",
+      "claim": "old actor sees header and section content before the change"
+    },
+    {
+      "case": "case-2a account version",
+      "claim": "section pending: old header retained for the unchanged actor, no section content"
+    },
+    {
+      "case": "case-2a account version",
+      "claim": "detector sensitivity: the cleared-state predicate is false while the old header is on screen"
+    },
+    {
+      "case": "case-2a account version",
+      "claim": "the held response was produced by the server for the old actor and carries its header and section content"
+    },
+    {
+      "case": "case-2a account version",
+      "claim": "the same persisted session now reports the changed authority"
+    },
+    {
+      "case": "case-2a account version",
+      "claim": "the app re-read /api/auth/user and re-issued the section read for the new actor"
+    },
+    {
+      "case": "case-2a account version",
+      "claim": "after the authority change (fresh read pending) the old header, capability tab and section content are gone"
+    },
+    {
+      "case": "case-2a account version",
+      "claim": "the late response from the previous authority cannot restore its header, capabilities or content"
+    },
+    {
+      "case": "case-2a account version",
+      "claim": "the late response really contained the previous authority's content"
+    },
+    {
+      "case": "case-2a account version",
+      "claim": "a permitted fresh read recovers with the current header and section content"
+    },
+    {
+      "case": "case-2a account version",
+      "claim": "nothing from the previous authority returns after recovery"
+    },
+    {
+      "case": "case-2a account version",
+      "claim": "capabilities come from the fresh read (onboarding tab is gone)"
+    },
+    {
+      "case": "case-2a account version",
+      "claim": "no uncaught page exceptions"
+    },
+    {
+      "case": "case-2b permissions",
+      "claim": "old actor sees the onboarding capability tab"
+    },
+    {
+      "case": "case-2b permissions",
+      "claim": "old actor sees header and section content before the change"
+    },
+    {
+      "case": "case-2b permissions",
+      "claim": "section pending: old header retained for the unchanged actor, no section content"
+    },
+    {
+      "case": "case-2b permissions",
+      "claim": "detector sensitivity: the cleared-state predicate is false while the old header is on screen"
+    },
+    {
+      "case": "case-2b permissions",
+      "claim": "the held response was produced by the server for the old actor and carries its header and section content"
+    },
+    {
+      "case": "case-2b permissions",
+      "claim": "the same persisted session now reports the changed authority"
+    },
+    {
+      "case": "case-2b permissions",
+      "claim": "the app re-read /api/auth/user and re-issued the section read for the new actor"
+    },
+    {
+      "case": "case-2b permissions",
+      "claim": "after the authority change (fresh read pending) the old header, capability tab and section content are gone"
+    },
+    {
+      "case": "case-2b permissions",
+      "claim": "the late response from the previous authority cannot restore its header, capabilities or content"
+    },
+    {
+      "case": "case-2b permissions",
+      "claim": "the late response really contained the previous authority's content"
+    },
+    {
+      "case": "case-2b permissions",
+      "claim": "a permitted fresh read recovers with the current header and section content"
+    },
+    {
+      "case": "case-2b permissions",
+      "claim": "nothing from the previous authority returns after recovery"
+    },
+    {
+      "case": "case-2b permissions",
+      "claim": "capabilities come from the fresh read (onboarding tab is gone)"
+    },
+    {
+      "case": "case-2b permissions",
+      "claim": "no uncaught page exceptions"
+    }
+  ],
+  "observations": [
+    {
+      "case": "case-1 user change",
+      "observation": "Until the app re-reads /api/auth/user it still renders the previous user's retained header; every data read is authorized by the server under the new session. This is the existing client revalidation design, not asserted as a pass/fail."
+    }
+  ],
+  "screenshots": [
+    "docs/certification/stage3-d-v/contact-actor-browser/case-1-actor-changed-fresh-pending.jpg",
+    "docs/certification/stage3-d-v/contact-actor-browser/case-1-new-user-denied.jpg",
+    "docs/certification/stage3-d-v/contact-actor-browser/case-1-new-user-recovered.jpg",
+    "docs/certification/stage3-d-v/contact-actor-browser/case-two-a-authority-changed-fresh-pending.jpg",
+    "docs/certification/stage3-d-v/contact-actor-browser/case-two-a-recovered.jpg",
+    "docs/certification/stage3-d-v/contact-actor-browser/case-two-b-authority-changed-fresh-pending.jpg",
+    "docs/certification/stage3-d-v/contact-actor-browser/case-two-b-recovered.jpg"
+  ],
+  "testOnlyInstrumentation": [
+    "in-page fetch hold that strips the abort signal so a late response is delivered",
+    "Date.now skew + synthetic offline/online events to trigger the application's own /api/auth/user revalidation",
+    "direct disposable-database updates of users.account_version / users.permissions / fixture rows"
+  ],
+  "scope": "REAL Contact page, auth hook and protected query fence in private Chromium (1280px desktop default window), persisted Passport sessions, disposable DB/Redis, provider transports denied. Case 1: agent -> other agent. Case 2a: same user account_version change. Case 2b: same user permissions change. Not a role matrix, not production, not the full CRM, not a real second tab or network-level abort race."
+}
