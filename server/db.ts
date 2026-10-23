@@ -85,7 +85,15 @@ function _poolSnapshot() {
 
 // Observe acquisition and pool release EVENTS; never wrap client.release().
 // Query instrumentation is physical-connection scoped, not checkout scoped.
-observeTransactionConnections(pool, {slowMs: _SLOW_QUERY_MS,
+// Timing-only observations (a slow but successful query, a normal release of a slow checkout) are informational and go to
+// stdout; stderr is classified as ERROR by the platform, so routing them there made ordinary 2 s+ background queries
+// look like hundreds of errors per window. Failures, acquisition errors, connection errors and leaked checkouts stay on stderr.
+const _emitDbObservation = (event: Record<string, unknown>) => {
+  const failed = Boolean(event.sqlState || event.failure || event.transactionOpen);
+  const informational = !failed && (event.event === "db:transaction_query" || event.event === "db:connection_release" || event.event === "db:acquired");
+  (informational ? console.info : console.warn)(JSON.stringify(event));
+};
+observeTransactionConnections(pool, {slowMs: _SLOW_QUERY_MS, emit: _emitDbObservation,
   tagSql: process.env.NODE_ENV === "production" && process.env.REPLIT_DEPLOYMENT === "1"});
 
 // Wrap pool.query() for callers that use the shorthand (no explicit
@@ -105,7 +113,8 @@ pool.query = function observedPoolQuery(...args: any[]): any {
   const observe=(err?:any)=>{
       const totalMs = Date.now() - acquireStart;
       if (!err && (totalMs >= _SLOW_QUERY_MS || poolAtAcquire.waiting >= 5)) {
-        console.warn(JSON.stringify({
+        // Successful but slow: informational (stdout), not an error.
+        (poolAtAcquire.waiting >= 5 ? console.warn : console.info)(JSON.stringify({
           event:            "db:slow_query",
           correlationId:    ctx?.correlationId  ?? null,
           normalizedRoute:  ctx?.normalizedRoute ?? null,
