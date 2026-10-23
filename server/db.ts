@@ -113,8 +113,10 @@ pool.query = function observedPoolQuery(...args: any[]): any {
   const observe=(err?:any)=>{
       const totalMs = Date.now() - acquireStart;
       if (!err && (totalMs >= _SLOW_QUERY_MS || poolAtAcquire.waiting >= 5)) {
-        // Successful but slow: informational (stdout), not an error.
-        (poolAtAcquire.waiting >= 5 ? console.warn : console.info)(JSON.stringify({
+        // Successful but slow, or successful while other callers queued: informational (stdout), not an error.
+        // Sustained queueing is reported separately as db:pool_pressure (stderr) by the sampler above, so a
+        // fast successful query must not also be classified as an error just because the pool was busy.
+        console.info(JSON.stringify({
           event:            "db:slow_query",
           correlationId:    ctx?.correlationId  ?? null,
           normalizedRoute:  ctx?.normalizedRoute ?? null,
