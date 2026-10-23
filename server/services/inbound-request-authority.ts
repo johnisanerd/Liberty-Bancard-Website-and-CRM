@@ -300,6 +300,10 @@ export async function linkInboundRequest(requestId: string, refs: {
 }): Promise<InboundRequest | null> {
   const [updated] = await db.update(inboundRequests).set({
     contactId: refs.contactId,
+    // First link snapshots the submitted mailbox; COALESCE keeps it immutable on every later link.
+    ...(refs.contactId
+      ? { submittedEmail: sql`COALESCE(${inboundRequests.submittedEmail}, (SELECT NULLIF(lower(btrim(email)), '') FROM contacts WHERE id = ${refs.contactId}))` }
+      : {}),
     dealId: refs.dealId,
     ticketId: refs.ticketId,
     protectedObjectRef: refs.protectedObjectRef,

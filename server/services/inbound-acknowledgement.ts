@@ -34,6 +34,16 @@ export const ACK_MAX_SEND_ATTEMPTS = 3;
 export const ACK_SOURCE_CLASSES = ["sales_request", "support_request", "fulfillment_request"] as const;
 export type AckSourceClass = (typeof ACK_SOURCE_CLASSES)[number];
 
+/**
+ * Block reasons that can never clear: eligibility only moves forward (activation is never backdated) and the
+ * recipient snapshot is immutable. The sweep stops revisiting these, so a backlog of them cannot starve new requests.
+ */
+export const ACK_TERMINAL_BLOCK_REASONS = [
+  "capability_closed", "capability_expired", "source_class_not_enabled", "request_before_eligibility_window",
+  "eligibility_window_missing", "no_recipient_on_request", "no_submitted_email_on_request",
+  "recipient_changed_since_submission", "request_missing",
+] as const;
+
 export interface AckCapability {
   enabled: boolean;
   /** Requests received before this instant are never acknowledged by email (no historical catch-up). */
@@ -48,12 +58,13 @@ const CLOSED: AckCapability = {
   enabled: false, eligibleFrom: null, expiresAt: null, sourceClasses: [], activatedBy: null, activatedAt: null,
 };
 
-/** Missing, malformed or unreadable capability is CLOSED. */
-export async function getAckCapability(): Promise<AckCapability> {
-  try {
-    const raw = await storage.getSystemSetting(ACK_CAPABILITY_KEY);
-    if (!raw) return CLOSED;
-    const parsed = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw));
+/** Throws when the setting cannot be read, so a transient read failure is never recorded as a permanent closure. */
+async function readAckCapability(): Promise<AckCapability> {
+  const raw = await storage.getSystemSetting(ACK_CAPABILITY_KEY);
+  if (!raw) return CLOSED;
+  {
+    let parsed: any;
+    try { parsed = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw)); } catch { return CLOSED; }
     if (!parsed || parsed.enabled !== true) return CLOSED;
     return {
       enabled: true,
@@ -63,9 +74,12 @@ export async function getAckCapability(): Promise<AckCapability> {
       activatedBy: typeof parsed.activatedBy === "string" ? parsed.activatedBy : null,
       activatedAt: typeof parsed.activatedAt === "string" ? parsed.activatedAt : null,
     };
-  } catch {
-    return CLOSED;
   }
+}
+
+/** Missing, malformed or unreadable capability is CLOSED. */
+export async function getAckCapability(): Promise<AckCapability> {
+  try { return await readAckCapability(); } catch { return CLOSED; }
 }
 
 async function getOwnerStartedAt(): Promise<Date> {
@@ -103,7 +117,8 @@ export async function setAckCapability(input: {
   const value: AckCapability = input.enabled
     ? {
         enabled: true,
-        eligibleFrom: (input.eligibleFrom && input.eligibleFrom > ownerStartedAt ? input.eligibleFrom : now).toISOString(),
+        // Never earlier than now: a request that predates activation can never become eligible (no catch-up, no backdating).
+        eligibleFrom: (input.eligibleFrom && input.eligibleFrom > now ? input.eligibleFrom : now).toISOString(),
         expiresAt: input.expiresAt ? input.expiresAt.toISOString() : null,
         sourceClasses: (input.sourceClasses ?? []).filter((c) => (ACK_SOURCE_CLASSES as readonly string[]).includes(c)),
         activatedBy: input.actor,
@@ -193,6 +208,7 @@ export async function prepareAcknowledgement(effectId: string): Promise<AckRow |
       sourceClass: inboundRequests.sourceClass,
       sourceType: inboundRequests.sourceType,
       contactId: inboundRequests.contactId,
+      submittedEmail: inboundRequests.submittedEmail,
     })
     .from(inboundRequestEffects)
     .innerJoin(inboundRequests, eq(inboundRequests.id, inboundRequestEffects.requestId))
@@ -200,18 +216,25 @@ export async function prepareAcknowledgement(effectId: string): Promise<AckRow |
     .limit(1);
   if (!row || row.effectType !== "transactional_ack") return null;
 
-  let email: string | null = null;
+  // The recipient is the mailbox captured with the occurrence, never the current CRM value. If the CRM address has
+  // since changed, the receipt is not sent at all (it would disclose request details to an unsubmitted address).
+  const email = row.submittedEmail?.trim().toLowerCase() || null;
   let firstName: string | null = null;
+  let currentEmail: string | null = null;
   if (row.contactId) {
     const [c] = await db.select({ email: contacts.email, firstName: contacts.firstName }).from(contacts).where(eq(contacts.id, row.contactId)).limit(1);
-    email = c?.email?.trim().toLowerCase() || null;
+    currentEmail = c?.email?.trim().toLowerCase() || null;
     firstName = c?.firstName ?? null;
   }
   const templateKey = `ack.${row.sourceClass}`;
-  if (!email || !row.contactId) {
+  const unusable = !row.contactId ? "no_recipient_on_request"
+    : !email ? "no_submitted_email_on_request"
+    : currentEmail !== email ? "recipient_changed_since_submission"
+    : null;
+  if (unusable || !email || !row.contactId) {
     const [created] = await db.insert(inboundAcknowledgements).values({
       effectId, requestId: row.requestId, sourceClass: row.sourceClass, templateKey,
-      presentationVersion: ACK_PRESENTATION_VERSION, state: "blocked", blockedReason: "no_recipient_on_request",
+      presentationVersion: ACK_PRESENTATION_VERSION, state: "blocked", blockedReason: unusable ?? "no_recipient_on_request",
     }).onConflictDoNothing().returning();
     return created ?? (await db.select().from(inboundAcknowledgements).where(eq(inboundAcknowledgements.effectId, effectId)).limit(1))[0] ?? null;
   }
@@ -254,6 +277,7 @@ export async function verifyAckTransportCapability(
       effectType: inboundRequestEffects.effectType,
       requestId: inboundRequests.id,
       requestContactId: inboundRequests.contactId,
+      submittedEmail: inboundRequests.submittedEmail,
       sourceClass: inboundRequests.sourceClass,
       sourceReceivedAt: inboundRequests.sourceReceivedAt,
     })
@@ -269,6 +293,10 @@ export async function verifyAckTransportCapability(
   if (message.inboundRequestId !== row.requestId) return deny("ACK_REQUEST_MISMATCH");
   if (row.requestContactId !== message.contactId || ack.recipientContactId !== message.contactId) return deny("ACK_CONTACT_MISMATCH");
   if (!ack.recipientEmail || ack.recipientEmail !== message.to.trim().toLowerCase()) return deny("ACK_RECIPIENT_MISMATCH");
+  // Authority is the mailbox captured with the occurrence; the contact must still hold that same address.
+  if (!row.submittedEmail || row.submittedEmail !== ack.recipientEmail) return deny("ACK_RECIPIENT_NOT_SUBMITTED");
+  const [liveContact] = await db.select({ email: contacts.email }).from(contacts).where(eq(contacts.id, message.contactId)).limit(1);
+  if (liveContact?.email?.trim().toLowerCase() !== row.submittedEmail) return deny("ACK_RECIPIENT_CHANGED");
   if (!ack.contentHash || ack.contentHash !== ackContentHash(message)) return deny("ACK_CONTENT_MISMATCH");
   const cap = await getAckCapability();
   const verdict = ackCapabilityAllows(cap, {
@@ -316,7 +344,7 @@ export async function dispatchAcknowledgement(effectId: string, deps?: { send?: 
     .select({ sourceClass: inboundRequests.sourceClass, sourceReceivedAt: inboundRequests.sourceReceivedAt })
     .from(inboundRequests).where(eq(inboundRequests.id, ack.requestId)).limit(1);
   const block = async (reason: string): Promise<AckDispatchOutcome> => {
-    if (ack.state !== "blocked" || ack.blockedReason !== reason) {
+    {
       await db.update(inboundAcknowledgements)
         .set({ state: "blocked", blockedReason: reason, updatedAt: new Date() })
         .where(and(eq(inboundAcknowledgements.id, ack.id), inArray(inboundAcknowledgements.state, ["prepared", "blocked"])));
@@ -326,7 +354,8 @@ export async function dispatchAcknowledgement(effectId: string, deps?: { send?: 
   if (!req) return block("request_missing");
   if (!ack.recipientEmail || !ack.recipientContactId) return block(ack.blockedReason ?? "no_recipient_on_request");
 
-  const cap = await getAckCapability();
+  let cap: AckCapability;
+  try { cap = await readAckCapability(); } catch { return block("capability_unreadable"); }
   const verdict = ackCapabilityAllows(cap, {
     sourceClass: req.sourceClass, sourceReceivedAt: req.sourceReceivedAt,
     ownerStartedAt: await getOwnerStartedAt(), now: deps?.now,
@@ -435,9 +464,13 @@ export async function runAcknowledgementSweep(opts?: { limit?: number; deps?: { 
       inArray(inboundRequestEffects.state, ["held", "ready"]),
       // Historical requests (before this owner started) are never prepared or sent; they keep an explicit disposition.
       gte(inboundRequests.sourceReceivedAt, ownerStartedAt),
-      sql`(${inboundAcknowledgements.id} IS NULL OR ${inboundAcknowledgements.state} IN ('prepared','blocked'))`,
+      // Terminal blocks are never revisited; transient waits (pause, unreadable state, retryable failures) are
+      // rotated by least-recently-touched so no backlog can pin the head of the queue.
+      sql`(${inboundAcknowledgements.id} IS NULL OR ${inboundAcknowledgements.state} = 'prepared'
+        OR (${inboundAcknowledgements.state} = 'blocked'
+            AND COALESCE(${inboundAcknowledgements.blockedReason}, '') NOT IN (${sql.join(ACK_TERMINAL_BLOCK_REASONS.map((r) => sql`${r}`), sql`, `)})))`,
     ))
-    .orderBy(inboundRequests.sourceReceivedAt)
+    .orderBy(sql`COALESCE(${inboundAcknowledgements.updatedAt}, ${inboundRequests.sourceReceivedAt})`)
     .limit(limit);
   const tally = { examined: rows.length, accepted: 0, blocked: 0, uncertain: 0, failed: 0, suppressed: 0, skipped: 0 };
   for (const r of rows) {

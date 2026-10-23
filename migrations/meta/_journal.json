@@ -2618,6 +2618,13 @@
       "when":1800400170000,
       "tag":"0370_inbound_acknowledgements",
       "breakpoints":true
+    },
+    {
+      "idx":374,
+      "version":"7",
+      "when":1800400180000,
+      "tag":"0371_inbound_request_submitted_email",
+      "breakpoints":true
     }
   ]
 }

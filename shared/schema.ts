@@ -7192,6 +7192,8 @@ export const inboundRequests = pgTable("inbound_requests", {
   actorId: text("actor_id"),
   sourceReceivedAt: timestamp("source_received_at", { withTimezone: true }).notNull().defaultNow(),
   contactId: integer("contact_id").references(() => contacts.id),
+  // Mailbox captured when the occurrence was first linked to its contact; never overwritten (receipt recipient authority).
+  submittedEmail: text("submitted_email"),
   dealId: integer("deal_id").references(() => deals.id),
   ticketId: integer("ticket_id").references(() => tickets.id),
   // Store the externally usable opaque reference, not the protected_objects

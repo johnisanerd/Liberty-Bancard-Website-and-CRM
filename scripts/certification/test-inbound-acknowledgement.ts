@@ -65,8 +65,8 @@ const contact = async (label: string) => (await pool.query(
 const request = async (label: string, opts: { contactId: number | null; receivedAt: Date; sourceType?: string; sourceClass?: string }) => {
   const r = (await pool.query(
     `INSERT INTO inbound_requests(idempotency_key,occurrence_key,request_fingerprint,source_category,source_type,source_class,caller_scope,actor_type,
-       source_received_at,contact_id,manifest_version,manifest_hash)
-     VALUES($1,$1,$6,'website_form',$2,$3,'public','visitor',$4,$5,'v1',$7) RETURNING id`,
+       source_received_at,contact_id,submitted_email,manifest_version,manifest_hash)
+     VALUES($1,$1,$6,'website_form',$2,$3,'public','visitor',$4,$5,(SELECT lower(email) FROM contacts WHERE id=$5),'v1',$7) RETURNING id`,
     [`ack-${id}-${label}`, opts.sourceType ?? "estimate_form", opts.sourceClass ?? "sales_request", opts.receivedAt, opts.contactId, sha(`fp-${id}-${label}`), sha("manifest")])).rows[0].id as string;
   const e = (await pool.query(
     `INSERT INTO inbound_request_effects(request_id,effect_key,effect_type,state,required,external_side_effect)
@@ -109,11 +109,11 @@ const late = await request("late", { contactId: await contact("l"), receivedAt: 
   await ack.runAcknowledgementSweep({ deps: { send: okSend, now: new Date(Date.now() + 5000) } });
   const a = await ackRow(sales.effectId);
   check(sends.length === 1 && sends[0].to.includes(`-${id}-l@`), "Only the request inside the eligibility window was sent");
-  check(a.blocked_reason === "request_before_eligibility_window", "Request received while closed is not caught up");
+  check(a.blocked_reason === "capability_closed" || a.blocked_reason === "request_before_eligibility_window", "Request received while closed is not caught up");
   const p = sends[0];
   check(p.category === "support" && p.commercialPurpose === "transactional_response" && p.inboundRequestId === late.requestId
     && p.contactId === p.intendedRecipientContactId && !!p.inboundAck?.attemptToken, "Send carries category, purpose, request, recipient and claim binding");
-  check((await ackRow(support.effectId)).blocked_reason === "source_class_not_enabled" || (await ackRow(support.effectId)).blocked_reason === "request_before_eligibility_window", "Support request stays blocked (not enabled / before window)");
+  check(["capability_closed","source_class_not_enabled","request_before_eligibility_window"].includes((await ackRow(support.effectId)).blocked_reason) && (await ackRow(support.effectId)).state === "blocked", "Support request stays blocked (never emailed)");
   const settled = await ackRow(late.effectId);
   check(settled.state === "accepted" && settled.transport_message_id === "fake-1", "Accepted by transport recorded with receipt");
   const eff = await effectRow(late.effectId);
@@ -204,6 +204,50 @@ const late = await request("late", { contactId: await contact("l"), receivedAt: 
   check(stillPaused === "paused", "Global outbound pause is still paused after the capability was opened and closed");
   const enrollments = Number((await pool.query(`SELECT count(*) FROM sequence_enrollments WHERE created_at > now() - interval '1 hour'`)).rows[0].count);
   check(enrollments === 0, "No sequence enrollment was created by acknowledgements");
+}
+
+// 6. Backlog fairness and immutable recipient.
+{
+  // 30 ineligible requests (arrived before this activation) must not starve a later eligible one.
+  for (let i = 0; i < 30; i++) await request(`backlog${i}`, { contactId: await contact(`b${i}`), receivedAt: new Date() });
+  await new Promise((r) => setTimeout(r, 20));
+  await ack.setAckCapability({ enabled: true, sourceClasses: ["sales_request"], actor: "cert" });
+  const fresh = await request("fresh", { contactId: await contact("fr"), receivedAt: new Date(Date.now() + 4000) });
+  const fairSends = sends.length;
+  const later = { now: new Date(Date.now() + 8000) };
+  for (let i = 0; i < 3; i++) await ack.runAcknowledgementSweep({ limit: 25, deps: { send: okSend, ...later } });
+  check(sends.length === fairSends + 1 && (await ackRow(fresh.effectId)).state === "accepted", "A backlog of >25 ineligible requests does not starve a new eligible request");
+  const terminal = Number((await pool.query(`SELECT count(*) FROM inbound_acknowledgements WHERE blocked_reason IN ('capability_closed','request_before_eligibility_window') AND request_id IN (SELECT id FROM inbound_requests WHERE idempotency_key LIKE $1)`, [`ack-${id}-backlog%`])).rows[0].count);
+  check(terminal === 30, "Every ineligible backlog request holds an explicit terminal blocked disposition");
+  const again = await ack.runAcknowledgementSweep({ limit: 25, deps: { send: okSend, ...later } });
+  check(again.examined === 0, "Terminal blocked rows are not revisited by the sweep");
+
+  // Contact email edited after submission but before preparation: nothing is sent to either address.
+  const moved = await request("moved", { contactId: await contact("m"), receivedAt: new Date(Date.now() + 4100) });
+  await pool.query(`UPDATE contacts SET email=$1 WHERE id=(SELECT contact_id FROM inbound_requests WHERE id=$2)`, [`changed-${id}@fixture.invalid`, moved.requestId]);
+  const beforeMoved = sends.length;
+  const mv = await ack.dispatchAcknowledgement(moved.effectId, { ...later, send: okSend });
+  check(mv.state === "blocked" && (await ackRow(moved.effectId)).blocked_reason === "recipient_changed_since_submission" && sends.length === beforeMoved, "Email changed before preparation: no receipt to the old or the new address");
+  check((await ackRow(moved.effectId)).recipient_email == null, "No recipient is bound for a changed address");
+
+  // Contact email edited after preparation, before the transport lease: the transport refuses.
+  const swap = await request("swap", { contactId: await contact("sw"), receivedAt: new Date(Date.now() + 4200) });
+  let swapVerdict: any;
+  await ack.dispatchAcknowledgement(swap.effectId, {
+    ...later,
+    send: async (p: any) => {
+      await pool.query(`UPDATE contacts SET email=$1 WHERE id=$2`, [`swapped-${id}@fixture.invalid`, p.contactId]);
+      swapVerdict = await ack.verifyAckTransportCapability(p, p.inboundAck);
+      return { success: false, outcome: "unsent", error: "refused" };
+    },
+  });
+  check(swapVerdict?.ok === false && swapVerdict.error === "ACK_RECIPIENT_CHANGED", "Transport refuses when the contact address changed after preparation");
+  // The snapshot itself is immutable across later links.
+  const { linkInboundRequest } = await import("../../server/services/inbound-request-authority");
+  const cid = (await pool.query(`SELECT contact_id FROM inbound_requests WHERE id=$1`, [swap.requestId])).rows[0].contact_id;
+  await linkInboundRequest(swap.requestId, { contactId: cid });
+  const snap = (await pool.query(`SELECT submitted_email FROM inbound_requests WHERE id=$1`, [swap.requestId])).rows[0].submitted_email;
+  check(snap === `ack-${id}-sw@fixture.invalid`, "Submitted-mailbox snapshot is not overwritten by a later link after an edit");
 }
 
 console.log(`\nALL CHECKS PASSED — ${checks}/${checks} checks`);

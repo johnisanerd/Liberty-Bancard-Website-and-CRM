@@ -10,3 +10,8 @@ last session of this work, so these counts are the earlier measurement, not a fr
 | Held internal effects (assignment, task, SLA, scoring, enrichment) | Not closed because a record exists. Each must be traced individually before marking; not done in this change |
 | New requests while capability is closed | Local work progresses; acknowledgement shows `blocked / capability_closed`; the effect stays `held` |
 | Delivery uncertain | Stays `attempting` with `delivery_uncertain`; never resent automatically |
+
+## Recipient and sweep rules (added after review)
+- The receipt recipient is the mailbox captured on the request (`inbound_requests.submitted_email`, snapshot at first contact link, never overwritten). If the CRM contact address no longer matches, the receipt is blocked as `recipient_changed_since_submission` and nothing is sent. The transport re-checks this before any lease.
+- Requests without a captured mailbox (all pre-existing requests) are blocked `no_submitted_email_on_request`: never emailed.
+- Blocked reasons that cannot clear (`capability_closed`, `capability_expired`, `source_class_not_enabled`, `request_before_eligibility_window`, no/changed recipient) are not revisited by the sweep, so a backlog cannot starve new requests. Activation is never backdated. Waits (pause, unreadable state/capability, retryable failures) rotate least-recently-touched first.
