@@ -202,6 +202,7 @@ assert(
       handler.includes("record_class = 'production'") ||
       handler.includes('recordClass: "production"') ||
       handler.includes('contacts.recordClass, "production"') ||
+      (path === "/api/analytics/lifecycle-distribution" && handler.includes("readLifecycleDistribution")) ||
       (path === "/api/analytics/pipeline" && handler.includes("readPipelineAnalytics"))
     );
   }) &&

@@ -344,7 +344,12 @@ export default function Overview() {
   });
 
   // #533 — Lifecycle state distribution
-  const { data: lifecycleDistData } = useQuery<{ distribution: Record<string, number> }>({
+  const { data: lifecycleDistData, isError: lifecycleDistError } = useQuery<{
+    distribution: Record<string, number>;
+    total?: number;
+    population?: string;
+    sampledAt?: string;
+  }>({
     queryKey: ["/api/analytics/lifecycle-distribution"],
     refetchInterval: 120000,
     retry: false,
@@ -1268,6 +1273,21 @@ export default function Overview() {
             </Card>
           )}
           {/* #533 — Lifecycle state breakdown */}
+          {lifecycleDistError && !lifecycleDistData && (
+            <Card data-testid="card-lifecycle-distribution-unavailable">
+              <CardHeader>
+                <CardTitle className="text-base flex items-center gap-2">
+                  <Activity className="w-4 h-4 text-primary" />
+                  Contacts by Lifecycle State
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-xs text-muted-foreground" role="status" data-testid="text-lifecycle-unavailable">
+                  Lifecycle counts are unavailable right now. This is not zero contacts; reload to try again.
+                </p>
+              </CardContent>
+            </Card>
+          )}
           {lifecycleDistData && Object.keys(lifecycleDistData.distribution).length > 0 && (
             <Card data-testid="card-lifecycle-distribution">
               <CardHeader>
@@ -1275,6 +1295,11 @@ export default function Overview() {
                   <Activity className="w-4 h-4 text-primary" />
                   Contacts by Lifecycle State
                 </CardTitle>
+                <p className="text-xs text-muted-foreground" data-testid="text-lifecycle-population">
+                  {typeof lifecycleDistData.total === "number" ? `${lifecycleDistData.total.toLocaleString()} production contacts` : "Production contacts"}
+                  {" · non-archived, same population as People"}
+                  {lifecycleDistData.sampledAt ? ` · as of ${new Date(lifecycleDistData.sampledAt).toLocaleString()}` : ""}
+                </p>
               </CardHeader>
               <CardContent>
                 <div className="space-y-1.5">

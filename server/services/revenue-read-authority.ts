@@ -353,6 +353,68 @@ export async function readContactPopulationCount(user: RevenueUser, filters: Par
   return Number(result.rows[0]?.n ?? 0);
 }
 
+export type LifecycleDistributionRead = {
+  distribution: Record<string, number>;
+  total: number;
+  /** Fixed population definition so the UI and audits can state what was counted. */
+  population: "production_non_archived_people_scope";
+  sampledAt: string;
+};
+
+/**
+ * Contacts per lifecycle state over exactly the population readPeople lists and
+ * readContactPopulationCount counts for the same actor (production, non-archived,
+ * synthetic-QA excluded, role/ownership predicate). Null lifecycle is reported as "unknown".
+ * Runs in one READ ONLY transaction so the distribution and total share a snapshot.
+ * Throws on any failure; callers must surface unavailable, never zero.
+ */
+export async function readLifecycleDistribution(
+  user: RevenueUser,
+  options: { statementTimeoutMs?: number; filters?: Partial<RevenueFilters> } = {},
+): Promise<LifecycleDistributionRead> {
+  const values: unknown[] = [];
+  const predicate = contactReadPredicate(
+    user,
+    { limit: 1, offset: 0, ...(options.filters ?? {}), recordClass: "production" },
+    values,
+  );
+  const timeout = Math.max(100, Math.min(Math.trunc(options.statementTimeoutMs ?? 2500), 30_000));
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN READ ONLY");
+    await client.query(`SET LOCAL statement_timeout = '${timeout}ms'`);
+    const result = await client.query<{ lifecycle_state: string | null; cnt: string }>(
+      `SELECT c.lifecycle_state, COUNT(*)::text AS cnt
+         FROM contacts c
+        WHERE ${predicate}
+        GROUP BY c.lifecycle_state
+        ORDER BY COUNT(*) DESC, c.lifecycle_state NULLS LAST`,
+      values,
+    );
+    const distribution: Record<string, number> = {};
+    let total = 0;
+    for (const row of result.rows) {
+      const key = row.lifecycle_state ?? "unknown";
+      const count = Number(row.cnt);
+      if (!Number.isSafeInteger(count) || count < 0) throw new Error("lifecycle_count_out_of_range");
+      distribution[key] = (distribution[key] ?? 0) + count;
+      total += count;
+    }
+    await client.query("COMMIT");
+    return {
+      distribution,
+      total,
+      population: "production_non_archived_people_scope",
+      sampledAt: new Date().toISOString(),
+    };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function readPeople(user: RevenueUser, filters: RevenueFilters) {
   const values: unknown[] = [];
   const predicate = contactReadPredicate(user, filters, values);

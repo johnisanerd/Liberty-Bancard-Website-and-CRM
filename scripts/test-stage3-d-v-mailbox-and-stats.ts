@@ -6,12 +6,15 @@ import { stage3BHttpFixture } from "./fixtures/stage3-b-http";
 //     takes the destination/source mailbox advisory lock BEFORE the contact row lock, so it serializes with other mailbox writers.
 //  2. /api/dashboard/stats contacts uses the same population authority as the People list and count readers, including the
 //     "linked to an agent-owned deal" branch for agents.
+//  3. /api/analytics/lifecycle-distribution counts that same population (QA, archived and nonproduction excluded, role scope),
+//     its buckets sum to its total, and a failed read stays unavailable (503, null total) instead of zero.
 let checks = 0;
 const check = (ok: unknown, label: string) => { assert.ok(ok, label); checks++; console.log(`✓ ${label}`); };
 const h = await stage3BHttpFixture(async app => {
   const { registerContactsRoutes } = await import("../server/routes/contacts.ts");
   const { registerPermissionsAuditRoutes } = await import("../server/routes/permissions-audit.ts");
-  registerContactsRoutes(app); registerPermissionsAuditRoutes(app);
+  const { registerAnalyticsRoutes } = await import("../server/routes/analytics.ts");
+  registerContactsRoutes(app); registerPermissionsAuditRoutes(app); registerAnalyticsRoutes(app);
   app.use("/api", (_req, res) => res.status(501).json({ message: "Unregistered isolated service" }));
 });
 const tag = h.prefix.slice(-12).toLowerCase();
@@ -142,5 +145,64 @@ try {
   check(await readContactPopulationCount(admin, { recordClass: "production", ...search }) === 5, "admin count reader agrees for the same filters");
   const forbiddenStats = await h.request("merchant", "GET", "/api/dashboard/stats");
   check(forbiddenStats.status === 401 || forbiddenStats.status === 403, `merchant stats stay denied (${forbiddenStats.status})`);
+  // ── 3. lifecycle distribution: same population as People / dashboard stats ──
+  const lifecycleOf = async (role: string) => {
+    const r = await h.request(role, "GET", "/api/analytics/lifecycle-distribution");
+    return { status: r.status, body: r.body as { distribution: Record<string, number> | null; total: number | null; available: boolean; sampledAt: string; population?: string } };
+  };
+  const sum = (d: Record<string, number>) => Object.values(d).reduce((a, b) => a + b, 0);
+  const lifeBaseline = { agent: await lifecycleOf("agent"), admin: await lifecycleOf("admin"), manager: await lifecycleOf("manager") };
+  const setState = (id: number, state: string) => q(`UPDATE contacts SET lifecycle_state=$2 WHERE id=$1`, [id, state]);
+  const lAssigned = await seed("life-assigned", { assignedTo: agent.email });
+  const lUnassigned = await seed("life-unassigned", { assignedTo: null });
+  const lLinked = await seed("life-linked", { assignedTo: foreign });
+  const lForbidden = await seed("life-forbidden", { assignedTo: foreign });
+  const lForbiddenArchivedDeal = await seed("life-forbidden-archived-deal", { assignedTo: foreign });
+  const lArchived = await seed("life-archived", { assignedTo: agent.email, archived: true });
+  const lNonprod = await seed("life-nonprod", { assignedTo: agent.email, cls: "test" });
+  const qaEmail = `no-email-${crypto.randomUUID()}@no-email.libertybancard.internal`;
+  const lQa = Number((await q(`INSERT INTO contacts(first_name,last_name,email,phone,company_name,record_class,assigned_to)
+    VALUES('Liberty','QATest',$1,'5550142',$2,'production',$3) RETURNING id`, [qaEmail, `${tag}-life-qa`, agent.email]))[0].id);
+  for (const [id, st] of [[lAssigned, "ENGAGED"], [lUnassigned, "PROSPECT"], [lLinked, "ENGAGED"], [lForbidden, "ENGAGED"], [lForbiddenArchivedDeal, "ENGAGED"], [lArchived, "ENGAGED"], [lNonprod, "ENGAGED"], [lQa, "ENGAGED"]] as const) await setState(id, st);
+  await q(`INSERT INTO deals(contact_id,pipeline,stage,record_class,owner) VALUES($1,'sales','New Lead','production',$2)`, [lLinked, agent.email]);
+  await q(`INSERT INTO deals(contact_id,pipeline,stage,record_class,owner,archived_at) VALUES($1,'sales','New Lead','production',$2,NOW())`, [lForbiddenArchivedDeal, agent.email]);
+
+  const adminLife = await lifecycleOf("admin"), managerLife = await lifecycleOf("manager"), agentLife = await lifecycleOf("agent");
+  for (const [role, r] of [["admin", adminLife], ["manager", managerLife], ["agent", agentLife]] as const) {
+    check(r.status === 200 && r.body.available === true && r.body.distribution && sum(r.body.distribution) === r.body.total && Number.isFinite(Date.parse(r.body.sampledAt)),
+      `${role} lifecycle distribution is available, sums to its returned total and carries a timestamp`);
+  }
+  check(adminLife.body.population === "production_non_archived_people_scope", "the response names its population");
+  const statsNow = { admin: await stats("admin"), manager: await stats("manager"), agent: await stats("agent") };
+  check(adminLife.body.total === statsNow.admin && managerLife.body.total === statsNow.manager && agentLife.body.total === statsNow.agent,
+    `distribution total equals dashboard stats contacts for the same actor (admin ${adminLife.body.total}, manager ${managerLife.body.total}, agent ${agentLife.body.total})`);
+  check(adminLife.body.total === await readContactPopulationCount(admin, { recordClass: "production" })
+    && agentLife.body.total === await readContactPopulationCount(agent, { recordClass: "production" }),
+    "distribution total equals the canonical contact count reader for identical actor and filters");
+  check(adminLife.body.total! - lifeBaseline.admin.body.total! === 5 && managerLife.body.total! - lifeBaseline.manager.body.total! === 5,
+    "admin and manager distributions add exactly the five production, non-archived, non-QA fixtures (legacy QA, archived and nonproduction excluded)");
+  check(agentLife.body.total! - lifeBaseline.agent.body.total! === 3,
+    "agent distribution adds exactly assigned + unassigned + linked-to-owned-deal; foreign, archived-deal, archived, nonproduction and QA rows are excluded");
+  const engagedDelta = (a: any, b: any) => (a.body.distribution.ENGAGED ?? 0) - (b.body.distribution.ENGAGED ?? 0);
+  const prospectDelta = (a: any, b: any) => (a.body.distribution.PROSPECT ?? 0) - (b.body.distribution.PROSPECT ?? 0);
+  check(engagedDelta(adminLife, lifeBaseline.admin) === 4 && prospectDelta(adminLife, lifeBaseline.admin) === 1
+    && engagedDelta(agentLife, lifeBaseline.agent) === 2 && prospectDelta(agentLife, lifeBaseline.agent) === 1,
+    "per-state counts move only by the in-scope fixtures");
+  const merchantLife = await h.request("merchant", "GET", "/api/analytics/lifecycle-distribution");
+  check(merchantLife.status === 401 || merchantLife.status === 403, `merchant lifecycle read stays denied (${merchantLife.status})`);
+
+  // A real read failure (statement timeout while another transaction holds the table exclusively) must be unavailable, never zero.
+  const blocker = await h.pool.connect();
+  try {
+    await blocker.query("BEGIN");
+    await blocker.query("LOCK TABLE contacts IN ACCESS EXCLUSIVE MODE");
+    const failed = await lifecycleOf("admin");
+    check(failed.status === 503 && failed.body.available === false && failed.body.distribution === null && failed.body.total === null
+      && Number.isFinite(Date.parse(failed.body.sampledAt)),
+      `a failed read returns 503 unavailable with null distribution and total (${failed.status})`);
+  } finally { await blocker.query("ROLLBACK").catch(() => undefined); blocker.release(); }
+  const recovered = await lifecycleOf("admin");
+  check(recovered.status === 200 && recovered.body.total === adminLife.body.total, "the next read after the failure recovers with the same total");
+
   console.log(`Stage 3 D-V mailbox protocol and stats parity: PASS (${checks} checks)`);
 } finally { await h.close(); }

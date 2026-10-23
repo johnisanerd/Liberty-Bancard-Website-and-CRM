@@ -12,7 +12,7 @@ import { agents, deals, leaderboardSettings, agentMerchants } from "@shared/sche
 import { eq, and, gte, lte, desc, sql, count, inArray, isNull } from "drizzle-orm";
 import { publicLeadRateLimit } from "../middleware/public-rate-limit";
 import { serverError } from "../utils/server-error";
-import { readPipelineAnalytics, contactReadPredicate, dealReadPredicate } from "../services/revenue-read-authority";
+import { readPipelineAnalytics, readLifecycleDistribution, contactReadPredicate, dealReadPredicate } from "../services/revenue-read-authority";
 // CRO-02 population observation runs as a scheduled BullMQ job (CRO02_OBSERVATION queue,
 // every 2h in prod) and is NOT triggered from HTTP requests. Doing it per-request was
 // the primary cause of db:pool_pressure: up to 2 000 per-subject graph-resolution queries
@@ -1478,35 +1478,19 @@ export function registerAnalyticsRoutes(app: Express, readOptions?: {
   });
 
   // GET /api/analytics/lifecycle-distribution
-  // #533 — Count of contacts per lifecycle_state (excluding archived)
+  // #533 — Contacts per lifecycle_state over the same population People lists and /api/dashboard/stats counts
+  // (production, non-archived, synthetic QA excluded, actor role/ownership scope). A failed read is unavailable (503), never zero.
   app.get("/api/analytics/lifecycle-distribution", isDashboardUser, async (req, res) => {
-    let client: import("pg").PoolClient | null = null;
     try {
-      client = await pool.connect();
-      await client.query("BEGIN READ ONLY");
-      await client.query("SET LOCAL statement_timeout = '2500ms'");
-      const result = await client.query<{ lifecycle_state: string | null; cnt: string }>(`
-        SELECT lifecycle_state, COUNT(*)::text AS cnt
-        FROM contacts
-        WHERE archived_at IS NULL AND record_class = 'production'
-        GROUP BY lifecycle_state
-        ORDER BY COUNT(*) DESC, lifecycle_state NULLS LAST
-      `);
-      const distribution: Record<string, number> = {};
-      let total = 0;
-      for (const row of result.rows) {
-        const key = row.lifecycle_state ?? "unknown";
-        const count = Number(row.cnt);
-        if (!Number.isSafeInteger(count) || count < 0) {
-          throw new Error("lifecycle_count_out_of_range");
-        }
-        distribution[key] = count;
-        total += count;
-      }
-      await client.query("COMMIT");
-      res.json({ distribution, total, available: true, sampledAt: new Date().toISOString() });
+      const read = await readLifecycleDistribution(req.user as any, { statementTimeoutMs: 2500 });
+      res.json({
+        distribution: read.distribution,
+        total: read.total,
+        available: true,
+        population: read.population,
+        sampledAt: read.sampledAt,
+      });
     } catch (err: any) {
-      if (client) await client.query("ROLLBACK").catch(() => {});
       console.error("[Analytics] lifecycle distribution unavailable:", err?.message);
       res.status(503).json({
         distribution: null,
@@ -1515,8 +1499,6 @@ export function registerAnalyticsRoutes(app: Express, readOptions?: {
         sampledAt: new Date().toISOString(),
         error: "lifecycle_distribution_unavailable",
       });
-    } finally {
-      client?.release();
     }
   });
 
