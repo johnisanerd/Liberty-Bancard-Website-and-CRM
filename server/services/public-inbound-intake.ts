@@ -38,6 +38,12 @@ export async function claimPublicInbound(
     if (claim.outcome === "conflict") { res.status(409).json({ error: "Idempotency key conflicts with another request" }); return null; }
     if (claim.outcome === "scope_mismatch") { res.status(404).json({ error: "Request not found" }); return null; }
     if (claim.outcome === "replay") {
+      // A retry of an attempt that failed or was cancelled must not look like success: nothing was recorded for it.
+      const state = claim.request.lifecycleState;
+      if (state === "failed" || state === "cancelled") {
+        res.status(409).json({ success: false, replayed: true, error: "PREVIOUS_ATTEMPT_NOT_RECORDED", requestReceipt: claim.request.id, status: state });
+        return null;
+      }
       res.status(200).json({ success: true, replayed: true, requestReceipt: claim.request.id, status: claim.request.lifecycleState });
       return null;
     }

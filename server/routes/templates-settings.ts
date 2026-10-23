@@ -6,6 +6,9 @@ import { insertMessageTemplateSchema, insertSavedFilterSchema, insertSlaConfigSc
 import { getEmailSignatureHtml, getEmailSignaturePlainText, getStoredSignature, saveSignature } from "../services/email-signatures";
 import { parse } from "csv-parse/sync";
 import { serverError } from "../utils/server-error";
+import {
+  TemplateVersionError, discardDraft, getTemplateWorkspace, previewTemplate, publishDraft, saveDraft, setTemplateActive,
+} from "../services/message-template-versions";
 
 export function registerTemplatesSettingsRoutes(app: Express) {
   // === MESSAGE TEMPLATES ===
@@ -31,10 +34,12 @@ export function registerTemplatesSettingsRoutes(app: Express) {
     }
   });
 
+  // Creating a template never makes it live: it starts inactive and its wording follows the same
+  // draft -> publish -> activate path as every other template.
   app.post("/api/message-templates", requireRole("admin", "manager"), async (req, res) => {
     try {
       const input = insertMessageTemplateSchema.parse(req.body);
-      const template = await storage.createMessageTemplate(input);
+      const template = await storage.createMessageTemplate({ ...input, isActive: false });
       res.status(201).json(template);
     } catch (err: any) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
@@ -42,13 +47,102 @@ export function registerTemplatesSettingsRoutes(app: Express) {
     }
   });
 
+  // Metadata only. Wording changes go through draft/publish and activation through the activation route.
+  const templateMetadataSchema = z.object({
+    name: z.string().min(1).optional(),
+    category: z.string().min(1).optional(),
+    channel: z.enum(["email", "sms"]).optional(),
+    mergeFields: z.array(z.string()).nullable().optional(),
+  }).strict();
+
   app.put("/api/message-templates/:id", requireRole("admin", "manager"), async (req, res) => {
     try {
-      const updated = await storage.updateMessageTemplate(Number(req.params.id), req.body);
+      const body = templateMetadataSchema.safeParse(req.body);
+      if (!body.success) {
+        return res.status(400).json({ message: "Only name, category, channel and merge fields can be edited here. Use Save draft / Publish for wording and Activate for use." });
+      }
+      const updated = await storage.updateMessageTemplate(Number(req.params.id), body.data);
       if (!updated) return res.status(404).json({ message: "Not found" });
       res.json(updated);
     } catch (err: any) {
       serverError(res, err);
+    }
+  });
+
+  const templateId = (req: any) => {
+    const id = Number(req.params.id);
+    return Number.isInteger(id) && id > 0 ? id : null;
+  };
+  const actor = (req: any) => String(req.user?.id ?? "");
+  const versionError = (res: any, err: unknown) => {
+    if (err instanceof TemplateVersionError) return res.status(err.status).json({ message: err.message, findings: err.findings });
+    return serverError(res, err);
+  };
+
+  app.get("/api/message-templates/:id/workspace", requireRole("admin", "manager"), async (req, res) => {
+    try {
+      const id = templateId(req);
+      if (!id) return res.status(400).json({ message: "Invalid template id" });
+      res.json(await getTemplateWorkspace(id));
+    } catch (err) { versionError(res, err); }
+  });
+
+  // Preview renders sample values only. It sends nothing and stores nothing.
+  app.post("/api/message-templates/preview", requireRole("admin", "manager"), async (req, res) => {
+    try {
+      const input = z.object({ subject: z.string().nullable().optional(), body: z.string().min(1) }).strict().parse(req.body);
+      res.json(previewTemplate(input));
+    } catch (err: any) {
+      if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
+      serverError(res, err);
+    }
+  });
+
+  app.put("/api/message-templates/:id/draft", requireRole("admin", "manager"), async (req, res) => {
+    try {
+      const id = templateId(req);
+      if (!id) return res.status(400).json({ message: "Invalid template id" });
+      const input = z.object({
+        subject: z.string().nullable(), body: z.string().min(1, "Message body is required"), baseVersion: z.number().int().positive(),
+      }).strict().parse(req.body);
+      res.json(await saveDraft(id, input, actor(req)));
+    } catch (err: any) {
+      if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
+      versionError(res, err);
+    }
+  });
+
+  app.delete("/api/message-templates/:id/draft", requireRole("admin", "manager"), async (req, res) => {
+    try {
+      const id = templateId(req);
+      if (!id) return res.status(400).json({ message: "Invalid template id" });
+      res.json(await discardDraft(id, actor(req)));
+    } catch (err) { versionError(res, err); }
+  });
+
+  // Publishing changes wording only. It never activates the template, enables a workflow or opens a send path.
+  app.post("/api/message-templates/:id/publish", requireRole("admin", "manager"), async (req, res) => {
+    try {
+      const id = templateId(req);
+      if (!id) return res.status(400).json({ message: "Invalid template id" });
+      const input = z.object({ expectedVersion: z.number().int().positive() }).strict().parse(req.body);
+      res.json(await publishDraft(id, input, actor(req)));
+    } catch (err: any) {
+      if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
+      versionError(res, err);
+    }
+  });
+
+  // "Activate campaign actions": allows workflow and operator sends to use this template's published wording.
+  app.post("/api/message-templates/:id/activation", requireRole("admin"), async (req, res) => {
+    try {
+      const id = templateId(req);
+      if (!id) return res.status(400).json({ message: "Invalid template id" });
+      const input = z.object({ active: z.boolean() }).strict().parse(req.body);
+      res.json(await setTemplateActive(id, input.active, actor(req)));
+    } catch (err: any) {
+      if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
+      versionError(res, err);
     }
   });
 

@@ -122,6 +122,8 @@ export const CERTIFICATION_FIXTURE_SUITES: Suite[] = [
     timeoutSecs:900,requiresDisposableTestDatabase:true},
   {name:"Inbound acknowledgement owner",script:"scripts/certification/test-inbound-acknowledgement.ts",
     timeoutSecs:900,requiresDisposableTestDatabase:true},
+  {name:"Message template versions and reviewed copy",script:"scripts/certification/test-message-template-versions.ts",
+    timeoutSecs:900,requiresDisposableTestDatabase:true},
 ];
 export const MANDATORY_SUITES: Suite[] = [
   {name:"Stage 3 C3 Destination Codec and Source Contracts",script:"scripts/test-stage3-c3-contracts.ts",timeoutSecs:60},

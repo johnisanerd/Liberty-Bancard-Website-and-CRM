@@ -1,8 +1,20 @@
-# Retained copy reconciliation (proposals only)
+# Retained copy reconciliation
 
-Nothing here has been applied. Each proposal needs owner approval and then the supported content publication path.
+Status: the workflow and template replacements below are **applied** (owner-approved with the editor task). They are
+exact-substring rewrites of stored wording through `server/services/reviewed-copy-replacements.ts`, run from the seed
+step at startup, idempotent, and recorded in `audit_logs` (`reviewed_copy_replacements_applied`). Workflow rewrites use
+the versioned workflow command and never pass `enabled`; no workflow, template or campaign was toggled. Template
+wording is published as a new content version through the same path admins use in GHL Settings.
 
-| Location | Current | Proposal |
+Admins edit template wording in GHL Settings -> Message Templates: **Save draft**, **Publish content version**,
+**Activate campaign actions** are separate commands, and receipts are turned on separately with **Enable transactional
+purpose** (Request receipts card). Publishing never activates anything. Publishing is blocked while wording contains
+an unresolved placeholder, dead link, emailed-attachment ask, unsupported timing/proof claim or "record exists" claim.
+
+The upload link is the absolute `https://libertybancard.com/upload-statement` (workflows have no `{APP_URL}` resolver;
+other seeded workflow links are absolute in the same way).
+
+| Location | Was | Applied / proposal |
 |---|---|---|
 | Workflow B, upload step | `[UPLOAD_LINK]` | Button "Upload your statement" to `{APP_URL}/upload-statement`, with the same URL as a text link below it |
 | Workflow B, attachment ask | "reply to this email with the statement attached" | Remove; the upload page is the only requested channel |

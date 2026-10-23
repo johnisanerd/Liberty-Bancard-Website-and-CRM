@@ -2650,15 +2650,35 @@ export const messageTemplates = pgTable("message_templates", {
   body: text("body").notNull(),
   mergeFields: text("merge_fields").array(),
   isActive: boolean("is_active").default(true),
+  // Number of the last published content version; subject/body above always equal that version.
+  contentVersion: integer("content_version").notNull().default(1),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 
 export const insertMessageTemplateSchema = createInsertSchema(messageTemplates).omit({
   id: true,
+  contentVersion: true,
   createdAt: true,
   updatedAt: true,
 });
+
+// Reviewed wording history. One editable draft per template; published rows are immutable.
+export const messageTemplateVersions = pgTable("message_template_versions", {
+  id: serial("id").primaryKey(),
+  templateId: integer("template_id").notNull().references(() => messageTemplates.id, { onDelete: "cascade" }),
+  version: integer("version"),
+  baseVersion: integer("base_version").notNull(),
+  state: text("state").notNull(),
+  subject: text("subject"),
+  body: text("body").notNull(),
+  authorId: text("author_id"),
+  publishedBy: text("published_by"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  publishedAt: timestamp("published_at"),
+});
+export type MessageTemplateVersion = typeof messageTemplateVersions.$inferSelect;
 
 export type MessageTemplate = typeof messageTemplates.$inferSelect;
 export type InsertMessageTemplate = z.infer<typeof insertMessageTemplateSchema>;

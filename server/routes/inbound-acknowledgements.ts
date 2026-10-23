@@ -5,6 +5,8 @@ import { serverError } from "../utils/server-error";
 import { getBackgroundProfile } from "../services/background-profile";
 import {
   ACK_SOURCE_CLASSES,
+  ACK_PREVIEW_SOURCE_TYPE,
+  buildAckContent,
   getAckCapability,
   getAcknowledgementStatusCounts,
   setAckCapability,
@@ -34,6 +36,22 @@ export function registerInboundAcknowledgementRoutes(app: Express) {
           uncertain: "Transport outcome unknown; never resent automatically.",
         },
       });
+    } catch (err) {
+      serverError(res, err);
+    }
+  });
+
+  // Exact receipt wording for each request type, rendered with a sample reference. Read-only: nothing is prepared,
+  // queued or sent, and receipt wording is code-owned (not editable here).
+  app.get("/api/admin/inbound-acknowledgements/preview", requireRole("admin", "manager"), async (_req, res) => {
+    try {
+      const previews = await Promise.all(ACK_SOURCE_CLASSES.map(async (sourceClass) => {
+        const c = await buildAckContent({
+          sourceClass, sourceType: ACK_PREVIEW_SOURCE_TYPE[sourceClass], requestId: "abcd1234-0000-4000-8000-000000000000", firstName: "Alex",
+        });
+        return { sourceClass, templateKey: c.templateKey, subject: c.subject, html: c.html, text: c.text };
+      }));
+      res.json({ previews, note: "Sample reference and first name. Nothing is sent by previewing." });
     } catch (err) {
       serverError(res, err);
     }

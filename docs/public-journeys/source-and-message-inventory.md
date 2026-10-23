@@ -28,5 +28,6 @@ Run `npx tsx scripts/audit-retained-message-copy.ts` (read-only) for the current
 | F. Closed Won Onboarding | invites emailed ID / voided check | Point to the secure document journey once its recipient authorization is proven |
 | G. Go-Live Lifecycle, template "Day 7 Review Request" | `[GOOGLE_REVIEW_LINK]` | Remove the review ask until a verified review URL is supplied; do not invent one |
 
-No enabled workflow was toggled and no stored workflow or template was changed. Publishing stored copy is an
-owner-approved content change; publishing never activates a workflow, campaign or release.
+The replacements in `copy-reconciliation.md` have been applied as an owner-approved content change (no workflow,
+template or campaign was toggled). F still points to a secure link from the representative; the secure document journey
+itself is unchanged. Publishing stored copy never activates a workflow, campaign or release.

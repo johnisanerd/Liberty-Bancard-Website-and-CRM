@@ -16,6 +16,7 @@ import { GhlSyncControlCard } from "@/components/dashboard/GhlSyncControlCard";
 import { GhlInboundSyncCard } from "@/components/dashboard/GhlInboundSyncCard";
 import { GhlCommandAction } from "@/components/dashboard/GhlCommandAction";
 import { InboundAcknowledgementCard } from "@/components/dashboard/InboundAcknowledgementCard";
+import { MessageTemplateEditor, ReceiptWordingPreview } from "@/components/dashboard/MessageTemplateEditor";
 
 interface PipelineStagesResult {
   matchingPolicy: "explicit_ids_only";
@@ -142,6 +143,8 @@ function StatusIndicator({ configured }: { configured: boolean | null }) {
 export default function GhlSettings() {
   const { toast } = useToast();
   const { user } = useAuth();
+  const canEditTemplates = user?.role === "admin" || user?.role === "manager";
+  const [editingTemplateId, setEditingTemplateId] = useState<number | null>(null);
   const [draftStageMappings, setDraftStageMappings] = useState<SemanticStageMapping[]>([]);
   const [selectedLocalPipeline, setSelectedLocalPipeline] = useState("");
   const [draftExternalPipelineIds, setDraftExternalPipelineIds] = useState<Record<string, string>>({});
@@ -882,6 +885,7 @@ export default function GhlSettings() {
                   <TableHead>Category</TableHead>
                   <TableHead>Channel</TableHead>
                   <TableHead>Status</TableHead>
+                  <TableHead>Wording</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -895,13 +899,27 @@ export default function GhlSettings() {
                         {t.isActive ? "Active" : "Inactive"}
                       </Badge>
                     </TableCell>
+                    <TableCell>
+                      {canEditTemplates ? (
+                        <Button variant="outline" size="sm" className="min-h-11" onClick={() => setEditingTemplateId(t.id)} data-testid={`button-edit-template-${t.id}`}>
+                          Edit and preview
+                        </Button>
+                      ) : <span className="text-xs text-muted-foreground">Admin or manager</span>}
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
             </Table>
           )}
+          <ReceiptWordingPreview canView={canEditTemplates} />
         </CardContent>
       </Card>
+      <MessageTemplateEditor
+        templateId={editingTemplateId}
+        canEdit={canEditTemplates}
+        canActivate={user?.role === "admin"}
+        onClose={() => setEditingTemplateId(null)}
+      />
 
       <InboundAcknowledgementCard canControl={user?.role === "admin"} />
 

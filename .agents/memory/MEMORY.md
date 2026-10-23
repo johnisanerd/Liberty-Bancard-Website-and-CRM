@@ -191,3 +191,4 @@
 - [Drizzle begin failure leaks client](drizzle-begin-leak.md) — failed BEGIN never released in drizzle 0.45; override in server/db.ts; db:long_checkout floods mean a leak.
 - [Actor-change browser trigger](actor-change-browser-trigger.md) — auth revalidation via Date.now skew + offline/online; hold strips abort signal; release old before fresh.
 - [Inbound acknowledgement owner](inbound-ack-owner.md) — default-closed per-message lease re-verified from durable rows; capability is not unpause; no historical catch-up.
+- [Message wording publication](message-wording-publication.md) — draft, publish, activate and receipt enablement are separate; unsendable wording is blocked.

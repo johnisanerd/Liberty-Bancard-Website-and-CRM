@@ -66,7 +66,7 @@
         {
           "type": "send_ghl_email",
           "subject": "Thanks for your interest - Liberty Bancard",
-          "body": "<p>Hi {{contact.firstName}},</p><p>Thanks for requesting an estimate. To give you an accurate breakdown, we'll need your most recent processing statement.</p><p>You can upload it here: [UPLOAD_LINK]</p><p>Or reply to this email with the statement attached. Once we review it, we'll have real numbers to show you - no guesswork.</p><p>Best,<br/>Liberty Bancard Team</p><p style='font-size:11px;color:#999;'>Eligibility, underwriting, card brand rules, and applicable laws apply.</p>"
+          "body": "<p>Hi {{contact.firstName}},</p><p>Thanks for requesting an estimate. To give you an accurate breakdown, we'll need your most recent processing statement.</p><p><a href='https://libertybancard.com/upload-statement' style='display:inline-block;padding:12px 24px;background:#2563eb;color:white;text-decoration:none;border-radius:6px;font-weight:bold;'>Upload your statement</a></p><p>Or copy this link into your browser: <a href='https://libertybancard.com/upload-statement'>https://libertybancard.com/upload-statement</a></p><p>Once we review it, we'll have real numbers to show you - no guesswork.</p><p>Best,<br/>Liberty Bancard Team</p><p style='font-size:11px;color:#999;'>Eligibility, underwriting, card brand rules, and applicable laws apply.</p>"
         },
         {
           "type": "create_audit_log",
@@ -130,8 +130,8 @@
         },
         {
           "type": "send_ghl_email",
-          "subject": "We saved your analysis - reschedule anytime",
-          "body": "<p>Hi {{contact.firstName}},</p><p>We noticed we weren't able to connect for your statement review call. No worries - your analysis is saved and ready whenever you are.</p><p>Pick a new time that works: {{calendarLink}}</p><p>We'll keep your data on file so you won't need to resubmit anything.</p><p>Best,<br/>Liberty Bancard Team</p><p style='font-size:11px;color:#999;'>Eligibility, underwriting, card brand rules, and applicable laws apply.</p>"
+          "subject": "Let's reschedule your statement review",
+          "body": "<p>Hi {{contact.firstName}},</p><p>We noticed we weren't able to connect for your statement review call. No worries - we can find a new time whenever you are ready.</p><p>Pick a new time that works: {{calendarLink}}</p><p>If you would like us to review your statement, you can upload it here: <a href='https://libertybancard.com/upload-statement'>Upload your statement</a></p><p>Best,<br/>Liberty Bancard Team</p><p style='font-size:11px;color:#999;'>Eligibility, underwriting, card brand rules, and applicable laws apply.</p>"
         },
         {
           "type": "create_task",
@@ -185,7 +185,7 @@
         {
           "type": "send_ghl_email",
           "subject": "Last check-in on your processing options",
-          "body": "<p>Hi {{contact.firstName}},</p><p>This is our last follow-up on the processing analysis we prepared for {{contact.companyName}}.</p><p>Your analysis is saved and ready whenever you want to revisit. Just reply to this email or book a call: {{calendarLink}}</p><p>We're here when you need us.</p><p>Best,<br/>Liberty Bancard Team</p><p style='font-size:11px;color:#999;'>Eligibility, underwriting, card brand rules, and applicable laws apply.</p>"
+          "body": "<p>Hi {{contact.firstName}},</p><p>This is our last follow-up on the processing analysis we prepared for {{contact.companyName}}.</p><p>If you would like us to review your statement, you can upload it here: <a href='https://libertybancard.com/upload-statement'>Upload your statement</a></p><p>You can also reply to this email or book a call: {{calendarLink}}</p><p>We're here when you need us.</p><p>Best,<br/>Liberty Bancard Team</p><p style='font-size:11px;color:#999;'>Eligibility, underwriting, card brand rules, and applicable laws apply.</p>"
         },
         {
           "type": "create_audit_log",
@@ -241,7 +241,7 @@
         {
           "type": "send_ghl_email",
           "subject": "Welcome to Liberty Bancard - Your Application & Next Steps",
-          "body": "<p>Hi {{contact.firstName}},</p><p>Welcome aboard! We're excited to get {{contact.companyName}} set up with better processing.</p><p><strong>Step 1: Complete Your Application</strong></p><p>Your merchant application takes about 5 minutes to complete. Click below to get started:</p><p><a href='https://libertybancard.com/apply' style='display:inline-block;padding:12px 24px;background:#2563eb;color:white;text-decoration:none;border-radius:6px;font-weight:bold;'>Start Your Application</a></p><p><strong>Step 2: Upload Required Documents</strong></p><p>To complete underwriting, we'll need:</p><ul><li>Most recent processing statement</li><li>Voided check or bank letter</li><li>Government-issued photo ID</li></ul><p>You can upload these documents through your merchant portal or reply to this email with them attached.</p><p><strong>What Happens Next:</strong></p><ol><li>Complete the application (5 min)</li><li>Upload required documents</li><li>Underwriting review (typically 24-48 hours)</li><li>Terminal setup and configuration (if applicable)</li><li>Go-live and first batch!</li></ol><p>You'll have a dedicated point of contact throughout. We'll keep you updated at every step.</p><p>Best,<br/>Liberty Bancard Team</p>"
+          "body": "<p>Hi {{contact.firstName}},</p><p>Welcome aboard! We're excited to get {{contact.companyName}} set up with better processing.</p><p><strong>Step 1: Complete Your Application</strong></p><p>Your merchant application takes about 5 minutes to complete. Click below to get started:</p><p><a href='https://libertybancard.com/apply' style='display:inline-block;padding:12px 24px;background:#2563eb;color:white;text-decoration:none;border-radius:6px;font-weight:bold;'>Start Your Application</a></p><p><strong>Step 2: Upload Required Documents</strong></p><p>To complete underwriting, we'll need:</p><ul><li>Most recent processing statement</li><li>Voided check or bank letter</li><li>Government-issued photo ID</li></ul><p>Your representative will share a secure link for documents.</p><p><strong>What Happens Next:</strong></p><ol><li>Complete the application (5 min)</li><li>Upload required documents</li><li>Underwriting review (typically 24-48 hours)</li><li>Terminal setup and configuration (if applicable)</li><li>Go-live and first batch!</li></ol><p>You'll have a dedicated point of contact throughout. We'll keep you updated at every step.</p><p>Best,<br/>Liberty Bancard Team</p>"
         },
         {
           "type": "send_ghl_sms",
@@ -386,10 +386,6 @@
           "assignedTo": "Scott Stevenson",
           "priority": "medium",
           "dueHours": 24
-        },
-        {
-          "type": "request_review",
-          "reviewUrl": "[GOOGLE_REVIEW_LINK]"
         },
         {
           "type": "wait",
@@ -580,7 +576,7 @@
       "category": "review_request",
       "channel": "email",
       "subject": "How's your experience with Liberty Bancard?",
-      "body": "<p>Hi {{contact.firstName}},</p>\n<p>It's been a week since your switch to Liberty Bancard. We hope everything's running smoothly!</p>\n<p>Would you take 30 seconds to share your experience? <a href=\"[GOOGLE_REVIEW_LINK]\">Leave a Review</a></p>\n<p>Your feedback helps other business owners make better processing decisions.</p>\n<p>Best,<br/>Liberty Bancard Team</p>",
+      "body": "<p>Hi {{contact.firstName}},</p>\n<p>It's been a week since your switch to Liberty Bancard. We hope everything's running smoothly!</p>\n<p>If anything needs attention, just reply to this email and we will help.</p>\n<p>Best,<br/>Liberty Bancard Team</p>",
       "mergeFields": [
         "contact.firstName"
       ],

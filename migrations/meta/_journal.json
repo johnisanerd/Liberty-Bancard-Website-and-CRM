@@ -2625,6 +2625,13 @@
       "when":1800400180000,
       "tag":"0371_inbound_request_submitted_email",
       "breakpoints":true
+    },
+    {
+      "idx":375,
+      "version":"7",
+      "when":1800400190000,
+      "tag":"0372_message_template_versions",
+      "breakpoints":true
     }
   ]
 }

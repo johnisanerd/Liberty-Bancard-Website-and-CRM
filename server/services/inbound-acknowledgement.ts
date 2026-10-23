@@ -36,6 +36,12 @@ export const ACK_SOURCE_CLASSES = [
 ] as const;
 export type AckSourceClass = (typeof ACK_SOURCE_CLASSES)[number];
 
+/** Representative source type per class, used only to render the admin receipt preview. Exhaustive by type. */
+export const ACK_PREVIEW_SOURCE_TYPE: Record<AckSourceClass, string> = {
+  sales_request: "estimate_form", support_request: "support_form", fulfillment_request: "equipment_request",
+  partner_application_request: "partner_application", privacy_request: "privacy_request",
+};
+
 /**
  * A privacy request has no CRM contact by design (no marketing or provider record is created for it). Its receipt goes
  * to the mailbox captured on the request itself, with no contact binding. Every other class requires a contact.

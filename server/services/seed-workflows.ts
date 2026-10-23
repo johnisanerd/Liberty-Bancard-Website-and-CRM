@@ -1,4 +1,5 @@
 import { storage } from "../storage";
+import { applyReviewedCopyReplacements } from "./reviewed-copy-replacements";
 import workflowsData from "../data/seeds/workflows.json";
 
 const PREBUILT_WORKFLOWS = (workflowsData as any).PREBUILT_WORKFLOWS as any[];
@@ -39,6 +40,13 @@ export async function seedDefaultData() {
           console.log(`[Seed] Updated workflow "${name}" with new actions`);
         }
       }
+    }
+
+    // Owner-approved wording replacements (docs/public-journeys/copy-reconciliation.md). Exact-substring edits only;
+    // never toggles a workflow or template.
+    const copy = await applyReviewedCopyReplacements();
+    if (copy.workflows.length || copy.templates.length || copy.skipped.length) {
+      console.log(`[Seed] Reviewed copy replacements: workflows=${copy.workflows.length} templates=${copy.templates.length} skipped=${copy.skipped.length}`);
     }
 
     const existingSlaConfigs = await storage.getSlaConfigs();
