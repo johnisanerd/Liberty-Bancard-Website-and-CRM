@@ -1,6 +1,7 @@
 import express, { type Request, Response, NextFunction } from "express";
 import { instrumentExpressRouting } from "./services/express-route-provenance";
 import {withTransactionPhase} from "./lib/transaction-observability";
+import {summarizeFailureForLog} from "./lib/lock-trace";
 import cookieParser from "cookie-parser";
 import * as Sentry from "@sentry/node";
 import { registerRoutes } from "./routes";
@@ -139,7 +140,7 @@ async function startSfpRuntimeOwnerHeartbeat(): Promise<void> {
     lastSfpRuntimeHeartbeatReason = null;
     log("[SFP Runtime] Current selected release owner established");
   } catch (error: any) {
-    lastSfpRuntimeHeartbeatReason = String(error?.message ?? error);
+    lastSfpRuntimeHeartbeatReason = summarizeFailureForLog(error);
     console.warn(`[SFP Runtime] Owner held at startup: ${lastSfpRuntimeHeartbeatReason}`);
   }
 
@@ -158,7 +159,7 @@ async function startSfpRuntimeOwnerHeartbeat(): Promise<void> {
       }
       lastSfpRuntimeHeartbeatReason = null;
     } catch (error: any) {
-      const reason = String(error?.message ?? error);
+      const reason = summarizeFailureForLog(error);
       if (reason !== lastSfpRuntimeHeartbeatReason) {
         console.warn(`[SFP Runtime] Heartbeat held: ${reason}`);
       }

@@ -108,3 +108,11 @@ export async function observeRecoveryFailure(
   const failure = await captureRecoveryFailure(originalError, cleanup, coordinates, emit);
   throw failure.cleanupError ?? failure.originalError;
 }
+
+/** One-line, parameter-free description of a failure for logs. drizzle's "Failed query" message embeds the whole
+ * multi-line SQL and bound parameters (which can include owner tokens); every line becomes a separate error entry. */
+export function summarizeFailureForLog(error: unknown): string {
+  const raw = String((error as any)?.message ?? error);
+  if (/^Failed query:/.test(raw)) return `database query failed ${JSON.stringify(safeDatabaseFailure(error))}`;
+  return raw.split("\n")[0].slice(0, 300);
+}
