@@ -78,7 +78,7 @@ export async function runContactPageEnrichment(merchantId: number): Promise<{ en
   const normalizedUrl = siteUrl.startsWith("http") ? siteUrl : `https://${siteUrl}`;
   const safe = await isSafeFetchTarget(normalizedUrl);
   if (!safe) {
-    console.warn(`[ContactPage] Blocked unsafe URL for merchant ${merchantId}: ${siteUrl}`);
+    console.info(`[ContactPage] Blocked unsafe URL for merchant ${merchantId}: ${siteUrl}`);
     return { enriched: false, source: "contactpage" };
   }
   const email = await findEmailOnSite(siteUrl);
@@ -185,7 +185,7 @@ export async function runContactPageBusinessEnrichment(
   // SSRF check on the root domain before attempting any page
   const safe = await isSafeFetchTarget(baseUrl);
   if (!safe) {
-    console.warn(`[ContactPage-Business] SSRF blocked domain for business ${businessId}: ${domain}`);
+    console.info(`[ContactPage-Business] SSRF blocked domain for business ${businessId}: ${domain}`);
     // SSRF block is a valid skip — not a transient transport failure.
     return { emailCount: 0, enriched: false, emails: [], fetchCompleted: true };
   }
@@ -332,7 +332,7 @@ export async function crawlFirstPartyContactEmails(
 
   const safe = await isSafeFetchTarget(baseUrl);
   if (!safe) {
-    console.warn(`[ContactPageCrawl] SSRF blocked domain: ${domain}`);
+    console.info(`[ContactPageCrawl] SSRF blocked domain: ${domain}`);
     // SSRF block is a valid skip, not a transient transport failure.
     return { candidates: [], fetchCompleted: true, pagesAttempted: 0 };
   }

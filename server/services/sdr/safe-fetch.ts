@@ -183,7 +183,7 @@ export async function safeFetch(
     // Resolve DNS → validate → pin the IP before connecting
     const resolved = await resolveSafeIp(hostname);
     if (!resolved) {
-      console.warn(`[SafeFetch] SSRF blocked: ${hostname} (unresolvable or private)`);
+      console.info(`[SafeFetch] SSRF blocked: ${hostname} (unresolvable or private)`);
       return null;
     }
 
@@ -199,7 +199,7 @@ export async function safeFetch(
       const timer = setTimeout(() => {
         aborted.value = true;
         req.destroy(new Error("SafeFetch timeout"));
-        console.warn(`[SafeFetch] Timeout: ${currentUrl.href}`);
+        console.info(`[SafeFetch] Timeout: ${currentUrl.href}`);
         resolve(null);
       }, timeoutMs);
 
@@ -286,7 +286,7 @@ export async function safeFetch(
     // Follow redirects (manual)
     if (response.statusCode >= 300 && response.statusCode < 400) {
       if (redirectCount >= MAX_REDIRECTS) {
-        console.warn(`[SafeFetch] Max redirects reached for ${originHostname}`);
+        console.info(`[SafeFetch] Max redirects reached for ${originHostname}`);
         return null;
       }
 
@@ -304,7 +304,7 @@ export async function safeFetch(
 
       // Redirect must stay on same host or subdomain (avoids PSL complexity)
       if (!isAllowedRedirectHost(originHostname, locationUrl.hostname)) {
-        console.warn(
+        console.info(
           `[SafeFetch] Blocked cross-origin redirect: ${currentUrl.href} → ${locationUrl.href}`
         );
         return null;

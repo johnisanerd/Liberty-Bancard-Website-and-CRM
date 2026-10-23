@@ -104,7 +104,7 @@ export async function runJsonLdEnrichment(merchantId: number): Promise<{ enriche
   const normalizedUrl = siteUrl.startsWith("http") ? siteUrl : `https://${siteUrl}`;
   const safe = await isSafeFetchTarget(normalizedUrl);
   if (!safe) {
-    console.warn(`[JSON-LD] Blocked unsafe URL for merchant ${merchantId}: ${siteUrl}`);
+    console.info(`[JSON-LD] Blocked unsafe URL for merchant ${merchantId}: ${siteUrl}`);
     return { enriched: false, emailFound: false, source: "jsonld" };
   }
   const html = await fetchHomepageHtml(siteUrl);
@@ -189,7 +189,7 @@ export async function runJsonLdBusinessEnrichment(
   // SSRF check before any network request
   const safe = await isSafeFetchTarget(websiteUrl);
   if (!safe) {
-    console.warn(`[JSON-LD-Business] SSRF blocked domain for business ${businessId}: ${domain}`);
+    console.info(`[JSON-LD-Business] SSRF blocked domain for business ${businessId}: ${domain}`);
     // SSRF block is a valid skip — not a transient transport failure.
     return { emailFound: false, emailCount: 0, emails: [], fetchCompleted: true };
   }
@@ -197,7 +197,7 @@ export async function runJsonLdBusinessEnrichment(
   // safeFetch returns null on SSRF block, timeout, or DNS failure — transport failure.
   const resp = await safeFetch(websiteUrl, { timeoutMs: 10000 });
   if (!resp) {
-    console.warn(`[JSON-LD-Business] safeFetch transport failure for business ${businessId}: ${domain}`);
+    console.info(`[JSON-LD-Business] safeFetch transport failure for business ${businessId}: ${domain}`);
     return { emailFound: false, emailCount: 0, emails: [], fetchCompleted: false };
   }
   // Non-OK HTTP response (e.g. 404, 503) — fetch completed, site returned an error.
