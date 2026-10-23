@@ -1,4 +1,5 @@
 import { Queue, Worker, DelayedError, type ConnectionOptions, type Job } from "bullmq";
+import { safeDatabaseFailure } from "../lib/lock-trace";
 import { sql } from "drizzle-orm";
 import {withTransactionPhase} from "../lib/transaction-observability";
 import {
@@ -1394,7 +1395,11 @@ export class QueueManager {
         if (status.ownerLive)
           await withTransactionPhase("sfp_runtime_selection_watch_renewal",renewSfpRuntimeDeploymentOwner);
       } catch (error: any) {
-        console.warn(`[QueueManager] Routine-SFP runtime owner unavailable: ${String(error?.message ?? error)}`);
+        // drizzle's "Failed query" message embeds the whole multi-line SQL and bound parameters (owner token included);
+        // each line became a separate error log entry. Log one line with the sanitized failure instead.
+        const raw = String(error?.message ?? error);
+        const summary = /^Failed query:/.test(raw) ? `database query failed ${JSON.stringify(safeDatabaseFailure(error))}` : raw.split("\n")[0].slice(0, 300);
+        console.warn(`[QueueManager] Routine-SFP runtime owner unavailable: ${summary}`);
       }
     };
     await checkAndWake();
