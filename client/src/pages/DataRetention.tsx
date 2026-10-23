@@ -154,7 +154,7 @@ export default function DataRetention() {
             <section data-testid="section-how-to-request">
               <h2 className="text-xl font-display font-semibold text-foreground mb-3">How to Request Deletion</h2>
               <p className="mb-3">
-                You may submit a data request using the form below. We will verify your identity and process your request within 30 days. Some data may be retained where required by applicable law or regulation.
+                You may submit a data request using the form below. We will verify your identity before acting on your request. Some data may be retained where required by applicable law or regulation.
               </p>
 
               {submitted ? (
@@ -167,7 +167,7 @@ export default function DataRetention() {
                     <p className="text-muted-foreground" data-testid="text-request-success-desc">
                       We have recorded your data request. It is received, not yet verified or completed. Our team will review it and contact you at the email address provided; we may ask you to confirm your identity first.
                     </p>
-                    <Button variant="outline" onClick={() => { setSubmitted(false); form.reset(); }} data-testid="button-submit-another">
+                    <Button variant="outline" className="min-h-11" onClick={() => { setSubmitted(false); form.reset(); }} data-testid="button-submit-another">
                       Submit Another Request
                     </Button>
                   </CardContent>
@@ -184,7 +184,7 @@ export default function DataRetention() {
                             <FormItem>
                               <FormLabel>Full Name</FormLabel>
                               <FormControl>
-                                <Input placeholder="Your full name" {...field} data-testid="input-request-name" />
+                                <Input className="min-h-11" placeholder="Your full name" {...field} data-testid="input-request-name" />
                               </FormControl>
                               <FormMessage />
                             </FormItem>
@@ -197,7 +197,7 @@ export default function DataRetention() {
                             <FormItem>
                               <FormLabel>Email Address</FormLabel>
                               <FormControl>
-                                <Input type="email" placeholder="you@example.com" {...field} data-testid="input-request-email" />
+                                <Input className="min-h-11" type="email" placeholder="you@example.com" {...field} data-testid="input-request-email" />
                               </FormControl>
                               <FormMessage />
                             </FormItem>
@@ -211,7 +211,7 @@ export default function DataRetention() {
                               <FormLabel>Request Type</FormLabel>
                               <Select onValueChange={field.onChange} value={field.value}>
                                 <FormControl>
-                                  <SelectTrigger data-testid="select-request-type">
+                                  <SelectTrigger className="min-h-11" data-testid="select-request-type">
                                     <SelectValue placeholder="Select request type" />
                                   </SelectTrigger>
                                 </FormControl>
@@ -239,7 +239,7 @@ export default function DataRetention() {
                             </FormItem>
                           )}
                         />
-                        <Button type="submit" disabled={mutation.isPending} data-testid="button-submit-request">
+                        <Button type="submit" className="min-h-11" disabled={mutation.isPending} data-testid="button-submit-request">
                           {mutation.isPending ? "Submitting..." : "Submit Request"}
                         </Button>
                       </form>

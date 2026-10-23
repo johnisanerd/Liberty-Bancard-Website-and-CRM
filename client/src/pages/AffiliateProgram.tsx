@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useLocation, Link } from "wouter";
 import { SEO } from "@/components/SEO";
 import { Navbar } from "@/components/Navbar";
@@ -78,6 +78,7 @@ export default function AffiliateProgram() {
   const [, navigate] = useLocation();
   const [view, setView] = useState<ViewMode>("info");
   const [submitting, setSubmitting] = useState(false);
+  const signupKey = useRef<string | null>(null);
   const [affiliateCode, setAffiliateCode] = useState<string | null>(null);
   const [dashboardCode, setDashboardCode] = useState("");
   const [stats, setStats] = useState<any>(null);
@@ -118,15 +119,18 @@ export default function AffiliateProgram() {
       toast({ title: "Password must be at least 6 characters", variant: "destructive" });
       return;
     }
+    // One key per submission attempt: a retry after a lost response replays the same occurrence.
+    signupKey.current ??= crypto.randomUUID();
     setSubmitting(true);
     try {
       const utmParams = getStoredUTMParams();
       const res = await fetch("/api/affiliate/signup", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "Idempotency-Key": signupKey.current },
         credentials: "include",
         body: JSON.stringify({ ...form, ...utmParams }),
       });
+      signupKey.current = null;
       const data = await res.json();
       if (!res.ok) {
         toast({ title: data.message || "Signup failed", variant: "destructive" });

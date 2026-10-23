@@ -589,6 +589,15 @@ app.use((req, _res, next) => {
         log(`[BackgroundProfile] ${_bgProfile} — startup seeds and pause-key seeding skipped`);
       }
 
+      // Reviewed wording convergence is a supported versioned repair, not a seed: it runs for every profile except
+      // "off" (selective included) and only rewrites wording; it never enables, activates or sends anything.
+      if (_bgProfile !== "off") {
+        import("./services/reviewed-copy-replacements")
+          .then(({ convergeReviewedCopy }) => convergeReviewedCopy())
+          .then((report) => log(`[CopyConvergence] applied=${report.counts.applied} current=${report.counts.already_current} conflict=${report.counts.conflict} failed=${report.counts.failed} missing=${report.counts.missing}`))
+          .catch((err) => console.warn("[CopyConvergence] Non-critical convergence error:", err?.message));
+      }
+
       // ── Workers start only after pause state is initialized ───────────────
       // If pauseInitialized=false, workers are skipped entirely (fail-closed).
       if (!pauseInitialized) {

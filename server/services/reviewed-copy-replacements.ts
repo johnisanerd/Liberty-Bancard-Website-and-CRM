@@ -1,7 +1,8 @@
 import { storage } from "../storage";
 import { auditChange } from "./audit-change";
 import { WorkflowCommandError } from "./workflow-command-error";
-import { getTemplateWorkspace, publishDraft, saveDraft } from "./message-template-versions";
+import { getTemplateWorkspace, publishDraft, saveDraft, TemplateVersionError } from "./message-template-versions";
+import { lintRules } from "./message-copy-lint";
 
 /**
  * Owner-approved wording replacements from docs/public-journeys/copy-reconciliation.md.
@@ -97,41 +98,119 @@ export function applyTemplateCopyReplacements(name: string, body: string): strin
 }
 
 const SYSTEM_ACTOR = "system:copy-reconciliation";
+export const COPY_CONVERGENCE_SETTING = "reviewedCopyConvergence";
 
-export async function applyReviewedCopyReplacements(): Promise<{ workflows: string[]; templates: string[]; skipped: string[] }> {
-  const result = { workflows: [] as string[], templates: [] as string[], skipped: [] as string[] };
+export type CopyTargetStatus = "applied" | "already_current" | "conflict" | "failed" | "missing" | "retired";
 
-  for (const wf of await storage.getWorkflows()) {
-    if (wf.retiredAt) continue;
-    const { actions, changed } = applyWorkflowCopyReplacements(wf.name, (wf.actions as any[]) ?? []);
-    if (!changed) continue;
+export interface CopyTargetResult {
+  kind: "workflow" | "template";
+  name: string;
+  id?: number;
+  status: CopyTargetStatus;
+  detail?: string;
+  fromVersion?: number;
+  toVersion?: number;
+}
+
+export interface CopyConvergenceReport {
+  ranAt: string;
+  results: CopyTargetResult[];
+  counts: Record<CopyTargetStatus, number>;
+}
+
+const WORKFLOW_TARGETS = [...new Set([...Object.keys(WORKFLOW_EMAIL_EDITS), ...Object.keys(REMOVED_ACTIONS)])];
+const TEMPLATE_TARGETS = Object.keys(TEMPLATE_EDITS);
+
+function remainingAuditedFindings(actions: any[]): string[] {
+  const hits = lintRules(JSON.stringify(actions)).map((f) => f.rule);
+  const removeFn = Object.values(REMOVED_ACTIONS).find((fn) => actions.some(fn));
+  if (removeFn) hits.push("request_review_unverified_url");
+  return [...new Set(hits)];
+}
+
+/**
+ * Supported, versioned convergence of the owner-approved wording. Safe to run any number of times and at any
+ * background profile (it is not part of the seeds): every target is handled independently and reported as applied,
+ * already_current, conflict (operator edit, draft or version change: left untouched), failed, missing or retired.
+ * It never throws for a single target, never sets `enabled`/`isActive`, and never starts a run or a send.
+ */
+export async function convergeReviewedCopy(): Promise<CopyConvergenceReport> {
+  const results: CopyTargetResult[] = [];
+  const workflows = await storage.getWorkflows();
+
+  for (const name of WORKFLOW_TARGETS) {
+    const wf = workflows.find((w) => w.name === name && !w.retiredAt) ?? workflows.find((w) => w.name === name);
+    if (!wf) { results.push({ kind: "workflow", name, status: "missing" }); continue; }
+    if (wf.retiredAt) { results.push({ kind: "workflow", name, id: wf.id, status: "retired" }); continue; }
     try {
-      // `enabled` is deliberately not passed: enabled workflows stay enabled and disabled ones stay disabled.
+      const current = (wf.actions as any[]) ?? [];
+      const { actions, changed } = applyWorkflowCopyReplacements(name, current);
+      if (!changed) {
+        const remaining = remainingAuditedFindings(current);
+        results.push(remaining.length
+          ? { kind: "workflow", name, id: wf.id, status: "conflict", fromVersion: wf.version, detail: `Live wording differs from the reviewed baseline and still has audited findings (${remaining.join(", ")}); not overwritten` }
+          : { kind: "workflow", name, id: wf.id, status: "already_current", fromVersion: wf.version });
+        continue;
+      }
       const updated = await storage.updateWorkflow(wf.id, { actions }, { expectedVersion: wf.version });
       if (updated?.enabled !== wf.enabled) throw new Error(`Workflow ${wf.id} enabled state changed unexpectedly`);
-      result.workflows.push(wf.name);
-    } catch (err) {
-      if (err instanceof WorkflowCommandError) { result.skipped.push(`${wf.name}: ${err.message}`); continue; }
-      throw err;
+      results.push({ kind: "workflow", name, id: wf.id, status: "applied", fromVersion: wf.version, toVersion: updated?.version });
+    } catch (err: any) {
+      results.push({ kind: "workflow", name, id: wf.id, status: err instanceof WorkflowCommandError ? "conflict" : "failed", detail: String(err?.message ?? err).slice(0, 300) });
     }
   }
 
-  for (const tpl of await storage.getMessageTemplates()) {
-    if (!(tpl.name in TEMPLATE_EDITS)) continue;
-    const body = applyTemplateCopyReplacements(tpl.name, tpl.body);
-    if (body === tpl.body) continue;
-    const ws = await getTemplateWorkspace(tpl.id);
-    if (ws.draft) { result.skipped.push(`${tpl.name}: an administrator draft exists; not overwritten`); continue; }
-    await saveDraft(tpl.id, { subject: tpl.subject, body, baseVersion: tpl.contentVersion }, SYSTEM_ACTOR);
-    await publishDraft(tpl.id, { expectedVersion: tpl.contentVersion }, SYSTEM_ACTOR, "system");
-    result.templates.push(tpl.name);
+  const templates = await storage.getMessageTemplates();
+  for (const name of TEMPLATE_TARGETS) {
+    const tpl = templates.find((t) => t.name === name);
+    if (!tpl) { results.push({ kind: "template", name, status: "missing" }); continue; }
+    try {
+      const body = applyTemplateCopyReplacements(name, tpl.body);
+      if (body === tpl.body) {
+        const remaining = lintRules(`${tpl.subject ?? ""}\n${tpl.body}`).map((f) => f.rule);
+        results.push(remaining.length
+          ? { kind: "template", name, id: tpl.id, status: "conflict", fromVersion: tpl.contentVersion, detail: `Live wording differs from the reviewed baseline and still has audited findings (${[...new Set(remaining)].join(", ")}); not overwritten` }
+          : { kind: "template", name, id: tpl.id, status: "already_current", fromVersion: tpl.contentVersion });
+        continue;
+      }
+      const ws = await getTemplateWorkspace(tpl.id);
+      if (ws.draft) { results.push({ kind: "template", name, id: tpl.id, status: "conflict", fromVersion: tpl.contentVersion, detail: "An administrator draft exists; not overwritten" }); continue; }
+      await saveDraft(tpl.id, { subject: tpl.subject, body, baseVersion: tpl.contentVersion }, SYSTEM_ACTOR);
+      const published = await publishDraft(tpl.id, { expectedVersion: tpl.contentVersion }, SYSTEM_ACTOR, "system");
+      results.push({ kind: "template", name, id: tpl.id, status: "applied", fromVersion: tpl.contentVersion, toVersion: published.contentVersion });
+    } catch (err: any) {
+      results.push({ kind: "template", name, id: tpl.id, status: err instanceof TemplateVersionError && err.status === 409 ? "conflict" : "failed", detail: String(err?.message ?? err).slice(0, 300) });
+    }
   }
 
-  if (result.workflows.length || result.templates.length) {
-    await auditChange({
-      actorType: "system", actorId: SYSTEM_ACTOR, action: "reviewed_copy_replacements_applied", entityType: "message_copy",
-      details: { workflows: result.workflows, templates: result.templates, source: "docs/public-journeys/copy-reconciliation.md" },
-    });
+  const counts = { applied: 0, already_current: 0, conflict: 0, failed: 0, missing: 0, retired: 0 } as Record<CopyTargetStatus, number>;
+  for (const r of results) counts[r.status]++;
+  const report: CopyConvergenceReport = { ranAt: new Date().toISOString(), results, counts };
+
+  try {
+    await storage.setSystemSetting(COPY_CONVERGENCE_SETTING, report);
+    if (counts.applied || counts.failed) {
+      await auditChange({
+        actorType: "system", actorId: SYSTEM_ACTOR, action: "reviewed_copy_convergence_run", entityType: "message_copy",
+        details: { counts, results: results.filter((r) => r.status === "applied" || r.status === "failed"), source: "docs/public-journeys/copy-reconciliation.md" },
+      });
+    }
+  } catch (err: any) {
+    console.error("[CopyConvergence] Could not persist result:", err?.message);
   }
-  return result;
+  return report;
+}
+
+export async function getCopyConvergenceStatus(): Promise<CopyConvergenceReport | null> {
+  return ((await storage.getSystemSetting(COPY_CONVERGENCE_SETTING)) as CopyConvergenceReport | null) ?? null;
+}
+
+/** Back-compat summary used by older callers/tests. */
+export async function applyReviewedCopyReplacements(): Promise<{ workflows: string[]; templates: string[]; skipped: string[] }> {
+  const report = await convergeReviewedCopy();
+  return {
+    workflows: report.results.filter((r) => r.kind === "workflow" && r.status === "applied").map((r) => r.name),
+    templates: report.results.filter((r) => r.kind === "template" && r.status === "applied").map((r) => r.name),
+    skipped: report.results.filter((r) => r.status === "conflict" || r.status === "failed").map((r) => `${r.name}: ${r.detail ?? r.status}`),
+  };
 }

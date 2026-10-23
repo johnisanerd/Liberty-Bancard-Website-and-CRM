@@ -12,6 +12,7 @@ import { useToast } from "@/hooks/use-toast";
 interface AckStatus {
   capability: { enabled: boolean; eligibleFrom: string | null; expiresAt: string | null; sourceClasses: string[]; activatedBy: string | null; activatedAt: string | null };
   counts: Record<string, number>;
+  worker?: { state: "reporting" | "stale" | "never_reported"; lastTickAt: string | null; ageSeconds: number | null; lastOutcome: "ok" | "error" | null; lastErrorName: string | null };
   meaning: Record<string, string>;
 }
 
@@ -73,6 +74,16 @@ export function InboundAcknowledgementCard({ canControl }: { canControl: boolean
           <p className="text-sm text-destructive" data-testid="text-ack-error">Receipt status could not be loaded.</p>
         ) : (
           <>
+            {data.worker && (
+              <p className="text-sm" data-testid="text-ack-worker-status">
+                <span className="text-muted-foreground">Receipt worker: </span>
+                {data.worker.state === "reporting"
+                  ? `reporting (last sweep ${data.worker.ageSeconds}s ago${data.worker.lastOutcome === "error" ? `, failed: ${data.worker.lastErrorName ?? "error"}` : ""})`
+                  : data.worker.state === "stale"
+                    ? `not reporting (last sweep ${data.worker.lastTickAt})`
+                    : "has not reported (not running in this environment)"}
+              </p>
+            )}
             <dl className="grid gap-1 text-sm" data-testid="list-ack-counts">
               {Object.keys(STATE_LABELS).map((k) => (
                 <div key={k} className="flex justify-between gap-4 border-b py-1">

@@ -11,6 +11,7 @@ import { Loader2 } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { getApiErrorMessage } from "@/lib/ghlTruth";
 import { useToast } from "@/hooks/use-toast";
+import { FinalEmailPreview, type FinalMessagePreview } from "./MessageFinalPreview";
 import type { MessageTemplate, MessageTemplateVersion } from "@shared/schema";
 
 interface Finding { rule: string; match: string; why: string }
@@ -21,7 +22,7 @@ interface Workspace {
   liveFindings: Finding[];
   draftFindings: Finding[];
 }
-interface Preview { subject: string; html: string; unresolved: string[]; findings: Finding[]; note: string }
+interface Preview { subject: string; html: string; unresolved: string[]; findings: Finding[]; note: string; final?: FinalMessagePreview | null }
 
 const LIST_KEY = ["/api/message-templates"];
 const wsKey = (id: number) => [`/api/message-templates/${id}/workspace`];
@@ -84,20 +85,22 @@ export function MessageTemplateEditor({
 
   useEffect(() => { if (!open) { setSeeded(null); setPreview(null); setPublishFindings([]); } }, [open]);
 
+  const channelForPreview = ws?.template?.channel === "email" ? "email" : ws?.template?.channel === "sms" ? "sms" : undefined;
+
   // Debounced server preview (sample values only; nothing is sent or stored).
   useEffect(() => {
     if (!open || !canEdit || !body.trim()) return;
     const ctl = new AbortController();
     const t = setTimeout(async () => {
       try {
-        const res = await apiRequest("POST", "/api/message-templates/preview", { subject: subject || null, body }, undefined, ctl.signal);
+        const res = await apiRequest("POST", "/api/message-templates/preview", { subject: subject || null, body, channel: channelForPreview }, undefined, ctl.signal);
         setPreview(await res.json());
       } catch (e) {
         if ((e as Error).name !== "AbortError") setPreview(null);
       }
     }, 400);
     return () => { clearTimeout(t); ctl.abort(); };
-  }, [open, canEdit, subject, body]);
+  }, [open, canEdit, subject, body, channelForPreview]);
 
   const refresh = async () => {
     await Promise.all([
@@ -145,7 +148,7 @@ export function MessageTemplateEditor({
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
-      <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto" data-testid="dialog-template-editor">
+      <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto overflow-x-hidden" data-testid="dialog-template-editor">
         <DialogHeader>
           <DialogTitle>{t ? t.name : "Message template"}</DialogTitle>
           <DialogDescription>
@@ -172,7 +175,7 @@ export function MessageTemplateEditor({
 
             <FindingList findings={ws!.liveFindings} testId="findings-live" />
 
-            <div className="grid gap-4 md:grid-cols-2">
+            <div className="grid gap-4 md:grid-cols-2 [&>*]:min-w-0">
               <div className="space-y-3">
                 {t.channel === "email" && (
                   <div className="space-y-1">
@@ -191,10 +194,10 @@ export function MessageTemplateEditor({
                   <>
                     {t.channel === "email" && <p className="text-sm font-medium" data-testid="preview-subject">{preview.subject}</p>}
                     {t.channel === "email"
-                      ? <SandboxedEmail html={preview.html} title="Email preview" />
-                      : <pre className="whitespace-pre-wrap text-sm rounded-md border p-3" data-testid="preview-sms">{preview.html}</pre>}
+                      ? (preview.final ? <FinalEmailPreview final={preview.final} /> : <SandboxedEmail html={preview.html} title="Email preview" />)
+                      : <pre className="whitespace-pre-wrap break-words text-sm rounded-md border p-3" data-testid="preview-sms">{preview.html}</pre>}
                     {preview.unresolved.length > 0 && (
-                      <p className="text-xs text-destructive">Unknown merge fields stay literal: {preview.unresolved.join(", ")}</p>
+                      <p className="text-xs text-destructive">Unsupported merge fields (publishing is blocked and sending would fail): {preview.unresolved.join(", ")}</p>
                     )}
                     <FindingList findings={preview.findings} testId="findings-preview" />
                   </>

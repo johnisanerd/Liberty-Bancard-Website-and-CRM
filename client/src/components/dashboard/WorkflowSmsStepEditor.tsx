@@ -123,7 +123,7 @@ export function WorkflowSmsStepEditor({ target, onClose }: { target: WorkflowSms
                 <div className="text-sm bg-muted/50 rounded-md p-3 whitespace-pre-wrap" data-testid="workflow-sms-preview-text">{preview.text}</div>
                 <p className="text-xs text-muted-foreground" data-testid="workflow-sms-preview-count">{preview.characters} characters with sample values</p>
                 {preview.unresolved.length > 0 && (
-                  <p className="text-xs text-destructive">Unknown merge fields stay literal: {preview.unresolved.join(", ")}</p>
+                  <p className="text-xs text-destructive">Unsupported merge fields (publishing is blocked and sending would fail): {preview.unresolved.join(", ")}</p>
                 )}
                 <FindingList findings={preview.findings} testId="workflow-sms-findings-preview" />
               </>

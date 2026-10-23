@@ -7,10 +7,49 @@ import { getEmailSignatureHtml, getEmailSignaturePlainText, getStoredSignature, 
 import { parse } from "csv-parse/sync";
 import { serverError } from "../utils/server-error";
 import {
-  TemplateVersionError, discardDraft, getTemplateWorkspace, previewTemplate, publishDraft, saveDraft, setTemplateActive,
+  TemplateVersionError, discardDraft, getTemplateWorkspace, previewTemplate, previewTemplateFinal, publishDraft, saveDraft, setTemplateActive,
 } from "../services/message-template-versions";
 
 export function registerTemplatesSettingsRoutes(app: Express) {
+  // === REVIEWED COPY CONVERGENCE (versioned wording repair; never enables, activates or sends) ===
+  app.get("/api/message-copy/convergence", requireRole("admin"), async (_req, res) => {
+    try {
+      const { getCopyConvergenceStatus } = await import("../services/reviewed-copy-replacements");
+      res.json({ last: await getCopyConvergenceStatus() });
+    } catch (err: any) {
+      serverError(res, err);
+    }
+  });
+
+  app.post("/api/message-copy/convergence", requireRole("admin"), async (_req, res) => {
+    try {
+      const { convergeReviewedCopy } = await import("../services/reviewed-copy-replacements");
+      res.json(await convergeReviewedCopy());
+    } catch (err: any) {
+      serverError(res, err);
+    }
+  });
+
+  // === REVIEW OWNER AND DUE TIME for partner applications and privacy requests (recorded policy only) ===
+  app.get("/api/admin/inbound-review-policy", requireRole("admin"), async (_req, res) => {
+    try {
+      const { getReviewPolicy } = await import("../services/inbound-review-policy");
+      res.json({ policy: await getReviewPolicy() });
+    } catch (err: any) {
+      serverError(res, err);
+    }
+  });
+
+  app.put("/api/admin/inbound-review-policy", requireRole("admin"), async (req, res) => {
+    try {
+      const { setReviewPolicy } = await import("../services/inbound-review-policy");
+      res.json({ policy: await setReviewPolicy(req.body?.policy ?? {}, String((req.user as any)?.id ?? "admin")) });
+    } catch (err: any) {
+      if (typeof err?.message === "string" && /^INVALID_REVIEW_/.test(err.message)) return res.status(400).json({ message: err.message });
+      serverError(res, err);
+    }
+  });
+
   // === MESSAGE TEMPLATES ===
   app.get("/api/message-templates", isAuthenticated, async (req, res) => {
     try {
@@ -90,8 +129,8 @@ export function registerTemplatesSettingsRoutes(app: Express) {
   // Preview renders sample values only. It sends nothing and stores nothing.
   app.post("/api/message-templates/preview", requireRole("admin", "manager"), async (req, res) => {
     try {
-      const input = z.object({ subject: z.string().nullable().optional(), body: z.string().min(1) }).strict().parse(req.body);
-      res.json(previewTemplate(input));
+      const input = z.object({ subject: z.string().nullable().optional(), body: z.string().min(1), channel: z.enum(["email", "sms"]).optional() }).strict().parse(req.body);
+      res.json(await previewTemplateFinal(input));
     } catch (err: any) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
       serverError(res, err);

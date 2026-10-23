@@ -40,7 +40,7 @@ const steps = wording.listEmailSteps(on);
 check(steps.length === 2 && steps[0].editable && !steps[1].editable && steps[1].stepIndex === 2, "Email steps are listed with their position; template-backed steps are not editable");
 
 const p = wording.previewWorkflowEmail({ subject: "S", body: "<p>Hi {{contact.firstName}} {{bogus.thing}}</p>" });
-check(p.html.includes("Alex") && p.unresolved.includes("bogus.thing"), "Preview renders sample values and reports unknown merge fields");
+check(p.html.includes("Alex") && p.unresolved.includes("{{bogus.thing}}"), "Preview renders sample values and reports unknown merge fields");
 check((await storage.getWorkflow(on.id))!.version === on.version, "Previewing changes nothing");
 
 const good = { stepIndex: 0, subject: "New subject", body: "<p>Hi {{contact.firstName}}, new wording.</p>" };

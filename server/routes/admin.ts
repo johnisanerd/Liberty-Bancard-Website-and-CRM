@@ -1,5 +1,6 @@
 import type { Express } from "express";
 import { claimPublicInbound } from "../services/public-inbound-intake";
+import { resolveReviewAssignment, reviewMetadata } from "../services/inbound-review-policy";
 import { orchestrateInboundRequest, setInboundRequestLifecycle } from "../services/inbound-request-authority";
 import { describeAckReceiptState } from "../services/inbound-acknowledgement";
 import { publicUser } from "@shared/public-user";
@@ -1203,7 +1204,7 @@ export function registerAdminRoutes(app: Express) {
           type: "alert",
           inboundRequestId: inbound.id,
           commandKey: `inbound:${inbound.id}:review-notification`,
-          metadata: { dataRequestId: request.id, link: "/dashboard/data-requests", eventType: "privacy_request_received", audienceRoles: ["admin"] },
+          metadata: { dataRequestId: request.id, link: "/dashboard/data-requests", eventType: "privacy_request_received", audienceRoles: ["admin"], ...reviewMetadata(await resolveReviewAssignment("privacy_request", inbound.sourceReceivedAt ?? new Date())) },
         } as any);
         const orchestrated = await orchestrateInboundRequest({
           requestId: inbound.id,

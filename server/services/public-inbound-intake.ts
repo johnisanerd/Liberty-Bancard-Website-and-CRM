@@ -19,6 +19,10 @@ export async function claimPublicInbound(
   res: Response,
   source: readonly [string, string],
   payload: unknown,
+  options?: {
+    /** Runs on a replay of an unfinished occurrence to complete its missing local work. */
+    onReplay?: (request: Extract<InboundClaimResult, { outcome: "replay" }>["request"]) => Promise<{ failed?: string; state?: string }>;
+  },
 ): Promise<Extract<InboundClaimResult, { outcome: "claimed" }>["request"] | null> {
   const key = req.header("Idempotency-Key");
   if (!key) {
@@ -44,7 +48,16 @@ export async function claimPublicInbound(
         res.status(409).json({ success: false, replayed: true, error: "PREVIOUS_ATTEMPT_NOT_RECORDED", requestReceipt: claim.request.id, status: state });
         return null;
       }
-      res.status(200).json({ success: true, replayed: true, requestReceipt: claim.request.id, status: claim.request.lifecycleState });
+      let status: string = claim.request.lifecycleState;
+      if (options?.onReplay) {
+        const resumed = await options.onReplay(claim.request);
+        if (resumed.failed) {
+          res.status(409).json({ success: false, replayed: true, error: "PREVIOUS_ATTEMPT_NOT_RECORDED", requestReceipt: claim.request.id, status: "failed" });
+          return null;
+        }
+        if (resumed.state) status = resumed.state;
+      }
+      res.status(200).json({ success: true, replayed: true, requestReceipt: claim.request.id, status });
       return null;
     }
     return claim.request;

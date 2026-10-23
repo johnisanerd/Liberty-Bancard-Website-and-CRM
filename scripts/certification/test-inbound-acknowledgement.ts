@@ -429,6 +429,79 @@ const late = await request("late", { contactId: await contact("l"), receivedAt: 
   check(await ack.describeAckReceiptState(cr) === "not_enabled", "Receipt state is not_enabled once the capability is closed");
 }
 
+// 8. Real SMTP boundary with a fake mail server: delivery override and final-dispatch capability recheck.
+{
+  const net = await import("node:net");
+  const rcpts: string[] = [];
+  const smtp = net.createServer((sock) => {
+    let inData = false; let buf = "";
+    sock.on("error", () => {});
+    sock.write("220 fake ESMTP\r\n");
+    sock.on("data", (chunk) => {
+      buf += chunk.toString("utf8");
+      for (;;) {
+        if (inData) { const end = buf.indexOf("\r\n.\r\n"); if (end < 0) return; buf = buf.slice(end + 5); inData = false; sock.write("250 OK queued\r\n"); continue; }
+        const nl = buf.indexOf("\r\n"); if (nl < 0) return;
+        const line = buf.slice(0, nl); buf = buf.slice(nl + 2);
+        const cmd = line.toUpperCase();
+        if (cmd.startsWith("EHLO")) sock.write("250-fake\r\n250-AUTH PLAIN LOGIN\r\n250 8BITMIME\r\n");
+        else if (cmd.startsWith("AUTH")) sock.write("235 ok\r\n");
+        else if (cmd.startsWith("RCPT TO")) { rcpts.push(line.toLowerCase()); sock.write("250 OK\r\n"); }
+        else if (cmd === "DATA") { inData = true; sock.write("354 go\r\n"); }
+        else if (cmd.startsWith("QUIT")) { sock.write("221 bye\r\n"); sock.end(); }
+        else sock.write("250 OK\r\n");
+      }
+    });
+  });
+  await new Promise<void>((r) => smtp.listen(0, "127.0.0.1", () => r()));
+  process.env.SMTP_HOST = "127.0.0.1"; process.env.SMTP_PORT = String((smtp.address() as any).port);
+  process.env.SMTP_USER = "cert"; process.env.SMTP_PASS = "cert";
+  process.env.UNSUBSCRIBE_TOKEN_SECRET ||= "cert-unsubscribe-secret-0123456789abcdef";
+  delete process.env.EMAIL_OVERRIDE_TO;
+  await ack.setAckCapability({ enabled: true, sourceClasses: ["sales_request"], actor: "cert" });
+  await new Promise((r) => setTimeout(r, 30));
+
+  // 8a. A delivery override must never redirect a receipt: nothing is sent, the attempt is not consumed.
+  const ov = await request("override", { contactId: await contact("ov"), receivedAt: new Date(Date.now() + 3000) });
+  process.env.EMAIL_OVERRIDE_TO = `redirect-${id}@fixture.invalid`;
+  const r1 = await ack.dispatchAcknowledgement(ov.effectId, { now: new Date(Date.now() + 30000) });
+  check(r1.state === "blocked" && (r1 as any).reason === "ack_delivery_override_active" && rcpts.length === 0, "A delivery override refuses the receipt before any mail leaves; nothing reaches the override address");
+  check((await ackRow(ov.effectId)).attempt_count === 0 && (await effectRow(ov.effectId)).state === "held", "Override refusal is a wait: no attempt consumed, effect stays held");
+  delete process.env.EMAIL_OVERRIDE_TO;
+  const r2 = await ack.dispatchAcknowledgement(ov.effectId, { now: new Date(Date.now() + 30000) });
+  check(r2.state === "accepted" && rcpts.length === 1 && rcpts[0].includes(`ack-${id}-ov@fixture.invalid`), "Without the override the receipt goes to the submitted mailbox only");
+
+  // 8b. Capability closed in the window between authorization and provider I/O.
+  const cl = await request("closewin", { contactId: await contact("cw"), receivedAt: new Date(Date.now() + 3500) });
+  await pool.query(`CREATE OR REPLACE FUNCTION cert_close_ack_capability() RETURNS trigger AS $$
+    BEGIN UPDATE system_settings SET value = to_jsonb('{"enabled":false}'::text) WHERE key = '${ack.ACK_CAPABILITY_KEY}'; RETURN NEW; END $$ LANGUAGE plpgsql`);
+  await pool.query(`CREATE TRIGGER cert_close_ack_capability_trg AFTER INSERT ON outbound_inflight_sends FOR EACH ROW EXECUTE FUNCTION cert_close_ack_capability()`);
+  const before = rcpts.length;
+  try {
+    const r3 = await ack.dispatchAcknowledgement(cl.effectId, { now: new Date(Date.now() + 30000) });
+    check(r3.state === "blocked" && (r3 as any).reason === "ack_capability_closed" && rcpts.length === before, "Capability closed after authorization but before provider I/O: nothing is sent");
+    check((await ackRow(cl.effectId)).attempt_count === 0 && (await effectRow(cl.effectId)).state === "held", "Final-dispatch refusal is a wait: no attempt consumed, effect stays held");
+  } finally {
+    await pool.query(`DROP TRIGGER IF EXISTS cert_close_ack_capability_trg ON outbound_inflight_sends`);
+    await pool.query(`DROP FUNCTION IF EXISTS cert_close_ack_capability()`);
+  }
+  check((await pool.query(`SELECT state FROM outbound_pause_control ORDER BY committed_at DESC LIMIT 1`)).rows[0].state === "paused", "Global pause stayed on throughout");
+  smtp.close();
+}
+
+// 9. Worker liveness evidence (F7): status reports never_reported / reporting / stale from the durable heartbeat.
+{
+  await pool.query(`DELETE FROM system_settings WHERE key=$1`, [ack.ACK_WORKER_HEARTBEAT_KEY]);
+  check((await ack.getAckWorkerStatus()).state === "never_reported", "Worker status is never_reported before any sweep records a heartbeat");
+  const now = new Date();
+  await storage.setSystemSetting(ack.ACK_WORKER_HEARTBEAT_KEY, { at: new Date(now.getTime() - 20_000).toISOString(), outcome: "ok" });
+  check((await ack.getAckWorkerStatus(now)).state === "reporting", "A recent heartbeat reports the worker as reporting");
+  await storage.setSystemSetting(ack.ACK_WORKER_HEARTBEAT_KEY, { at: new Date(now.getTime() - 600_000).toISOString(), outcome: "error", errorName: "Boom" });
+  const stale = await ack.getAckWorkerStatus(now);
+  check(stale.state === "stale" && stale.lastOutcome === "error" && stale.lastErrorName === "Boom", "An old heartbeat reports stale with the last failure name");
+  await pool.query(`DELETE FROM system_settings WHERE key=$1`, [ack.ACK_WORKER_HEARTBEAT_KEY]);
+}
+
 console.log(`\nALL CHECKS PASSED — ${checks}/${checks} checks`);
 await pool.end();
 process.exit(0);

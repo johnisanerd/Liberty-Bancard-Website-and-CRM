@@ -1,5 +1,4 @@
 import { storage } from "../storage";
-import { applyReviewedCopyReplacements } from "./reviewed-copy-replacements";
 import workflowsData from "../data/seeds/workflows.json";
 
 const PREBUILT_WORKFLOWS = (workflowsData as any).PREBUILT_WORKFLOWS as any[];
@@ -21,33 +20,8 @@ export async function seedDefaultData() {
       console.log(`Seeded ${newWorkflows.length} workflows`);
     }
 
-    const WORKFLOWS_TO_UPDATE: Record<string, { actions: any[] }> = {
-      "F. Closed Won - Onboarding Kickoff": {
-        actions: PREBUILT_WORKFLOWS.find(w => w.name === "F. Closed Won - Onboarding Kickoff")!.actions,
-      },
-      "G. Go-Live Lifecycle (Day 2/7/14/30)": {
-        actions: PREBUILT_WORKFLOWS.find(w => w.name === "G. Go-Live Lifecycle (Day 2/7/14/30)")!.actions,
-      },
-    };
-
-    for (const [name, updates] of Object.entries(WORKFLOWS_TO_UPDATE)) {
-      const existing = existingWorkflows.find(w => w.name === name);
-      if (existing) {
-        const existingActions = JSON.stringify(existing.actions);
-        const newActions = JSON.stringify(updates.actions);
-        if (existingActions !== newActions) {
-          if (!existing.retiredAt) await storage.updateWorkflow(existing.id, { actions: updates.actions }, { expectedVersion: existing.version });
-          console.log(`[Seed] Updated workflow "${name}" with new actions`);
-        }
-      }
-    }
-
-    // Owner-approved wording replacements (docs/public-journeys/copy-reconciliation.md). Exact-substring edits only;
-    // never toggles a workflow or template.
-    const copy = await applyReviewedCopyReplacements();
-    if (copy.workflows.length || copy.templates.length || copy.skipped.length) {
-      console.log(`[Seed] Reviewed copy replacements: workflows=${copy.workflows.length} templates=${copy.templates.length} skipped=${copy.skipped.length}`);
-    }
+    // Reviewed wording is converged by convergeReviewedCopy() (supported, versioned, runs at startup for every
+    // non-"off" profile). The seed never rewrites existing workflow actions, so operator edits survive restarts.
 
     const existingSlaConfigs = await storage.getSlaConfigs();
     if (existingSlaConfigs.length === 0) {

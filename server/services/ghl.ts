@@ -1438,37 +1438,40 @@ export async function sendTemplatedMessage(params: {
     deal = await storage.getDeal(params.dealId);
   }
 
-  const mergeData: Record<string, any> = {
+  // Same registry/renderer as publication checks and previews. Unsupported or unresolved tokens fail the send
+  // before any provider call; values are escaped for the output format.
+  const { renderMessage } = await import("./message-token-registry");
+  const calendarLink = getCalendarBookingUrl({
+    contactEmail: contact.email ?? undefined,
+    contactName: `${contact.firstName} ${contact.lastName}`,
+  });
+  const extra: Record<string, string> = {};
+  for (const [k, v] of Object.entries(params.extraData ?? {})) {
+    if (typeof v === "string" || typeof v === "number") extra[k] = String(v);
+  }
+  const tokenSource = {
     contact: {
-      firstName: contact.firstName,
-      lastName: contact.lastName,
-      fullName: `${contact.firstName} ${contact.lastName}`,
-      email: contact.email,
-      phone: contact.phone,
-      companyName: contact.companyName || "",
-      vertical: contact.vertical || "",
+      firstName: contact.firstName, lastName: contact.lastName, email: contact.email, phone: contact.phone,
+      companyName: contact.companyName, vertical: contact.vertical,
     },
     deal: deal ? {
-      effectiveRate: deal.effectiveRate || "",
-      totalVolume: deal.totalVolume || "",
-      totalFees: deal.totalFees || "",
-      avgTicket: deal.avgTicket || "",
-      recommendedPath: deal.recommendedPath || "",
-      terminalRecommendation: deal.terminalRecommendation || "",
-      offerPath: deal.offerPath || "",
-      stage: deal.stage,
-      estimatedGrossProfitMonthly: deal.estimatedGrossProfitMonthly || "",
-      merchantTier: deal.merchantTier || "",
-    } : {},
-    calendarLink: getCalendarBookingUrl({
-      contactEmail: contact.email ?? undefined,
-      contactName: `${contact.firstName} ${contact.lastName}`,
-    }) || "[CALENDAR_LINK]",
-    ...params.extraData,
+      effectiveRate: deal.effectiveRate, totalVolume: deal.totalVolume, totalFees: deal.totalFees, avgTicket: deal.avgTicket,
+      recommendedPath: deal.recommendedPath, terminalRecommendation: deal.terminalRecommendation, offerPath: deal.offerPath,
+      stage: deal.stage, estimatedGrossProfitMonthly: deal.estimatedGrossProfitMonthly, merchantTier: deal.merchantTier,
+    } : null,
+    calendarLink,
+    extra,
   };
-
-  const resolvedBody = resolveMergeFields(template.body, mergeData);
-  const resolvedSubject = template.subject ? resolveMergeFields(template.subject, mergeData) : undefined;
+  let resolvedBody: string;
+  let resolvedSubject: string | undefined;
+  try {
+    const bodyFormat = template.channel === "email" ? "html" : "text";
+    resolvedBody = renderMessage("template", template.body, tokenSource, bodyFormat).output;
+    resolvedSubject = template.subject ? renderMessage("template", template.subject, tokenSource, "subject").output : undefined;
+  } catch (err: any) {
+    if (err?.name === "RenderError") return { success: false, error: err.message };
+    throw err;
+  }
 
   if (template.channel === "email") {
     return sendGhlEmail({

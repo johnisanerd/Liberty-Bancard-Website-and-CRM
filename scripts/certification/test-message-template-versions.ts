@@ -71,20 +71,20 @@ check((await versions.setTemplateActive(t.id, false, "admin1")).isActive === fal
 await versions.saveDraft(t.id, { subject: null, body: "<p>x</p>", baseVersion: 2 }, "u1");
 check((await versions.discardDraft(t.id, "u1")).discarded === 1, "Draft can be discarded");
 const prev = versions.previewTemplate({ subject: "Hi {{contact.firstName}}", body: "<p>{{contact.firstName}} {{bogus.value}}</p>" });
-check(prev.subject === "Hi Alex" && prev.unresolved.includes("bogus.value") && prev.findings.some((f) => f.rule === "unknown_merge_variable"), "Preview renders sample values and reports unknown variables");
+check(prev.subject === "Hi Alex" && prev.unresolved.includes("{{bogus.value}}") && prev.findings.some((f) => f.rule === "unknown_merge_variable"), "Preview renders sample values and reports unknown variables");
 
 // ── Owner-approved replacements ─────────────────────────────────────────────
 const seed = JSON.parse(readFileSync("server/data/seeds/workflows.json", "utf8"));
 const targeted = ["B. Estimate Request Intake", "D. No-Show Rescue", "E. Proposal Follow-Up Cadence", "F. Closed Won - Onboarding Kickoff", "G. Go-Live Lifecycle (Day 2/7/14/30)"];
 for (const name of targeted) {
   const wf = seed.PREBUILT_WORKFLOWS.find((w: any) => w.name === name);
-  check(lintCopy(JSON.stringify(wf.actions)).length === 0, `Seed copy for "${name}" has no audited findings`);
+  check(lintCopy(JSON.stringify(wf.actions), "workflow").length === 0, `Seed copy for "${name}" has no audited findings`);
 }
 const dayTpl = seed.DEFAULT_MESSAGE_TEMPLATES.find((x: any) => x.name === "Day 7 Review Request");
-check(lintCopy(dayTpl.body).length === 0, "Seed Day 7 template has no audited findings");
+check(lintCopy(dayTpl.body, "template").length === 0, "Seed Day 7 template has no audited findings");
 const nurtureTpl = seed.DEFAULT_MESSAGE_TEMPLATES.find((x: any) => x.name === "30-Day Nurture Email");
-check(lintCopy(nurtureTpl.body).length === 0, "Seed 30-Day Nurture template has no audited findings");
-check(lintCopy("<p>Your statement analysis is saved and the numbers haven't changed.</p>").some((f) => f.rule === "exists_claim"), "Broadened rule flags the statement-analysis claim");
+check(lintCopy(nurtureTpl.body, "template").length === 0, "Seed 30-Day Nurture template has no audited findings");
+check(lintCopy("<p>Your statement analysis is saved and the numbers haven't changed.</p>", "template").some((f) => f.rule === "exists_claim"), "Broadened rule flags the statement-analysis claim");
 
 const OLD: Record<string, any[]> = {
   "B. Estimate Request Intake": [{ type: "send_ghl_email", subject: "Thanks", body: "<p>Hi</p><p>You can upload it here: [UPLOAD_LINK]</p><p>Or reply to this email with the statement attached. Once we review it, we'll have real numbers.</p>" }],
@@ -102,7 +102,7 @@ for (const name of targeted) {
 }
 await pool.query(`DELETE FROM message_templates WHERE name='Day 7 Review Request'`);
 const OLD_DAY7 = `<p>Hi {{contact.firstName}},</p>\n<p>It's been a week since your switch to Liberty Bancard.</p>\n<p>Would you take 30 seconds to share your experience? <a href="[GOOGLE_REVIEW_LINK]">Leave a Review</a></p>\n<p>Your feedback helps other business owners make better processing decisions.</p>\n<p>Best,<br/>Liberty Bancard Team</p>`;
-check(lintCopy(OLD_DAY7).some((f) => f.rule === "bracket_placeholder"), "Fixture reproduces the audited Day 7 finding");
+check(lintCopy(OLD_DAY7, "template").some((f) => f.rule === "bracket_placeholder"), "Fixture reproduces the audited Day 7 finding");
 const day7 = await storage.createMessageTemplate({ ...dayTpl, body: OLD_DAY7, isActive: true });
 
 const run1 = await replacements.applyReviewedCopyReplacements();
@@ -111,14 +111,14 @@ for (const name of targeted) {
   const wf = (await storage.getWorkflow(before[name].id))!;
   check(wf.enabled === true, `"${name}" stays enabled`);
   check(wf.version === before[name].version + 1, `"${name}" advances one workflow version`);
-  check(lintCopy(JSON.stringify(wf.actions)).length === 0, `"${name}" has no audited findings after replacement`);
+  check(lintCopy(JSON.stringify(wf.actions), "workflow").length === 0, `"${name}" has no audited findings after replacement`);
 }
 const g = (await storage.getWorkflow(before[targeted[4]].id))!;
 check(!(g.actions as any[]).some((a) => a.type === "request_review") && (g.actions as any[]).length === 2, "Workflow G drops only the review request");
 const d = (await storage.getWorkflow(before[targeted[1]].id))!;
 check(JSON.stringify(d.actions).includes("review your statement, you can upload it here") && !JSON.stringify(d.actions).includes("saved your analysis"), "Workflow D uses the reviewed upload wording");
 const day7After = (await storage.getMessageTemplate(day7.id))!;
-check(day7After.isActive === true && day7After.contentVersion === 2 && lintCopy(day7After.body).length === 0, "Day 7 template is published as a new version and stays active");
+check(day7After.isActive === true && day7After.contentVersion === 2 && lintCopy(day7After.body, "template").length === 0, "Day 7 template is published as a new version and stays active");
 
 const run2 = await replacements.applyReviewedCopyReplacements();
 check(run2.workflows.length === 0 && run2.templates.length === 0, "A second run changes nothing (idempotent)");

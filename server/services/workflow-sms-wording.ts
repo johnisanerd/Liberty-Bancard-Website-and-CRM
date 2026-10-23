@@ -1,6 +1,7 @@
 import { storage } from "../storage";
 import { WorkflowCommandError } from "./workflow-command-error";
-import { lintCopy, renderPreview, type CopyFinding } from "./message-copy-lint";
+import { lintCopy, type CopyFinding } from "./message-copy-lint";
+import { previewMessage } from "./message-token-registry";
 
 /**
  * Wording edits for inline SMS steps (send_ghl_sms with its own body) in a workflow.
@@ -31,7 +32,7 @@ export function listSmsSteps(workflow: { actions: unknown }): WorkflowSmsStep[] 
     if (a?.type !== "send_ghl_sms") return;
     const body = typeof a.body === "string" ? a.body : "";
     const templateId = a.templateId ? Number(a.templateId) : null;
-    out.push({ stepIndex, body, templateId, editable: !templateId, findings: lintCopy(body) });
+    out.push({ stepIndex, body, templateId, editable: !templateId, findings: lintCopy(body, "workflow") });
   });
   return out;
 }
@@ -51,13 +52,14 @@ export async function getWorkflowSmsWorkspace(workflowId: number) {
 }
 
 export function previewWorkflowSms(input: { body: string }) {
-  const body = renderPreview(input.body);
+  const preview = previewMessage("workflow", input, "text");
   return {
-    text: body.rendered,
-    characters: body.rendered.length,
-    unresolved: body.unresolved,
-    findings: lintCopy(input.body),
-    note: "Rendered with sample values. Nothing is sent or stored by previewing.",
+    text: preview.body,
+    characters: preview.body.length,
+    unresolved: preview.unresolved,
+    personas: preview.personas,
+    findings: lintCopy(input.body, "workflow"),
+    note: "Rendered by the same renderer that sends workflow steps, with sample values. Nothing is sent or stored by previewing.",
   };
 }
 
@@ -77,7 +79,7 @@ export async function publishWorkflowSmsStep(
   if (current.templateId) {
     throw new WorkflowSmsWordingError("This step sends a stored template. Edit the wording on that template instead.", 409);
   }
-  const findings = lintCopy(input.body);
+  const findings = lintCopy(input.body, "workflow");
   if (findings.length) {
     throw new WorkflowSmsWordingError("The wording still contains text that cannot be sent. Fix these before publishing.", 422, findings);
   }

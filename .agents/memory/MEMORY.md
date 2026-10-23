@@ -192,3 +192,7 @@
 - [Actor-change browser trigger](actor-change-browser-trigger.md) — auth revalidation via Date.now skew + offline/online; hold strips abort signal; release old before fresh.
 - [Inbound acknowledgement owner](inbound-ack-owner.md) — default-closed per-message lease re-verified from durable rows; capability is not unpause; no historical catch-up.
 - [Message wording publication](message-wording-publication.md) — draft, publish, activate and receipt enablement are separate; unsendable wording is blocked.
+- [Message copy convergence](message-copy-convergence.md) — wording applied by convergeReviewedCopy, not seeds; one token registry/strict renderer.
+- [Handoff vs provider completion](handoff-vs-completion.md) — missing GHL id = durable wait; projection upsert is the consumable handoff.
+- [Partner intake & review policy](partner-application-review-policy.md) — shared resume routine; owner/due only from recorded policy; no public timing promises.
+- [Ack override refusal & worker liveness](ack-worker-liveness.md) — override refused, final recheck, heartbeat in status; new certs are selected suites only.

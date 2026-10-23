@@ -2,7 +2,8 @@ import { and, desc, eq } from "drizzle-orm";
 import { db } from "../db";
 import { messageTemplates, messageTemplateVersions } from "@shared/schema";
 import { auditChange } from "./audit-change";
-import { lintCopy, renderPreview, type CopyFinding } from "./message-copy-lint";
+import { lintCopy, type CopyFinding } from "./message-copy-lint";
+import { previewMessage } from "./message-token-registry";
 
 /**
  * Four deliberately separate content/purpose commands exist for outbound wording:
@@ -19,7 +20,7 @@ export class TemplateVersionError extends Error {
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
-const lintTemplate = (subject: string | null | undefined, body: string) => lintCopy(`${subject ?? ""}\n${body}`);
+const lintTemplate = (subject: string | null | undefined, body: string) => lintCopy(`${subject ?? ""}\n${body}`, "template");
 
 async function lockTemplate(tx: Tx, id: number) {
   const [t] = await tx.select().from(messageTemplates).where(eq(messageTemplates.id, id)).for("update");
@@ -52,15 +53,74 @@ export async function getTemplateWorkspace(templateId: number) {
 }
 
 export function previewTemplate(input: { subject?: string | null; body: string }) {
-  const subject = renderPreview(input.subject ?? "");
-  const body = renderPreview(input.body);
+  const preview = previewMessage("template", input, "html");
   return {
-    subject: subject.rendered,
-    html: body.rendered,
-    unresolved: [...new Set([...subject.unresolved, ...body.unresolved])],
+    subject: preview.subject,
+    html: preview.body,
+    unresolved: preview.unresolved,
+    personas: preview.personas,
     findings: lintTemplate(input.subject, input.body),
-    note: "Rendered with sample values. Nothing is sent or stored by previewing.",
+    note: "Rendered by the same renderer that sends stored templates, with sample values. Nothing is sent or stored by previewing.",
   };
+}
+
+export interface FinalMessagePreview {
+  channel: "email" | "sms";
+  subject: string | null;
+  /** Exactly what the send path hands to the provider for an email: body plus the marketing compliance footer. */
+  html: string;
+  text: string;
+  htmlImagesOff: string;
+  sender: { mode: "provider_default"; note: string };
+  replyTo: { mode: "not_forwarded"; note: string };
+  logoCount: number;
+  signaturePresent: boolean;
+  footer: { state: "applied" | "unavailable"; reason?: string };
+  note: string;
+}
+
+/**
+ * The final message as the stored-template send path assembles it. Uses the same footer renderer as the send (with a
+ * sample unsubscribe link), so the previewed footer, plain-text part and sender facts are the real ones. When the
+ * compliance prerequisites are missing the preview says so, because a real send would fail the same way.
+ */
+export async function previewTemplateFinal(input: { subject?: string | null; body: string; channel?: "email" | "sms" }) {
+  const base = previewTemplate(input);
+  if (input.channel !== "email") return { ...base, final: null as FinalMessagePreview | null };
+  const { renderEmailPartsForPurpose, getCommercialComplianceConfig } = await import("./can-spam-footer");
+  const loader = async () => {
+    const real = await getCommercialComplianceConfig();
+    return real.ok ? { ok: true as const, mailingAddress: real.mailingAddress, unsubscribeUrl: "https://libertybancard.com/unsubscribe?t=SAMPLE-TOKEN" } : real;
+  };
+  const sender = { mode: "provider_default" as const, note: "Stored templates are sent through the provider with its configured location sender; the template does not choose a From address." };
+  const replyTo = { mode: "not_forwarded" as const, note: "The provider conversation API used for stored templates does not forward a Reply-To header." };
+  const logoCount = (base.html.match(/<img\b[^>]*logo[^>]*>/gi) ?? []).length;
+  const signaturePresent = /data-signature|Liberty Bancard<\/|1-?\(?\d{3}\)?[-\s.]\d{3}[-\s.]\d{4}|954-266-8214/i.test(base.html);
+  const imagesOff = (html: string) => html.replace(/<img\b[^>]*>/gi, (tag) => {
+    const alt = /alt\s*=\s*"([^"]*)"/i.exec(tag)?.[1];
+    return `<span style="border:1px dashed #999;padding:2px 6px;font-size:12px;color:#555;">${alt ? `[image: ${alt}]` : "[image]"}</span>`;
+  });
+  try {
+    const parts = await renderEmailPartsForPurpose({ html: base.html, purpose: "marketing_outreach", complianceLoader: loader });
+    return {
+      ...base,
+      final: {
+        channel: "email" as const, subject: base.subject, html: parts.html, text: parts.text, htmlImagesOff: imagesOff(parts.html),
+        sender, replyTo, logoCount, signaturePresent, footer: { state: "applied" as const },
+        note: "Sample values and a sample unsubscribe link. Nothing is sent or stored by previewing.",
+      } as FinalMessagePreview,
+    };
+  } catch (err) {
+    return {
+      ...base,
+      final: {
+        channel: "email" as const, subject: base.subject, html: base.html, text: "", htmlImagesOff: imagesOff(base.html),
+        sender, replyTo, logoCount, signaturePresent,
+        footer: { state: "unavailable" as const, reason: err instanceof Error ? err.message : "COMPLIANCE_CONFIGURATION_UNAVAILABLE" },
+        note: "The required compliance footer cannot be built, so a real send of this template would fail until that is configured.",
+      } as FinalMessagePreview,
+    };
+  }
 }
 
 export async function saveDraft(templateId: number, input: { subject: string | null; body: string; baseVersion: number }, actorId: string) {

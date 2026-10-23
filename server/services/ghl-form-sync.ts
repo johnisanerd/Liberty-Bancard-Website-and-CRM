@@ -33,7 +33,8 @@ function isGhlReady(): boolean {
   return isGhlConfigured() || isSdrGhlConfigured();
 }
 
-async function enqueueGhlContactProjection(contactId: number): Promise<void> {
+/** Idempotent durable handoff: one consumable pending projection per contact, claimed by the projection worker. */
+export async function enqueueGhlContactProjection(contactId: number): Promise<void> {
   await db.insert(contactProviderProjections).values({
     contactId,
     provider: "ghl",

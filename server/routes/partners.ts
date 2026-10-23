@@ -333,7 +333,9 @@ ${getEmailSignatureHtml("partners")}
 
       // Claim the occurrence before any write. The password is never part of the fingerprint input.
       const { password: _omitPassword, ...claimPayload } = req.body;
-      const inbound = await claimPublicInbound(req, res, ["website_form", "partner_application"], claimPayload);
+      const inbound = await claimPublicInbound(req, res, ["website_form", "partner_application"], claimPayload, {
+        onReplay: async (request) => (await import("../services/partner-application-intake")).resumePartnerApplication(request, "partner"),
+      });
       if (!inbound) return;
       const failApplication = async (status: number, body: Record<string, unknown>) => {
         await setInboundRequestLifecycle(inbound.id, "failed", `HTTP_${status}`).catch(() => undefined);
@@ -387,63 +389,11 @@ ${getEmailSignatureHtml("partners")}
         notes: notesText || null,
       });
 
-      // Local outcomes are awaited so the response reflects what is durably recorded. The partner row above is the
-      // application of record; the contact record and the review notification below are local-only writes.
-      let localContactId: number | null = null;
-      let contactRecorded = false;
-      try {
-        const partnerContact = await createContactLocalFirst({
-          firstName,
-          lastName: lastName || "",
-          email: email.toLowerCase(),
-          phone,
-          companyName: companyName || undefined,
-          status: "Active",
-          tags: ["src_website", "iso_partner_application", mappedType],
-        });
-        localContactId = partnerContact?.id ?? null;
-        contactRecorded = !!partnerContact;
-      } catch (err) {
-        logOperationalDiagnostic("partner_application_sync", err, "contact_create_failed", { partnerId: partner.id });
-        // An existing CRM contact with this exact address is the same mailbox: link it, never modify it.
-        try {
-          const existingContact = await storage.getContactByEmail(email.toLowerCase());
-          if (existingContact) { localContactId = existingContact.id; contactRecorded = true; }
-        } catch (lookupErr) {
-          logOperationalDiagnostic("partner_application_sync", lookupErr, "contact_lookup_failed", { partnerId: partner.id });
-        }
-      }
-
-      // Review ownership: an admin-audience in-app notification linked to this request occurrence. The commandKey makes
-      // a replay create exactly one. No deadline is promised because no partner-review policy exists.
-      let reviewNotified = false;
-      let emailReceipt: "queued" | "not_enabled" = "not_enabled";
-      try {
-        const notification = await storage.createNotification({
-          channel: "internal",
-          title: "New partner application to review",
-          message: `${(companyName || `${firstName} ${lastName || ""}`).toString().trim().slice(0, 120)} applied as ${mappedType.replace(/_/g, " ")}.`,
-          type: "alert",
-          inboundRequestId: inbound.id,
-          commandKey: `inbound:${inbound.id}:review-notification`,
-          metadata: {
-            partnerId: partner.id,
-            link: "/dashboard/referral-program",
-            eventType: "partner_application_received",
-            audienceRoles: ["admin"],
-          },
-        } as any);
-        const orchestrated = await orchestrateInboundRequest({
-          requestId: inbound.id,
-          contactId: localContactId,
-          notificationId: notification.id,
-        });
-        reviewNotified = orchestrated.lifecycleState !== "review_required";
-        emailReceipt = await describeAckReceiptState(inbound.id);
-      } catch (err) {
-        logOperationalDiagnostic("partner_application_review", err, "review_notification_failed", { partnerId: partner.id });
-        await setInboundRequestLifecycle(inbound.id, "review_required", "REVIEW_NOTIFICATION_FAILED").catch(() => undefined);
-      }
+      // Local work (contact via the partner source contract, review notification with owner/due time, request
+      // orchestration) is completed by one repeatable routine, so a replay of a partial occurrence resumes it.
+      const { completePartnerApplicationLocal } = await import("../services/partner-application-intake");
+      const completed = await completePartnerApplicationLocal(inbound, partner as any, "partner");
+      const { localContactId, contactRecorded, reviewNotified, emailReceipt } = completed;
 
       if (localContactId) {
         syncFormSubmissionToGhl({

@@ -254,6 +254,11 @@ async function sendSmtpEmailCore(params: {
     if (params.inboundAck && (params.seedTest || isCommercial)) {
       return { success: false, error: "ACK_PURPOSE_MISMATCH", outcome: "unsent" };
     }
+    // An occurrence-bound receipt is authorized for the exact mailbox the requester submitted. A delivery override
+    // would silently send it somewhere else (and mark the occurrence acknowledged), so it fails closed instead.
+    if (params.inboundAck && process.env.EMAIL_OVERRIDE_TO?.trim()) {
+      return { success: false, error: "ACK_DELIVERY_OVERRIDE_ACTIVE", outcome: "unsent" };
+    }
     const seedDecision = params.seedTest
       ? await authorizeSeedSend({ ...params, ...params.seedTest, receiptKey: params.seedTest.receiptKey })
       : params.inboundAck
@@ -278,6 +283,13 @@ async function sendSmtpEmailCore(params: {
       if (!epochOk) {
         return { success: false, error: "Outbound paused: epoch changed before send", ...(seedDecision ? { outcome: "unsent" as const } : {}) };
       }
+      if (params.inboundAck) {
+        // Final dispatch boundary for a receipt: the purpose capability (closed/expired/revoked) and every durable
+        // binding are verified again, not only the global pause epoch. This never lifts or relaxes the pause.
+        const { verifyAckTransportCapability } = await import("./inbound-acknowledgement");
+        const final = await verifyAckTransportCapability(params, params.inboundAck);
+        if (!final.ok) return { success: false, error: final.error, outcome: "unsent" };
+      }
       return await _sendSmtpEmailInner({ ...params, html: rendered.html, text: rendered.text }, rendered.complianceConfig);
     } finally {
       deregisterInflight(token);
@@ -300,6 +312,7 @@ async function _sendSmtpEmailInner(params: {
   unsubscribeUrl?: string;
   contactId?: number;
   commercialPurpose?: "marketing_outreach" | "transactional_response";
+  inboundAck?: { effectId: string; attemptToken: string };
 }, complianceConfig?: Awaited<ReturnType<typeof getCommercialComplianceConfig>>): Promise<SmtpSendResult> {
   const transport = getTransporter();
   if (!transport) {
@@ -354,6 +367,11 @@ async function _sendSmtpEmailInner(params: {
 
   // Test-mode recipient override — set EMAIL_OVERRIDE_TO to redirect all mail to one address
   const overrideTo = process.env.EMAIL_OVERRIDE_TO?.trim();
+  if (overrideTo && params.inboundAck) {
+    // Defense in depth: the gate above already refuses; the recipient checked by the acknowledgement authority must
+    // be the recipient the provider receives.
+    return { success: false, error: "ACK_DELIVERY_OVERRIDE_ACTIVE", outcome: "unsent" };
+  }
   const effectiveTo = overrideTo || params.to;
   const effectiveSubject = overrideTo
     ? `[TEST → ${params.to}] ${params.subject}`

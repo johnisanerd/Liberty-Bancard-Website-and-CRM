@@ -40,7 +40,9 @@ import { recordPewcDecision } from "../services/consent-evidence";
 import { syncAffiliateSignupToGhl } from "../services/ghl-form-sync";
 import { sanitizeFirstName } from "../services/contact-name-utils";
 import { publicLeadRateLimit } from "../middleware/public-rate-limit";
-import { serverError } from "../utils/server-error";
+import { serverError, logOperationalDiagnostic } from "../utils/server-error";
+import { claimPublicInbound } from "../services/public-inbound-intake";
+import { completePartnerApplicationLocal } from "../services/partner-application-intake";
 import { registerPersistedCsvProcessor, processPersistedCsvImport } from "../services/csv-import-processor";
 import { processCanonicalImportRecoveryTick } from "../services/canonical-import-recovery-worker";
 import { canonicalRecoverableImportAccountingSql } from "../services/canonical-import-recovery-contract";
@@ -552,13 +554,24 @@ Guidelines:
       if (!password || typeof password !== "string" || password.length < 6) {
         return res.status(400).json({ message: "Password must be at least 6 characters." });
       }
+      // Claim the occurrence before any write (password excluded from the fingerprint input). The affiliate signup
+      // shares the partner-application source contract; the applicant does not need a provider contact id for any receipt.
+      const { password: _omitPassword, ...claimPayload } = req.body;
+      const inbound = await claimPublicInbound(req, res, ["website_form", "partner_application"], claimPayload, {
+        onReplay: async (request) => (await import("../services/partner-application-intake")).resumePartnerApplication(request, "affiliate"),
+      });
+      if (!inbound) return;
+      const failSignup = async (status: number, body: Record<string, unknown>) => {
+        await setInboundRequestLifecycle(inbound.id, "failed", `HTTP_${status}`).catch(() => undefined);
+        return res.status(status).json(body);
+      };
       const existing = await storage.getPartnerByEmail(email.toLowerCase());
       if (existing) {
-        return res.status(409).json({ message: "An affiliate account with this email already exists." });
+        return failSignup(409, { message: "An affiliate account with this email already exists." });
       }
       const existingUser = await authStorage.getUserByEmail(email.toLowerCase());
       if (existingUser) {
-        return res.status(409).json({ message: "An account with this email already exists." });
+        return failSignup(409, { message: "An account with this email already exists." });
       }
       let code = "";
       for (let attempt = 0; attempt < 5; attempt++) {
@@ -588,29 +601,33 @@ Guidelines:
         role: "affiliate",
         authProvider: "local",
       });
-      const affiliateContact = await createContactLocalFirst({
-        firstName,
-        lastName: lastName || "",
-        email: email.toLowerCase(),
-        phone,
-        companyName: companyName || undefined,
-        status: "Active",
-        tags: ["src_website", "affiliate"],
-      }).catch(() => null);
+      // Contact (partner source contract), review notification with owner/due time and request orchestration run
+      // through one repeatable routine. A failure is recorded on the occurrence (review_required) and resumed on replay;
+      // it is no longer swallowed. The contact writer records durable provider work, so no immediate GHL id is needed.
+      const completed = await completePartnerApplicationLocal(inbound, partner as any, "affiliate");
+      const affiliateContact = completed.localContactId ? await storage.getContact(completed.localContactId) : null;
 
       if (affiliateContact) {
+        // Supplemental referral-code form sync is best-effort; the durable projection from the contact writer is the
+        // authoritative handoff. Provider completion belongs to the GHL companion work.
         syncFormSubmissionToGhl({
           contactId: affiliateContact.id,
           leadSource: "affiliate",
           formData: {
             lb_referral_code: partner.affiliateCode || "",
           },
-        }).catch(err => console.error("GHL affiliate sync error:", err));
+        }).catch(err => logOperationalDiagnostic("affiliate_signup_sync", err, "form_sync_failed", { partnerId: partner.id }));
         if (affiliateContact.ghlContactId) {
           const { enrollInGhlWorkflowCompliant } = await import("../services/ghl-workflows");
           enrollInGhlWorkflowCompliant({ workflowKey: "affiliate_welcome", ghlContactId: affiliateContact.ghlContactId, contactId: affiliateContact.id, metadata: { affiliateCode: partner.affiliateCode || code, partnerId: partner.id } }).catch(err =>
-            console.error("[Affiliate] GHL affiliate_welcome enrollment error:", err)
+            logOperationalDiagnostic("affiliate_signup_sync", err, "welcome_enrollment_failed", { partnerId: partner.id })
           );
+        } else {
+          // Not a failure: the welcome waits for a provider contact id, and the receipt does not depend on it.
+          await storage.createAuditLog({
+            action: "affiliate_welcome_waiting_for_provider_contact", entityType: "partner", entityId: partner.id,
+            details: { contactId: affiliateContact.id, requestReceipt: inbound.id },
+          } as any).catch(() => undefined);
         }
       }
       syncAffiliateSignupToGhl({
@@ -620,18 +637,20 @@ Guidelines:
         phone,
         companyName: companyName || undefined,
         affiliateCode: partner.affiliateCode || code,
-      }).catch(err => console.error("GHL affiliate sync error:", err));
+      }).catch(err => logOperationalDiagnostic("affiliate_signup_sync", err, "affiliate_sync_failed", { partnerId: partner.id }));
 
       req.logIn(user, (loginErr) => {
         if (loginErr) {
           return res.status(201).json({
             message: "Welcome to the Liberty Bancard Affiliate Program!",
             affiliateCode: partner.affiliateCode,
+            receipt: { accountCreated: true, contactRecorded: completed.contactRecorded, requestReceipt: inbound.id },
           });
         }
         return res.status(201).json({
           message: "Welcome to the Liberty Bancard Affiliate Program!",
           affiliateCode: partner.affiliateCode,
+          receipt: { accountCreated: true, contactRecorded: completed.contactRecorded, requestReceipt: inbound.id },
         });
       });
     } catch (err: any) {

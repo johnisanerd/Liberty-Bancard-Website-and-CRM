@@ -131,7 +131,7 @@ export function WorkflowEmailStepEditor({ target, onClose }: { target: WorkflowE
                 {/* Empty sandbox: no scripts, forms, navigation or same-origin access for the previewed markup. */}
                 <iframe title="Workflow email preview" sandbox="" srcDoc={preview.html} className="w-full h-64 rounded-md border bg-white" />
                 {preview.unresolved.length > 0 && (
-                  <p className="text-xs text-destructive">Unknown merge fields stay literal: {preview.unresolved.join(", ")}</p>
+                  <p className="text-xs text-destructive">Unsupported merge fields (publishing is blocked and sending would fail): {preview.unresolved.join(", ")}</p>
                 )}
                 <FindingList findings={preview.findings} testId="workflow-email-findings-preview" />
               </>

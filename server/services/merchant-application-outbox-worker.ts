@@ -280,12 +280,10 @@ async function handleConsentRecord(row: OutboxRow): Promise<void> {
 }
 
 async function handleGhlSync(row: OutboxRow): Promise<void> {
-  // Honour the global outbound pause: GHL CRM sync is an outbound operation.
-  // Using the canonical authority so the static scanner detects this gate.
-  // contact_link / consent_record / risk_scan do NOT call this check — they
-  // are pure DB operations and must run regardless of pause state.
-  await assertOutboundNotPaused();
-
+  // This step only records the durable contact-projection handoff (an idempotent local upsert consumed by the
+  // projection worker). Recording it must NOT depend on the email/outbound pause: the pause is enforced where the
+  // provider is actually called, and a handoff skipped here would never be recorded at all. Handoff, provider
+  // completion and message completion are separate facts; this handler asserts only the first.
   const appId = row.applicationId;
   const [appRow] = await db
     .select({ contactId: merchantApplications.contactId })
@@ -379,6 +377,9 @@ async function handleApprovalEmail(row: OutboxRow): Promise<void> {
   // Transient contact/GHL/send failures propagate here and keep the row retryable.
   const result = await sendApplicationApprovedEmail(input);
 
+  // No GHL contact id yet is a durable wait, not a completed skip: completing here would lose the message.
+  if (result.status === "skipped" && result.reason === "no_ghl_contact") throw new OutboxWaitError("ghl_contact_pending");
+
   if (result.status === "sent") {
     // Evidence written ONLY when the email was actually sent.
     await storage.createAuditLog({
@@ -427,6 +428,9 @@ async function handleDeclineEmail(row: OutboxRow): Promise<void> {
   const { sendApplicationDeclinedEmail } = await import("./merchant-application-status");
   // Transient contact/GHL/send failures propagate here and keep the row retryable.
   const result = await sendApplicationDeclinedEmail(input);
+
+  // No GHL contact id yet is a durable wait, not a completed skip: completing here would lose the message.
+  if (result.status === "skipped" && result.reason === "no_ghl_contact") throw new OutboxWaitError("ghl_contact_pending");
 
   if (result.status === "sent") {
     await storage.createAuditLog({
@@ -605,4 +609,4 @@ export function triggerOutboxTick(): void {
   if (typeof t.unref === "function") t.unref();
 }
 
-export const __test__ = { backoffMs, MAX_ATTEMPTS, STALE_LOCK_MS, scrubError };
+export const __test__ = { backoffMs, MAX_ATTEMPTS, STALE_LOCK_MS, scrubError, tick };

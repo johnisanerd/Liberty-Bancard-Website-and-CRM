@@ -733,7 +733,7 @@ export default function ISOPartnerProgram() {
               Ready to Start Earning Residuals?
             </h2>
             <p className="text-primary-foreground/80 mb-6 max-w-xl mx-auto">
-              Join Liberty Bancard's ISO and partner network. Apply today and start referring merchants within 24 hours.
+              Join Liberty Bancard's ISO and partner network. Apply today. Our team reviews every application and contacts you at the email you provide.
             </p>
             <a href="#apply">
               <Button

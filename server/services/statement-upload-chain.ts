@@ -480,11 +480,14 @@ export async function runStatementUploadChain(
   // ────────────────────────────────────────────────────────────────────────────
   // STEP 7 — GHL projection requested for statement metadata
   // ────────────────────────────────────────────────────────────────────────────
-  // Records the durable handoff identity for the statement metadata. It does not enqueue or perform a provider
-  // write: projection claims, retries and provider results belong to the GHL projection owner, and this step is
-  // never reported as provider-complete. Replays reuse the same handoff identity.
+  // Writes the durable, consumable handoff: the same idempotent pending contact projection the merchant application
+  // path uses. The projection worker owns claims, retries, a missing GHL contact id (a wait, not a failure) and the
+  // pause-gated provider write. This step is never reported as provider-complete. Replays reuse the one pending
+  // projection and the same handoff identity.
   try {
     const handoffKey = `statement-projection:${input.contactId}:${documentId ?? input.inboundRequestId ?? "no-document"}`;
+    const { enqueueGhlContactProjection } = await import("./ghl-form-sync");
+    await enqueueGhlContactProjection(input.contactId);
     const existing = await db.execute(sql`
       SELECT 1 FROM audit_logs
       WHERE action = 'statement_projection_handoff_recorded' AND details->>'handoffKey' = ${handoffKey}
@@ -496,13 +499,14 @@ export async function runStatementUploadChain(
         entityType: "contact",
         entityId: input.contactId,
         actorType: "system",
-        details: { handoffKey, documentId: documentId ?? null, dealId, providerWriteAttempted: false, state: "handed_off_not_enqueued" },
+        details: { handoffKey, documentId: documentId ?? null, dealId, providerWriteAttempted: false, state: "enqueued_pending_projection" },
       } as any);
     }
     steps.push(makeStep(7, "Projection handoff recorded", true, undefined, {
       state: "handed_off",
       handoffKey,
       reused: alreadyRecorded,
+      consumableCommand: "contact_provider_projection:pending",
       providerWriteAttempted: false,
       providerComplete: false,
     }));

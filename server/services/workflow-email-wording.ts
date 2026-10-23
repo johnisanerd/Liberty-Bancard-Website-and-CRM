@@ -1,6 +1,7 @@
 import { storage } from "../storage";
 import { WorkflowCommandError } from "./workflow-command-error";
-import { lintCopy, renderPreview, type CopyFinding } from "./message-copy-lint";
+import { lintCopy, type CopyFinding } from "./message-copy-lint";
+import { previewMessage } from "./message-token-registry";
 
 /**
  * Wording edits for inline email steps (send_ghl_email with its own subject/body) in a workflow.
@@ -12,7 +13,7 @@ export class WorkflowEmailWordingError extends Error {
   constructor(message: string, public status: number, public findings?: CopyFinding[]) { super(message); }
 }
 
-const lintStep = (subject: string | null | undefined, body: string) => lintCopy(`${subject ?? ""}\n${body}`);
+const lintStep = (subject: string | null | undefined, body: string) => lintCopy(`${subject ?? ""}\n${body}`, "workflow");
 
 export interface WorkflowEmailStep {
   stepIndex: number;
@@ -55,14 +56,14 @@ export async function getWorkflowEmailWorkspace(workflowId: number) {
 }
 
 export function previewWorkflowEmail(input: { subject?: string | null; body: string }) {
-  const subject = renderPreview(input.subject ?? "");
-  const body = renderPreview(input.body);
+  const preview = previewMessage("workflow", input, "html");
   return {
-    subject: subject.rendered,
-    html: body.rendered,
-    unresolved: [...new Set([...subject.unresolved, ...body.unresolved])],
+    subject: preview.subject,
+    html: preview.body,
+    unresolved: preview.unresolved,
+    personas: preview.personas,
     findings: lintStep(input.subject, input.body),
-    note: "Rendered with sample values. Nothing is sent or stored by previewing.",
+    note: "Rendered by the same renderer that sends workflow steps, with sample values. Nothing is sent or stored by previewing.",
   };
 }
 

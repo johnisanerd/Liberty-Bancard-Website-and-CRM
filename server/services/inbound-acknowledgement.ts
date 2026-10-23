@@ -468,7 +468,8 @@ export async function dispatchAcknowledgement(effectId: string, deps?: { send?: 
     return { state: "suppressed", reason };
   }
   // A pause or other pre-send refusal is a wait, not a consumed attempt.
-  const waited = reason === "outbound_paused";
+  const waited = reason === "outbound_paused" || reason === "ack_delivery_override_active"
+    || reason === "ack_capability_closed" || reason === "ack_capability_expired";
   const attempts = ack.attemptCount + (waited ? 0 : 1);
   const exhausted = !waited && attempts >= ACK_MAX_SEND_ATTEMPTS;
   await db.update(inboundAcknowledgements)
@@ -590,15 +591,52 @@ let workerStarted = false;
 let workerRunning = false;
 const WORKER_INTERVAL_MS = 30_000;
 
+export const ACK_WORKER_HEARTBEAT_KEY = "inbound_ack_worker_heartbeat";
+
+/** Durable liveness evidence for the acknowledgement worker; written after every sweep, success or failure. */
+async function recordAckWorkerHeartbeat(entry: { outcome: "ok" | "error"; errorName?: string; tally?: unknown }): Promise<void> {
+  try {
+    await storage.setSystemSetting(ACK_WORKER_HEARTBEAT_KEY, { at: new Date().toISOString(), intervalMs: WORKER_INTERVAL_MS, ...entry });
+  } catch {
+    // A heartbeat write failure must never break the sweep; the status view then reports the worker as stale.
+  }
+}
+
+export interface AckWorkerStatus {
+  state: "reporting" | "stale" | "never_reported";
+  lastTickAt: string | null;
+  ageSeconds: number | null;
+  lastOutcome: "ok" | "error" | null;
+  lastErrorName: string | null;
+}
+
+export async function getAckWorkerStatus(now: Date = new Date()): Promise<AckWorkerStatus> {
+  const raw = await storage.getSystemSetting(ACK_WORKER_HEARTBEAT_KEY);
+  const at = raw && typeof raw === "object" && typeof (raw as any).at === "string" ? new Date((raw as any).at) : null;
+  if (!at || Number.isNaN(at.getTime())) return { state: "never_reported", lastTickAt: null, ageSeconds: null, lastOutcome: null, lastErrorName: null };
+  const ageSeconds = Math.max(0, Math.round((now.getTime() - at.getTime()) / 1000));
+  return {
+    state: ageSeconds * 1000 <= WORKER_INTERVAL_MS * 4 ? "reporting" : "stale",
+    lastTickAt: at.toISOString(), ageSeconds,
+    lastOutcome: (raw as any).outcome === "error" ? "error" : "ok",
+    lastErrorName: typeof (raw as any).errorName === "string" ? (raw as any).errorName : null,
+  };
+}
+
 export function startInboundAcknowledgementWorker(): void {
   if (workerStarted) return;
   workerStarted = true;
   const tick = async () => {
     if (workerRunning) return;
     workerRunning = true;
-    try { await runAcknowledgementSweep(); }
-    catch (err) { process.stderr.write(`[InboundAck] sweep error (${err instanceof Error ? err.name : "NonError"})\n`); }
-    finally { workerRunning = false; }
+    try {
+      const tally = await runAcknowledgementSweep();
+      await recordAckWorkerHeartbeat({ outcome: "ok", tally });
+    } catch (err) {
+      const name = err instanceof Error ? err.name : "NonError";
+      process.stderr.write(`[InboundAck] sweep error (${name})\n`);
+      await recordAckWorkerHeartbeat({ outcome: "error", errorName: name });
+    } finally { workerRunning = false; }
   };
   const timer = setInterval(() => { void tick(); }, WORKER_INTERVAL_MS);
   if (typeof timer.unref === "function") timer.unref();

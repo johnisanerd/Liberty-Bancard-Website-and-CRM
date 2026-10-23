@@ -1,12 +1,9 @@
 /**
- * Dependency-free wording checks shared by the retained-copy audit script and the template publish route.
- * Pure functions only: no database, no network, no environment access.
+ * Wording checks shared by the retained-copy audit script and the publish routes for templates and workflow steps.
+ * Pure functions only (token support and rendering come from the shared registry): no database, network or environment.
  */
 
-export const SUPPORTED_MERGE = new Set([
-  "firstName", "lastName", "fullName", "email", "phone", "companyName", "businessName", "agentName", "agentEmail",
-  "agentPhone", "calendarLink", "dealName", "referenceId",
-]);
+import { renderPersonas, tokensIn, unsupportedTokens, type MessagePurpose } from "./message-token-registry";
 
 export const COPY_RULES: Array<{ id: string; test: RegExp; why: string }> = [
   { id: "bracket_placeholder", test: /\[[A-Z][A-Z0-9_]{3,}\]/g, why: "Unresolved bracket placeholder would be sent literally" },
@@ -20,39 +17,38 @@ export const COPY_RULES: Array<{ id: string; test: RegExp; why: string }> = [
 export interface CopyFinding { rule: string; match: string; why: string }
 
 export function mergeVariables(text: string): string[] {
-  return [...text.matchAll(/\{\{\s*([A-Za-z0-9_.]+)\s*\}\}/g)].map((m) => m[1]);
+  return tokensIn(text);
 }
 
-export function lintCopy(text: string): CopyFinding[] {
+/**
+ * Publication-time checks for one purpose. Token support and render behavior come from the shared registry and the
+ * deterministic renderer, so anything that passes here renders the same way in the preview and at dispatch.
+ */
+export function lintRules(text: string): CopyFinding[] {
   const out: CopyFinding[] = [];
   for (const rule of COPY_RULES) {
     const hits = [...text.matchAll(new RegExp(rule.test.source, rule.test.flags))].map((m) => m[0].slice(0, 80));
     for (const hit of new Set(hits)) out.push({ rule: rule.id, match: hit, why: rule.why });
   }
-  for (const v of new Set(mergeVariables(text))) {
-    if (!SUPPORTED_MERGE.has(v) && !/^(contact|deal|company|agent)\.[A-Za-z0-9_]+$/.test(v)) {
-      out.push({ rule: "unknown_merge_variable", match: `{{${v}}}`, why: "Variable is not in the supported merge list" });
-    }
-  }
   return out;
 }
 
-/** Sample values used only to render a preview; nothing here is sent or stored. */
-export const PREVIEW_SAMPLE: Record<string, string> = {
-  "contact.firstName": "Alex", "contact.lastName": "Sample", "contact.email": "alex@example.test",
-  "contact.phone": "(555) 010-0100", "contact.companyName": "Sample Business LLC", "contact.vertical": "restaurant",
-  firstName: "Alex", lastName: "Sample", fullName: "Alex Sample", email: "alex@example.test", phone: "(555) 010-0100",
-  companyName: "Sample Business LLC", businessName: "Sample Business LLC", agentName: "Sample Representative",
-  agentEmail: "rep@example.test", agentPhone: "(555) 010-0101", calendarLink: "https://example.test/book",
-  dealName: "Sample deal", referenceId: "ABCD1234",
-};
-
-export function renderPreview(text: string): { rendered: string; unresolved: string[] } {
-  const unresolved: string[] = [];
-  const rendered = text.replace(/\{\{\s*([A-Za-z0-9_.]+)\s*\}\}/g, (_m, key: string) => {
-    const v = PREVIEW_SAMPLE[key];
-    if (v === undefined) { unresolved.push(key); return `{{${key}}}`; }
-    return v;
-  });
-  return { rendered, unresolved: [...new Set(unresolved)] };
+export function lintCopy(text: string, purpose: MessagePurpose): CopyFinding[] {
+  const out: CopyFinding[] = lintRules(text);
+  for (const token of unsupportedTokens(purpose, text)) {
+    out.push({ rule: "unknown_merge_variable", match: token, why: `Token is not available for ${purpose === "workflow" ? "workflow steps" : "stored templates"}; it would not be filled when sent` });
+  }
+  if (!out.some((f) => f.rule === "unknown_merge_variable")) {
+    // Render with every sample persona through the real renderer. A deal-dependent token is fine here because the
+    // sample persona includes a deal; unresolved, bracket and literal-undefined output are still caught.
+    for (const persona of renderPersonas(purpose, { body: text }, "text")) {
+      if (!persona.error) continue;
+      if (persona.error.code === "RENDER_BRACKET_PLACEHOLDER" && out.some((f) => f.rule === "bracket_placeholder")) continue;
+      const match = persona.error.detail.join(", ").slice(0, 80);
+      if (!out.some((f) => f.rule === `render_${persona.error!.code}` && f.match === match)) {
+        out.push({ rule: `render_${persona.error.code}`, match, why: "The real message renderer rejects this text" });
+      }
+    }
+  }
+  return out;
 }

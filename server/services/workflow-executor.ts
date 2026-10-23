@@ -5,6 +5,8 @@ import { updateContactLocalFirst } from "./contact-writer";
 import { resolvePacketVertical, GENERAL_FALLBACK_VERTICAL } from "../../shared/collateral-packet-verticals";
 import { applyConsentCommand } from "./consent-authority";
 import crypto from "crypto";
+import { renderMessage, type TokenSource } from "./message-token-registry";
+import { escapeHtml, type RenderFormat } from "./message-render";
 import {
   classifyCr06SequencePurpose,
   decideCr06PromotionalLifecycle,
@@ -123,6 +125,30 @@ async function interpolateTemplate(text: string, contactId?: number, dealId?: nu
   return result;
 }
 
+const WORKFLOW_CALENDAR_LINK = "https://libertybancard.com/book";
+
+/**
+ * Final-send rendering for workflow email/SMS steps. Uses the same registry and renderer as publication checks and
+ * previews: unsupported or unresolved tokens throw (the step fails and nothing is sent), values are escaped for the
+ * output format, and non-person first names render a generic greeting.
+ */
+async function renderWorkflowMessage(text: string, contactId: number, dealId: number | undefined, format: RenderFormat): Promise<string> {
+  const contact = await storage.getContact(contactId);
+  if (!contact) throw new Error("Contact not found for message rendering");
+  const deal = dealId ? await storage.getDeal(dealId) : undefined;
+  const source: TokenSource = {
+    contact: {
+      firstName: contact.firstName, lastName: contact.lastName, email: contact.email, phone: contact.phone,
+      companyName: contact.companyName, vertical: contact.vertical,
+    },
+    deal: deal ? {
+      stage: deal.stage, offerPath: deal.offerPath, effectiveRate: deal.effectiveRate, totalVolume: deal.totalVolume,
+    } : null,
+    calendarLink: WORKFLOW_CALENDAR_LINK,
+  };
+  return renderMessage("workflow", text, source, format).output;
+}
+
 export async function executeWorkflowActions(
   workflowId: number,
   actions: any[],
@@ -238,8 +264,6 @@ export async function executeWorkflowActions(
 
       } else if (action.type === "send_ghl_email" && contactId) {
         if (isGhlConfigured()) {
-          const subject = await interpolateTemplate(action.subject || "Message from Liberty Bancard", contactId, dealId);
-          const body = await interpolateTemplate(action.body || "", contactId, dealId);
           if (action.templateId) {
             const permission = await canSendWorkflowTemplate(action.templateId, contactId);
             const result = permission.allowed
@@ -247,6 +271,8 @@ export async function executeWorkflowActions(
               : { success: false, error: permission.reason };
             logEntries.push({ step: i + 1, action: "send_ghl_email", templateId: action.templateId, status: result.success ? "completed" : "failed", error: result.error, timestamp: new Date().toISOString() });
           } else {
+            const subject = await renderWorkflowMessage(action.subject || "Message from Liberty Bancard", contactId, dealId, "subject");
+            const body = await renderWorkflowMessage(action.body || "", contactId, dealId, "html");
             const result = await sendWorkflowEmail({ contactId, dealId, subject, body });
             logEntries.push({ step: i + 1, action: "send_ghl_email", status: result.success ? "completed" : "failed", error: result.error, timestamp: new Date().toISOString() });
           }
@@ -264,7 +290,6 @@ export async function executeWorkflowActions(
 
       } else if (action.type === "send_ghl_sms" && contactId) {
         if (isGhlConfigured()) {
-          const body = await interpolateTemplate(action.body || "", contactId, dealId);
           if (action.templateId) {
             const permission = await canSendWorkflowTemplate(action.templateId, contactId);
             const result = permission.allowed
@@ -272,6 +297,7 @@ export async function executeWorkflowActions(
               : { success: false, error: permission.reason };
             logEntries.push({ step: i + 1, action: "send_ghl_sms", templateId: action.templateId, status: result.success ? "completed" : "failed", error: result.error, timestamp: new Date().toISOString() });
           } else {
+            const body = await renderWorkflowMessage(action.body || "", contactId, dealId, "text");
             const result = await sendWorkflowSms({ contactId, dealId, body });
             logEntries.push({ step: i + 1, action: "send_ghl_sms", status: result.success ? "completed" : "failed", error: result.error, timestamp: new Date().toISOString() });
           }
@@ -287,7 +313,7 @@ export async function executeWorkflowActions(
           const result = await sendWorkflowEmail({
             contactId, dealId,
             subject: `Your Custom Pricing Breakdown - ${matchedPacket.name}`,
-            body: `<p>Hi {{contact.firstName}},</p><p>Here is your personalized information packet.</p><p>Best,<br/>Liberty Bancard</p><p style="font-size:11px;color:#999;">Eligibility, underwriting, card brand rules, and applicable laws apply.</p>`,
+            body: await renderWorkflowMessage(`<p>Hi {{contact.firstName}},</p><p>Here is your personalized information packet.</p><p>Best,<br/>Liberty Bancard</p><p style="font-size:11px;color:#999;">Eligibility, underwriting, card brand rules, and applicable laws apply.</p>`, contactId, dealId, "html"),
           });
           logEntries.push({ step: i + 1, action: "send_packet", packetName: matchedPacket.name, status: result.success ? "completed" : "failed", timestamp: new Date().toISOString() });
         } else {
@@ -298,19 +324,19 @@ export async function executeWorkflowActions(
         const deal = await storage.getDeal(dealId);
         const contact = await storage.getContact(contactId);
         if (deal && contact && isGhlConfigured()) {
-          const proposalBody = await interpolateTemplate(
+          const proposalBody = await renderWorkflowMessage(
             `<h2>Statement Analysis & Proposal</h2>
 <p>Dear {{contact.firstName}},</p>
 <p>After reviewing your processing statement, here is what we found:</p>
 <ul>
-  <li><strong>Current Effective Rate:</strong> ${deal.effectiveRate || "Pending Review"}</li>
-  <li><strong>Monthly Volume:</strong> ${deal.totalVolume || "Pending Review"}</li>
-  <li><strong>Recommended Path:</strong> ${deal.recommendedPath || deal.offerPath || "Custom Pricing"}</li>
+  <li><strong>Current Effective Rate:</strong> ${escapeHtml(deal.effectiveRate || "Pending Review")}</li>
+  <li><strong>Monthly Volume:</strong> ${escapeHtml(deal.totalVolume || "Pending Review")}</li>
+  <li><strong>Recommended Path:</strong> ${escapeHtml(deal.recommendedPath || deal.offerPath || "Custom Pricing")}</li>
 </ul>
 <p><strong>Next Step:</strong> <a href="{{calendarLink}}">Book a 10-minute call</a></p>
 <p>Best,<br/>Liberty Bancard Team</p>
 <p style="font-size:11px;color:#999;">Eligibility, underwriting, card brand rules, and applicable laws apply.</p>`,
-            contactId, dealId
+            contactId, dealId, "html"
           );
           const result = await sendWorkflowEmail({
             contactId, dealId,
@@ -393,9 +419,9 @@ export async function executeWorkflowActions(
 
       } else if (action.type === "request_review" && contactId) {
         if (isGhlConfigured()) {
-          const body = await interpolateTemplate(
+          const body = await renderWorkflowMessage(
             `<p>Hi {{contact.firstName}},</p><p>We hope your payment processing has been running smoothly since switching to Liberty Bancard!</p><p>Would you mind leaving us a quick review?</p><p>Thank you!</p><p>Best,<br/>Liberty Bancard Team</p>`,
-            contactId, dealId
+            contactId, dealId, "html"
           );
           const result = await sendWorkflowEmail({
             contactId, dealId,

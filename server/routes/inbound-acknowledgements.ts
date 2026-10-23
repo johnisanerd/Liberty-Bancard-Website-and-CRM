@@ -9,6 +9,7 @@ import {
   buildAckContent,
   getAckCapability,
   getAcknowledgementStatusCounts,
+  getAckWorkerStatus,
   setAckCapability,
   startInboundAcknowledgementWorker,
 } from "../services/inbound-acknowledgement";
@@ -26,10 +27,11 @@ export function registerInboundAcknowledgementRoutes(app: Express) {
 
   app.get("/api/admin/inbound-acknowledgements/status", requireRole("admin", "manager"), async (_req, res) => {
     try {
-      const [capability, counts] = await Promise.all([getAckCapability(), getAcknowledgementStatusCounts()]);
+      const [capability, counts, worker] = await Promise.all([getAckCapability(), getAcknowledgementStatusCounts(), getAckWorkerStatus()]);
       res.json({
         capability,
         counts,
+        worker,
         meaning: {
           blocked: "Request recorded; no email attempt is authorized yet.",
           accepted: "Accepted by the mail transport; not proof of inbox delivery.",
