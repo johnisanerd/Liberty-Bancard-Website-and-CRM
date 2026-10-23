@@ -274,6 +274,12 @@ const RAW_SUITE_MANIFEST: SuiteManifestDefinition[] = [
     providerDenial: "pre-import disposable DB guard; actual local password sessions and ephemeral loopback server; provider fetches denied",
   },
   {
+    name: "Drizzle BEGIN Failure Releases Client",
+    script: "scripts/test-drizzle-begin-release.ts",
+    capability: "deterministic-static",
+    providerDenial: "fake pool client; no database round trip, server, browser or provider",
+  },
+  {
     name: "GHL Inbound Pagination Parser",
     script: "scripts/test-ghl-inbound-pagination.ts",
     capability: "deterministic-static",

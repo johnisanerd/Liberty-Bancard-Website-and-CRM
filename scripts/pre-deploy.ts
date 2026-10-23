@@ -260,6 +260,7 @@ export const MANDATORY_SUITES: Suite[] = [
   { name: "Stage 3 B Atomic Work Commands", script: "scripts/test-stage3-b-work-commands.ts", timeoutSecs: 180 },
   { name: "Stage 3 B Trusted Work Producers", script: "scripts/test-stage3-b-work-adapters.ts", timeoutSecs: 180 },
   { name: "SSR Style Isolation", script: "scripts/test-ssr-style-isolation.ts", timeoutSecs: 60 },
+  { name: "Drizzle BEGIN Failure Releases Client", script: "scripts/test-drizzle-begin-release.ts", timeoutSecs: 60 },
   { name: "GHL Inbound Pagination Parser", script: "scripts/test-ghl-inbound-pagination.ts", timeoutSecs: 60 },
   { name: "GHL Inbound Focused Sanitizer and Source Checks", script: "scripts/test-ghl-inbound-sync.ts", timeoutSecs: 60 },
   { name: "GHL Inbound Route Middleware", script: "scripts/test-ghl-inbound-route-guards.ts", timeoutSecs: 60 },
