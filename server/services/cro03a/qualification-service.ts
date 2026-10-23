@@ -1830,9 +1830,25 @@ export async function processRecurringCro03aGeographyQualification(options: {
  * @returns          { processed, eligible, ineligible, featureDetected }
  *                   eligible / ineligible counts are informational only (for logging).
  */
+// The observation table carries an immutability guard (cro03_immutable_row_guard) that rejects every UPDATE,
+// including the informational sentinel stamp below. Once the guard has refused the stamp, the stamp can never
+// succeed on this database, so the backfill stands down for the life of the process instead of failing the
+// whole recurring qualification job on every tick. Observations are never mutated to work around the guard.
+let observationSentinelBlockedByImmutabilityGuard = false;
+
+function isImmutableGuardRefusal(error: unknown): boolean {
+  const e = error as { code?: string; message?: string; cause?: { code?: string; message?: string } } | null;
+  const code = e?.cause?.code ?? e?.code;
+  const message = `${e?.cause?.message ?? ""} ${e?.message ?? ""}`;
+  return code === "P0001" && /is immutable/i.test(message);
+}
+
 export async function backfillCro03aObservationGeography(
   batchSize = 200,
 ): Promise<{ processed: number; eligible: number; ineligible: number; featureDetected: boolean }> {
+  if (observationSentinelBlockedByImmutabilityGuard) {
+    return { processed: 0, eligible: 0, ineligible: 0, featureDetected: false };
+  }
   // Feature-detect the sentinel column so the function is safe to call on a schema
   // that hasn't had the 0274 migration applied yet (rolling upgrade guard).
   try {
@@ -1890,12 +1906,19 @@ export async function backfillCro03aObservationGeography(
   }
 
   // Single bulk UPDATE — only the sentinel column is touched, never payload or payload_hash.
-  await db.execute(sql`
-    UPDATE cro03_source_observations
-       SET geography_backfill_attempted_at = NOW()
-     WHERE id IN (${sql.join(allIds.map((id) => sql`${id}::uuid`), sql`,`)})
-       AND geography_backfill_attempted_at IS NULL
-  `);
+  try {
+    await db.execute(sql`
+      UPDATE cro03_source_observations
+         SET geography_backfill_attempted_at = NOW()
+       WHERE id IN (${sql.join(allIds.map((id) => sql`${id}::uuid`), sql`,`)})
+         AND geography_backfill_attempted_at IS NULL
+    `);
+  } catch (error) {
+    if (!isImmutableGuardRefusal(error)) throw error;
+    observationSentinelBlockedByImmutabilityGuard = true;
+    console.warn("[CRO03A GeoBackfill] observation table is immutable; sentinel stamping disabled for this process");
+    return { processed: 0, eligible: 0, ineligible: 0, featureDetected: false };
+  }
 
   return { processed: allIds.length, eligible, ineligible, featureDetected: true };
 }
