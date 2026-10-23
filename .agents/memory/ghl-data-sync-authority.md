@@ -15,6 +15,8 @@ For contact reconciliation, keep existing production values and use GHL only to 
 
 **How to apply:** Preserve nonblank local details and protected consent/opt-out/ownership/status data. Use exact GHL-ID or normalized-email matching with collision checks, and use canonical local-only intake for genuinely new contacts without provider projection or paid-work hooks.
 
+**Update 2026-10-23:** the owner confirmed GHL writes are now approved ("Confirmed GHL writes"), superseding the one-way-only scope. The native-review requirement below still applies: the agent prepares the review sheet, never approves it, and outbound/promotional pauses stay on.
+
 If a future explicit request introduces writes back to GHL, require a fresh, location-bound native-workflow review covering exact operations, fields, custom-field IDs, tags and stages. The agent must not approve its own native safety review.
 
 **Why:** GHL field, tag, contact and stage changes can trigger native communications even when the app's outbound messaging is paused.
