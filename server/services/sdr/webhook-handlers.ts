@@ -10,7 +10,7 @@ import { classifyIntent, executeIntentAction } from "./reply-intelligence";
 import { handleCallDisposition, CALL_DISPOSITIONS, type CallDisposition } from "./voice-orchestrator";
 import { handleAppointmentBooked as schedulingHandleBooked, handleAppointmentCanceled as schedulingHandleCanceled } from "./scheduling";
 import { enrollInAppointmentWorkflow, tagContactForInboxOrganization } from "../ghl-workflow-enrollment";
-import { runReceiptStep, currentReceiptId, ReceiptClaimLostError } from "../ghl-webhook-effects";
+import { runReceiptStep, runReceiptTxStep, currentReceiptId, ReceiptClaimLostError } from "../ghl-webhook-effects";
 import { ghlAppointmentSuperseded } from "../ghl-appointment-events";
 import { checkAndLogCompliance } from "./compliance-engine";
 import { processCommunicationEvent } from "../communication-feedback";
@@ -102,27 +102,30 @@ export async function handleContactUpdated(rawPayload: unknown): Promise<void> {
 
   const merchant = await findMerchantByGhlId(ghlContactId);
 
-  await db.insert(sdrLeadEvents).values({
-    merchantId: merchant?.id || null,
-    eventType: "contact_updated",
-    channel: "ghl",
-    actorType: "ghl_webhook",
-    payloadJson: payload,
-    ghlRefId: ghlContactId,
-  });
+  // Event row and merchant mirror commit together with their step record: a retry never repeats either.
+  await runReceiptTxStep("contact_updated:local", async tx => {
+    await tx.insert(sdrLeadEvents).values({
+      merchantId: merchant?.id || null,
+      eventType: "contact_updated",
+      channel: "ghl",
+      actorType: "ghl_webhook",
+      payloadJson: payload,
+      ghlRefId: ghlContactId,
+    });
 
-  if (merchant) {
-    const updates: Record<string, unknown> = {};
-    if (payload.firstName || payload.lastName) {
-      updates.businessName = [payload.firstName, payload.lastName].filter(Boolean).join(" ");
+    if (merchant) {
+      const updates: Record<string, unknown> = {};
+      if (payload.firstName || payload.lastName) {
+        updates.businessName = [payload.firstName, payload.lastName].filter(Boolean).join(" ");
+      }
+      if (payload.email) updates.mainEmail = payload.email;
+      if (payload.phone) updates.mainPhone = payload.phone;
+      if (Object.keys(updates).length > 0) {
+        updates.updatedAt = new Date();
+        await tx.update(sdrMerchants).set(updates).where(eq(sdrMerchants.id, merchant.id));
+      }
     }
-    if (payload.email) updates.mainEmail = payload.email;
-    if (payload.phone) updates.mainPhone = payload.phone;
-    if (Object.keys(updates).length > 0) {
-      updates.updatedAt = new Date();
-      await db.update(sdrMerchants).set(updates).where(eq(sdrMerchants.id, merchant.id));
-    }
-  }
+  });
 
   console.log(`[SDR Webhook] contact-updated processed for GHL contact ${ghlContactId}`);
 }
@@ -141,13 +144,15 @@ export async function handleMessageReceived(rawPayload: unknown): Promise<void> 
 
   const channel = payload.type === "SMS" ? "sms" : payload.type === "Email" ? "email" : "chat";
 
-  await db.insert(sdrLeadEvents).values({
-    merchantId: merchant?.id || null,
-    eventType: "message_received",
-    channel,
-    actorType: "merchant",
-    payloadJson: payload,
-    ghlRefId: payload.messageId || ghlContactId,
+  await runReceiptTxStep("message_received:event", async tx => {
+    await tx.insert(sdrLeadEvents).values({
+      merchantId: merchant?.id || null,
+      eventType: "message_received",
+      channel,
+      actorType: "merchant",
+      payloadJson: payload,
+      ghlRefId: payload.messageId || ghlContactId,
+    });
   });
 
   const deliveryStatus = (payload as any).status || (payload as any).deliveryStatus || "";
@@ -264,25 +269,28 @@ export async function handleCallOutcome(rawPayload: unknown): Promise<void> {
   const ghlContactId = payload.contactId;
   const merchant = ghlContactId ? await findMerchantByGhlId(ghlContactId) : null;
 
-  await db.insert(sdrLeadEvents).values({
-    merchantId: merchant?.id || null,
-    eventType: "call_outcome",
-    channel: "call",
-    actorType: payload.direction === "inbound" ? "merchant" : "system",
-    payloadJson: payload,
-    ghlRefId: payload.callId || ghlContactId || null,
+  await runReceiptTxStep("call_outcome:local", async tx => {
+    await tx.insert(sdrLeadEvents).values({
+      merchantId: merchant?.id || null,
+      eventType: "call_outcome",
+      channel: "call",
+      actorType: payload.direction === "inbound" ? "merchant" : "system",
+      payloadJson: payload,
+      ghlRefId: payload.callId || ghlContactId || null,
+    });
+    if (merchant) {
+      const [state] = await tx.select().from(sdrLeadState).where(eq(sdrLeadState.merchantId, merchant.id));
+      if (state) {
+        await tx.update(sdrLeadState).set({
+          lastCallAt: new Date(),
+          lastTouchAt: new Date(),
+          updatedAt: new Date(),
+        }).where(eq(sdrLeadState.merchantId, merchant.id));
+      }
+    }
   });
 
   if (merchant) {
-    const [state] = await db.select().from(sdrLeadState).where(eq(sdrLeadState.merchantId, merchant.id));
-    if (state) {
-      await db.update(sdrLeadState).set({
-        lastCallAt: new Date(),
-        lastTouchAt: new Date(),
-        updatedAt: new Date(),
-      }).where(eq(sdrLeadState.merchantId, merchant.id));
-    }
-
     const rawDisposition = (payload.status || "").trim().toLowerCase().replace(/[\s-]+/g, "_");
     if (rawDisposition && (CALL_DISPOSITIONS as readonly string[]).includes(rawDisposition)) {
       try {
@@ -344,9 +352,20 @@ export async function handleCallOutcome(rawPayload: unknown): Promise<void> {
   }
 
   if (ghlContactId && merchant) {
-    const { enrollInGhlWorkflowCompliant } = await import("../ghl-workflows");
-    // Awaited (not fire-and-forget): a failed handoff fails the receipt so the provider retry recovers it.
-    await enrollInGhlWorkflowCompliant({ workflowKey: "post_call_review", ghlContactId, contactId: crmContactForCallOutcome?.id, metadata: { callId: (payload as any).callId, disposition: (payload as any).status, merchantId: merchant.id } });
+    // External effect: a leased receipt step carrying the stable {receiptId, stepKey, attempt} identity. A refusal,
+    // pause or lost response is a structured outcome owned by the deferred-enrollment recovery; only a failure with
+    // no durable owner fails the receipt so the provider retry recovers it.
+    await runReceiptStep("call_outcome:post_call_review", async info => {
+      const { enrollWorkflowHandoff } = await import("../ghl-workflow-enrollment");
+      const localId = crmContactForCallOutcome?.id;
+      if (!localId) return { state: "skipped", reason: "no_local_contact" };
+      const outcome = await enrollWorkflowHandoff({
+        workflowKey: "post_call_review", ghlContactId, contactId: localId,
+        metadata: { callId: (payload as any).callId, disposition: (payload as any).status, merchantId: merchant.id }, identity: info,
+      });
+      if (outcome.state === "failed" && !outcome.durable) throw new Error(`post_call_handoff_failed:${outcome.reason.slice(0, 120)}`);
+      return outcome;
+    });
   }
 
   // ── Wave C1: Auto-trigger statement request on positive call outcomes ────────
@@ -411,11 +430,22 @@ export async function handleAppointmentBooked(rawPayload: unknown): Promise<void
     const [crmContact] = await db.select().from(contacts).where(eq(contacts.ghlContactId, ghlContactId)).limit(1);
     if (crmContact && !(await ghlAppointmentSuperseded(null, payload, "booked"))) {
       const appointmentDate = payload.startTime ? new Date(payload.startTime) : new Date(Date.now() + 24 * 60 * 60 * 1000);
-      await runReceiptStep("booked:crm_appointment_workflow", () => enrollInAppointmentWorkflow({
-        contactId: crmContact.id,
-        appointmentDate,
-        calendarType: "sales",
-      }));
+      // The SDR merchant path and this CRM-contact path address the same GHL contact and workflow. When the merchant
+      // step of this receipt already completed (in any structured state) it, or its durable deferred enrollment, owns
+      // the handoff; this step must not enrol a second time.
+      const { completedReceiptStepResult } = await import("../ghl-webhook-effects");
+      const merchantHandoff = await completedReceiptStepResult("booked:enroll_booking_confirmation");
+      if (!merchantHandoff) {
+        await runReceiptStep("booked:crm_appointment_workflow", async info => {
+          const outcome = await enrollInAppointmentWorkflow({
+            contactId: crmContact.id, appointmentDate, calendarType: "sales",
+          }, info);
+          // A failure with no durable owner fails the receipt so the provider retry recovers it; every other state is a
+          // structured, recorded result (held/unknown handoffs are owned by the deferred-enrollment recovery).
+          if (outcome.state === "failed" && !outcome.durable) throw new Error(`appointment_handoff_failed:${outcome.reason.slice(0, 120)}`);
+          return outcome;
+        });
+      }
 
       await runReceiptStep("booked:analytics_event", async () => {
         const { recordAnalyticsEvent } = await import("../analytics-events");

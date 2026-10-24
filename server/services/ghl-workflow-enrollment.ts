@@ -996,145 +996,100 @@ export async function runInboundConfirmationFollowupJob(data: {
   }
 }
 
+/** Stable identity of one external effect attempt: the receipt, the step and the attempt number. */
+export interface AppointmentHandoffIdentity { receiptId: string | null; stepKey: string; attempt: number }
+
+/**
+ * Structured result of the appointment handoff to GHL. Nothing here is a silent success:
+ *  - enrolled: the provider accepted the enrollment;
+ *  - skipped: nothing to do and nothing owed (reason says why);
+ *  - held: refused for a reason that can clear (global pause, unverified workflow channels); `durable` is true when a
+ *    deferred enrollment now owns the retry, so a pause never discards a legitimate future handoff;
+ *  - failed: the provider refused or the request failed; `durable` as above;
+ *  - unknown: the request may have been accepted (lost response); a deferred enrollment re-asserts it, which is safe
+ *    because enrolling an already-enrolled contact is idempotent at the provider.
+ */
+export type AppointmentEnrollmentOutcome =
+  | { state: "enrolled"; via: "workflow" }
+  | { state: "skipped"; reason: string }
+  | { state: "held" | "failed" | "unknown"; reason: string; durable: boolean };
+
+
+/**
+ * Hands a booked appointment to the registered GHL "booking_confirmation" workflow through the one compliant
+ * enrollment boundary and the existing deferred-enrollment recovery. It no longer upserts contacts, writes tags, sends
+ * its own confirmation, or schedules in-memory reminders: confirmations and reminders belong to the native GHL
+ * workflows (a process-local timer is lost on restart and would be a second, parallel sender).
+ */
 export async function enrollInAppointmentWorkflow(params: {
   contactId: number;
   appointmentDate: Date;
   calendarType: "sales" | "account_management";
   dealId?: number;
-}): Promise<void> {
+}, identity?: AppointmentHandoffIdentity): Promise<AppointmentEnrollmentOutcome> {
   const { contactId, appointmentDate, calendarType, dealId } = params;
   const contact = await storage.getContact(contactId);
-  if (!contact) return;
+  if (!contact) return { state: "skipped", reason: "contact_missing" };
+  if (!isGhlConfigured() && !isSdrGhlConfigured()) return { state: "skipped", reason: "ghl_not_configured" };
+  if (!contact.ghlContactId) return { state: "skipped", reason: "no_ghl_contact_id" };
 
-  const appointmentWorkflowId = process.env.GHL_WORKFLOW_APPOINTMENT;
+  return enrollWorkflowHandoff({
+    workflowKey: "booking_confirmation", ghlContactId: contact.ghlContactId, contactId,
+    metadata: {
+      appointmentDate: appointmentDate.toISOString(), calendarType, contactId, dealId,
+      firstName: contact.firstName, companyName: contact.companyName,
+    },
+    identity,
+    auditContext: { appointmentDate, calendarType },
+  });
+}
 
-  if (appointmentWorkflowId && (isGhlConfigured() || isSdrGhlConfigured())) {
-    let ghlContactId = contact.ghlContactId;
-    if (!ghlContactId) {
-      try {
-        ghlContactId = await unifiedUpsertContact(contact);
-      } catch (err) {
-        console.error(`[GHL Appointment] Failed to upsert contact:`, err);
-      }
-    }
+/**
+ * One handoff of a contact to a registered GHL workflow, shared by the CRM-contact and SDR-merchant appointment paths
+ * so the same remote effect has one implementation, one durable owner (deferred enrollments) and one outcome shape.
+ */
+export async function enrollWorkflowHandoff(input: {
+  workflowKey: string; ghlContactId: string; contactId: number; metadata: Record<string, unknown>;
+  identity?: AppointmentHandoffIdentity; auditContext?: Record<string, unknown>;
+}): Promise<AppointmentEnrollmentOutcome> {
+  const { workflowKey, ghlContactId, contactId, identity } = input;
+  const { getWorkflowId, enrollInGhlWorkflowCompliant } = await import("./ghl-workflows");
+  if (!await getWorkflowId(workflowKey)) return { state: "skipped", reason: "workflow_not_configured" };
 
-    if (ghlContactId) {
-      try {
-        await addTag({
-          contactId: ghlContactId,
-          tags: ["LB-BOOKING-READY", "LB-MEETING-SET"],
-        });
-
-        await triggerWorkflow({
-          workflowId: appointmentWorkflowId,
-          contactId: ghlContactId,
-          metadata: {
-            appointmentDate: appointmentDate.toISOString(),
-            calendarType,
-            contactId,
-            dealId,
-            firstName: contact.firstName,
-            companyName: contact.companyName,
-          },
-        });
-
-        await storage.createAuditLog({
-          action: "ghl_appointment_workflow_enrolled",
-          entityType: "contact",
-          entityId: contactId,
-          details: { appointmentDate, calendarType, ghlWorkflowId: appointmentWorkflowId },
-        });
-
-        return;
-      } catch (err) {
-        console.error(`[GHL Appointment] Workflow trigger failed:`, err);
-      }
-    }
+  const idempotencyKey = identity?.receiptId
+    ? `${identity.receiptId}:${identity.stepKey}`
+    : `handoff:${workflowKey}:${contactId}:${String(input.metadata.appointmentDate ?? input.metadata.meetingId ?? "")}`;
+  // Stable per-effect identity: the same receipt and step produce the same key on every attempt.
+  const metadata = { ...input.metadata, idempotencyKey, attempt: identity?.attempt ?? 1 };
+  const result = await enrollInGhlWorkflowCompliant({ workflowKey, ghlContactId, contactId, metadata });
+  const audit = (state: string, extra: Record<string, unknown>) => storage.createAuditLog({
+    action: `ghl_appointment_workflow_${state}`, entityType: "contact", entityId: contactId,
+    details: { ...input.auditContext, workflowKey, idempotencyKey, ...extra },
+  }).catch(() => undefined);
+  if (result.success) {
+    await audit("enrolled", {});
+    return { state: "enrolled", via: "workflow" };
   }
 
-  if (isGhlConfigured() || isSdrGhlConfigured()) {
-    let apptGhlContactId = contact.ghlContactId;
-    if (!apptGhlContactId) {
-      try {
-        apptGhlContactId = await unifiedUpsertContact(contact);
-      } catch (err) {
-        console.error(`[GHL Appointment] Failed to upsert contact for fallback sends:`, err);
-      }
-    }
-
-    if (!apptGhlContactId) {
-      console.error(`[GHL Appointment] No GHL contact ID for fallback sends — skipping`);
-      return;
-    }
-
-    try {
-      const dateStr = appointmentDate.toLocaleDateString("en-US", {
-        weekday: "long",
-        month: "long",
-        day: "numeric",
-        hour: "numeric",
-        minute: "2-digit",
-        timeZone: "America/New_York",
-      });
-
-      await unifiedSendEmail({
-        contactId,
-        ghlContactId: apptGhlContactId,
-        subject: `Your call with Liberty Bancard is confirmed — ${dateStr}`,
-        body: buildAppointmentConfirmationEmail(contact.firstName || "there", dateStr, calendarType),
-      });
-
-      const msUntilAppt = appointmentDate.getTime() - Date.now();
-      const capturedApptGhlId = apptGhlContactId;
-
-      if (msUntilAppt > 24 * 60 * 60 * 1000) {
-        setTimeout(async () => {
-          try {
-            await unifiedSendEmail({
-              contactId,
-              ghlContactId: capturedApptGhlId,
-              subject: `Reminder: Your call with Liberty Bancard is tomorrow`,
-              body: buildAppointmentReminderEmail(contact.firstName || "there", dateStr, "24h"),
-            });
-          } catch (err) {
-            console.error(`[GHL Appointment] 24h reminder failed:`, err);
-          }
-        }, msUntilAppt - 24 * 60 * 60 * 1000);
-      }
-
-      if (msUntilAppt > 60 * 60 * 1000) {
-        setTimeout(async () => {
-          try {
-            if (contact.consentSms && contact.phone) {
-              await unifiedSendSms({
-                contactId,
-                ghlContactId: capturedApptGhlId,
-                body: `Hi ${contact.firstName}, just a reminder — your call with Liberty Bancard is in about 1 hour. Looking forward to speaking with you! — Liberty Bancard`,
-              });
-            }
-          } catch (err) {
-            console.error(`[GHL Appointment] 1h reminder failed:`, err);
-          }
-        }, msUntilAppt - 60 * 60 * 1000);
-      }
-
-      setTimeout(async () => {
-        try {
-          const calLink = calendarType === "account_management" ? AM_CALENDAR : SALES_CALENDAR;
-          await unifiedSendEmail({
-            contactId,
-            ghlContactId: capturedApptGhlId,
-            subject: `Thanks for your time, ${contact.firstName}`,
-            body: buildPostMeetingFollowupEmail(contact.firstName || "there", calendarType, calLink),
-          });
-        } catch (err) {
-          console.error(`[GHL Appointment] Post-meeting follow-up failed:`, err);
-        }
-      }, msUntilAppt + 60 * 60 * 1000);
-    } catch (err) {
-      console.error(`[GHL Appointment] Confirmation email failed:`, err);
-    }
+  const reason = String(result.error ?? "enrollment_failed").slice(0, 200);
+  const { isTransientGhlError, deferGhlEnrollment } = await import("./ghl-enrollment-recovery");
+  const { isAmbiguousDispatchMessage } = await import("./ghl-dispatch-recorder");
+  const paused = /paus|coordinator hold|authority/i.test(reason);
+  const unverified = /not live-verified|not configured|declaration/i.test(reason);
+  const transient = isTransientGhlError(new Error(reason));
+  // A quiet-hours denial clears on its own; the recovery job re-runs the same compliance gate later, so the handoff is
+  // not lost (a permanent denial such as missing consent is not deferred).
+  const quietHours = /quiet hours/i.test(reason);
+  let durable = false;
+  if (paused || transient || quietHours) {
+    // The handoff stays owed: the recovery job retries it (without spending retries while paused).
+    await deferGhlEnrollment({ ghlContactId, workflowKey, metadata, error: new Error(reason) });
+    durable = true;
   }
+  const state: "held" | "failed" | "unknown" = isAmbiguousDispatchMessage(reason) ? "unknown"
+    : (paused || unverified || quietHours || result.skipped) ? "held" : "failed";
+  await audit(state, { reason, durable });
+  return { state, reason, durable };
 }
 
 export async function tagContactForInboxOrganization(params: {
@@ -1255,7 +1210,7 @@ export function getEnrollmentStatus(): {
     sequencesWithWorkflowIds: withIds.length,
     unmappedSequences: unmapped,
     hasInboundWorkflow: !!process.env.GHL_WORKFLOW_INBOUND_CONFIRMATION,
-    hasAppointmentWorkflow: !!process.env.GHL_WORKFLOW_APPOINTMENT,
+    hasAppointmentWorkflow: !!process.env.GHL_WORKFLOW_BOOKING_CONFIRM,
     hasDefaultWorkflow: !!process.env.GHL_DEFAULT_WORKFLOW_ID,
     workflowProvisioningNote: "GHL workflows must be created in the GHL UI (GoHighLevel does not expose a public workflow creation API). Configure workflow IDs via GHL_WORKFLOW_<SEQUENCE_NAME> environment variables. Set GHL_WORKFLOW_ONLY_MODE=true to disable direct sends and enforce GHL-native delivery.",
     platformEmailSeparation: {

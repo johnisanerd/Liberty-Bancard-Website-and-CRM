@@ -1,11 +1,12 @@
 import { db } from "../../db";
 import { sdrLeadState, sdrLeadEvents, sdrMerchants, sdrChannelAttempts } from "@shared/schema";
 import type { SdrMerchant } from "@shared/schema";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { fetchCalendars, isSdrGhlConfigured } from "./ghl-client";
 import { onStageChange } from "./ghl-sync-rules";
 import { runReceiptStep, runReceiptTxStep, type DbTx } from "../ghl-webhook-effects";
 import { ghlAppointmentSuperseded } from "../ghl-appointment-events";
+import { enrollWorkflowHandoff, type AppointmentEnrollmentOutcome } from "../ghl-workflow-enrollment";
 
 async function enrollMerchantWorkflow(
   merchant: Pick<SdrMerchant, "id" | "ghlContactId">,
@@ -245,28 +246,39 @@ type AppointmentWebhookData = {
 };
 
 /**
- * Provider enrollment through the compliant helper. A structured refusal ({success:false, skipped:true}: pause,
- * unmapped contact, consent) is not an error to retry, but it is never silent: it is recorded as a visible lead event
- * on the merchant and returned as the step result. A real failure throws so the receipt is retried.
+ * Provider enrollment through the one shared handoff (compliant gate + durable deferred-enrollment recovery). The step
+ * result is a structured outcome, never a bare success:
+ *  - enrolled: provider accepted;
+ *  - held / skipped / unknown / failed-with-durable-owner: recorded as a visible lead event and returned; a pause or a
+ *    transient provider failure leaves a deferred enrollment that the recovery job owns, so the handoff is not lost;
+ *  - failed without a durable owner: throws so the provider's retry of the webhook recovers it.
+ * The external call carries the stable identity {receiptId, stepKey, attempt}.
  */
 async function enrollStep(
   stepKey: string, merchant: Pick<SdrMerchant, "id" | "ghlContactId">, workflowKey: string, metadata: Record<string, unknown>,
 ) {
-  return runReceiptStep(stepKey, async () => {
-    const result = await enrollMerchantWorkflow(merchant, workflowKey, metadata);
-    const outcome = result as { success?: boolean; skipped?: boolean; error?: string };
-    if (outcome.success === false && !outcome.skipped) {
-      throw new Error(`workflow_enrollment_failed:${workflowKey}:${String(outcome.error ?? "unknown").slice(0, 120)}`);
+  return runReceiptStep(stepKey, async info => {
+    let outcome: AppointmentEnrollmentOutcome;
+    if (!merchant.ghlContactId) {
+      outcome = { state: "skipped", reason: "No GHL contact ID" };
+    } else {
+      const { resolveLocalContactIdForGhlContactId } = await import("../ghl-workflows");
+      const contactId = await resolveLocalContactIdForGhlContactId(merchant.ghlContactId);
+      outcome = contactId
+        ? await enrollWorkflowHandoff({ workflowKey, ghlContactId: merchant.ghlContactId, contactId, metadata, identity: info })
+        : { state: "skipped", reason: "No unique local contact mapped to this SDR merchant" };
     }
-    if (outcome.success === false && outcome.skipped) {
-      await db.insert(sdrLeadEvents).values({
-        merchantId: merchant.id, eventType: "workflow_enrollment_held", channel: "system", actorType: "system",
-        payloadJson: { workflowKey, reason: String(outcome.error ?? "skipped").slice(0, 200), stepKey },
-        decisionReason: `Workflow ${workflowKey} not enrolled: ${String(outcome.error ?? "skipped").slice(0, 120)}`,
-      });
-      return { enrolled: false, held: true };
+    if (outcome.state === "enrolled") return { enrolled: true, held: false, state: "enrolled" as const, durable: false };
+    if (outcome.state === "failed" && !outcome.durable) {
+      throw new Error(`workflow_enrollment_failed:${workflowKey}:${outcome.reason.slice(0, 120)}`);
     }
-    return { enrolled: true, held: false };
+    const durable = outcome.state === "skipped" ? false : outcome.durable;
+    await db.insert(sdrLeadEvents).values({
+      merchantId: merchant.id, eventType: "workflow_enrollment_held", channel: "system", actorType: "system",
+      payloadJson: { workflowKey, state: outcome.state, durable, reason: outcome.state === "skipped" ? outcome.reason : outcome.reason.slice(0, 200), stepKey: info.stepKey, attempt: info.attempt },
+      decisionReason: `Workflow ${workflowKey} not enrolled (${outcome.state}${durable ? ", retry owned by deferred enrollments" : ""}): ${outcome.reason.slice(0, 120)}`,
+    });
+    return { enrolled: false, held: true, state: outcome.state, durable };
   });
 }
 
@@ -384,6 +396,10 @@ export async function handleAppointmentCanceled(webhookData: AppointmentWebhookD
 
   const { result: local } = await runReceiptTxStep("canceled:local", async tx => {
     if (await ghlAppointmentSuperseded(tx, webhookData, "canceled")) return { outcome: "superseded" as const };
+    // A booking confirmation still owed by the deferred-enrollment recovery (held by a pause or a lost response) must
+    // not be delivered for an appointment that has since been canceled. Committed with the cancellation itself.
+    await tx.execute(sql`DELETE FROM deferred_ghl_enrollments
+      WHERE ghl_contact_id = ${ghlContactId} AND workflow_key = 'booking_confirmation' AND status = 'pending'`);
     const [merchant] = await tx.select().from(sdrMerchants).where(eq(sdrMerchants.ghlContactId, ghlContactId));
     if (!merchant) {
       await recordOrphanAppointmentEvent(tx, "appointment_canceled", webhookData, ghlContactId);

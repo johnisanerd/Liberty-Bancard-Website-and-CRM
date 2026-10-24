@@ -54,9 +54,16 @@ Rows that must never reopen: `pipeline_local_only`, `superseded_by_merge`, `DISP
 | `fullSyncToGhl` | no | retired no-op | cannot create records |
 | Delete detection | yes | deletes stay disabled | |
 
-Components per contact, in order: (1) identity + profile + any true suppression, (2) permissions, (3) tags and
-parent/pipeline fields. Tags are never part of the first write. A failed tag write fails the projection (local tags change
-only after provider success) and a missing `lb_location_of` is reported as a held component.
+Components per contact, in order: (1) identity + profile + any true suppression, (2) permissions, (3) parent/pipeline
+fields, then owned-tag deltas. Tags are never part of the first write and never part of any `PUT`. The CRM owns only
+`LB-ACTIVE-PIPELINE` and `lb_parent_account`; it sends add/remove deltas for those two through
+`POST`/`DELETE /contacts/:id/tags`, so every GHL-native tag is preserved. A transient tag failure fails the projection (local
+tags change only after provider success, and the retry is idempotent); an unreviewed operation or a provider rejection is a
+held component. A missing `lb_location_of` is reported as a held component.
+
+Scope: the ordinary workers cover the existing CRM population under a durable code-defined scope (linked production
+contacts for updates; unlinked CRM-source contacts for creates; discovery, registry, imports, identity matching, inbound
+sync, test/demo/synthetic and archived records excluded), narrowable through `ghl_export_policy.existingPopulation`.
 
 Ambiguous creates (response lost on POST): never retried blindly. The next claim reconciles with a read-only lookup using
 the identity pinned on the original create: an email-bearing create is linked only to a record stating the same email;
@@ -78,8 +85,10 @@ circuit counters; auth failures trip the circuit; other failures and ambiguous r
 
 | Event | Handler | Idempotency |
 |---|---|---|
-| Contact created/updated, notes, tasks, opportunities | existing handlers in `server/routes/sdr.ts` | #2096 explicit occurrence claims |
-| Appointment booked / showed / canceled | existing handlers (enrollment, tags, stage chains) | same |
+| Contact created, notes, tasks, opportunities | existing handlers in `server/routes/sdr.ts` | #2096 explicit occurrence claims |
+| Appointment booked / canceled | `sdr/scheduling.ts` + `sdr/webhook-handlers.ts` | local effects commit with their step record in one transaction; external effects are leased steps completed only while the receipt claim is held. The booking handoff (SDR merchant and CRM contact share one implementation and one `booking_confirmation` workflow) returns enrolled/skipped/held/failed/unknown with a durable owner (`deferred_ghl_enrollments`) for pause, quiet-hours and transient/lost-response outcomes, carries the stable `{receiptId, stepKey, attempt}` identity, and a cancellation withdraws a still-owed confirmation. No CRM-side reminder timer or fallback email exists; confirmations and reminders belong to the native workflows. |
+| Contact updated, inbound message, call outcome (local effects) | `sdr/webhook-handlers.ts` | local rows are transactional steps of the receipt |
+| Other handlers (opt-out, bounce, statement request, lifecycle transitions, stage-change chains, communication-event processing) | existing handlers | **not** split into durable steps: at-least-once on retry, unchanged by this work |
 | Appointment updated / rescheduled | `/api/webhooks/ghl/appointment-updated`, `/appointment-rescheduled` | ordered upsert into `ghl_appointment_state`; no enrollment, tag or stage change |
 
 All of `/api/webhooks/ghl/` runs `ghlWebhookReceiptMiddleware`: receipt `received → claimed → applied | failed` in
@@ -89,7 +98,8 @@ processing → 409; duplicate of an applied event → 200 without reprocessing. 
 ## Custom fields, stages, tags, calendars (review evidence only)
 
 - Installed custom fields (nine): lb_consent_email, lb_consent_sms, lb_do_not_sdr, lb_promo_code, lb_pain_points,
-  lb_lead_source, external_contact_id, lead_score, contact_role.
+  lb_lead_source, external_contact_id, lead_score, contact_role (ids and observed types are in
+  `docs/ghl-native-safety-approval-package.md`; the adapter and review bind id and key only, not type).
 - `ghl.ts` can also emit vertical, lb_vertical, monthly_volume, lb_monthly_volume, lb_current_processor and
   lb_partner_code when a contact has values. Optional profile fields that are not installed are recorded as held and
   omitted; they do not block the contact. Only a required suppression field, or a payload naming a field whose id the

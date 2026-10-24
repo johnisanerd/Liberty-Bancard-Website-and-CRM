@@ -16,7 +16,7 @@
  */
 import { sql } from "drizzle-orm";
 import { db, pool } from "../db";
-import { ghlIntakeEvidenceSql } from "./ghl-projection-convergence";
+import { ghlIntakeEvidenceSql, ghlExistingPopulationSql, ghlExportAuthoritySql } from "./ghl-projection-convergence";
 
 export const CONTACT_PROJECTION_MAX_ATTEMPTS = 8;
 export const PROJECTION_LEASE_MS = 2 * 60 * 1000;
@@ -37,6 +37,8 @@ export interface ExportFacts {
   localOnlyFence: boolean;
   /** A source event of an intake category on or after the policy cutoff exists for this contact. */
   currentIntakeEvidence: boolean;
+  /** The contact is inside the durable existing-population scope (known GHL id, or a CRM-source create). */
+  existingPopulation?: boolean;
   /** Disposition of the contact's existing open projection, if any. An existing hold is never released by a producer. */
   existingOpenDisposition?: ExportDisposition | null;
 }
@@ -44,7 +46,7 @@ export interface ExportFacts {
 /**
  * Pure export classification for a newly requested projection.
  *
- * Authority comes only from contact facts and source evidence. Queue row creation time and the caller's source
+ * Authority comes only from contact facts, source evidence and the existing-population scope. Queue row creation time and the caller's source
  * string never grant it: an unlinked contact without current-intake evidence is held as historical bulk, and an
  * existing hold survives every background producer.
  */
@@ -60,16 +62,21 @@ export function classifyExportDisposition(facts: ExportFacts): { disposition: Ex
       ? { disposition: "linked_update", reason: "linked_contact_with_current_intake" }
       : { disposition: "current_intake", reason: "current_intake_evidence" };
   }
-  // Policy: export authority is current-intake evidence and nothing else. A contact that is already linked to a GHL
-  // record but has no current-intake evidence is historical: ordinary edits to it are held like any other
-  // historical contact until the owner scopes a release. This never depends on whether an open row exists.
+  // Existing-population scope: a production CRM record already known to GHL (profile/permission update) or carrying a
+  // CRM-source create reason is exported by the ordinary workers without any post-cutoff evidence. Scope is a fact
+  // about the contact, never about queue row age or the caller's source string.
+  if (facts.existingPopulation) {
+    return facts.hasGhlContactId
+      ? { disposition: "linked_update", reason: "existing_linked_identity" }
+      : { disposition: "current_intake", reason: "existing_crm_source" };
+  }
   const existing = facts.existingOpenDisposition ?? null;
   if (existing === "historical_hold" || existing === "unclassified") {
     return { disposition: "historical_hold", reason: "existing_historical_hold_preserved" };
   }
   return facts.hasGhlContactId
-    ? { disposition: "historical_hold", reason: "linked_without_current_intake" }
-    : { disposition: "historical_hold", reason: "no_current_intake_evidence" };
+    ? { disposition: "historical_hold", reason: "linked_without_export_authority" }
+    : { disposition: "historical_hold", reason: "outside_existing_population_scope" };
 }
 
 export interface SqlExecutor { execute(query: any): Promise<any> }
@@ -106,17 +113,19 @@ export async function enqueueContactProjection(
                    WHERE f.contact_id = c.id AND f.provider = 'ghl' AND f.state = 'terminal'
                      AND f.terminal_reason = 'pipeline_local_only') AS fence,
            ${sql.raw(ghlIntakeEvidenceSql("c.id"))} AS evidence,
+           ${sql.raw(ghlExistingPopulationSql("c.id"))} AS in_scope,
            (SELECT o.export_disposition FROM contact_provider_projections o
             WHERE o.contact_id = c.id AND o.provider = 'ghl' AND o.state IN ('pending', 'retry', 'processing')
             ORDER BY (o.authority_version IS NOT NULL) DESC, o.created_at DESC LIMIT 1) AS open_disposition
     FROM contacts c WHERE c.id = ${contactId}
   `))[0];
   if (!facts) return { action: "not_exported", disposition: "closed", reason: "contact_missing" };
-  const hasEvidence = facts.evidence === true;
+  const hasEvidence = facts.evidence === true || facts.in_scope === true;
   const { disposition, reason } = classifyExportDisposition({
     recordClass: facts.record_class, archived: facts.archived === true,
     hasGhlContactId: facts.has_ghl === true, localOnlyFence: facts.fence === true,
-    currentIntakeEvidence: hasEvidence,
+    currentIntakeEvidence: facts.evidence === true,
+    existingPopulation: facts.in_scope === true,
     existingOpenDisposition: (facts.open_disposition ?? null) as ExportDisposition | null,
   });
   // Held rows are recorded (visible, never exported); work that must never exist is not recorded at all.
@@ -206,7 +215,7 @@ export async function enqueueContactProjection(
  */
 export const EXPORT_ELIGIBLE_SQL = `p.authority_version IS NOT NULL
         AND p.export_disposition IN ('current_intake', 'linked_update')
-        AND ${ghlIntakeEvidenceSql("p.contact_id")}
+        AND ${ghlExportAuthoritySql("p.contact_id")}
         AND c.record_class NOT IN ('test', 'demo', 'synthetic')
         AND c.archived_at IS NULL
         AND NOT EXISTS (SELECT 1 FROM contact_provider_projections f
@@ -558,6 +567,9 @@ export interface ProjectionBacklog {
   eligibleRetryWaiting: number;
   processing: number;
   heldHistorical: number;
+  /** Eligible (pending/retry) work split by kind: updates to records GHL already knows vs creates of missing ones. */
+  eligibleLinkedUpdates: number;
+  eligibleCreates: number;
   localOnlyOrTest: number;
   ambiguous: number;
   terminal: number;
@@ -576,6 +588,8 @@ export async function getProjectionBacklog(): Promise<ProjectionBacklog> {
       count(*) FILTER (WHERE p.state = 'retry' AND ${eligible} AND p.next_attempt_at > now()) AS eligible_retry_waiting,
       count(*) FILTER (WHERE p.state = 'processing') AS processing,
       count(*) FILTER (WHERE p.state IN ('pending','retry') AND p.export_disposition IN ('historical_hold','unclassified')) AS held_historical,
+      count(*) FILTER (WHERE p.state IN ('pending','retry') AND ${eligible} AND c.ghl_contact_id IS NOT NULL) AS eligible_linked_updates,
+      count(*) FILTER (WHERE p.state IN ('pending','retry') AND ${eligible} AND c.ghl_contact_id IS NULL) AS eligible_creates,
       count(*) FILTER (WHERE p.export_disposition IN ('local_only','test_local_only')
                           OR (p.export_disposition IN ('current_intake','linked_update') AND p.state IN ('pending','retry') AND NOT (${eligible}))) AS local_only_or_test,
       count(*) FILTER (WHERE p.dispatch_state = 'ambiguous') AS ambiguous,
@@ -587,7 +601,8 @@ export async function getProjectionBacklog(): Promise<ProjectionBacklog> {
   return {
     eligiblePending: n(r.eligible_pending), eligibleRetryDue: n(r.eligible_retry_due),
     eligibleRetryWaiting: n(r.eligible_retry_waiting), processing: n(r.processing),
-    heldHistorical: n(r.held_historical), localOnlyOrTest: n(r.local_only_or_test),
+    heldHistorical: n(r.held_historical), eligibleLinkedUpdates: n(r.eligible_linked_updates),
+    eligibleCreates: n(r.eligible_creates), localOnlyOrTest: n(r.local_only_or_test),
     ambiguous: n(r.ambiguous), terminal: n(r.terminal), succeeded: n(r.succeeded),
     deferralsTotal: n(r.deferrals_total),
   };

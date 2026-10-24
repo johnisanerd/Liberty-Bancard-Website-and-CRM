@@ -113,6 +113,12 @@ async function claimable(contactIds: number[]): Promise<boolean> {
   return keep.length > 0;
 }
 const syncOk = async () => ({ success: true });
+/** The existing-population scope is a policy switch (default on). The R1/H7 sections certify the evidence-only authority
+ *  rule, so they run with the scope off; the dedicated scope section below runs with it on. */
+const setScope = async (enabled: boolean, extra: object = {}) =>
+  pool.query(`INSERT INTO system_settings(key,value,updated_at) VALUES('ghl_export_policy',$1::jsonb,NOW())
+              ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()`, [JSON.stringify({ existingPopulation: { enabled, ...extra } })]);
+await setScope(false);
 
 // ---------------------------------------------------------------- migration / schema
 const migrationSql = readFileSync("migrations/0375_ghl_projection_operations_and_intake_evidence.sql", "utf8");
@@ -771,13 +777,14 @@ server.close();
 
 // ================================================================ R3/R4/R8: approved fake-provider journey (real worker, executor, transport, control)
 {
+  let tagOpsReviewed = true;
   const controlRow = async (permissionsEnabled: boolean) => {
     const identity = controlService.getCurrentGhlRuntimeIdentity();
     assert(identity, "runtime identity must resolve for the disposable run");
     const fields = installedFields.map((k, i) => ({ id: `cf_${i}`, key: k }));
     const workflows: any[] = [];
     const now = Date.now();
-    const identityFields = ["firstName", "lastName", "email", "phone", "companyName", "tags", "customFields"];
+    const identityFields = ["firstName", "lastName", "email", "phone", "companyName", "customFields"];
     const value = {
       enabled: true, permissionsEnabled, epoch: 1, ownerProfile: "ghl-sync-only", selectedRuntime: identity, transitioning: false,
       nativeReview: {
@@ -786,8 +793,12 @@ server.close();
         inventoryRevision: controlService.hashNativeWorkflowInventory(workflows), workflows, workflowActionEvidence: [],
         customFields: fields, customFieldInventoryRevision: controlService.hashGhlCustomFieldInventory(fields),
         allowedOperations: [
-          { method: "POST", path: "/contacts", fields: identityFields, tags: ["LB-ACTIVE-PIPELINE", "lb_parent_account", "promo_tag", "keep_me"], stageIds: [], customFieldIds: fields.map(f => f.id), purpose: "cert identity create", safetyEvidence: "fixture" },
-          { method: "PUT", path: "/contacts/:contactId", fields: identityFields, tags: ["LB-ACTIVE-PIPELINE", "lb_parent_account", "promo_tag", "keep_me"], stageIds: [], customFieldIds: fields.map(f => f.id), purpose: "cert identity update", safetyEvidence: "fixture" },
+          { method: "POST", path: "/contacts", fields: identityFields, tags: [], stageIds: [], customFieldIds: fields.map(f => f.id), purpose: "cert identity create", safetyEvidence: "fixture" },
+          { method: "PUT", path: "/contacts/:contactId", fields: identityFields, tags: [], stageIds: [], customFieldIds: fields.map(f => f.id), purpose: "cert identity update", safetyEvidence: "fixture" },
+          ...(tagOpsReviewed ? [
+            { method: "POST", path: "/contacts/:contactId/tags", fields: ["tags"], tags: ["LB-ACTIVE-PIPELINE", "lb_parent_account"], stageIds: [], customFieldIds: [], purpose: "cert owned-tag add", safetyEvidence: "fixture" },
+            { method: "DELETE", path: "/contacts/:contactId/tags", fields: ["tags"], tags: ["LB-ACTIVE-PIPELINE", "lb_parent_account"], stageIds: [], customFieldIds: [], purpose: "cert owned-tag remove", safetyEvidence: "fixture" },
+          ] : []),
         ],
       },
     };
@@ -807,8 +818,9 @@ server.close();
   const behaviour = {
     fuzzyEmail: false, loseNextPost: false, failCustomFieldPut: false, duplicate400For: null as string | null, failPutFor: null as string | null,
     lookupMode: "normal" as "normal" | "noEmail" | "unsupported", dupRemoteEmail: null as string | null, duplicate400Phone: null as string | null,
-    failTagPut: false,
+    failTagPut: false, tagStatus: 0,
   };
+  const remoteTags = new Map<string, Set<string>>();
   const journeyResponder = (call: Call, body: any): Response => {
     const u = new URL(call.url);
     const path = u.pathname;
@@ -835,6 +847,15 @@ server.close();
       remote.set(created.id, created);
       if (behaviour.loseNextPost) { behaviour.loseNextPost = false; throw new Error("socket hang up"); }
       return json({ contact: { id: created.id } });
+    }
+    const tagPath = path.match(/^\/contacts\/([^/]+)\/tags$/);
+    if (tagPath && (call.method === "POST" || call.method === "DELETE")) {
+      if (behaviour.failTagPut) return json({ message: "tag boom" }, 500);
+      if (behaviour.tagStatus) return json({ message: "tag rejected" }, behaviour.tagStatus);
+      const set = remoteTags.get(tagPath[1]) ?? new Set<string>();
+      for (const tag of body?.tags ?? []) { if (call.method === "POST") set.add(tag); else set.delete(tag); }
+      remoteTags.set(tagPath[1], set);
+      return json({ tags: [...set] });
     }
     if (call.method === "PUT" && /^\/contacts\/[^/]+$/.test(path)) {
       if (behaviour.failPutFor && path.endsWith(behaviour.failPutFor)) return json({ message: "boom" }, 500);
@@ -1020,7 +1041,7 @@ server.close();
   installedFields.push("lb_do_not_contact", "lb_do_not_autocontact");
   await controlRowFn(true);
   const cSup = await mkContact();
-  await pool.query(`UPDATE contacts SET do_not_contact=true, tags=ARRAY['promo_tag'] WHERE id=$1`, [cSup]);
+  await pool.query(`UPDATE contacts SET do_not_contact=true, is_parent_account=true, tags=ARRAY['promo_tag'] WHERE id=$1`, [cSup]);
   await enqueue(cSup);
   mark = ghlCalls.length;
   await runWorker();
@@ -1028,10 +1049,14 @@ server.close();
   const firstCreate = firstWrites.find(c => c.method === "POST");
   check(!!firstCreate && (firstCreate.body.customFields ?? []).some((f: any) => f.id === `cf_${installedFields.indexOf("lb_do_not_contact")}` && f.field_value === "true") && !("tags" in firstCreate.body),
     "H3 case 3: the first create carries lb_do_not_contact=true and no tags");
-  const firstTagIdx = firstWrites.findIndex(c => Array.isArray(c.body?.tags));
-  const lastPermIdx = firstWrites.reduce((acc, c, i) => (Array.isArray(c.body?.customFields) && !Array.isArray(c.body?.tags) && c.method === "PUT" ? i : acc), -1);
-  check(firstTagIdx > lastPermIdx && firstTagIdx > 0 && firstWrites[firstTagIdx].body.tags.includes("promo_tag"),
-    "H3: tags (which can start a workflow) are written only after identity, suppression and permission writes");
+  const isTagCall = (c: any) => /\/contacts\/[^/]+\/tags$/.test(new URL(c.url).pathname);
+  const firstTagIdx = firstWrites.findIndex(isTagCall);
+  const lastPermIdx = firstWrites.reduce((acc, c, i) => (Array.isArray(c.body?.customFields) && !isTagCall(c) && c.method === "PUT" ? i : acc), -1);
+  check(firstTagIdx > lastPermIdx && firstTagIdx > 0 && firstWrites[firstTagIdx].method === "POST"
+    && JSON.stringify(firstWrites[firstTagIdx].body.tags) === JSON.stringify(["lb_parent_account"]),
+    "H3/B: owned tags (which can start a workflow) are added only after identity, suppression and permission writes, as an add-tags delta with only the owned tag");
+  check(!firstWrites.some(c => c.method === "PUT" && "tags" in (c.body ?? {})) && !firstWrites.some(c => JSON.stringify(c.body ?? {}).includes("promo_tag")),
+    "B: no profile write ever carries a tags array, and a non-owned local tag is never sent");
   // suppression present but permissions disabled: the whole first write is refused before any mutation
   await controlRowFn(false);
   const cSup2 = await mkContact();
@@ -1051,16 +1076,59 @@ server.close();
   await runWorker();
   const tRow = (await projRows(cT))[0];
   check(tRow.state === "retry" && /^GHL_COMPONENT_FAILED:tags/.test(String(tRow.last_error_code)) && !(await linkedOf(cT)).tags.includes("lb_parent_account")
-    && ghlCalls.slice(mark).some(c => c.method === "PUT" && Array.isArray(c.body?.tags) && c.body.tags.includes("lb_parent_account")),
+    && ghlCalls.slice(mark).some(c => c.method === "POST" && isTagCall(c) && c.body.tags.includes("lb_parent_account")),
     "H4 case 7: a failed tag write is a failed component and the local tag set is not changed");
   behaviour.failTagPut = false;
   await makeDue(cT);
   mark = ghlCalls.length;
   await runWorker();
-  const tagPuts = ghlCalls.slice(mark).filter(c => c.method === "PUT" && Array.isArray(c.body?.tags));
-  check((await projRows(cT))[0].state === "succeeded" && tagPuts.length === 1 && tagPuts[0].body.tags.includes("keep_me") && tagPuts[0].body.tags.includes("lb_parent_account")
-    && (await linkedOf(cT)).tags.includes("lb_parent_account") && postsSince(mark).length === 0,
-    "H4: the retry re-sends the full desired tag set, then updates local tags, with no second create");
+  const tagCalls = ghlCalls.slice(mark).filter(isTagCall);
+  check((await projRows(cT))[0].state === "succeeded" && tagCalls.length === 1 && tagCalls[0].method === "POST"
+    && JSON.stringify(tagCalls[0].body.tags) === JSON.stringify(["lb_parent_account"])
+    && (await linkedOf(cT)).tags.includes("lb_parent_account") && (await linkedOf(cT)).tags.includes("keep_me") && postsSince(mark).length === 0,
+    "H4/B: the retry sends only the owned-tag delta (never keep_me), then updates local tags, with no second create");
+
+  // B: native GHL tags are preserved; removing the owned tag is a DELETE of only that tag; no delta means no tag request
+  const remoteIdT = (await linkedOf(cT)).ghl_contact_id as string;
+  remoteTags.set(remoteIdT, new Set(["outreach.paused", "opted-out", "lb_parent_account", "native_source"]));
+  await pool.query(`UPDATE contacts SET is_parent_account=false WHERE id=$1`, [cT]);
+  await enqueue(cT);
+  mark = ghlCalls.length;
+  await runWorker();
+  const delCalls = ghlCalls.slice(mark).filter(isTagCall);
+  check(delCalls.length === 1 && delCalls[0].method === "DELETE" && JSON.stringify(delCalls[0].body.tags) === JSON.stringify(["lb_parent_account"])
+    && JSON.stringify([...remoteTags.get(remoteIdT)!].sort()) === JSON.stringify(["native_source", "opted-out", "outreach.paused"])
+    && !(await linkedOf(cT)).tags.includes("lb_parent_account") && (await linkedOf(cT)).tags.includes("keep_me"),
+    "B: removing the owned tag deletes only that tag; native GHL tags (outreach.paused, opted-out, native_source) are untouched");
+  await makeDue(cT);
+  await enqueue(cT);
+  mark = ghlCalls.length;
+  await runWorker();
+  check(ghlCalls.slice(mark).filter(isTagCall).length === 0 && ghlCalls.slice(mark).filter(c => c.method === "PUT" && "tags" in (c.body ?? {})).length === 0,
+    "B: with no owned-tag delta no tag request is made");
+
+  // B: provider rejection / unreviewed operation is a held outcome, not an infinite retry, and local tags do not move
+  const cTh = await mkContact();
+  await pool.query(`UPDATE contacts SET is_parent_account=true, tags=ARRAY['keep_me'] WHERE id=$1`, [cTh]);
+  behaviour.tagStatus = 422;
+  await enqueue(cTh);
+  await runWorker();
+  const thRow = (await projRows(cTh))[0];
+  check(thRow.state === "succeeded" && (thRow.component_receipts?.components?.tags?.heldKeys ?? []).includes("tags:provider_rejected_422")
+    && !(await linkedOf(cTh)).tags.includes("lb_parent_account"),
+    "B: a provider rejection of the tag endpoint is a held component (reported), the projection completes and local tags are unchanged");
+  behaviour.tagStatus = 0;
+  const cTu = await mkContact();
+  await pool.query(`UPDATE contacts SET is_parent_account=true WHERE id=$1`, [cTu]);
+  tagOpsReviewed = false; await controlRowFn(true);
+  mark = ghlCalls.length;
+  await enqueue(cTu);
+  await runWorker();
+  const tuRow = (await projRows(cTu))[0];
+  check(tuRow.state === "succeeded" && (tuRow.component_receipts?.components?.tags?.heldKeys ?? []).includes("tags:operation_not_reviewed")
+    && ghlCalls.slice(mark).filter(isTagCall).length === 0,
+    "B: when the tag-delta operations are not in the approved review the tag component is held and no tag request is sent");
+  tagOpsReviewed = true; await controlRowFn(true);
   // missing lb_location_of is reported as a held component, not silently dropped
   const cLoc = await mkContact();
   await pool.query(`UPDATE contacts SET parent_contact_id=$2 WHERE id=$1`, [cLoc, cT]);
@@ -1324,6 +1392,61 @@ server.close();
       && await receipts.markGhlWebhookReceipt(claimB.receiptId, claimB.claimToken, "applied") === true, "Only the current claimant can settle the receipt");
   }
 
+  // C: completion fenced by the receipt claim; a takeover mid-flight re-runs the step with the same identity and attempt + 1.
+  {
+    const eid = `h5-fence-${run}`;
+    const occ = receipts.ghlWebhookOccurrence("x", { eventId: eid, locationId: "loc_h5" });
+    const claimA = await receipts.claimGhlWebhookReceipt(occ.eventKey, "x", { payloadFingerprint: occ.fingerprint });
+    assert(claimA.decision === "process");
+    const ctxA = { receiptId: claimA.receiptId, claimToken: claimA.claimToken, lost: false };
+    const seen: Array<{ receiptId: string | null; stepKey: string; attempt: number }> = [];
+    let claimB: any = null;
+    let aLost = false;
+    try {
+      await effects.receiptStepContext.run(ctxA, () => effects.runReceiptStep("ext-fence", async info => {
+        seen.push(info);
+        // while the external call is in flight the lease lapses and another delivery takes the receipt over
+        await pool.query(`UPDATE ghl_provider_event_receipts SET lease_expires_at = now() - interval '1 second' WHERE id=$1`, [claimA.receiptId]);
+        claimB = await receipts.claimGhlWebhookReceipt(occ.eventKey, "x", { payloadFingerprint: occ.fingerprint });
+        return "provider_accepted";
+      }));
+    } catch (e) { aLost = e instanceof effects.ReceiptClaimLostError; }
+    const stepRow = (await pool.query(`SELECT state FROM ghl_webhook_effect_steps WHERE receipt_id=$1 AND step_key='ext-fence'`, [claimA.receiptId])).rows[0];
+    check(aLost && ctxA.lost === true && stepRow.state === "running",
+      "C: a delivery that lost its receipt claim while the external call was in flight cannot record the step as done (completion is fenced by the claim)");
+    assert(claimB?.decision === "process");
+    const ctxB = { receiptId: claimB.receiptId, claimToken: claimB.claimToken, lost: false };
+    await effects.receiptStepContext.run(ctxB, () => effects.runReceiptStep("ext-fence", async info => { seen.push(info); return "provider_accepted"; }));
+    check(seen.length === 2 && seen[0].receiptId === seen[1].receiptId && seen[0].stepKey === seen[1].stepKey && seen[0].attempt === 1 && seen[1].attempt === 2,
+      "C: the takeover re-runs the step immediately with the same {receiptId, stepKey} identity and attempt + 1");
+  }
+  // C: runReceiptTxStep overlap — a concurrent takeover cannot interleave with an in-flight local effect.
+  {
+    const eid = `h5-race-${run}`, tag = `r-${run}`;
+    const occ = receipts.ghlWebhookOccurrence("x", { eventId: eid, locationId: "loc_h5" });
+    const claimA = await receipts.claimGhlWebhookReceipt(occ.eventKey, "x", { payloadFingerprint: occ.fingerprint });
+    assert(claimA.decision === "process");
+    const ctxA = { receiptId: claimA.receiptId, claimToken: claimA.claimToken, lost: false };
+    const insert = (tx: any) => tx.execute(sql`INSERT INTO cert_h5_effects(receipt_id, tag) VALUES (${claimA.receiptId}::uuid, ${tag})`);
+    let aFinished = false;
+    const aPromise = effects.receiptStepContext.run(ctxA, () => effects.runReceiptTxStep("effect", async tx => { await insert(tx); await sleep(700); aFinished = true; }));
+    await sleep(250);
+    let takeoverSawFinished: boolean | null = null;
+    const takeover = (async () => {
+      await pool.query(`UPDATE ghl_provider_event_receipts SET lease_expires_at = now() - interval '1 second' WHERE id=$1`, [claimA.receiptId]);
+      const b = await receipts.claimGhlWebhookReceipt(occ.eventKey, "x", { payloadFingerprint: occ.fingerprint });
+      takeoverSawFinished = aFinished;
+      return b;
+    })();
+    const [aResult, claimB] = await Promise.all([aPromise, takeover]);
+    assert(claimB.decision === "process");
+    check(aResult.replayed === false && takeoverSawFinished === true && (await effectRows(tag)) === 1,
+      "C: a takeover racing an in-flight local effect waits for it to commit (the effect and its step record are never interleaved with the takeover)");
+    const ctxB = { receiptId: claimB.receiptId, claimToken: claimB.claimToken, lost: false };
+    const replay = await effects.receiptStepContext.run(ctxB, () => effects.runReceiptTxStep("effect", insert));
+    check(replay.replayed === true && (await effectRows(tag)) === 1, "C: the new claimant replays the committed step instead of repeating the effect");
+  }
+
   // Changed payload under one occurrence key.
   {
     const eid = `h5-changed-${run}`, tag = `c-${run}`;
@@ -1451,7 +1574,276 @@ server.close();
       check((await events(m.id, "workflow_enrollment_held")) === 1, "A workflow enrollment that could not be performed is recorded as a visible held event, not dropped");
     }
     check(ghlCalls.slice(before).every(c => c.method === "GET"), `The appointment delivery paths made no provider write in the disposable run (read-only requests: ${ghlCalls.length - before})`);
+
+    // C: structured appointment handoff outcomes. Every fixture creates BOTH the SDR merchant and the CRM contact that
+    // share one GHL contact id; the provider is a fake host behind the real transport, pause authority and receipts.
+    {
+      const webhookHandlers = await import("../../server/services/sdr/webhook-handlers");
+      const { retryDeferredEnrollments } = await import("../../server/services/ghl-enrollment-recovery");
+      const pauseAuth = await import("../../server/services/outbound-pause-authority");
+      const savedEnv = { wf: process.env.GHL_WORKFLOW_BOOKING_CONFIRM, ch: process.env.GHL_WORKFLOW_VERIFIED_CHANNELS_BOOKING_CONFIRMATION, tok: process.env.GHL_PRIVATE_INTEGRATION_TOKEN, loc: process.env.GHL_LOCATION_ID, sms: process.env.SMS_ENABLED };
+      process.env.SMS_ENABLED = "true"; // the native booking workflow is verified for email and SMS; the local gate still requires consent evidence
+      process.env.GHL_WORKFLOW_BOOKING_CONFIRM = "wf_book_cert";
+      process.env.GHL_WORKFLOW_VERIFIED_CHANNELS_BOOKING_CONFIRMATION = "email,sms";
+      process.env.GHL_PRIVATE_INTEGRATION_TOKEN ||= "cert-token";
+      process.env.GHL_LOCATION_ID ||= "loc_cert_fake";
+      type Wf = { url: string; body: any };
+      const wf: Wf[] = [];
+      const mode = { value: "ok" as "ok" | "lose" | "bad400" };
+      const prevFetch = globalThis.fetch;
+      const prevResponder = ghlResponder;
+      globalThis.fetch = (async (input: any, init?: any) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input?.url ?? "";
+        if (/\/workflow\//.test(url) && String(init?.method ?? "GET").toUpperCase() === "POST") {
+          let body: any = null; try { body = typeof init?.body === "string" ? JSON.parse(init.body) : null; } catch { body = null; }
+          wf.push({ url, body });
+        }
+        return prevFetch(input, init);
+      }) as typeof fetch;
+      ghlResponder = call => {
+        if (/\/workflow\//.test(call.url) && call.method === "POST") {
+          if (mode.value === "lose") throw new Error("socket hang up");
+          if (mode.value === "bad400") return json({ message: "bad workflow" }, 400);
+          return json({ success: true });
+        }
+        return prevResponder(call);
+      };
+      const setPause = async (paused: boolean) => {
+        await pool.query(`UPDATE outbound_pause_control SET state=$1, committed_at=NOW()`, [paused ? "paused" : "unpaused"]);
+        pauseAuth.invalidatePauseStateCache();
+      };
+      const mkPair = async (merchant = true) => {
+        const m = merchant ? await mkMerchant() : null;
+        const ghl = m?.ghl ?? `ghl_h6c_${run}_${++evSeq}`;
+        const cid = await mkContact({ ghl });
+        // transactional booking confirmation: the address only needs to be a deliverable, non-blocked status
+        await pool.query(`UPDATE contacts SET email_status='valid' WHERE id=$1`, [cid]);
+        await pool.query(`INSERT INTO consent_audit_logs(contact_id, channel, action, consented, consent_type, disclosure_version, consented_phone, source)
+                          SELECT id, 'sms', 'opt_in', true, 'express_written', 'cert-v1', phone, 'cert' FROM contacts WHERE id=$1`, [cid]);
+        return { m, ghl, cid };
+      };
+      const deferredRow = async (ghl: string) =>
+        (await pool.query(`SELECT status, retry_count FROM deferred_ghl_enrollments WHERE ghl_contact_id=$1 AND workflow_key='booking_confirmation'`, [ghl])).rows[0];
+      const heldEvent = async (merchantId: number) =>
+        (await pool.query(`SELECT payload_json FROM sdr_lead_events WHERE merchant_id=$1 AND event_type='workflow_enrollment_held' AND payload_json->>'workflowKey'='booking_confirmation' ORDER BY id DESC LIMIT 1`, [merchantId])).rows[0]?.payload_json;
+      const stepKeys = async (receiptId: string) =>
+        (await pool.query(`SELECT step_key, state, attempt_count FROM ghl_webhook_effect_steps WHERE receipt_id=$1 ORDER BY step_key`, [receiptId])).rows;
+      type Delivered = { decision: string; error?: string; receiptId?: string };
+      const deliverFixed = async (kind: "booked" | "canceled", body: Record<string, unknown>, handler: (p: any) => Promise<void>, opts: { accept?: boolean } = {}): Promise<Delivered> => {
+        const occ = receipts.ghlWebhookOccurrence(`appointment-${kind}`, body);
+        const claim = await receipts.claimGhlWebhookReceipt(occ.eventKey, `appointment-${kind}`, { ...receipts.extractReceiptMeta(body), payloadFingerprint: occ.fingerprint }, occ.legacyEventKey);
+        if (claim.decision !== "process") return { decision: claim.decision };
+        const ctx = { receiptId: claim.receiptId, claimToken: claim.claimToken, lost: false };
+        try {
+          await effects.receiptStepContext.run(ctx, async () => {
+            if (opts.accept !== false) {
+              const verdict = await appointments.acceptGhlAppointmentTransition({ kind, payload: body, allowedLocationId: "loc_cert_fake", allowedCalendarIds: [] });
+              if (verdict.decision !== "apply") return;
+            }
+            await handler(body);
+          });
+          await receipts.markGhlWebhookReceipt(claim.receiptId, claim.claimToken, "applied");
+          return { decision: "applied", receiptId: claim.receiptId };
+        } catch (error) {
+          await receipts.markGhlWebhookReceipt(claim.receiptId, claim.claimToken, "failed", String((error as Error).message));
+          return { decision: "failed", error: String((error as Error).message), receiptId: claim.receiptId };
+        }
+      };
+      const bookedBody = (ghl: string, tag: string) => ({ eventId: `h6c3-${run}-${tag}`, locationId: "loc_cert_fake", appointmentId: `apt-${run}-${tag}`, contactId: ghl, calendarId: "cal_x", dateUpdated: t(1), startTime: new Date(Date.now() + 86_400_000).toISOString() });
+      const mutationsBefore = ghlCalls.length;
+      // The SMS compliance gate depends on local business hours (no weekends); fix "now" for argument-less Date
+      // construction to a Tuesday 14:00 in America/New_York so the fixture is deterministic on any day.
+      const RealDate = Date;
+      class FixedClockDate extends RealDate {
+        constructor(...args: any[]) { if (args.length === 0) super("2026-10-27T18:00:00Z"); else super(...(args as [any])); }
+        static now() { return RealDate.now(); }
+      }
+      globalThis.Date = FixedClockDate as unknown as DateConstructor;
+      try {
+        // 1. paused: nothing reaches the provider, the handoff is held with a durable owner, the CRM step does not enrol twice.
+        await setPause(true);
+        const p1 = await mkPair();
+        const b1 = bookedBody(p1.ghl, "paused");
+        const d1 = await deliverFixed("booked", b1, webhookHandlers.handleAppointmentBooked);
+        const ev1 = await heldEvent(p1.m!.id);
+        const def1 = await deferredRow(p1.ghl);
+        // (the unrelated inbox-tag step cannot run during the pause, so the receipt itself may be left for the sender to retry)
+        check((d1.decision === "applied" || /inbox_tag_failed/.test(d1.error ?? "")) && wf.length === 0 && ev1?.state === "held" && ev1?.durable === true && def1?.status === "pending",
+          "C: with the outbound pause active the booking handoff is a structured held outcome with a durable deferred enrollment, and nothing is sent");
+        const steps1 = await stepKeys(d1.receiptId!);
+        check(steps1.some(r => r.step_key === "booked:enroll_booking_confirmation" && r.state === "done") && !steps1.some(r => r.step_key === "booked:crm_appointment_workflow"),
+          "C: the SDR merchant step and the CRM contact step address one GHL contact, so the CRM step does not enrol a second time");
+        // cancellation while the handoff is only owed: the deferred confirmation is withdrawn with the cancellation
+        const c1 = await deliverFixed("canceled", { eventId: `h6c3-${run}-paused-cancel`, locationId: "loc_cert_fake", appointmentId: b1.appointmentId, contactId: p1.ghl, calendarId: "cal_x", dateUpdated: t(5) }, webhookHandlers.handleAppointmentCanceled);
+        check(c1.decision === "applied" && !(await deferredRow(p1.ghl)), "C: cancelling an appointment withdraws its still-owed booking confirmation (no confirmation for a canceled booking)");
+
+        // 2. a held handoff survives the pause: after unpause the recovery owner delivers it exactly once.
+        const p2 = await mkPair();
+        await deliverFixed("booked", bookedBody(p2.ghl, "recover"), webhookHandlers.handleAppointmentBooked);
+        check((await deferredRow(p2.ghl))?.status === "pending", "C: a handoff refused during the pause is retained, not discarded");
+        await setPause(false);
+        await pool.query(`UPDATE deferred_ghl_enrollments SET next_retry_at = now() - interval '1 minute' WHERE ghl_contact_id=$1`, [p2.ghl]);
+        const wfBefore = wf.length;
+        await retryDeferredEnrollments();
+        check(wf.length === wfBefore + 1 && wf[wf.length - 1].url.includes(p2.ghl) && !(await deferredRow(p2.ghl) && (await deferredRow(p2.ghl)).status === "pending"),
+          "C: after the pause is lifted the deferred-enrollment recovery performs the retained handoff once");
+
+        // 3. provider accepts: one request carrying the stable identity; no deferral; CRM-only contact uses the CRM step.
+        const p3 = await mkPair();
+        const b3 = bookedBody(p3.ghl, "accepted");
+        const w3 = wf.length;
+        const d3 = await deliverFixed("booked", b3, webhookHandlers.handleAppointmentBooked);
+        check(d3.decision === "applied" && wf.length === w3 + 1 && wf[w3].body.idempotencyKey === `${d3.receiptId}:booked:enroll_booking_confirmation` && wf[w3].body.attempt === 1
+          && !(await deferredRow(p3.ghl)) && !(await heldEvent(p3.m!.id)),
+          "C: an accepted handoff is one provider request carrying the stable {receiptId, stepKey, attempt} identity, with no deferral and no held event");
+        const p3b = await mkPair(false);
+        const w3b = wf.length;
+        const d3b = await deliverFixed("booked", bookedBody(p3b.ghl, "crm-only"), webhookHandlers.handleAppointmentBooked);
+        check(d3b.decision === "applied" && wf.length === w3b + 1 && wf[w3b].body.idempotencyKey === `${d3b.receiptId}:booked:crm_appointment_workflow`,
+          "C: a CRM contact with no SDR merchant is handed off by the CRM step under its own stable identity");
+        // cancellation after acceptance: the accepted enrollment is not repeated and nothing is owed
+        const w3c = wf.length;
+        const c3 = await deliverFixed("canceled", { eventId: `h6c3-${run}-accepted-cancel`, locationId: "loc_cert_fake", appointmentId: b3.appointmentId, contactId: p3.ghl, calendarId: "cal_x", dateUpdated: t(6) }, webhookHandlers.handleAppointmentCanceled);
+        check(c3.decision === "applied" && wf.filter((w, i) => i >= w3c && w.body?.idempotencyKey?.includes("booked:")).length === 0 && !(await deferredRow(p3.ghl)),
+          "C: a cancellation after the provider accepted the booking handoff repeats nothing and leaves nothing owed");
+
+        // 4. lost response: unknown outcome, owned by the recovery job, not an error and not a silent success.
+        mode.value = "lose";
+        const p4 = await mkPair();
+        const d4 = await deliverFixed("booked", bookedBody(p4.ghl, "lost"), webhookHandlers.handleAppointmentBooked);
+        const ev4 = await heldEvent(p4.m!.id);
+        check(d4.decision === "applied" && ev4?.state === "unknown" && ev4?.durable === true && !!(await deferredRow(p4.ghl)),
+          "C: a lost provider response is an unknown outcome recorded visibly and re-asserted by the durable recovery (no silent success, no failed receipt)");
+
+        // 5. provider refusal with no durable owner fails the receipt; the retry runs the same step with the same identity.
+        mode.value = "bad400";
+        const p5 = await mkPair();
+        const b5 = bookedBody(p5.ghl, "refused");
+        const d5 = await deliverFixed("booked", b5, webhookHandlers.handleAppointmentBooked);
+        check(d5.decision === "failed" && /workflow_enrollment_failed/.test(d5.error ?? "") && !(await deferredRow(p5.ghl)),
+          "C: a refused handoff with no durable owner fails the receipt so the sender's retry recovers it");
+        mode.value = "ok";
+        const w5 = wf.length;
+        const r5 = await deliverFixed("booked", b5, webhookHandlers.handleAppointmentBooked, { accept: false });
+        check(r5.decision === "applied" && wf.length === w5 + 1 && wf[w5].body.idempotencyKey === `${d5.receiptId}:booked:enroll_booking_confirmation` && wf[w5].body.attempt === 2,
+          "C: the retry re-runs only the failed step under the same identity with the attempt counted");
+
+        // 6. local completion failure after provider acceptance: retry repeats the call under the SAME identity (provider-idempotent).
+        const p6 = await mkPair();
+        const b6 = bookedBody(p6.ghl, "completion");
+        const realQuery = pool.query.bind(pool);
+        let injected = 0;
+        (pool as any).query = (...args: any[]) => {
+          const text = typeof args[0] === "string" ? args[0] : args[0]?.text ?? "";
+          if (/UPDATE ghl_webhook_effect_steps SET state = 'done'/.test(text) && args[1]?.[1] === "booked:enroll_booking_confirmation" && injected === 0) { injected++; return Promise.reject(new Error("injected completion failure")); }
+          return realQuery(...(args as [any]));
+        };
+        const w6 = wf.length;
+        let d6: Delivered;
+        try { d6 = await deliverFixed("booked", b6, webhookHandlers.handleAppointmentBooked); } finally { (pool as any).query = realQuery; }
+        check(d6.decision === "failed" && /injected completion failure/.test(d6.error ?? "") && wf.length === w6 + 1, "C: a local completion failure after provider acceptance fails the receipt");
+        const r6 = await deliverFixed("booked", b6, webhookHandlers.handleAppointmentBooked, { accept: false });
+        const sameKey = wf.slice(w6).every(w => w.body.idempotencyKey === `${d6.receiptId}:booked:enroll_booking_confirmation`);
+        check(r6.decision === "applied" && wf.length === w6 + 2 && sameKey && wf[w6 + 1].body.attempt === 2,
+          "C: the retry after a completion failure repeats the provider call under the identical identity (attempt 2), so the provider can de-duplicate it");
+      } finally {
+        globalThis.Date = RealDate;
+        await setPause(true);
+        globalThis.fetch = prevFetch; ghlResponder = prevResponder;
+        for (const [k, v] of [["GHL_WORKFLOW_BOOKING_CONFIRM", savedEnv.wf], ["GHL_WORKFLOW_VERIFIED_CHANNELS_BOOKING_CONFIRMATION", savedEnv.ch], ["GHL_PRIVATE_INTEGRATION_TOKEN", savedEnv.tok], ["GHL_LOCATION_ID", savedEnv.loc], ["SMS_ENABLED", savedEnv.sms]] as const) {
+          if (v === undefined) delete process.env[k]; else process.env[k] = v;
+        }
+      }
+      void mutationsBefore;
+      const enrollSrc = readFileSync("server/services/ghl-workflow-enrollment.ts", "utf8");
+      const fnSrc = enrollSrc.slice(enrollSrc.indexOf("export async function enrollInAppointmentWorkflow"), enrollSrc.indexOf("export async function tagContactForInboxOrganization"));
+      check(!/setTimeout|unifiedSendEmail|unifiedUpsertContact|addTag\(/.test(fnSrc),
+        "C: the appointment handoff has no in-memory reminder timer, no direct email, no contact upsert and no tag write (confirmations and reminders belong to the native workflows)");
+    }
   }
+}
+
+// ================================================================ A: durable existing-population scope (#2105)
+{
+  const dispo = async (cid: number) => { const r = (await projRows(cid)).find(x => ["pending", "retry", "processing"].includes(x.state)) ?? (await projRows(cid))[0]; return r ? `${r.export_disposition}/${r.export_reason}` : "none"; };
+  await setScope(true);
+  const old = new Date("2025-01-01T00:00:00Z");
+  const cLinked = await mkContact({ intake: false, ghl: `ghl_${run}_scope_linked` });
+  const cOldCrm = await mkContact({ intake: false }); await addIntakeEvidence(cOldCrm, "manual_crm", old);
+  const cOldForm = await mkContact({ intake: false }); await addIntakeEvidence(cOldForm, "website_form", old);
+  const cNoSource = await mkContact({ intake: false });
+  const cCsv = await mkContact({ intake: false }); await addIntakeEvidence(cCsv, "csv_import", old);
+  const cDisc = await mkContact({ intake: false }); await addIntakeEvidence(cDisc, "discovery", old);
+  const cReg = await mkContact({ intake: false }); await addIntakeEvidence(cReg, "registry", old); await addIntakeEvidence(cReg, "sunbiz", old); await addIntakeEvidence(cReg, "dbpr", old);
+  const cTestLinked = await mkContact({ intake: false, recordClass: "test", ghl: `ghl_${run}_scope_test` });
+  const cArchLinked = await mkContact({ intake: false, archived: true, ghl: `ghl_${run}_scope_arch` });
+  const cDnc = await mkContact({ intake: false, ghl: `ghl_${run}_scope_dnc` });
+  await pool.query(`UPDATE contacts SET do_not_contact=true WHERE id=$1`, [cDnc]);
+
+  // Classification at enqueue: age grants nothing, source policy does.
+  check(await dispo(cLinked) === "none" && (await enqueue(cLinked)).disposition === "linked_update" && await claimable([cLinked]),
+    "A: a production contact that already has a GHL id is in scope for updates without any intake evidence");
+  check((await enqueue(cOldCrm)).disposition === "current_intake" && (await enqueue(cOldForm)).disposition === "current_intake",
+    "A: an unlinked CRM-source contact (manual_crm, website_form) is in scope for a create whatever the date of its source event");
+  check((await enqueue(cNoSource)).disposition === "historical_hold" && (await enqueue(cCsv)).disposition === "historical_hold"
+    && (await enqueue(cDisc)).disposition === "historical_hold" && (await enqueue(cReg)).disposition === "historical_hold",
+    "A: source-less, csv-import, discovery and registry/Sunbiz/DBPR contacts stay held");
+  check((await enqueue(cTestLinked)).disposition === "test_local_only" && !(await claimable([cTestLinked])),
+    "A: a test contact is never exportable, scope or not");
+  check((await enqueue(cArchLinked)).disposition !== "linked_update" && !(await claimable([cArchLinked])), "A: an archived contact is never in scope");
+
+  // Sweep: in-scope contacts that have no projection row get one (ordinary worker input); excluded contacts never do; idempotent.
+  const cSwLinked = await mkContact({ intake: false, ghl: `ghl_${run}_sweep_linked` });
+  const cSwCrm = await mkContact({ intake: false }); await addIntakeEvidence(cSwCrm, "partner_referral", old);
+  const cSwCsv = await mkContact({ intake: false }); await addIntakeEvidence(cSwCsv, "csv_import", old);
+  const cSwReg = await mkContact({ intake: false }); await addIntakeEvidence(cSwReg, "sunbiz", old);
+  const cSwNone = await mkContact({ intake: false });
+  const cSwTest = await mkContact({ intake: false, recordClass: "demo", ghl: `ghl_${run}_sweep_demo` });
+  const blBefore = await authority.getProjectionBacklog();
+  check(await convergence.projectionConvergenceNeeded(), "A: un-enrolled in-scope contacts are detected as convergence work");
+  await convergence.convergeLegacyProjectionRows();
+  const sw = async (cid: number) => (await projRows(cid)).filter(r => r.source_kind === "existing_population").length;
+  check(await sw(cSwLinked) === 1 && await sw(cSwCrm) === 1 && await sw(cSwCsv) === 0 && await sw(cSwReg) === 0 && await sw(cSwNone) === 0 && await sw(cSwTest) === 0,
+    "A: the sweep enrols exactly the in-scope contacts (linked update, old CRM-source create) and no csv/registry/source-less/test contact");
+  const swRow = (await projRows(cSwLinked))[0]; const swCreate = (await projRows(cSwCrm))[0];
+  check(swRow.export_disposition === "linked_update" && swRow.export_reason === "existing_linked_identity"
+    && swCreate.export_disposition === "current_intake" && swCreate.export_reason === "existing_crm_source",
+    "A: swept rows are persisted as known-GHL-id updates and missing-id creates with their reason");
+  const blAfter = await authority.getProjectionBacklog();
+  check(blAfter.eligibleLinkedUpdates >= blBefore.eligibleLinkedUpdates && blAfter.eligibleCreates >= blBefore.eligibleCreates + 1,
+    "A: the backlog reports eligible linked updates and eligible creates separately");
+  await convergence.convergeLegacyProjectionRows();
+  check(await sw(cSwLinked) === 1 && await sw(cSwCrm) === 1, "A: a second sweep creates no duplicate rows (idempotent)");
+  check(await claimable([cSwLinked]) && await claimable([cSwCrm]), "A: swept rows are claimed by the ordinary worker path");
+
+  // A release of a pre-existing hold for contacts the scope now covers; excluded holds stay.
+  await setScope(false);
+  const cHold = await mkContact({ intake: false, ghl: `ghl_${run}_hold_linked` });
+  await enqueue(cHold);
+  const cHoldCsv = await mkContact({ intake: false }); await addIntakeEvidence(cHoldCsv, "csv_import", old); await enqueue(cHoldCsv);
+  check((await projRows(cHold))[0].export_disposition === "historical_hold" && !(await claimable([cHold])), "A: with the scope off a linked contact's work is held");
+  await setScope(true);
+  await convergence.convergeLegacyProjectionRows();
+  check((await projRows(cHold))[0].export_disposition === "linked_update" && (await projRows(cHold))[0].export_reason === "existing_linked_identity"
+    && (await projRows(cHoldCsv))[0].export_disposition === "historical_hold",
+    "A: switching the scope on releases the held linked update and leaves the csv-import hold in place");
+
+  // Policy narrowing is by source category, never by age; registry categories cannot be named; switching off demotes open rows.
+  await setScope(true, { createSourceCategories: ["website_form", "sunbiz", "registry"] });
+  const cNarrow = await mkContact({ intake: false }); await addIntakeEvidence(cNarrow, "manual_crm", old);
+  const cNarrowReg = await mkContact({ intake: false }); await addIntakeEvidence(cNarrowReg, "sunbiz", old);
+  check((await enqueue(cNarrow)).disposition === "historical_hold" && (await enqueue(cNarrowReg)).disposition === "historical_hold",
+    "A: createSourceCategories narrows the create scope by source, and a registry category can never be named into scope");
+  await setScope(false);
+  await convergence.convergeLegacyProjectionRows();
+  check((await projRows(cSwLinked))[0].export_disposition === "historical_hold" && !(await claimable([cSwLinked])),
+    "A: switching the scope off returns open, undispatched exportable rows to the hold without deleting them");
+  await setScope(true);
+  await convergence.convergeLegacyProjectionRows();
+  check((await projRows(cSwLinked))[0].export_disposition === "linked_update", "A: switching it back on releases them again");
+  // suppression is not cleared by scope: the contact flagged do_not_contact stays flagged and in the queue under the same dispatch guards
+  check((await pool.query(`SELECT do_not_contact FROM contacts WHERE id=$1`, [cDnc])).rows[0].do_not_contact === true,
+    "A: scope never clears a contact's suppression flag");
 }
 
 // static ownership guards

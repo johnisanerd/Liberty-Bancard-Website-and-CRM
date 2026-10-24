@@ -308,7 +308,7 @@ export interface GhlSyncRuntimeTruth {
   blockedDeferred: { count: number; lastAt: string | null; lastEntityType: string | null; lastReason: string | null } | null;
   exportBacklog: (import("./ghl-projection-authority").ProjectionBacklog & { oldestEligibleAt: string | null; oldestHeldAt: string | null; asOf: string }) | null;
   lastTick: Record<string, unknown> | null;
-  exportPolicy: { currentIntakeSince: string | null; legacyPhases: Record<string, boolean> | null } | null;
+  exportPolicy: { currentIntakeSince: string | null; existingPopulationEnabled: boolean; legacyPhases: Record<string, boolean> | null } | null;
   errors: { owner: string | null; worker: string | null; queueBacklog: string | null; metrics: string | null; deferred: string | null; exportBacklog?: string | null };
 }
 
@@ -443,8 +443,8 @@ export async function getGhlSyncRuntimeTruth(): Promise<GhlSyncRuntimeTruth> {
     truth.lastTick = (settings.find(r => r.key === "ghl_sync_last_tick")?.value ?? null) as Record<string, unknown> | null;
     const policy = settings.find(r => r.key === "ghl_export_policy")?.value as any;
     truth.exportPolicy = policy
-      ? { currentIntakeSince: policy.currentIntakeSince ?? null, legacyPhases: policy.legacyPhases ?? null }
-      : null;
+      ? { currentIntakeSince: policy.currentIntakeSince ?? null, existingPopulationEnabled: policy.existingPopulation?.enabled !== false, legacyPhases: policy.legacyPhases ?? null }
+      : { currentIntakeSince: null, existingPopulationEnabled: true, legacyPhases: null };
   } catch (error) {
     truth.errors.exportBacklog = (error as Error).message;
   }

@@ -34,6 +34,47 @@ export function ghlIntakeEvidenceSql(contactIdExpr: string): string {
             AND e.created_at >= ${GHL_INTAKE_CUTOFF_SQL})`;
 }
 
+/**
+ * Existing-population scope (#2105 item A). The CRM's existing records are processed by the ordinary projection workers
+ * under a durable, code-defined scope instead of requiring post-cutoff intake evidence:
+ *  - a production, non-archived contact that already carries a GHL contact id is in scope for profile/permission
+ *    updates (identity is known; no create happens);
+ *  - an unlinked contact is in scope for a create only when it has a CRM-source event of a create-source category at
+ *    any date (default: the intake categories). Discovery, registry (Sunbiz/DBPR), imports, identity matching,
+ *    inbound sync and source-less prospects stay out unless policy.existingPopulation.createSourceCategories names them
+ *    (registry categories can never be named).
+ * Contact age never grants scope, test/demo/synthetic and archived records are never in scope, and the local-only
+ * fence and suppression facts are enforced elsewhere (scope never clears them).
+ * system_settings.ghl_export_policy.existingPopulation.enabled = false switches the whole scope off (default on).
+ */
+export const GHL_EXISTING_POPULATION_NEVER_CATEGORIES = ["sunbiz", "dbpr", "registry"] as const;
+
+const EXISTING_POPULATION_ENABLED_SQL = `COALESCE((SELECT (s.value->'existingPopulation'->>'enabled')::boolean
+     FROM system_settings s WHERE s.key = '${GHL_EXPORT_POLICY_KEY}'), true)`;
+
+const EXISTING_POPULATION_CREATE_CATEGORIES_SQL = `COALESCE((SELECT ARRAY(SELECT jsonb_array_elements_text(s.value->'existingPopulation'->'createSourceCategories'))
+     FROM system_settings s WHERE s.key = '${GHL_EXPORT_POLICY_KEY}'
+       AND jsonb_typeof(s.value->'existingPopulation'->'createSourceCategories') = 'array'),
+     ARRAY[${GHL_INTAKE_EVIDENCE_CATEGORIES.map(c => `'${c}'`).join(", ")}]::text[])`;
+
+export function ghlExistingPopulationSql(contactIdExpr: string): string {
+  return `(${EXISTING_POPULATION_ENABLED_SQL}
+     AND EXISTS (SELECT 1 FROM contacts sc
+       WHERE sc.id = ${contactIdExpr}
+         AND COALESCE(sc.record_class, 'unknown') NOT IN ('test', 'demo', 'synthetic')
+         AND sc.archived_at IS NULL
+         AND (sc.ghl_contact_id IS NOT NULL
+              OR EXISTS (SELECT 1 FROM contact_source_events e2
+                         WHERE e2.contact_id = sc.id
+                           AND e2.source_category = ANY(${EXISTING_POPULATION_CREATE_CATEGORIES_SQL})
+                           AND e2.source_category NOT IN (${GHL_EXISTING_POPULATION_NEVER_CATEGORIES.map(c => `'${c}'`).join(", ")})))))`;
+}
+
+/** Export authority = current-intake evidence OR the existing-population scope. */
+export function ghlExportAuthoritySql(contactIdExpr: string): string {
+  return `(${ghlIntakeEvidenceSql(contactIdExpr)} OR ${ghlExistingPopulationSql(contactIdExpr)})`;
+}
+
 /** Statements take $1 = batch size (contacts / rows) so every run is bounded and resumable. */
 export const GHL_PROJECTION_CONVERGENCE_STATEMENTS: readonly string[] = [
   // 1. Persisted export disposition for rows that predate the disposition column. Evidence-based: a legacy row is
@@ -165,19 +206,89 @@ WHERE p.id = a.id AND (a.rn > 1 OR p.authority_version IS NULL)`;
 
 export const GHL_AUTHORITY_RECONCILE_STATEMENT = `UPDATE contact_provider_projections p
 SET export_disposition = 'historical_hold',
-    export_reason = 'no_current_intake_evidence',
+    export_reason = CASE WHEN EXISTS (SELECT 1 FROM contacts hc WHERE hc.id = p.contact_id AND hc.ghl_contact_id IS NOT NULL)
+                         THEN 'linked_without_export_authority' ELSE 'outside_existing_population_scope' END,
     updated_at = now()
 WHERE p.id IN (
   SELECT x.id FROM contact_provider_projections x
   WHERE x.provider = 'ghl' AND x.state IN ('pending', 'retry')
     AND x.export_disposition IN ('current_intake', 'linked_update')
-    AND NOT ${ghlIntakeEvidenceSql("x.contact_id")}
+    AND NOT ${ghlExportAuthoritySql("x.contact_id")}
   ORDER BY x.id LIMIT $1)`;
 
+/** Runtime classification of legacy unclassified rows under the full export authority (evidence or existing population). */
+export const GHL_RUNTIME_CLASSIFY_STATEMENT = `UPDATE contact_provider_projections p
+SET export_disposition = CASE
+      WHEN p.terminal_reason = 'pipeline_local_only' THEN 'local_only'
+      WHEN c.record_class IN ('test', 'demo', 'synthetic') THEN 'test_local_only'
+      WHEN p.state IN ('pending', 'retry', 'processing') AND ${ghlExportAuthoritySql("p.contact_id")}
+        THEN CASE WHEN c.ghl_contact_id IS NULL THEN 'current_intake' ELSE 'linked_update' END
+      WHEN p.state IN ('pending', 'retry', 'processing') THEN 'historical_hold'
+      ELSE 'closed'
+    END,
+    export_reason = CASE
+      WHEN p.terminal_reason = 'pipeline_local_only' THEN 'pipeline_local_only_fence'
+      WHEN c.record_class IN ('test', 'demo', 'synthetic') THEN 'record_class_' || c.record_class
+      WHEN p.state IN ('pending', 'retry', 'processing') AND ${ghlIntakeEvidenceSql("p.contact_id")} THEN 'current_intake_evidence'
+      WHEN p.state IN ('pending', 'retry', 'processing') AND ${ghlExistingPopulationSql("p.contact_id")}
+        THEN CASE WHEN c.ghl_contact_id IS NULL THEN 'existing_crm_source' ELSE 'existing_linked_identity' END
+      WHEN p.state IN ('pending', 'retry', 'processing') THEN
+        CASE WHEN c.ghl_contact_id IS NULL THEN 'outside_existing_population_scope' ELSE 'linked_without_export_authority' END
+      ELSE 'not_open_work'
+    END,
+    source_kind = COALESCE(p.source_kind, 'legacy')
+FROM contacts c
+WHERE c.id = p.contact_id AND p.provider = 'ghl' AND p.export_disposition = 'unclassified'
+  AND p.id IN (SELECT id FROM contact_provider_projections
+               WHERE provider = 'ghl' AND export_disposition = 'unclassified' ORDER BY id LIMIT $1)`;
+
+/**
+ * Releases held rows that the existing-population scope now covers (a hold only ever records "no export authority").
+ * Rows in processing are not touched. A row that is out of scope stays held. Never clears a suppression: suppression
+ * is enforced by the dispatch path, not by the hold.
+ */
+export const GHL_SCOPE_RELEASE_STATEMENT = `UPDATE contact_provider_projections p
+SET export_disposition = CASE WHEN c.ghl_contact_id IS NULL THEN 'current_intake' ELSE 'linked_update' END,
+    export_reason = CASE WHEN ${ghlIntakeEvidenceSql("p.contact_id")} THEN 'current_intake_evidence'
+                         WHEN c.ghl_contact_id IS NULL THEN 'existing_crm_source' ELSE 'existing_linked_identity' END,
+    next_attempt_at = LEAST(p.next_attempt_at, now()),
+    updated_at = now()
+FROM contacts c
+WHERE c.id = p.contact_id
+  AND p.id IN (
+    SELECT x.id FROM contact_provider_projections x
+    WHERE x.provider = 'ghl' AND x.state IN ('pending', 'retry') AND x.authority_version IS NOT NULL
+      AND x.export_disposition = 'historical_hold'
+      AND ${ghlExportAuthoritySql("x.contact_id")}
+    ORDER BY x.id LIMIT $1)`;
+
+/**
+ * Enrols in-scope contacts that have no projection at all (any state) through the single projection table: this is
+ * the ordinary worker's input, not a second engine. Self-terminating (a row now exists), bounded, resumable.
+ */
+export const GHL_EXISTING_POPULATION_ENQUEUE_STATEMENT = `INSERT INTO contact_provider_projections
+  (contact_id, provider, projection_key, state, authority_version, desired_generation, export_disposition, export_reason, source_kind)
+SELECT c.id, 'ghl', 'contact:' || c.id, 'pending', 1, 1,
+       CASE WHEN c.ghl_contact_id IS NULL THEN 'current_intake' ELSE 'linked_update' END,
+       CASE WHEN c.ghl_contact_id IS NULL THEN 'existing_crm_source' ELSE 'existing_linked_identity' END,
+       'existing_population'
+FROM contacts c
+WHERE c.id IN (
+    SELECT cl.id FROM contacts cl WHERE cl.ghl_contact_id IS NOT NULL
+    UNION
+    SELECT ev.contact_id FROM contact_source_events ev
+    WHERE ev.source_category = ANY(${EXISTING_POPULATION_CREATE_CATEGORIES_SQL}))
+  AND ${ghlExistingPopulationSql("c.id")}
+  AND NOT EXISTS (SELECT 1 FROM contact_provider_projections q WHERE q.contact_id = c.id AND q.provider = 'ghl')
+ORDER BY c.id LIMIT $1
+ON CONFLICT DO NOTHING`;
+
 export const GHL_RUNTIME_RECONCILE_STATEMENTS: readonly string[] = [
-  GHL_PROJECTION_CONVERGENCE_STATEMENTS[0],
+  GHL_RUNTIME_CLASSIFY_STATEMENT,
   GHL_RUNTIME_DEDUPE_STATEMENT,
   GHL_AUTHORITY_RECONCILE_STATEMENT,
+  GHL_SCOPE_RELEASE_STATEMENT,
+  GHL_EXISTING_POPULATION_ENQUEUE_STATEMENT,
 ];
 
 export const GHL_CONVERGENCE_BATCH_SIZE = 500;
@@ -185,13 +296,25 @@ export const GHL_CONVERGENCE_MAX_BATCHES_PER_RUN = 20;
 
 export async function projectionConvergenceNeeded(): Promise<boolean> {
   const result = await pool.query(
-    `SELECT EXISTS (
-       SELECT 1 FROM contact_provider_projections
-       WHERE provider = 'ghl'
-         AND (export_disposition = 'unclassified'
-              OR (state IN ('pending', 'retry', 'processing') AND authority_version IS NULL)
-              OR (state IN ('pending', 'retry') AND export_disposition IN ('current_intake', 'linked_update')
-                  AND NOT ${ghlIntakeEvidenceSql("contact_provider_projections.contact_id")}))
+    `SELECT (
+       EXISTS (
+         SELECT 1 FROM contact_provider_projections
+         WHERE provider = 'ghl'
+           AND (export_disposition = 'unclassified'
+                OR (state IN ('pending', 'retry', 'processing') AND authority_version IS NULL)
+                OR (state IN ('pending', 'retry') AND export_disposition IN ('current_intake', 'linked_update')
+                    AND NOT ${ghlExportAuthoritySql("contact_provider_projections.contact_id")})
+                OR (state IN ('pending', 'retry') AND authority_version IS NOT NULL AND export_disposition = 'historical_hold'
+                    AND ${ghlExportAuthoritySql("contact_provider_projections.contact_id")})))
+       OR EXISTS (
+         SELECT 1 FROM contacts c
+         WHERE c.id IN (
+             SELECT cl.id FROM contacts cl WHERE cl.ghl_contact_id IS NOT NULL
+             UNION
+             SELECT ev.contact_id FROM contact_source_events ev
+             WHERE ev.source_category = ANY(${EXISTING_POPULATION_CREATE_CATEGORIES_SQL}))
+           AND ${ghlExistingPopulationSql("c.id")}
+           AND NOT EXISTS (SELECT 1 FROM contact_provider_projections q WHERE q.contact_id = c.id AND q.provider = 'ghl'))
      ) AS needed`,
   );
   return result.rows[0]?.needed === true;

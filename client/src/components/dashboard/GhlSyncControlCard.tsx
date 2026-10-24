@@ -82,11 +82,11 @@ interface SyncTruth {
     } | null;
     exportBacklog?: {
       eligiblePending: number; eligibleRetryDue: number; eligibleRetryWaiting: number; processing: number;
-      heldHistorical: number; localOnlyOrTest: number; ambiguous: number; terminal: number; succeeded: number;
+      heldHistorical: number; eligibleLinkedUpdates?: number; eligibleCreates?: number; localOnlyOrTest: number; ambiguous: number; terminal: number; succeeded: number;
       deferralsTotal: number; oldestEligibleAt: string | null; oldestHeldAt: string | null; asOf: string;
     } | null;
     lastTick?: { at?: string; outcome?: string; reason?: string; error?: string | null; circuitState?: string } | null;
-    exportPolicy?: { currentIntakeSince: string | null; legacyPhases: Record<string, boolean> | null } | null;
+    exportPolicy?: { currentIntakeSince: string | null; existingPopulationEnabled?: boolean; legacyPhases: Record<string, boolean> | null } | null;
     errors: Record<string, string | null> | null;
   } | null;
 }
@@ -393,6 +393,8 @@ export function GhlSyncControlCard({ canControl, summaryOnly = false }: { canCon
                     <>
                       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                         <TruthValue label="Eligible, waiting to run" value={truth.runtime.exportBacklog.eligiblePending + truth.runtime.exportBacklog.eligibleRetryDue} />
+                        <TruthValue label="of which updates to existing GHL records" value={truth.runtime.exportBacklog.eligibleLinkedUpdates} />
+                        <TruthValue label="of which creates of missing records" value={truth.runtime.exportBacklog.eligibleCreates} />
                         <TruthValue label="Scheduled retry" value={truth.runtime.exportBacklog.eligibleRetryWaiting} />
                         <TruthValue label="Processing" value={truth.runtime.exportBacklog.processing} />
                         <TruthValue label="Needs reconciliation" value={truth.runtime.exportBacklog.ambiguous} />

@@ -19,6 +19,8 @@ const ALLOWED_METHOD_PATHS = new Set([
   "PUT /contacts/:contactId",
   "PATCH /contacts/:contactId",
   "DELETE /contacts/:contactId",
+  "POST /contacts/:contactId/tags",
+  "DELETE /contacts/:contactId/tags",
   "POST /opportunities",
   "PUT /opportunities/:opportunityId",
   "PATCH /opportunities/:opportunityId",

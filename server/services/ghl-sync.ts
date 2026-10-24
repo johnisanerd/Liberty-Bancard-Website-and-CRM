@@ -32,7 +32,7 @@ import { enqueuePromotionalEnrollment } from "./promotional-enrollment-eligibili
 import { eq, sql, and, isNull, desc } from "drizzle-orm";
 import { GO_LIVE_GATE_STAGES, checkGoLiveReadiness } from "./go-live-gate";
 import { canExecute } from "./outbound-queue-coordinator";
-import { markGhlDispatch, GhlAmbiguousDispatchError, withGhlDispatchRecorder, summarizeDispatches, type GhlDispatchHooks } from "./ghl-dispatch-recorder";
+import { markGhlDispatch, classifyGhlOperation, GhlAmbiguousDispatchError, withGhlDispatchRecorder, summarizeDispatches, type GhlDispatchHooks } from "./ghl-dispatch-recorder";
 import {
   CONTACT_PROJECTION_MAX_ATTEMPTS, AMBIGUOUS_RETRY_MS, DEFERRAL_RETRY_MS,
   claimEligibleProjections, renewProjectionLease, reserveProjectionDispatch, settleProjection,
@@ -593,9 +593,16 @@ async function ghlFetch(path: string, options: RequestInit & { pauseEpoch?: bigi
     });
     try {
       const dispatched = await fetch(url, { ...options, body: transportBody, headers, signal: options.signal ?? AbortSignal.timeout(20_000) });
-      await settleDispatch(dispatched.ok ? "ok" : (dispatched.status >= 500 && method === "POST" ? "ambiguous" : "http_error"), dispatched.status);
+      // Only a create can leave an unknown duplicate behind. The owned-tag add/remove endpoints are idempotent set
+      // operations, so a 5xx/lost response on them is an ordinary retryable failure, never an ambiguous dispatch.
+      const idempotentTagCall = classifyGhlOperation(method, path) === "contact_tags";
+      await settleDispatch(dispatched.ok ? "ok" : (dispatched.status >= 500 && method === "POST" && !idempotentTagCall ? "ambiguous" : "http_error"), dispatched.status);
       return dispatched;
     } catch (transportError) {
+      if (classifyGhlOperation(method, path) === "contact_tags") {
+        await settleDispatch("http_error", null);
+        throw transportError;
+      }
       await settleDispatch("ambiguous");
       if (method === "POST") {
         throw new GhlAmbiguousDispatchError(`${method} ${path.split("?")[0]}: ${transportError instanceof Error ? transportError.message : String(transportError)}`);
@@ -1945,20 +1952,36 @@ const ACTIVE_PIPELINE_TAG = "LB-ACTIVE-PIPELINE";
 const PARENT_ACCOUNT_TAG = "lb_parent_account";
 
 /**
- * Tags and parent/location fields as ONE component, written only after identity, suppression and permission
- * components. The desired tag set is recomputed from current local data on every run and sent in full; local tags
- * change only after the provider accepted the write, so a failed write is retried instead of being masked by an
- * already-updated local copy. Fields the provider has not installed are held (and reported), never auto-created.
+ * Parent/location fields and the two CRM-owned tags as ONE component, written only after identity, suppression and
+ * permission components.
+ *
+ * Tags are never replaced. GHL-native tags (outreach.paused, outreach.replied, outbound-merchant-enrolled, opt-out and
+ * bounce tags, source tags...) are owned by GHL and its workflows; the CRM owns exactly LB-ACTIVE-PIPELINE and
+ * lb_parent_account. The component therefore sends only owned-tag deltas through the add-tags and remove-tags
+ * endpoints, which cannot touch any other tag, and only when the CRM's last known state of an owned tag differs from
+ * what the CRM wants. The local copy of an owned tag changes only after the provider accepted that delta, so a failed
+ * write is retried (idempotently) instead of being masked.
+ *
+ * A reviewed-operation refusal or a provider rejection of the tag endpoints yields a held outcome (reported, never
+ * retried forever and never blocking identity/permission storage); transient failures stay retryable failures. Fields
+ * the provider has not installed are held (and reported), never auto-created.
  */
+export function computeOwnedTagDelta(currentTags: readonly string[], wantActive: boolean, wantParent: boolean): { add: string[]; remove: string[] } {
+  const add: string[] = []; const remove: string[] = [];
+  for (const [tag, wanted] of [[ACTIVE_PIPELINE_TAG, wantActive], [PARENT_ACCOUNT_TAG, wantParent]] as const) {
+    const present = currentTags.includes(tag);
+    if (wanted && !present) add.push(tag);
+    else if (!wanted && present) remove.push(tag);
+  }
+  return { add, remove };
+}
+
 export async function applyTagsAndParentComponent(contact: Contact, ghlContactId: string): Promise<GhlComponentOutcome> {
   try {
     const deals = await storage.getDealsByContact(contact.id);
     const hasActiveDeal = deals.some(d => (ACTIVE_DEAL_STAGES as readonly string[]).includes(d.stage));
     const currentTags: string[] = contact.tags || [];
-    const desired = new Set(currentTags);
-    if (hasActiveDeal) desired.add(ACTIVE_PIPELINE_TAG); else desired.delete(ACTIVE_PIPELINE_TAG);
-    if (contact.isParentAccount) desired.add(PARENT_ACCOUNT_TAG); else desired.delete(PARENT_ACCOUNT_TAG);
-    const desiredTags = Array.from(desired);
+    const delta = computeOwnedTagDelta(currentTags, hasActiveDeal, !!contact.isParentAccount);
 
     const wanted: Array<{ key: string; field_value: string; meaningful: boolean }> = [];
     if (hasActiveDeal !== currentTags.includes(ACTIVE_PIPELINE_TAG)) {
@@ -1978,15 +2001,36 @@ export async function applyTagsAndParentComponent(contact: Contact, ghlContactId
     const customFields = wanted.filter(field => installedKeys.has(field.key)).map(({ key, field_value }) => ({ key, field_value }));
     const heldKeys = wanted.filter(field => !installedKeys.has(field.key) && field.meaningful).map(field => field.key);
 
-    const payload: Record<string, unknown> = { tags: desiredTags };
-    if (customFields.length > 0) payload.customFields = customFields;
-    await ghlFetch(`/contacts/${ghlContactId}`, { method: "PUT", body: JSON.stringify(payload) });
-
-    // Provider accepted: only now does the local copy follow.
-    if (desiredTags.join(",") !== currentTags.join(",")) {
-      await storage.syncUpdateContact(contact.id, { tags: desiredTags });
+    if (customFields.length > 0) {
+      await ghlFetch(`/contacts/${ghlContactId}`, { method: "PUT", body: JSON.stringify({ customFields }) });
     }
-    return { state: heldKeys.length > 0 ? "held" : "ok", heldKeys };
+
+    const tagState: { held: string | null } = { held: null };
+    let localTags = [...currentTags];
+    const tagCall = async (method: "POST" | "DELETE", tags: string[]) => {
+      if (tags.length === 0 || tagState.held) return;
+      try {
+        await ghlFetch(`/contacts/${ghlContactId}/tags`, { method, body: JSON.stringify({ tags }) });
+      } catch (err: any) {
+        const message = String(err?.message || "");
+        // A refusal because the tag-delta operation is not in the approved native review is a held component,
+        // whichever error class carried it; every other boundary error still aborts the projection.
+        if (/operation_not_reviewed/.test(message)) { tagState.held = "tags:operation_not_reviewed"; return; }
+        if (isProjectionBoundaryError(err)) throw err;
+        const status = message.match(/GHL API error (\d+)/)?.[1];
+        if (status && ["400", "403", "404", "422"].includes(status)) { tagState.held = `tags:provider_rejected_${status}`; return; }
+        throw err;
+      }
+      localTags = method === "POST"
+        ? Array.from(new Set([...localTags, ...tags]))
+        : localTags.filter(tag => !tags.includes(tag));
+      await storage.syncUpdateContact(contact.id, { tags: localTags });
+    };
+    await tagCall("POST", delta.add);
+    await tagCall("DELETE", delta.remove);
+
+    const allHeld = tagState.held ? [...heldKeys, tagState.held] : heldKeys;
+    return { state: allHeld.length > 0 ? "held" : "ok", heldKeys: allHeld };
   } catch (err: any) {
     if (isGhlSyncDeferred(err?.message)) throw new GhlSyncDeferredError(err.message);
     if (isProjectionBoundaryError(err)) throw err;
@@ -2694,10 +2738,11 @@ async function recordGhlTick(record: Record<string, unknown>): Promise<void> {
   }
 }
 
-export async function readGhlExportPolicy(): Promise<{ currentIntakeSince: string; legacyPhases: { deals: boolean; tasks: boolean; companies: boolean } }> {
+export async function readGhlExportPolicy(): Promise<{ currentIntakeSince: string; existingPopulationEnabled: boolean; legacyPhases: { deals: boolean; tasks: boolean; companies: boolean } }> {
   const row = ((await pool.query(`SELECT value FROM system_settings WHERE key = 'ghl_export_policy'`)).rows[0]?.value ?? {}) as any;
   return {
     currentIntakeSince: typeof row.currentIntakeSince === "string" ? row.currentIntakeSince : "2026-10-23T04:00:00Z",
+    existingPopulationEnabled: row.existingPopulation?.enabled !== false,
     legacyPhases: {
       deals: row.legacyPhases?.deals === true,
       tasks: row.legacyPhases?.tasks === true,

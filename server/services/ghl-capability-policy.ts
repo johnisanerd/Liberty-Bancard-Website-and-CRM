@@ -71,6 +71,8 @@ function isPermissionPayload(body: unknown): boolean {
 const WRITE_TEMPLATES: Array<{ path: RegExp; template: string; methods: string[] }> = [
   { path: /^\/contacts$/i, template: "/contacts", methods: ["POST"] },
   { path: /^\/contacts\/[A-Za-z0-9_-]{1,128}$/i, template: "/contacts/:contactId", methods: ["PUT", "PATCH", "DELETE"] },
+  // Add/remove tags on one contact. Additive/subtractive by construction: cannot replace the contact's tag set.
+  { path: /^\/contacts\/[A-Za-z0-9_-]{1,128}\/tags$/i, template: "/contacts/:contactId/tags", methods: ["POST", "DELETE"] },
   { path: /^\/opportunities$/i, template: "/opportunities", methods: ["POST"] },
   { path: /^\/opportunities\/[A-Za-z0-9_-]{1,128}$/i, template: "/opportunities/:opportunityId", methods: ["PUT", "PATCH", "DELETE"] },
   { path: /^\/tasks$/i, template: "/tasks", methods: ["POST"] },
