@@ -55,9 +55,13 @@ export async function getWorkflowEmailWorkspace(workflowId: number) {
   };
 }
 
-export function previewWorkflowEmail(input: { subject?: string | null; body: string }) {
+export async function previewWorkflowEmail(input: { subject?: string | null; body: string }) {
   const preview = previewMessage("workflow", input, "html");
+  const { buildFinalEmailPreview } = await import("./message-template-versions");
+  // Only a fully rendered message has a final form; unresolved merge fields keep the plain preview and its findings.
+  const final = preview.unresolved.length ? null : await buildFinalEmailPreview({ subject: preview.subject, html: preview.body });
   return {
+    final,
     subject: preview.subject,
     html: preview.body,
     unresolved: preview.unresolved,

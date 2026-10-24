@@ -71,10 +71,14 @@ export interface FinalMessagePreview {
   html: string;
   text: string;
   htmlImagesOff: string;
-  sender: { mode: "provider_default"; note: string };
-  replyTo: { mode: "not_forwarded"; note: string };
+  sender: { mode: "provider_default" | "unknown"; address: string | null; name: string | null; note: string };
+  replyTo: { mode: "not_set" | "unknown"; address: string | null; note: string };
+  /** What the transport really sends. Plain text below is generated reference text unless textTransmitted is true. */
+  transport: { name: "ghl_conversations"; payloadFields: string[]; textTransmitted: boolean; note: string };
   logoCount: number;
   signaturePresent: boolean;
+  signatureCount: number;
+  footerCount: number;
   footer: { state: "applied" | "unavailable"; reason?: string };
   note: string;
 }
@@ -87,40 +91,55 @@ export interface FinalMessagePreview {
 export async function previewTemplateFinal(input: { subject?: string | null; body: string; channel?: "email" | "sms" }) {
   const base = previewTemplate(input);
   if (input.channel !== "email") return { ...base, final: null as FinalMessagePreview | null };
+  return { ...base, final: await buildFinalEmailPreview({ subject: base.subject, html: base.html }) };
+}
+
+/**
+ * Final-email view shared by stored templates and workflow steps. It runs the same composer the transport uses
+ * (renderEmailPartsForPurpose: one signature, one footer) and reads the payload fields from the same builder the
+ * provider call uses, so what is shown is what is handed over. Sender facts the code cannot know are labelled unknown.
+ */
+export async function buildFinalEmailPreview(input: { subject: string | null; html: string }): Promise<FinalMessagePreview> {
   const { renderEmailPartsForPurpose, getCommercialComplianceConfig } = await import("./can-spam-footer");
+  const { inspectPresentation } = await import("./email-presentation");
+  const { buildGhlEmailPayload } = await import("./ghl");
   const loader = async () => {
     const real = await getCommercialComplianceConfig();
     return real.ok ? { ok: true as const, mailingAddress: real.mailingAddress, unsubscribeUrl: "https://libertybancard.com/unsubscribe?t=SAMPLE-TOKEN" } : real;
   };
-  const sender = { mode: "provider_default" as const, note: "Stored templates are sent through the provider with its configured location sender; the template does not choose a From address." };
-  const replyTo = { mode: "not_forwarded" as const, note: "The provider conversation API used for stored templates does not forward a Reply-To header." };
-  const logoCount = (base.html.match(/<img\b[^>]*logo[^>]*>/gi) ?? []).length;
-  const signaturePresent = /data-signature|Liberty Bancard<\/|1-?\(?\d{3}\)?[-\s.]\d{3}[-\s.]\d{4}|954-266-8214/i.test(base.html);
+  const sender: FinalMessagePreview["sender"] = {
+    mode: "unknown", address: null, name: null,
+    note: "Sent through the provider with its configured location sender. The From address is not stored here, so it is unknown to this preview.",
+  };
+  const replyTo: FinalMessagePreview["replyTo"] = {
+    mode: "unknown", address: null,
+    note: "No Reply-To is set by this wording. A sending path may supply one; it is not visible here.",
+  };
   const imagesOff = (html: string) => html.replace(/<img\b[^>]*>/gi, (tag) => {
     const alt = /alt\s*=\s*"([^"]*)"/i.exec(tag)?.[1];
     return `<span style="border:1px dashed #999;padding:2px 6px;font-size:12px;color:#555;">${alt ? `[image: ${alt}]` : "[image]"}</span>`;
   });
+  let html = input.html, text = "";
+  let footer: FinalMessagePreview["footer"];
+  let note = "Sample values and a sample unsubscribe link. Nothing is sent or stored by previewing.";
   try {
-    const parts = await renderEmailPartsForPurpose({ html: base.html, purpose: "marketing_outreach", complianceLoader: loader });
-    return {
-      ...base,
-      final: {
-        channel: "email" as const, subject: base.subject, html: parts.html, text: parts.text, htmlImagesOff: imagesOff(parts.html),
-        sender, replyTo, logoCount, signaturePresent, footer: { state: "applied" as const },
-        note: "Sample values and a sample unsubscribe link. Nothing is sent or stored by previewing.",
-      } as FinalMessagePreview,
-    };
+    const parts = await renderEmailPartsForPurpose({ html: input.html, purpose: "marketing_outreach", complianceLoader: loader });
+    html = parts.html; text = parts.text; footer = { state: "applied" };
   } catch (err) {
-    return {
-      ...base,
-      final: {
-        channel: "email" as const, subject: base.subject, html: base.html, text: "", htmlImagesOff: imagesOff(base.html),
-        sender, replyTo, logoCount, signaturePresent,
-        footer: { state: "unavailable" as const, reason: err instanceof Error ? err.message : "COMPLIANCE_CONFIGURATION_UNAVAILABLE" },
-        note: "The required compliance footer cannot be built, so a real send of this template would fail until that is configured.",
-      } as FinalMessagePreview,
-    };
+    footer = { state: "unavailable", reason: err instanceof Error ? err.message : "COMPLIANCE_CONFIGURATION_UNAVAILABLE" };
+    note = "The required compliance footer cannot be built, so a real send of this message would fail until that is configured.";
   }
+  const facts = inspectPresentation(html);
+  const payloadFields = Object.keys(buildGhlEmailPayload({ ghlContactId: "preview", subject: input.subject ?? "", html }));
+  return {
+    channel: "email", subject: input.subject, html, text, htmlImagesOff: imagesOff(html), sender, replyTo,
+    transport: {
+      name: "ghl_conversations", payloadFields, textTransmitted: payloadFields.includes("text"),
+      note: "The provider call carries an HTML body only. The plain text shown is generated reference text; it is not sent as a separate part.",
+    },
+    logoCount: facts.logoCount, signaturePresent: facts.signatureCount > 0, signatureCount: facts.signatureCount, footerCount: facts.footerCount,
+    footer, note,
+  };
 }
 
 export async function saveDraft(templateId: number, input: { subject: string | null; body: string; baseVersion: number }, actorId: string) {
@@ -194,6 +213,49 @@ export async function publishDraft(templateId: number, input: { expectedVersion:
       before: { version: t.contentVersion, subject: t.subject, body: t.body },
       after: { version: next, subject: draft.subject, body: draft.body },
       details: { isActiveUnchanged: updated.isActive },
+    }, tx);
+    return updated;
+  });
+}
+
+/**
+ * System convergence of reviewed wording as ONE atomic step under the template lock: the live version must still be the
+ * one the change was computed from, no operator draft may exist, and the new wording is published as the next immutable
+ * version without ever creating a draft row. A draft an operator saves at any moment is therefore either already
+ * visible here (conflict, left intact) or saved afterwards against the new version; it can never be overwritten,
+ * consumed or published by the system.
+ */
+export async function publishSystemWording(
+  templateId: number,
+  input: { expectedVersion: number; subject: string | null; body: string },
+  actorId: string,
+) {
+  return db.transaction(async (tx) => {
+    const t = await lockTemplate(tx, templateId);
+    if (input.expectedVersion !== t.contentVersion) {
+      throw new TemplateVersionError("The published wording changed since the change was computed.", 409);
+    }
+    const [draft] = await tx.select({ id: messageTemplateVersions.id }).from(messageTemplateVersions)
+      .where(and(eq(messageTemplateVersions.templateId, templateId), eq(messageTemplateVersions.state, "draft"))).for("update");
+    if (draft) throw new TemplateVersionError("An administrator draft exists; not overwritten.", 409);
+    const findings = lintTemplate(input.subject, input.body);
+    if (findings.length) throw new TemplateVersionError("The reviewed wording still contains text that cannot be sent.", 422, findings);
+    await ensureBaseline(tx, t);
+    const next = t.contentVersion + 1;
+    const now = new Date();
+    await tx.insert(messageTemplateVersions).values({
+      templateId, version: next, baseVersion: t.contentVersion, state: "published", subject: input.subject, body: input.body,
+      authorId: null, publishedBy: actorId, publishedAt: now, updatedAt: now,
+    });
+    const [updated] = await tx.update(messageTemplates).set({
+      subject: input.subject, body: input.body, contentVersion: next, updatedAt: now,
+    }).where(eq(messageTemplates.id, templateId)).returning();
+    await auditChange({
+      userId: null, actorType: "system", actorId, action: "message_template_content_published",
+      entityType: "message_template", entityId: templateId,
+      before: { version: t.contentVersion, subject: t.subject, body: t.body },
+      after: { version: next, subject: input.subject, body: input.body },
+      details: { isActiveUnchanged: updated.isActive, via: "system_convergence" },
     }, tx);
     return updated;
   });

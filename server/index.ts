@@ -594,7 +594,7 @@ app.use((req, _res, next) => {
       if (_bgProfile !== "off") {
         import("./services/reviewed-copy-replacements")
           .then(({ convergeReviewedCopy }) => convergeReviewedCopy())
-          .then((report) => log(`[CopyConvergence] applied=${report.counts.applied} current=${report.counts.already_current} conflict=${report.counts.conflict} failed=${report.counts.failed} missing=${report.counts.missing}`))
+          .then((report) => log(`[CopyConvergence] applied=${report.counts.applied} partial=${report.counts.partial} current=${report.counts.already_current} conflict=${report.counts.conflict} failed=${report.counts.failed} missing=${report.counts.missing}`))
           .catch((err) => console.warn("[CopyConvergence] Non-critical convergence error:", err?.message));
       }
 

@@ -1046,6 +1046,24 @@ export async function sendGhlEmail(params: {
   }
 }
 
+/**
+ * The exact provider payload for a conversation email. The transport sends this object as JSON; it carries an HTML body
+ * only (there is no plain-text field), which is why previews label any generated plain text as reference text.
+ * emailFrom / emailReplyTo are present only when the calling path supplies them; otherwise the provider's configured
+ * sender applies and this code does not know its address.
+ */
+export function buildGhlEmailPayload(input: {
+  ghlContactId: string; subject: string; html: string; fromEmail?: string; fromName?: string; replyTo?: string;
+}): Record<string, unknown> {
+  const payload: Record<string, unknown> = { type: "Email", contactId: input.ghlContactId, subject: input.subject, html: input.html };
+  // NOTE: emailReplyMode is NOT included — "custom" is not a valid GHL enum value and causes 422
+  // CONVERSATIONS_VALIDATION_ERROR. emailFrom alone is sufficient to override the sender address.
+  if (input.fromEmail) payload.emailFrom = input.fromName ? `${input.fromName} <${input.fromEmail}>` : input.fromEmail;
+  // Critical for dedicated-mailbox outreach so replies land in a monitored inbox.
+  if (input.replyTo) payload.emailReplyTo = input.replyTo;
+  return payload;
+}
+
 async function _sendGhlEmailInner(params: {
   contactId: number;
   dealId?: number;
@@ -1071,29 +1089,10 @@ async function _sendGhlEmailInner(params: {
     const config = getConfig();
     if (!config) throw new Error("GHL not configured");
 
-    const emailPayload: Record<string, unknown> = {
-      type: "Email",
-      contactId: ghlContactId,
-      subject: params.subject,
-      html: params.body,
-    };
-
-    if (params.fromEmail) {
-      // Format as "Display Name <email>" when fromName is also provided.
-      // NOTE: emailReplyMode is NOT included — "custom" is not a valid GHL enum
-      // value and causes 422 CONVERSATIONS_VALIDATION_ERROR. emailFrom alone
-      // is sufficient to override the sender address.
-      emailPayload.emailFrom = params.fromName
-        ? `${params.fromName} <${params.fromEmail}>`
-        : params.fromEmail;
-    }
-
-    if (params.replyTo) {
-      // GHL conversations API supports emailReplyTo to set the Reply-To header.
-      // Critical for cold outreach from dedicated mailboxes (Scott@mail.libertybancard.com)
-      // so prospect replies land in a monitored inbox (scott@libertybancard.com).
-      emailPayload.emailReplyTo = params.replyTo;
-    }
+    const emailPayload = buildGhlEmailPayload({
+      ghlContactId, subject: params.subject, html: params.body,
+      fromEmail: params.fromEmail, fromName: params.fromName, replyTo: params.replyTo,
+    });
 
     const result = await ghlFetch("/conversations/messages", {
       method: "POST",

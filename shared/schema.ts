@@ -2680,6 +2680,27 @@ export const messageTemplateVersions = pgTable("message_template_versions", {
 });
 export type MessageTemplateVersion = typeof messageTemplateVersions.$inferSelect;
 
+// Durable executable work following a partner approval or affiliate signup (see migrations/0373).
+export const partnerApprovalDeliveries = pgTable("partner_approval_deliveries", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  partnerId: integer("partner_id").notNull().references(() => partners.id, { onDelete: "cascade" }),
+  generation: integer("generation").notNull(),
+  kind: text("kind").notNull(),
+  state: text("state").notNull().default("pending"),
+  waitReason: text("wait_reason"),
+  attempts: integer("attempts").notNull().default(0),
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+  lockedAt: timestamp("locked_at", { withTimezone: true }),
+  dispatchStartedAt: timestamp("dispatch_started_at", { withTimezone: true }),
+  authActionId: uuid("auth_action_id"),
+  terminalReason: text("terminal_reason"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("partner_approval_deliveries_partner_generation_uidx").on(table.partnerId, table.generation),
+]);
+export type PartnerApprovalDelivery = typeof partnerApprovalDeliveries.$inferSelect;
+
 export type MessageTemplate = typeof messageTemplates.$inferSelect;
 export type InsertMessageTemplate = z.infer<typeof insertMessageTemplateSchema>;
 

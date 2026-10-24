@@ -144,7 +144,7 @@ export function registerWorkflowsRoutes(app: Express) {
       const id = positiveId.safeParse(req.params.id);
       if (!id.success) return res.status(400).json({ message: "Invalid workflow id" });
       const input = z.object({ subject: z.string().nullable().optional(), body: z.string() }).strict().parse(req.body);
-      res.json(previewWorkflowEmail(input));
+      res.json(await previewWorkflowEmail(input));
     } catch (err) { emailWordingError(res, err); }
   });
 

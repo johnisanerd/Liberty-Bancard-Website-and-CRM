@@ -580,27 +580,30 @@ Guidelines:
         if (!dup) break;
       }
       const passwordHash = await bcrypt.hash(password, 12);
-      const partner = await storage.createPartner({
-        companyName: (companyName || `${firstName} ${lastName || ""}`.trim()).slice(0, 200),
-        contactName: `${firstName} ${lastName || ""}`.trim().slice(0, 200),
-        email: email.toLowerCase().slice(0, 200),
-        phone: phone.slice(0, 30),
-        passwordHash,
-        partnerType: "affiliate",
-        affiliateCode: code,
-        status: "active",
-        commissionPercent: 10,
-        website: website ? String(website).slice(0, 500) : null,
-        howHeard: howHeard ? String(howHeard).slice(0, 500) : null,
-      });
-      const user = await authStorage.upsertUser({
-        email: email.toLowerCase(),
-        firstName,
-        lastName: lastName || "",
-        passwordHash,
-        role: "affiliate",
-        authProvider: "local",
-      });
+      // Account row, login credential and the occurrence binding commit in one transaction, so a crash can never leave
+      // an account without its credential or an occurrence that cannot find its account.
+      const { createPartnerAccount, PARTNER_EMAIL_IN_USE } = await import("../services/partner-account");
+      let partner;
+      try {
+        partner = await createPartnerAccount({
+          companyName: (companyName || `${firstName} ${lastName || ""}`.trim()).slice(0, 200),
+          contactName: `${firstName} ${lastName || ""}`.trim().slice(0, 200),
+          email: email.toLowerCase().slice(0, 200),
+          phone: phone.slice(0, 30),
+          passwordHash,
+          partnerType: "affiliate",
+          affiliateCode: code,
+          status: "active",
+          commissionPercent: 10,
+          website: website ? String(website).slice(0, 500) : null,
+          howHeard: howHeard ? String(howHeard).slice(0, 500) : null,
+        }, { role: "affiliate", inboundRequestId: inbound.id });
+      } catch (accountErr: any) {
+        if (accountErr?.message === PARTNER_EMAIL_IN_USE) return failSignup(409, { message: "An account with this email already exists." });
+        throw accountErr;
+      }
+      const user = await authStorage.getUserByEmail(email.toLowerCase());
+      if (!user) throw new Error("AFFILIATE_CREDENTIAL_MISSING_AFTER_COMMIT");
       // Contact (partner source contract), review notification with owner/due time and request orchestration run
       // through one repeatable routine. A failure is recorded on the occurrence (review_required) and resumed on replay;
       // it is no longer swallowed. The contact writer records durable provider work, so no immediate GHL id is needed.
@@ -617,18 +620,8 @@ Guidelines:
             lb_referral_code: partner.affiliateCode || "",
           },
         }).catch(err => logOperationalDiagnostic("affiliate_signup_sync", err, "form_sync_failed", { partnerId: partner.id }));
-        if (affiliateContact.ghlContactId) {
-          const { enrollInGhlWorkflowCompliant } = await import("../services/ghl-workflows");
-          enrollInGhlWorkflowCompliant({ workflowKey: "affiliate_welcome", ghlContactId: affiliateContact.ghlContactId, contactId: affiliateContact.id, metadata: { affiliateCode: partner.affiliateCode || code, partnerId: partner.id } }).catch(err =>
-            logOperationalDiagnostic("affiliate_signup_sync", err, "welcome_enrollment_failed", { partnerId: partner.id })
-          );
-        } else {
-          // Not a failure: the welcome waits for a provider contact id, and the receipt does not depend on it.
-          await storage.createAuditLog({
-            action: "affiliate_welcome_waiting_for_provider_contact", entityType: "partner", entityId: partner.id,
-            details: { contactId: affiliateContact.id, requestReceipt: inbound.id },
-          } as any).catch(() => undefined);
-        }
+        // The welcome is durable work written with the account (see partner_approval_deliveries): it waits for the provider
+        // contact id and is executed by the delivery worker, so nothing here depends on this request staying alive.
       }
       syncAffiliateSignupToGhl({
         firstName,

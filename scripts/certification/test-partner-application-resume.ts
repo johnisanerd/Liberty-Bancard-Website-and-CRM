@@ -31,10 +31,12 @@ const claim = async (label: string) => {
   assert.equal(c.outcome, "claimed");
   return (c as any).request;
 };
-const partnerRow = async (email: string) => storage.createPartner({
+const accounts = await import("../../server/services/partner-account");
+// The same account transaction the routes use: it binds the occurrence's mailbox atomically with the account.
+const partnerRow = async (email: string, requestId: string) => accounts.createPartnerAccount({
   companyName: `Par ${id}`, contactName: "Par Fixture", email, phone: nextPhone(), passwordHash: "x", partnerType: "referral",
   affiliateCode: `par${id}${Math.floor(Math.random() * 1e6)}`, status: "pending", commissionPercent: 10,
-} as any);
+} as any, { role: "partner", inboundRequestId: requestId });
 const notifications = async (rid: string) => (await pool.query(`SELECT metadata FROM notifications WHERE inbound_request_id=$1`, [rid])).rows;
 const contactsFor = async (email: string) => (await pool.query(`SELECT id FROM contacts WHERE lower(email)=$1`, [email])).rows;
 const reload = async (rid: string) => (await auth.getInboundRequestById(rid))!;
@@ -44,8 +46,7 @@ await pool.query(`DELETE FROM system_settings WHERE key=$1`, [policy.INBOUND_REV
 // 1. Crash after the account was created: only the partner row exists. Replay resumes the rest once.
 const emailA = `par-a-${id}@fixture.invalid`;
 const reqA = await claim("a");
-await auth.linkInboundRequest(reqA.id, { submittedEmail: emailA });
-await partnerRow(emailA);
+await partnerRow(emailA, reqA.id);
 check((await contactsFor(emailA)).length === 0 && (await notifications(reqA.id)).length === 0, "Fixture: account exists, contact and review notification do not");
 const r1 = await intake.resumePartnerApplication(await reload(reqA.id), "partner");
 check(!r1.failed, "Replay of the partial occurrence resumes instead of failing");
@@ -60,16 +61,14 @@ check(metaA.reviewPolicy === "not_configured" && metaA.reviewOwnerUserId === nul
 
 // 2. Nothing durable to resume from: truthful failure.
 const reqB = await claim("b");
-await auth.linkInboundRequest(reqB.id, { submittedEmail: `par-b-${id}@fixture.invalid` });
-const r2 = await intake.resumePartnerApplication(await reload(reqB.id), "partner");
+const r2 = await intake.resumePartnerApplication(await reload(reqB.id), "partner", new Date(Date.now() + 10 * 60_000));
 check(r2.failed === "PARTIAL_INTAKE_NO_ACCOUNT" && (await reload(reqB.id)).lifecycleState === "failed", "A replay with no durable account fails truthfully so the applicant can resubmit");
 
 // 3. Existing CRM contact with the same mailbox is linked, never duplicated.
 const emailC = `par-c-${id}@fixture.invalid`;
 await pool.query(`INSERT INTO contacts(first_name,last_name,email,phone) VALUES('Pre','Existing',$1,$2)`, [emailC, nextPhone()]);
 const reqC = await claim("c");
-await auth.linkInboundRequest(reqC.id, { submittedEmail: emailC });
-await partnerRow(emailC);
+await partnerRow(emailC, reqC.id);
 await intake.resumePartnerApplication(await reload(reqC.id), "partner");
 check((await contactsFor(emailC)).length === 1, "An existing contact with the same mailbox is linked, not duplicated");
 
@@ -82,8 +81,7 @@ check(rejected, "A policy owner that is not an existing reviewer is rejected");
 await policy.setReviewPolicy({ partner_application_request: { ownerUserId: adminId, dueHours: 48 }, privacy_request: { ownerUserId: adminId, dueHours: 72 } }, "cert");
 const emailD = `par-d-${id}@fixture.invalid`;
 const reqD = await claim("d");
-await auth.linkInboundRequest(reqD.id, { submittedEmail: emailD });
-await partnerRow(emailD);
+await partnerRow(emailD, reqD.id);
 await intake.resumePartnerApplication(await reload(reqD.id), "partner");
 const metaD = (await notifications(reqD.id))[0].metadata;
 const expectedDue = new Date((await reload(reqD.id)).sourceReceivedAt.getTime() + 48 * 3600_000).toISOString();

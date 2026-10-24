@@ -1,4 +1,5 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
+import { clearSubmissionKey, getSubmissionKey, isDefinitiveSubmissionOutcome } from "@/lib/submission-key";
 import { Link } from "wouter";
 import { SEO } from "@/components/SEO";
 import { Navbar } from "@/components/Navbar";
@@ -238,7 +239,6 @@ export default function ISOPartnerProgram() {
   const { toast } = useToast();
   const [view, setView] = useState<FormView>("form");
   const [submitting, setSubmitting] = useState(false);
-  const applyKey = useRef<string | null>(null);
   const [affiliateCode, setAffiliateCode] = useState("");
   const [form, setForm] = useState({
     firstName: "",
@@ -260,16 +260,20 @@ export default function ISOPartnerProgram() {
       toast({ title: "Password must be at least 6 characters", variant: "destructive" });
       return;
     }
-    applyKey.current ??= crypto.randomUUID();
+    const key = getSubmissionKey("partner_apply", form.email);
     setSubmitting(true);
     try {
       const res = await fetch("/api/partner-apply", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "Idempotency-Key": applyKey.current },
+        headers: { "Content-Type": "application/json", "Idempotency-Key": key },
         body: JSON.stringify(form),
       });
-      applyKey.current = null;
-      const data = await res.json();
+      const data = await res.json().catch(() => null);
+      if (isDefinitiveSubmissionOutcome(res.status, data)) clearSubmissionKey("partner_apply", form.email);
+      if (!data) {
+        toast({ title: "We could not read the response. Please press Submit again; your application will not be duplicated.", variant: "destructive" });
+        return;
+      }
       if (!res.ok) {
         toast({ title: data.message || "Submission failed", variant: "destructive" });
         return;

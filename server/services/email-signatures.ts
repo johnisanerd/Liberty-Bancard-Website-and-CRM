@@ -160,7 +160,7 @@ export function getEmailSignatureHtml(
 
   return `
 <br/>
-<div style="max-width:560px;">
+<div data-liberty-signature="1" style="max-width:560px;">
 ${logoBlock}<table style="font-family:Arial,sans-serif;font-size:13px;color:#333;border-collapse:collapse;width:100%;">
   <tr>
     <td style="border-left:3px solid #1e3a5f;padding-left:12px;line-height:1.6;">

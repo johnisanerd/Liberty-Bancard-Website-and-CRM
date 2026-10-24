@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
+import { clearSubmissionKey, getSubmissionKey, isDefinitiveSubmissionOutcome } from "@/lib/submission-key";
 import { useLocation, Link } from "wouter";
 import { SEO } from "@/components/SEO";
 import { Navbar } from "@/components/Navbar";
@@ -78,7 +79,6 @@ export default function AffiliateProgram() {
   const [, navigate] = useLocation();
   const [view, setView] = useState<ViewMode>("info");
   const [submitting, setSubmitting] = useState(false);
-  const signupKey = useRef<string | null>(null);
   const [affiliateCode, setAffiliateCode] = useState<string | null>(null);
   const [dashboardCode, setDashboardCode] = useState("");
   const [stats, setStats] = useState<any>(null);
@@ -119,19 +119,24 @@ export default function AffiliateProgram() {
       toast({ title: "Password must be at least 6 characters", variant: "destructive" });
       return;
     }
-    // One key per submission attempt: a retry after a lost response replays the same occurrence.
-    signupKey.current ??= crypto.randomUUID();
+    // One key per mailbox until the server settles the occurrence: a retry after a lost response, an unreadable body or a
+    // reload replays the same occurrence and lets the server finish work it already committed.
+    const key = getSubmissionKey("affiliate_signup", form.email);
     setSubmitting(true);
     try {
       const utmParams = getStoredUTMParams();
       const res = await fetch("/api/affiliate/signup", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "Idempotency-Key": signupKey.current },
+        headers: { "Content-Type": "application/json", "Idempotency-Key": key },
         credentials: "include",
         body: JSON.stringify({ ...form, ...utmParams }),
       });
-      signupKey.current = null;
-      const data = await res.json();
+      const data = await res.json().catch(() => null);
+      if (isDefinitiveSubmissionOutcome(res.status, data)) clearSubmissionKey("affiliate_signup", form.email);
+      if (!data) {
+        toast({ title: "We could not read the response. Please press Sign up again; your submission will not be duplicated.", variant: "destructive" });
+        return;
+      }
       if (!res.ok) {
         toast({ title: data.message || "Signup failed", variant: "destructive" });
         return;

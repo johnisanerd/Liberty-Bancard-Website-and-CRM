@@ -15,11 +15,12 @@ import type { InsertPartner } from "@shared/schema";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import { createContactLocalFirst } from "../services/contact-writer";
+import { createPartnerAccount, PARTNER_EMAIL_IN_USE } from "../services/partner-account";
 import { claimPublicInbound } from "../services/public-inbound-intake";
 import { orchestrateInboundRequest, setInboundRequestLifecycle } from "../services/inbound-request-authority";
 import { describeAckReceiptState } from "../services/inbound-acknowledgement";
 import { syncFormSubmissionToGhl, syncAffiliateSignupToGhl } from "../services/ghl-form-sync";
-import { sendPartnerWelcomeEmail } from "../services/partner-welcome";
+import { updatePartnerWithApproval, listPartnerDeliveries, resendPartnerDelivery } from "../services/partner-approval-delivery";
 import { isGhlConfigured, sendGhlPartnerTransactionalEmail } from "../services/ghl";
 import { sendSmtpEmail, isSmtpConfigured } from "../services/smtp-email";
 import { logOperationalDiagnostic, serverError } from "../utils/server-error";
@@ -76,25 +77,8 @@ async function consumePartnerPassword(token: string, purpose: "partner_password_
     },
   });
 }
-const PARTNER_EMAIL_IN_USE = "An account with this email already exists.";
-async function createPartnerWithCredential(input: InsertPartner) {
-  return db.transaction(async tx => {
-    const email = input.email?.trim().toLowerCase();
-    const [linked] = email ? await tx.select().from(users).where(eq(users.email, email)) : [undefined];
-    if (linked && linked.role !== "partner") throw new Error(PARTNER_EMAIL_IN_USE);
-    const [partner] = await tx.insert(partners).values({ ...input, email }).returning();
-    if (input.passwordHash && email) {
-      if (linked) {
-        await tx.update(users).set({ passwordHash: input.passwordHash, updatedAt: new Date() }).where(eq(users.id, linked.id));
-        await tx.update(userSessions).set({ isInvalidated: true, invalidatedAt: new Date() }).where(eq(userSessions.userId, linked.id));
-      } else {
-        const names = (input.contactName || "").split(" ");
-        await tx.insert(users).values({ email, firstName: names[0] || "Partner", lastName: names.slice(1).join(" "),
-          passwordHash: input.passwordHash, role: "partner", authProvider: "local" });
-      }
-    }
-    return partner;
-  });
+async function createPartnerWithCredential(input: InsertPartner, inboundRequestId?: string) {
+  return createPartnerAccount(input, { role: "partner", inboundRequestId });
 }
 async function registerPartnerLoginSession(req: any, userId: string): Promise<void> {
   const sessionId = req.sessionID;
@@ -180,8 +164,10 @@ export function registerPartnersRoutes(app: Express) {
       const existing = await storage.getPartner(partnerId);
       if (!existing) return res.status(404).json({ message: "Not found" });
 
-      const updated = await storage.updatePartner(partnerId, updates);
-      if (!updated) return res.status(404).json({ message: "Not found" });
+      // Status change and, on approval, the durable invite/welcome intent commit together; the delivery worker executes it.
+      const applied = await updatePartnerWithApproval(partnerId, updates);
+      if (!applied) return res.status(404).json({ message: "Not found" });
+      const updated = applied.updated;
 
       if (updates.status === "active" && existing.status !== "active") {
         (async () => {
@@ -231,82 +217,34 @@ export function registerPartnersRoutes(app: Express) {
             logOperationalDiagnostic("partner_approval_enrollment", e, "enrollment_failed", { partnerId });
           }
         })();
-        if (!existing.passwordHash) {
-          (async () => {
-            let inviteActionId: string | undefined;
-            try {
-               const inviteAction = await issueAuthAction({
-                 purpose: "partner_invite", subject: { type: "partner", id: partnerId }, ttlMs: 72 * 60 * 60 * 1000,
-               });
-               inviteActionId = inviteAction.id;
-
-              const replitDomain = process.env.REPLIT_DOMAINS?.split(",")[0]?.trim();
-              const baseUrl = process.env.APP_URL ||
-                (replitDomain ? `https://${replitDomain}` : "https://libertybancard.com");
-               const inviteUrl = `${baseUrl}/partner-login#action=invite&token=${encodeURIComponent(inviteAction.token)}`;
-
-              if (updated.email) {
-                const firstName = (updated.contactName || "").split(" ")[0] || "there";
-                const safeInviteUrl = escapeHtml(inviteUrl);
-                const html = `
-<div style="font-family:Arial,sans-serif;font-size:14px;color:#333;max-width:600px;">
-   <p>Hi ${escapeHtml(firstName)},</p>
-  <p>Congratulations — your Liberty Bancard partner application has been <strong>approved</strong>!</p>
-  <p>To activate your partner account, please set your password by clicking the button below:</p>
-   <p><a href="${safeInviteUrl}" style="display:inline-block;background-color:#1e3a5f;color:#ffffff;padding:10px 20px;border-radius:4px;text-decoration:none;font-size:13px;font-weight:bold;">Set Your Password &amp; Access Your Portal &rarr;</a></p>
-   <p>Or copy and paste this link:<br/><span style="font-family:monospace;font-size:12px;color:#555;">${safeInviteUrl}</span></p>
-  <p>This link expires in 72 hours. Once you set your password, you'll have full access to your partner dashboard with referral tracking, commission reports, and marketing materials.</p>
-  <p>Questions? Reply to this email, call us at <a href="tel:9542668214" style="color:#1e3a5f;">954-266-8214</a>, or email <a href="mailto:scott@libertybancard.com" style="color:#1e3a5f;">scott@libertybancard.com</a>.</p>
-  <p>Welcome aboard!</p>
-${getEmailSignatureHtml("partners")}
-</div>`;
-                const subject = "You're approved — set your partner portal password";
-                // Primary: SMTP via internal_ops category
-                const smtpResult = await sendSmtpEmail({
-                  to: updated.email,
-                  subject,
-                  html,
-                  category: "internal_ops",
-                });
-                if (smtpResult.success) {
-                  await setAuthActionDelivery(inviteAction.id, "sent");
-                } else {
-                  if (isGhlConfigured()) {
-                    try {
-                      const ghlResult = await sendGhlPartnerTransactionalEmail({
-                      email: updated.email,
-                      subject,
-                      body: html,
-                      fromEmail: "partners@libertybancard.com",
-                      fromName: "Liberty Bancard Partner Program",
-                      });
-                      await setAuthActionDelivery(inviteAction.id, ghlResult.success ? "sent" : "definite_failure");
-                    } catch {
-                      await setAuthActionDelivery(inviteAction.id, "ambiguous");
-                    }
-                  } else {
-                    await setAuthActionDelivery(inviteAction.id, "definite_failure");
-                  }
-                }
-              } else {
-                await setAuthActionDelivery(inviteAction.id, "definite_failure");
-              }
-            } catch (err) {
-              if (inviteActionId) await setAuthActionDelivery(inviteActionId, "ambiguous").catch(() => {});
-              logOperationalDiagnostic("partner_invite_delivery", err, "invite_delivery_failed", { partnerId });
-            }
-          })();
-        } else {
-          sendPartnerWelcomeEmail(updated).catch(err =>
-            logOperationalDiagnostic("partner_invite_delivery", err, "welcome_delivery_failed", { partnerId })
-          );
-        }
       }
 
       privatePartnerResponse(res);
       res.json(toPartnerOperatorRecord(updated));
     } catch (err: any) {
       serverError(res, err, "partner_update");
+    }
+  });
+
+  // Durable invite/welcome work for a partner: state only (never a token), plus an explicit operator resend.
+  app.get("/api/partners/:id/approval-deliveries", numericPartnerIdOnly, requireRole("admin"), async (req, res) => {
+    try {
+      privatePartnerResponse(res);
+      res.json({ deliveries: await listPartnerDeliveries(Number(req.params.id)) });
+    } catch (err: any) {
+      serverError(res, err, "partner_deliveries");
+    }
+  });
+
+  app.post("/api/partners/:id/approval-deliveries/:deliveryId/resend", numericPartnerIdOnly, requireRole("admin"), async (req, res) => {
+    try {
+      const actorId = String((req as any).user?.id ?? (req as any).user?.claims?.sub ?? "admin");
+      const row = await resendPartnerDelivery(Number(req.params.id), String(req.params.deliveryId), actorId);
+      if (!row) return res.status(409).json({ message: "Only a failed or unconfirmed delivery can be sent again." });
+      privatePartnerResponse(res);
+      res.json({ id: row.id, state: row.state });
+    } catch (err: any) {
+      serverError(res, err, "partner_delivery_resend");
     }
   });
 
@@ -376,7 +314,9 @@ ${getEmailSignatureHtml("partners")}
         referralType ? `Referral type: ${referralType}` : "",
       ].filter(Boolean).join(" | ");
 
-      const partner = await createPartnerWithCredential({
+      let partner;
+      try {
+        partner = await createPartnerWithCredential({
         companyName: (companyName || `${firstName} ${lastName || ""}`.trim()).slice(0, 200),
         contactName: `${firstName} ${lastName || ""}`.trim().slice(0, 200),
         email: email.toLowerCase().slice(0, 200),
@@ -387,7 +327,11 @@ ${getEmailSignatureHtml("partners")}
         status: "pending",
         commissionPercent: mappedType === "iso_agent" ? 50 : 10,
         notes: notesText || null,
-      });
+        }, inbound.id);
+      } catch (accountErr: any) {
+        if (accountErr?.message === PARTNER_EMAIL_IN_USE) return failApplication(409, { message: "A partner account with this email already exists." });
+        throw accountErr;
+      }
 
       // Local work (contact via the partner source contract, review notification with owner/due time, request
       // orchestration) is completed by one repeatable routine, so a replay of a partial occurrence resumes it.

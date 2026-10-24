@@ -66,7 +66,7 @@ let noLink: unknown;
 try { registry.renderMessage("workflow", "{{calendarLink}}", { ...source("Alex", "a@x.test"), calendarLink: null }, "html"); } catch (e) { noLink = e; }
 check(noLink instanceof RenderError, "A missing calendar link fails rather than printing an empty href");
 
-const prev = emailWording.previewWorkflowEmail({ subject: "Hi {{contact.firstName}}", body: "<p>{{contact.firstName}} {{contact.fristName}}</p>" });
+const prev = await emailWording.previewWorkflowEmail({ subject: "Hi {{contact.firstName}}", body: "<p>{{contact.firstName}} {{contact.fristName}}</p>" });
 check(prev.unresolved.includes("{{contact.fristName}}") && prev.findings.some((f) => f.rule === "unknown_merge_variable"), "Preview and publication checks agree on the typo");
 check(prev.personas.length === 3, "Preview renders named, role-mailbox and missing-name personas");
 const ok = smsWording.previewWorkflowSms({ body: "Hi {{contact.firstName}}, {{calendarLink}}" });
@@ -134,7 +134,7 @@ check((await storage.getMessageTemplate(day7.id))!.isActive === true, "The Day 7
 check(run1.counts.failed === 0, "No target failed");
 
 const run2 = await replacements.convergeReviewedCopy();
-check(run2.counts.applied === 0 && targeted.every((n) => run2.results.find((r) => r.name === n)!.status === "already_current"), "A second run applies nothing (idempotent)");
+check(run2.counts.applied === 0 && run2.counts.partial === 0 && targeted.every((n) => run2.results.find((r) => r.name === n)!.status === "already_current"), "A second run applies nothing (idempotent)");
 for (const name of targeted) check((await storage.getWorkflow(before[name].id))!.version === before[name].version + 1, `"${name}" version is unchanged by the repeat`);
 const status = await replacements.getCopyConvergenceStatus();
 check(status?.counts.applied === 0 && !!status?.ranAt, "The last result is persisted and readable");
@@ -147,6 +147,70 @@ await storage.updateWorkflow(before[targeted[0]].id, { actions: [{ type: "send_g
 const run3 = await replacements.convergeReviewedCopy();
 check(run3.results.find((r) => r.name === targeted[0])!.status === "conflict", "Operator wording that still has audited findings is reported as a conflict");
 check(JSON.stringify((await storage.getWorkflow(before[targeted[0]].id))!.actions).includes("Mine"), "The operator edit is not overwritten");
+
+// ── Partial match is reported, not called clean ─────────────────────────────
+const bId = before[targeted[0]].id;
+await storage.updateWorkflow(bId, { actions: [
+  { type: "send_ghl_email", subject: "One", body: OLD[targeted[0]][0].body },
+  { type: "send_ghl_email", subject: "Two", body: "<p>Upload it here: [UPLOAD_LINK]</p>" },
+] }, { expectedVersion: (await storage.getWorkflow(bId))!.version });
+const runPartial = await replacements.convergeReviewedCopy();
+const partialB = runPartial.results.find((r) => r.name === targeted[0])!;
+check(partialB.status === "partial" && /bracket_placeholder/.test(partialB.detail ?? "") && runPartial.counts.partial === 1, "A workflow where only part of the audited wording matched is reported as partial with the residual findings, not as applied/clean");
+check(!JSON.stringify((await storage.getWorkflow(bId))!.actions).includes("You can upload it here: [UPLOAD_LINK]"), "The matched part was still converged");
+
+// ── Atomicity against an operator draft (deterministic schedules) ───────────
+const mkTpl = (label: string) => storage.createMessageTemplate({
+  name: `MCC atomic ${label} ${id}`, category: "cert", channel: "email", subject: "S", mergeFields: [], isActive: false,
+  body: "<p>Hi {{contact.firstName}}</p><p>old wording</p>",
+});
+// Schedule 1: the operator saves a draft after the system computed its change and before it saves.
+const t1 = await mkTpl("between-check-and-save");
+await templates.saveDraft(t1.id, { subject: "S", body: "<p>OPERATOR DRAFT</p>", baseVersion: t1.contentVersion }, "operator-1");
+let c1: any;
+try { await templates.publishSystemWording(t1.id, { expectedVersion: t1.contentVersion, subject: "S", body: "<p>system wording</p>" }, "system:cert"); } catch (e) { c1 = e; }
+const w1 = await templates.getTemplateWorkspace(t1.id);
+check(c1?.status === 409 && w1.draft?.body === "<p>OPERATOR DRAFT</p>" && w1.draft?.authorId === "operator-1" && w1.template.contentVersion === t1.contentVersion, "A draft that exists when the system saves produces a visible conflict; the draft and the live wording are intact");
+// Schedule 2: the operator updates the draft between the system's save and publish. The system never creates a draft, so
+// there is nothing to consume: the operator draft and the system version coexist only if the operator's base is current.
+const t2 = await mkTpl("between-save-and-publish");
+const sys2 = await templates.publishSystemWording(t2.id, { expectedVersion: t2.contentVersion, subject: "S", body: "<p>system wording</p>" }, "system:cert");
+let stale: any;
+try { await templates.saveDraft(t2.id, { subject: "S", body: "<p>OPERATOR</p>", baseVersion: t2.contentVersion }, "operator-2"); } catch (e) { stale = e; }
+check(sys2.contentVersion === t2.contentVersion + 1 && stale?.status === 409 && (await templates.getTemplateWorkspace(t2.id)).draft === null, "An operator who opened the old version gets a visible conflict instead of silently publishing over the system change");
+const fresh2 = await templates.saveDraft(t2.id, { subject: "S", body: "<p>OPERATOR v2</p>", baseVersion: sys2.contentVersion }, "operator-2");
+check(fresh2.baseVersion === sys2.contentVersion && (await storage.getMessageTemplate(t2.id))!.body === "<p>system wording</p>", "A draft saved against the new version is kept and does not change live wording");
+// Schedule 3: genuinely concurrent operator save and system publish, repeated; an operator draft is never lost.
+let sysWon = 0, opWon = 0;
+for (let i = 0; i < 8; i++) {
+  const t = await mkTpl(`race-${i}`);
+  const runOp = () => templates.saveDraft(t.id, { subject: "S", body: `<p>OPERATOR ${i}</p>`, baseVersion: t.contentVersion }, "operator-3");
+  const runSys = () => templates.publishSystemWording(t.id, { expectedVersion: t.contentVersion, subject: "S", body: "<p>system wording</p>" }, "system:cert");
+  // Alternate which side is issued first so both interleavings are exercised.
+  const [op, sys] = i % 2 === 0
+    ? await Promise.allSettled([runOp(), runSys()])
+    : await Promise.allSettled([runSys(), runOp()]).then(([a, b]) => [b, a] as const);
+  const ws = await templates.getTemplateWorkspace(t.id);
+  if (op.status === "fulfilled" && sys.status === "rejected") {
+    opWon++;
+    assert(ws.draft?.body === `<p>OPERATOR ${i}</p>` && ws.template.contentVersion === t.contentVersion, "operator draft must survive");
+  } else if (op.status === "rejected" && sys.status === "fulfilled") {
+    sysWon++;
+    assert((op.reason as any)?.status === 409 && ws.template.body === "<p>system wording</p>" && !ws.draft, "operator must see a conflict");
+  } else assert.fail(`unexpected race outcome ${op.status}/${sys.status}`);
+}
+check(opWon + sysWon === 8, `Eight concurrent operator-save/system-publish races each ended with exactly one winner and a visible loser (operator ${opWon}, system ${sysWon}); no draft was lost or consumed`);
+// Schedule 4: parallel startup and admin convergence apply a template once.
+await pool.query(`DELETE FROM message_templates WHERE name='Day 7 Review Request'`);
+const d7b = await storage.createMessageTemplate({
+  name: "Day 7 Review Request", category: "cert", channel: "email", subject: "How's it going?", mergeFields: [], isActive: true,
+  body: `<p>Hi {{contact.firstName}},</p>\n<p>Would you take 30 seconds to share your experience? <a href="[GOOGLE_REVIEW_LINK]">Leave a Review</a></p>\n<p>Your feedback helps other business owners make better processing decisions.</p>`,
+});
+const [pa, pb] = await Promise.all([replacements.convergeReviewedCopy(), replacements.convergeReviewedCopy()]);
+const d7After = (await storage.getMessageTemplate(d7b.id))!;
+const d7Statuses = [pa, pb].map((r) => r.results.find((x) => x.name === "Day 7 Review Request")!.status).sort();
+check(d7After.contentVersion === d7b.contentVersion + 1 && d7Statuses.filter((x) => x === "applied").length === 1, `Parallel startup and admin convergence publish the template exactly once (${d7Statuses.join("/")})`);
+check((await pool.query(`SELECT count(*)::int n FROM message_template_versions WHERE template_id=$1 AND state='draft'`, [d7b.id])).rows[0].n === 0, "Convergence leaves no draft row behind");
 
 // Seed no longer rewrites operator-edited F/G workflows.
 const { seedDefaultData } = await import("../../server/services/seed-workflows");

@@ -12,6 +12,7 @@ import type { DataDeleteRequest } from "@shared/schema";
 import {useState} from "react";
 import {useAuth} from "@/hooks/use-auth";
 import {Input} from "@/components/ui/input";
+import { ReviewOwnershipPanel } from "@/components/dashboard/ReviewOwnershipPanel";
 
 const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
   pending: { label: "Pending", className: "bg-yellow-500 text-black" },
@@ -70,6 +71,8 @@ export default function DataRequests() {
         </Badge>
       </div>
       <p className="text-sm text-muted-foreground">These controls record administrative review only. A matching record is not proof of subject ownership or executed erasure. Consent, audit, intake and send evidence remain retained.</p>
+
+      <ReviewOwnershipPanel />
 
       <Card data-testid="card-data-requests-table">
         <CardContent className="pt-6">

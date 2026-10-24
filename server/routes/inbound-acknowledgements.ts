@@ -21,6 +21,8 @@ import {
 export function registerInboundAcknowledgementRoutes(app: Express) {
   if (getBackgroundProfile() !== "off") {
     startInboundAcknowledgementWorker();
+    void import("../services/partner-application-intake").then((m) => m.startPartnerApplicationRecovery());
+    void import("../services/partner-approval-delivery").then((m) => m.startPartnerApprovalDeliveryWorker());
   } else {
     console.log("[BackgroundProfile] off — InboundAcknowledgementWorker not started");
   }

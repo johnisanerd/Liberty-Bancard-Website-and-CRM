@@ -60,93 +60,52 @@ function buildPartnerWelcomeEmail(partner: Partner, referralLink: string, portal
 `;
 }
 
-export async function sendPartnerWelcomeEmail(partner: Partner): Promise<void> {
-  if (!partner.email) {
-    console.warn(`[Partner Welcome] Skipping — partner #${partner.id} has no email address`);
-    return;
-  }
+export type PartnerWelcomeResult = "sent" | "not_configured" | "no_provider_contact";
+
+/**
+ * One delivery attempt of the approval welcome. Throws when the provider call fails (the caller owns retry/ambiguity);
+ * returns "not_configured" / "no_provider_contact" when a prerequisite is missing so the caller can wait instead of
+ * recording a send that never happened. Writes the "sent" audit row only after a provider handoff.
+ */
+export async function deliverPartnerWelcome(partner: Partner): Promise<PartnerWelcomeResult> {
+  if (!partner.email) throw new Error("PARTNER_WELCOME_NO_EMAIL");
+  if (!isSdrGhlConfigured()) return "not_configured";
 
   const baseUrl = getBaseUrl();
   const referralLink = `${baseUrl}?ref=${partner.affiliateCode || ""}`;
   const portalUrl = `${baseUrl}/partner-portal`;
-
   const ghlWorkflowId = process.env.GHL_WORKFLOW_PARTNER_WELCOME;
-  let method: "ghl_workflow" | "direct_email" | "skipped" = "skipped";
+  const nameParts = (partner.contactName || "").split(" ");
+  const ghlContactId = await upsertContact({
+    firstName: nameParts[0] || "",
+    lastName: nameParts.slice(1).join(" ") || "",
+    email: partner.email,
+    phone: partner.phone || undefined,
+    companyName: partner.companyName || undefined,
+    tags: ["partner", "approved", partner.partnerType || "referral"],
+  });
+  if (!ghlContactId) return "no_provider_contact";
 
-  try {
-    if (ghlWorkflowId && isSdrGhlConfigured()) {
-      const nameParts = (partner.contactName || "").split(" ");
-      const ghlContactId = await upsertContact({
-        firstName: nameParts[0] || "",
-        lastName: nameParts.slice(1).join(" ") || "",
-        email: partner.email,
-        phone: partner.phone || undefined,
-        companyName: partner.companyName || undefined,
-        tags: ["partner", "approved", partner.partnerType || "referral"],
-      });
-
-      if (ghlContactId) {
-        await triggerWorkflow({
-          workflowId: ghlWorkflowId,
-          contactId: ghlContactId,
-          metadata: {
-            partnerId: partner.id,
-            affiliateCode: partner.affiliateCode,
-            referralLink,
-            portalUrl,
-            commissionPercent: partner.commissionPercent,
-            source: "partner_approved",
-            approvedAt: new Date().toISOString(),
-          },
-        });
-        method = "ghl_workflow";
-        console.log(`[Partner Welcome] Email sent to partner #${partner.id} via ghl_workflow`);
-      }
-    } else if (isSdrGhlConfigured()) {
-      const nameParts = (partner.contactName || "").split(" ");
-      const ghlContactId = await upsertContact({
-        firstName: nameParts[0] || "",
-        lastName: nameParts.slice(1).join(" ") || "",
-        email: partner.email,
-        phone: partner.phone || undefined,
-        companyName: partner.companyName || undefined,
-        tags: ["partner", "approved", partner.partnerType || "referral"],
-      });
-
-      if (ghlContactId) {
-        const subject = `Welcome to Liberty Bancard's Partner Program — you're approved!`;
-        const htmlBody = buildPartnerWelcomeEmail(partner, referralLink, portalUrl);
-        await sendEmailReply({ contactId: ghlContactId, commercialPurpose: "transactional_response", subject, htmlBody, fromEmail: "partners@libertybancard.com", fromName: "Liberty Bancard Partner Program" });
-        method = "direct_email";
-        console.log(`[Partner Welcome] Email sent to partner #${partner.id} via direct_email`);
-      } else {
-        console.warn(`[Partner Welcome] Could not obtain GHL contact ID for partner #${partner.id} — email not sent`);
-      }
-    } else {
-      console.warn(`[Partner Welcome] GHL not configured — skipping welcome email for partner #${partner.id}`);
-    }
-
-    if (method !== "skipped") {
-      await storage.createAuditLog({
-        action: "partner_welcome_sent",
-        entityType: "partner",
-        entityId: partner.id,
-        details: { email: partner.email, method, affiliateCode: partner.affiliateCode },
-      });
-    }
-  } catch (err) {
-    console.error(`[Partner Welcome] Failed to send welcome email for partner #${partner.id}:`, err);
-    // Write a skipped/failed audit row so operators know the welcome was not delivered
-    await storage.createAuditLog({
-      action: "partner_welcome_skipped",
-      entityType: "partner",
-      entityId: partner.id,
-      details: {
-        email: partner.email,
-        reason: err instanceof Error ? err.message : String(err),
+  let method: "ghl_workflow" | "direct_email";
+  if (ghlWorkflowId) {
+    await triggerWorkflow({
+      workflowId: ghlWorkflowId,
+      contactId: ghlContactId,
+      metadata: {
+        partnerId: partner.id, affiliateCode: partner.affiliateCode, referralLink, portalUrl,
+        commissionPercent: partner.commissionPercent, source: "partner_approved", approvedAt: new Date().toISOString(),
       },
-    }).catch((auditErr: Error) =>
-      console.error(`[Partner Welcome] Failed to write partner_welcome_skipped audit log for partner #${partner.id}:`, auditErr.message),
-    );
+    });
+    method = "ghl_workflow";
+  } else {
+    const subject = `Welcome to Liberty Bancard's Partner Program — you're approved!`;
+    const htmlBody = buildPartnerWelcomeEmail(partner, referralLink, portalUrl);
+    await sendEmailReply({ contactId: ghlContactId, commercialPurpose: "transactional_response", subject, htmlBody, fromEmail: "partners@libertybancard.com", fromName: "Liberty Bancard Partner Program" });
+    method = "direct_email";
   }
+  await storage.createAuditLog({
+    action: "partner_welcome_sent", entityType: "partner", entityId: partner.id,
+    details: { email: partner.email, method, affiliateCode: partner.affiliateCode },
+  }).catch(() => undefined);
+  return "sent";
 }

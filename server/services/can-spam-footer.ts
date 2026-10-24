@@ -130,8 +130,11 @@ export async function renderEmailPartsForPurpose(params: {
   if (!params.contactId && !params.complianceLoader) throw new Error("COMMERCIAL_CONTACT_REQUIRED");
   const resolved = await (params.complianceLoader ?? getCommercialComplianceConfig)(params.contactId);
   if (!resolved.ok) throw new Error(resolved.error);
+  // Exactly one Liberty signature block (and logo) reaches the transport; the footer is injected once below.
+  const { collapseDuplicateSignatures } = await import("./email-presentation");
+  const presentedHtml = collapseDuplicateSignatures(params.html);
   return {
-    html: await injectCanSpamFooter(params.html, params.contactId, resolved),
+    html: await injectCanSpamFooter(presentedHtml, params.contactId, resolved),
     text: injectCanSpamTextFooter(baseText, resolved),
     complianceConfig: resolved,
   };

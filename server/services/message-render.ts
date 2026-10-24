@@ -92,7 +92,7 @@ export function escapeHtml(value: string): string {
     .replace(/"/g, "&quot;").replace(/'/g, "&#039;");
 }
 
-const GREETING_RE = /(^|\n)([ \t]*)(Hi|Hello|Hey|Dear)[ \t]+\{\{\s*(?:contact\.)?(?:first_?name)\s*\}\}[ \t]*,/gi;
+const GREETING_RE = /(^|\n|<(?:p|div|td|li|h[1-6])\b[^>]*>)([ \t]*)(Hi|Hello|Hey|Dear)[ \t]+\{\{\s*(?:contact\.)?(?:first_?name)\s*\}\}[ \t]*,/gi;
 const TOKEN_RE = /\{\{\s*([^{}]+?)\s*\}\}/g;
 const BRACKET_RE = /\[(?:[A-Z][A-Z0-9 _\-]{2,}|(?:first|last|company|business|your)[ _-]?name[^\]]*|insert[^\]]*|link[^\]]*|url[^\]]*)\]|%[A-Z_]{3,}%|\{[A-Za-z_]+\}/gi;
 

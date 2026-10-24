@@ -1,7 +1,7 @@
 import { storage } from "../storage";
 import { auditChange } from "./audit-change";
 import { WorkflowCommandError } from "./workflow-command-error";
-import { getTemplateWorkspace, publishDraft, saveDraft, TemplateVersionError } from "./message-template-versions";
+import { publishSystemWording, TemplateVersionError } from "./message-template-versions";
 import { lintRules } from "./message-copy-lint";
 
 /**
@@ -100,7 +100,7 @@ export function applyTemplateCopyReplacements(name: string, body: string): strin
 const SYSTEM_ACTOR = "system:copy-reconciliation";
 export const COPY_CONVERGENCE_SETTING = "reviewedCopyConvergence";
 
-export type CopyTargetStatus = "applied" | "already_current" | "conflict" | "failed" | "missing" | "retired";
+export type CopyTargetStatus = "applied" | "partial" | "already_current" | "conflict" | "failed" | "missing" | "retired";
 
 export interface CopyTargetResult {
   kind: "workflow" | "template";
@@ -154,7 +154,11 @@ export async function convergeReviewedCopy(): Promise<CopyConvergenceReport> {
       }
       const updated = await storage.updateWorkflow(wf.id, { actions }, { expectedVersion: wf.version });
       if (updated?.enabled !== wf.enabled) throw new Error(`Workflow ${wf.id} enabled state changed unexpectedly`);
-      results.push({ kind: "workflow", name, id: wf.id, status: "applied", fromVersion: wf.version, toVersion: updated?.version });
+      // A partial match is not a clean result: report what the live wording still contains.
+      const residual = remainingAuditedFindings(actions);
+      results.push(residual.length
+        ? { kind: "workflow", name, id: wf.id, status: "partial", fromVersion: wf.version, toVersion: updated?.version, detail: `Reviewed replacements were applied, but audited findings remain (${residual.join(", ")}); an administrator must edit the rest` }
+        : { kind: "workflow", name, id: wf.id, status: "applied", fromVersion: wf.version, toVersion: updated?.version });
     } catch (err: any) {
       results.push({ kind: "workflow", name, id: wf.id, status: err instanceof WorkflowCommandError ? "conflict" : "failed", detail: String(err?.message ?? err).slice(0, 300) });
     }
@@ -173,26 +177,28 @@ export async function convergeReviewedCopy(): Promise<CopyConvergenceReport> {
           : { kind: "template", name, id: tpl.id, status: "already_current", fromVersion: tpl.contentVersion });
         continue;
       }
-      const ws = await getTemplateWorkspace(tpl.id);
-      if (ws.draft) { results.push({ kind: "template", name, id: tpl.id, status: "conflict", fromVersion: tpl.contentVersion, detail: "An administrator draft exists; not overwritten" }); continue; }
-      await saveDraft(tpl.id, { subject: tpl.subject, body, baseVersion: tpl.contentVersion }, SYSTEM_ACTOR);
-      const published = await publishDraft(tpl.id, { expectedVersion: tpl.contentVersion }, SYSTEM_ACTOR, "system");
-      results.push({ kind: "template", name, id: tpl.id, status: "applied", fromVersion: tpl.contentVersion, toVersion: published.contentVersion });
+      // One atomic step under the template lock: checks the live version and the absence of an operator draft, then
+      // publishes. No draft row is ever created, so an operator draft saved at any moment cannot be consumed.
+      const published = await publishSystemWording(tpl.id, { expectedVersion: tpl.contentVersion, subject: tpl.subject, body }, SYSTEM_ACTOR);
+      const residual = lintRules(`${published.subject ?? ""}\n${published.body}`).map((f) => f.rule);
+      results.push(residual.length
+        ? { kind: "template", name, id: tpl.id, status: "partial", fromVersion: tpl.contentVersion, toVersion: published.contentVersion, detail: `Reviewed replacements were applied, but audited findings remain (${[...new Set(residual)].join(", ")})` }
+        : { kind: "template", name, id: tpl.id, status: "applied", fromVersion: tpl.contentVersion, toVersion: published.contentVersion });
     } catch (err: any) {
-      results.push({ kind: "template", name, id: tpl.id, status: err instanceof TemplateVersionError && err.status === 409 ? "conflict" : "failed", detail: String(err?.message ?? err).slice(0, 300) });
+      results.push({ kind: "template", name, id: tpl.id, status: err instanceof TemplateVersionError && (err.status === 409 || err.status === 422) ? "conflict" : "failed", detail: String(err?.message ?? err).slice(0, 300) });
     }
   }
 
-  const counts = { applied: 0, already_current: 0, conflict: 0, failed: 0, missing: 0, retired: 0 } as Record<CopyTargetStatus, number>;
+  const counts = { applied: 0, partial: 0, already_current: 0, conflict: 0, failed: 0, missing: 0, retired: 0 } as Record<CopyTargetStatus, number>;
   for (const r of results) counts[r.status]++;
   const report: CopyConvergenceReport = { ranAt: new Date().toISOString(), results, counts };
 
   try {
     await storage.setSystemSetting(COPY_CONVERGENCE_SETTING, report);
-    if (counts.applied || counts.failed) {
+    if (counts.applied || counts.partial || counts.failed) {
       await auditChange({
         actorType: "system", actorId: SYSTEM_ACTOR, action: "reviewed_copy_convergence_run", entityType: "message_copy",
-        details: { counts, results: results.filter((r) => r.status === "applied" || r.status === "failed"), source: "docs/public-journeys/copy-reconciliation.md" },
+        details: { counts, results: results.filter((r) => r.status === "applied" || r.status === "partial" || r.status === "failed"), source: "docs/public-journeys/copy-reconciliation.md" },
       });
     }
   } catch (err: any) {
@@ -209,8 +215,8 @@ export async function getCopyConvergenceStatus(): Promise<CopyConvergenceReport 
 export async function applyReviewedCopyReplacements(): Promise<{ workflows: string[]; templates: string[]; skipped: string[] }> {
   const report = await convergeReviewedCopy();
   return {
-    workflows: report.results.filter((r) => r.kind === "workflow" && r.status === "applied").map((r) => r.name),
-    templates: report.results.filter((r) => r.kind === "template" && r.status === "applied").map((r) => r.name),
+    workflows: report.results.filter((r) => r.kind === "workflow" && (r.status === "applied" || r.status === "partial")).map((r) => r.name),
+    templates: report.results.filter((r) => r.kind === "template" && (r.status === "applied" || r.status === "partial")).map((r) => r.name),
     skipped: report.results.filter((r) => r.status === "conflict" || r.status === "failed").map((r) => `${r.name}: ${r.detail ?? r.status}`),
   };
 }

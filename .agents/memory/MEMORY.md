@@ -196,3 +196,4 @@
 - [Handoff vs provider completion](handoff-vs-completion.md) — missing GHL id = durable wait; projection upsert is the consumable handoff.
 - [Partner intake & review policy](partner-application-review-policy.md) — shared resume routine; owner/due only from recorded policy; no public timing promises.
 - [Ack override refusal & worker liveness](ack-worker-liveness.md) — override refused, final recheck, heartbeat in status; new certs are selected suites only.
+- [Partner approval delivery & binding](partner-approval-delivery-and-binding.md) — same-tx mailbox pin, durable approval rows, review reconcile, HTML-only final preview; tsc/intake-pages baseline failures.

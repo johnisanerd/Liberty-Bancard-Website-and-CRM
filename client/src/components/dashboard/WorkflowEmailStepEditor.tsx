@@ -1,3 +1,4 @@
+import { FinalEmailPreview, type FinalMessagePreview } from "./MessageFinalPreview";
 import { useEffect, useMemo, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
@@ -11,7 +12,7 @@ import { getApiErrorMessage } from "@/lib/ghlTruth";
 import { useToast } from "@/hooks/use-toast";
 
 interface Finding { rule: string; match: string; why: string }
-interface Preview { subject: string; html: string; unresolved: string[]; findings: Finding[]; note: string }
+interface Preview { subject: string; html: string; unresolved: string[]; findings: Finding[]; note: string; final?: FinalMessagePreview | null }
 
 function findingsFromError(e: unknown): Finding[] {
   const raw = e instanceof Error ? e.message : "";
@@ -129,7 +130,9 @@ export function WorkflowEmailStepEditor({ target, onClose }: { target: WorkflowE
               <>
                 <p className="text-sm font-medium" data-testid="workflow-email-preview-subject">{preview.subject}</p>
                 {/* Empty sandbox: no scripts, forms, navigation or same-origin access for the previewed markup. */}
-                <iframe title="Workflow email preview" sandbox="" srcDoc={preview.html} className="w-full h-64 rounded-md border bg-white" />
+                {preview.final
+                  ? <FinalEmailPreview final={preview.final} />
+                  : <iframe title="Workflow email preview" sandbox="" srcDoc={preview.html} className="w-full h-64 rounded-md border bg-white" />}
                 {preview.unresolved.length > 0 && (
                   <p className="text-xs text-destructive">Unsupported merge fields (publishing is blocked and sending would fail): {preview.unresolved.join(", ")}</p>
                 )}

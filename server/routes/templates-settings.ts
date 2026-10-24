@@ -50,6 +50,24 @@ export function registerTemplatesSettingsRoutes(app: Express) {
     }
   });
 
+  app.get("/api/admin/inbound-review-queue", requireRole("admin"), async (_req, res) => {
+    try {
+      const { getReviewQueueStatus } = await import("../services/inbound-review-policy");
+      res.json({ classes: await getReviewQueueStatus() });
+    } catch (err: any) {
+      serverError(res, err);
+    }
+  });
+
+  app.post("/api/admin/inbound-review-queue/reconcile", requireRole("admin"), async (req, res) => {
+    try {
+      const { reconcileReviewAssignments } = await import("../services/inbound-review-policy");
+      res.json(await reconcileReviewAssignments(String((req.user as any)?.id ?? "admin")));
+    } catch (err: any) {
+      serverError(res, err);
+    }
+  });
+
   // === MESSAGE TEMPLATES ===
   app.get("/api/message-templates", isAuthenticated, async (req, res) => {
     try {
