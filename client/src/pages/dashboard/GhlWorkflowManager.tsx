@@ -1459,7 +1459,7 @@ function PromptsDocument() {
   );
 }
 
-type GhlConnectionState = "verified" | "failed" | "auth_failed" | "unknown";
+type GhlConnectionState = "verified" | "failed" | "auth_failed" | "access_denied" | "unknown";
 
 // Shown only when a read-only provider check FAILED. A passing or unverified check never shows token guidance.
 const GHL_TOKEN_STEP = {
@@ -1478,6 +1478,17 @@ const GHL_READ_FAILURE_STEP = {
   detail: "The read-only GHL connection check failed, but not with an authentication error. It may be a timeout, a provider outage or rate limiting. Re-run the check later before changing any credential.",
   link: undefined as string | undefined,
   linkLabel: undefined as string | undefined,
+  critical: true,
+};
+
+// 403 / forbidden: the provider refused the request. That can be a missing scope, an entitlement, a location access
+// policy or an IP/access rule as well as a bad token, so the guidance does not tell the admin to replace the token.
+const GHL_ACCESS_DENIED_STEP = {
+  step: 1,
+  title: "GHL refused the read-only check — access, not necessarily the token",
+  detail: "GHL answered 403 (forbidden). In GHL → Settings → Private Integrations confirm the integration has the needed scopes, that it is allowed for this location, and that the account plan includes the feature. Only if those are correct and the check still fails with 401 or an invalid-token message should the token be replaced.",
+  link: "https://app.gohighlevel.com/settings/private-integrations",
+  linkLabel: "GHL Private Integrations",
   critical: true,
 };
 
@@ -1512,11 +1523,12 @@ const GHL_SETUP_STEPS = [
 
 function GhlSetupGuide({ configuredCount, totalCount, connection }: { configuredCount: number; totalCount: number; connection: GhlConnectionState }) {
   const steps = connection === "auth_failed" ? [GHL_TOKEN_STEP, ...GHL_SETUP_STEPS]
+    : connection === "access_denied" ? [GHL_ACCESS_DENIED_STEP, ...GHL_SETUP_STEPS]
     : connection === "failed" ? [GHL_READ_FAILURE_STEP, ...GHL_SETUP_STEPS] : GHL_SETUP_STEPS;
   const [open, setOpen] = useState(false);
   const allDone = configuredCount === totalCount;
   // Missing optional reference IDs are informational, never an alarm.
-  const alarm = connection === "failed" || connection === "auth_failed";
+  const alarm = connection === "failed" || connection === "auth_failed" || connection === "access_denied";
 
   return (
     <Card className={`border-2 ${alarm ? "border-amber-400 dark:border-amber-700" : "border-border"}`} data-testid="card-ghl-setup-guide">
@@ -1659,7 +1671,8 @@ export default function GhlWorkflowManager() {
   const connection: GhlConnectionState = connectionQuery.isError ? "unknown"
     : connectionQuery.data
       ? (connectionQuery.data.connected ? "verified"
-        : /\b(?:401|403)\b|unauthori[sz]ed|forbidden|invalid.*(?:token|api key)|not configured/i.test(connectionQuery.data.error ?? "") ? "auth_failed" : "failed")
+        : /\b401\b|unauthori[sz]ed|invalid.*(?:token|api key)|not configured/i.test(connectionQuery.data.error ?? "") ? "auth_failed"
+        : /\b403\b|forbidden/i.test(connectionQuery.data.error ?? "") ? "access_denied" : "failed")
       : "unknown";
 
   const mappingByName = Object.fromEntries(mappings.map(m => [m.sequenceName, m]));

@@ -12,6 +12,7 @@ import {
   GhlRequiredFieldUnavailableError,
   lookupGhlContactStrict,
   type GhlUpsertOutcome,
+  type GhlComponentOutcome,
   type GhlIdentityLookup,
   sendGhlEmail,
   GhlIdentityConflictError,
@@ -35,7 +36,7 @@ import { markGhlDispatch, GhlAmbiguousDispatchError, withGhlDispatchRecorder, su
 import {
   CONTACT_PROJECTION_MAX_ATTEMPTS, AMBIGUOUS_RETRY_MS, DEFERRAL_RETRY_MS,
   claimEligibleProjections, renewProjectionLease, reserveProjectionDispatch, settleProjection,
-  clearProjectionAmbiguity, beginProjectionOperation, settleProjectionOperation, getUnresolvedCreateOperation,
+  clearProjectionAmbiguity, linkReconciledIdentity, hasUnsettledOperation, beginProjectionOperation, settleProjectionOperation, getUnresolvedCreateOperation,
   markCreateOperationReconciled, GhlProjectionFenceError, type ClaimedProjection,
 } from "./ghl-projection-authority";
 
@@ -94,13 +95,10 @@ function projectionRetryDelayMs(attemptCount: number): number {
 const NOT_EXPORTABLE_ERROR = /^(?:PIPELINE_LOCAL_ONLY|EXPORT_NOT_ELIGIBLE)/;
 
 export type SyncContactResult = {
-  success: boolean; ghlContactId?: string; error?: string; components?: GhlUpsertOutcome["components"];
+  success: boolean; ghlContactId?: string; error?: string; components?: GhlUpsertOutcome["components"] & { tags?: GhlComponentOutcome };
 };
 
-type ReconcileResult = { status: "resolved" | "unresolved" | "conflict" } | { status: "hold"; code: string };
-
-/** A phone-only create can be proven only by a unique, owner-free remote record created after the request was sent. */
-const PHONE_ONLY_PROOF_SKEW_MS = 60_000;
+type ReconcileResult = { status: "resolved" | "unresolved" | "conflict" | "claim_lost" } | { status: "hold"; code: string };
 
 /**
  * Resolve an ambiguous earlier create with read-only lookups using the ORIGINAL identity that was sent (recorded in
@@ -115,7 +113,7 @@ async function reconcileAmbiguousProjection(
   const contact = await storage.getContact(row.contactId);
   if (!contact) return { status: "resolved" };
   // A local link proves identity; remaining operations (update, tags, permissions) are idempotent.
-  if (contact.ghlContactId) { await clearProjectionAmbiguity(row); return { status: "resolved" }; }
+  if (contact.ghlContactId) return (await clearProjectionAmbiguity(row)) ? { status: "resolved" } : { status: "claim_lost" };
   const op = await getUnresolvedCreateOperation(row.id);
   const email = ((op ? op.identity.email : contact.email) ?? "").trim();
   const phone = ((op ? op.identity.phone : contact.phone) ?? "").trim();
@@ -124,25 +122,26 @@ async function reconcileAmbiguousProjection(
   let found: GhlIdentityLookup;
   try { found = await lookup(email ? { email } : { phone }); } catch { return { status: "unresolved" }; }
   if (found.status === "absent") {
+    if (deps.assertOwnership) await deps.assertOwnership();
+    if (!await clearProjectionAmbiguity(row)) return { status: "claim_lost" };
     if (op) await markCreateOperationReconciled(op.operationId, "absent");
-    await clearProjectionAmbiguity(row);
     return { status: "resolved" };
   }
   if (found.status === "ambiguous") return { status: "hold", code: "AMBIGUOUS_REMOTE_IDENTITY_NEEDS_REVIEW" };
-  if (email && found.matchedEmail && found.matchedEmail.trim().toLowerCase() !== email.toLowerCase()) {
+  // An email-bearing create is proven only by a remote record that states the same email.
+  if (email && (!found.matchedEmail || found.matchedEmail.trim().toLowerCase() !== email.toLowerCase())) {
     return { status: "hold", code: "AMBIGUOUS_REMOTE_IDENTITY_NEEDS_REVIEW" };
   }
   const owner = ((await db.execute(sql`
     SELECT id FROM contacts WHERE ghl_contact_id = ${found.id} AND id <> ${row.contactId} LIMIT 1
   `)) as any).rows as any[];
   if (owner.length > 0) return { status: "conflict" };
-  if (!email) {
-    const createdMs = found.createdAt ? Date.parse(found.createdAt) : NaN;
-    if (!op || !Number.isFinite(createdMs) || createdMs < op.createdAt.getTime() - PHONE_ONLY_PROOF_SKEW_MS) {
-      return { status: "hold", code: "AMBIGUOUS_PHONE_IDENTITY_NEEDS_REVIEW" };
-    }
-  }
-  await db.execute(sql`UPDATE contacts SET ghl_contact_id = ${found.id}, updated_at = now() WHERE id = ${row.contactId} AND ghl_contact_id IS NULL`);
+  // A phone-only match is never proof: a phone number can belong to several people and recency of the remote record
+  // does not show it came from this request. Held for a person to review.
+  if (!email) return { status: "hold", code: "AMBIGUOUS_PHONE_IDENTITY_NEEDS_REVIEW" };
+  // Final fence: runtime ownership, then the link itself is conditional on the live claim.
+  if (deps.assertOwnership) await deps.assertOwnership();
+  if (!await linkReconciledIdentity(row, found.id)) return { status: "claim_lost" };
   if (op) await markCreateOperationReconciled(op.operationId, "linked");
   await clearProjectionAmbiguity(row);
   return { status: "resolved" };
@@ -156,6 +155,7 @@ async function executeClaimedProjection(row: ClaimedProjection, deps: Projection
   if (row.dispatchState === "ambiguous") {
     const reconciled = await reconcileAmbiguousProjection(row, deps);
     const resolved = reconciled.status;
+    if (reconciled.status === "claim_lost") return "claim_lost";
     if (reconciled.status === "hold") {
       return (await settleProjection(row, { kind: "hold", code: reconciled.code })) ? "ambiguous" : "claim_lost";
     }
@@ -170,8 +170,17 @@ async function executeClaimedProjection(row: ClaimedProjection, deps: Projection
   if (!await reserveProjectionDispatch(row)) return "claim_lost";
   const syncFn = deps.syncFn ?? syncContactToGhl;
   // Final fence + durable operation record before every provider mutation (including transport retries).
+  let ownershipLost: Error | null = null;
   const hooks: GhlDispatchHooks = {
     async begin(record, meta) {
+      // Runtime selection, runtime lease and job ownership are re-verified before EVERY provider mutation, not only
+      // at the start of the row.
+      if (deps.assertOwnership) {
+        try { await deps.assertOwnership(); } catch (error) {
+          ownershipLost = error instanceof Error ? error : new Error(String(error));
+          throw new GhlProjectionFenceError("runtime_ownership_lost");
+        }
+      }
       const allowed = await beginProjectionOperation(row, {
         operationId: record.operationId, operationClass: record.operation, method: record.method,
         identity: record.operation === "contact_create" ? meta.identity ?? null : null,
@@ -184,11 +193,25 @@ async function executeClaimedProjection(row: ClaimedProjection, deps: Projection
   };
   const run = await withGhlDispatchRecorder(() => syncFn(row.contactId), hooks);
   const evidence = summarizeDispatches(run.recorder);
+  if (ownershipLost) {
+    // Ownership changed mid-row: stop this row without spending budget, then stop the batch.
+    if (evidence.dispatched) {
+      await settleProjection(row, { kind: "retry", code: "GHL_RUNTIME_OWNERSHIP_LOST_PARTIAL", receipts: { ...evidence.receipts }, consumedAttempt: false, dispatched: true, delayMs: DEFERRAL_RETRY_MS });
+    } else {
+      await settleProjection(row, { kind: "released" });
+    }
+    throw ownershipLost;
+  }
   const result = "result" in run ? run.result : null;
   const thrown = "error" in run ? (run.error instanceof Error ? run.error.message : String(run.error)) : null;
 
   const receipts: Record<string, unknown> = result?.components
     ? { ...evidence.receipts, components: result.components } : { ...evidence.receipts };
+  if (result?.success && await hasUnsettledOperation(row)) {
+    // A provider operation for this claim never reported its outcome: success cannot be asserted. Recovery
+    // reconciles it read-only before anything is sent again.
+    return (await settleProjection(row, { kind: "ambiguous", code: "GHL_OPERATION_UNSETTLED", receipts })) ? "ambiguous" : "claim_lost";
+  }
   if (result?.success) {
     return (await settleProjection(row, { kind: "success", receipts })) ? "success" : "claim_lost";
   }
@@ -221,10 +244,11 @@ async function executeClaimedProjection(row: ClaimedProjection, deps: Projection
     // retrying cannot help until the inventory or payload contract changes, so it waits without spending budget.
     return (await settleProjection(row, { kind: "deferred", code: "GHL_CUSTOM_FIELD_CONTRACT_BLOCKED", retryAfterMs: 15 * 60 * 1000 })) ? "deferred" : "claim_lost";
   }
-  if (!evidence.dispatched && typeof error === "string" && /GHL_IDENTITY_AMBIGUOUS/.test(error)) {
-    // Remote identity cannot be established safely and nothing was sent. Held for review with the specific reason.
+  if (typeof error === "string" && /GHL_IDENTITY_AMBIGUOUS/.test(error)) {
+    // Remote identity cannot be established safely. Any request that did reach the provider was rejected without
+    // a result (for example a duplicate-contact 400); nothing was linked or merged. Held for review with the reason.
     const reason = error.replace(/^.*GHL_IDENTITY_AMBIGUOUS:?/, "").trim().slice(0, 80) || "unspecified";
-    return (await settleProjection(row, { kind: "terminal", reason: "IDENTITY_NEEDS_REVIEW", code: `GHL_IDENTITY_AMBIGUOUS:${reason}`, receipts, consumedAttempt: false, dispatched: false })) ? "terminal" : "claim_lost";
+    return (await settleProjection(row, { kind: "terminal", reason: "IDENTITY_NEEDS_REVIEW", code: `GHL_IDENTITY_AMBIGUOUS:${reason}`, receipts, consumedAttempt: false, dispatched: evidence.dispatched })) ? "terminal" : "claim_lost";
   }
   if (!evidence.dispatched && typeof error === "string" && /GHL_REQUIRED_SUPPRESSION_FIELD_UNAVAILABLE/.test(error)) {
     // A suppression must travel with the contact but the provider field is not installed: nothing is sent.
@@ -758,8 +782,18 @@ export async function syncContactToGhl(contactId: number): Promise<SyncContactRe
       return { success: false, ghlContactId: ghlId, error: `GHL_COMPONENT_FAILED:${failedComponents.join(",")}`, components: upsertOutcome.components };
     }
 
-    await checkAndApplyActivePipelineTag(contact, ghlId);
-    await applyParentLocationTags(contact, ghlId);
+    // Tags (which can start a native workflow) and parent/location fields are the last component, after identity,
+    // suppression and permissions are in place.
+    let tagsComponent: GhlComponentOutcome = { state: "not_applicable" };
+    if (ghlId) {
+      const fresh = (await storage.getContact(contactId)) ?? contact;
+      tagsComponent = await applyTagsAndParentComponent(fresh, ghlId);
+    }
+    const allComponents = { ...upsertOutcome.components, tags: tagsComponent };
+    if (tagsComponent.state === "failed") {
+      await updateSyncStatusRecord("contacts", "outbound", 0, 1, `GHL_COMPONENT_FAILED:tags:${tagsComponent.code ?? "failed"}`);
+      return { success: false, ghlContactId: ghlId, error: `GHL_COMPONENT_FAILED:tags:${tagsComponent.code ?? "failed"}`, components: allComponents };
+    }
 
     await storage.createGhlActivityLog({
       contactId,
@@ -783,7 +817,7 @@ export async function syncContactToGhl(contactId: number): Promise<SyncContactRe
       actorType: "system",
       details: { ghlContactId: ghlId },
     }).catch(() => {});
-    return { success: true, ghlContactId: ghlId, components: upsertOutcome.components };
+    return { success: true, ghlContactId: ghlId, components: allComponents };
   } catch (err: any) {
     if (isGhlSyncDeferred(err?.message)) {
       await recordGhlSyncDeferred("contacts", err.message);
@@ -1902,108 +1936,81 @@ export async function removeTagsFromLocal(ghlContactId: string, tags: string[]):
   }
 }
 
-export async function applyParentLocationTags(contact: Contact, ghlContactId?: string): Promise<void> {
+/** Typed fence/ambiguity errors must reach the projection executor; they are never a component failure. */
+function isProjectionBoundaryError(err: any): boolean {
+  return err?.code === "GHL_PROJECTION_FENCE_LOST" || err instanceof GhlAmbiguousDispatchError || err instanceof GhlSyncDeferredError;
+}
+
+const ACTIVE_PIPELINE_TAG = "LB-ACTIVE-PIPELINE";
+const PARENT_ACCOUNT_TAG = "lb_parent_account";
+
+/**
+ * Tags and parent/location fields as ONE component, written only after identity, suppression and permission
+ * components. The desired tag set is recomputed from current local data on every run and sent in full; local tags
+ * change only after the provider accepted the write, so a failed write is retried instead of being masked by an
+ * already-updated local copy. Fields the provider has not installed are held (and reported), never auto-created.
+ */
+export async function applyTagsAndParentComponent(contact: Contact, ghlContactId: string): Promise<GhlComponentOutcome> {
   try {
-    if (!ghlContactId) ghlContactId = contact.ghlContactId || undefined;
-    if (!ghlContactId) return;
-
+    const deals = await storage.getDealsByContact(contact.id);
+    const hasActiveDeal = deals.some(d => (ACTIVE_DEAL_STAGES as readonly string[]).includes(d.stage));
     const currentTags: string[] = contact.tags || [];
-    let updatedTags = [...currentTags];
-    const customFields: Array<{ key: string; field_value: string }> = [];
+    const desired = new Set(currentTags);
+    if (hasActiveDeal) desired.add(ACTIVE_PIPELINE_TAG); else desired.delete(ACTIVE_PIPELINE_TAG);
+    if (contact.isParentAccount) desired.add(PARENT_ACCOUNT_TAG); else desired.delete(PARENT_ACCOUNT_TAG);
+    const desiredTags = Array.from(desired);
 
-    if (contact.isParentAccount) {
-      if (!updatedTags.includes("lb_parent_account")) {
-        updatedTags = [...updatedTags, "lb_parent_account"];
-      }
-    } else {
-      updatedTags = updatedTags.filter(t => t !== "lb_parent_account");
+    const wanted: Array<{ key: string; field_value: string; meaningful: boolean }> = [];
+    if (hasActiveDeal !== currentTags.includes(ACTIVE_PIPELINE_TAG)) {
+      wanted.push({ key: "lb_do_not_sdr", field_value: hasActiveDeal ? "true" : "false", meaningful: true });
     }
-
     if (contact.parentContactId) {
       const parent = await storage.getContact(contact.parentContactId);
       if (parent) {
         const parentName = parent.companyName || `${parent.firstName} ${parent.lastName}`.trim();
-        customFields.push({ key: "lb_location_of", field_value: parentName });
+        wanted.push({ key: "lb_location_of", field_value: parentName, meaningful: true });
       }
     } else {
-      customFields.push({ key: "lb_location_of", field_value: "" });
+      wanted.push({ key: "lb_location_of", field_value: "", meaningful: false });
     }
+    const { getGhlCustomFieldInventory } = await import("./ghl");
+    const installedKeys = new Set((await getGhlCustomFieldInventory()).map(field => field.key));
+    const customFields = wanted.filter(field => installedKeys.has(field.key)).map(({ key, field_value }) => ({ key, field_value }));
+    const heldKeys = wanted.filter(field => !installedKeys.has(field.key) && field.meaningful).map(field => field.key);
 
-    // Optional enrichment: a field the provider has not installed is held, never sent (an unverified field id would
-    // otherwise defer the whole projection after the identity already succeeded). Fields are never auto-created.
-    if (customFields.length > 0) {
-      const { getGhlCustomFieldInventory } = await import("./ghl");
-      const installedKeys = new Set((await getGhlCustomFieldInventory()).map(field => field.key));
-      for (let i = customFields.length - 1; i >= 0; i--) {
-        if (!installedKeys.has(customFields[i].key)) customFields.splice(i, 1);
-      }
+    const payload: Record<string, unknown> = { tags: desiredTags };
+    if (customFields.length > 0) payload.customFields = customFields;
+    await ghlFetch(`/contacts/${ghlContactId}`, { method: "PUT", body: JSON.stringify(payload) });
+
+    // Provider accepted: only now does the local copy follow.
+    if (desiredTags.join(",") !== currentTags.join(",")) {
+      await storage.syncUpdateContact(contact.id, { tags: desiredTags });
     }
-    const tagsChanged = updatedTags.join(",") !== currentTags.join(",");
-    if (tagsChanged || customFields.length > 0) {
-      const payload: Record<string, any> = {};
-      if (tagsChanged) {
-        payload.tags = updatedTags;
-        await storage.syncUpdateContact(contact.id, { tags: updatedTags });
-      }
-      if (customFields.length > 0) {
-        payload.customFields = customFields;
-      }
-      await ghlFetch(`/contacts/${ghlContactId}`, {
-        method: "PUT",
-        body: JSON.stringify(payload),
-      });
-      if (contact.isParentAccount) {
-        console.log(`[GHL Sync] Applied lb_parent_account tag to contact ${contact.id}`);
-      }
-      if (contact.parentContactId) {
-        console.log(`[GHL Sync] Applied lb_location_of custom field to contact ${contact.id}`);
-      }
-    }
+    return { state: heldKeys.length > 0 ? "held" : "ok", heldKeys };
   } catch (err: any) {
     if (isGhlSyncDeferred(err?.message)) throw new GhlSyncDeferredError(err.message);
-    console.error(`[GHL Sync] Failed to apply parent/location tags for contact ${contact.id}:`, err.message);
+    if (isProjectionBoundaryError(err)) throw err;
+    const status = String(err?.message || "").match(/GHL API error (\d+)/)?.[1] || "unknown";
+    console.warn(`[GHL Sync] Tags/parent component failed for contact ${contact.id} (${status}):`, String(err?.message || "").slice(0, 200));
+    return { state: "failed", code: `HTTP_${status}` };
   }
 }
 
+/** Legacy export: parent/location tags alone. Delegates to the one component so the rules cannot diverge. */
+export async function applyParentLocationTags(contact: Contact, ghlContactId?: string): Promise<void> {
+  const id = ghlContactId || contact.ghlContactId || undefined;
+  if (!id) return;
+  const outcome = await applyTagsAndParentComponent(contact, id);
+  if (outcome.state === "failed") throw new Error(`GHL_COMPONENT_FAILED:tags:${outcome.code ?? "failed"}`);
+}
+
+/** Deal-sync entry point: the same component. Failures are logged by the caller's sync status, never masked locally. */
 export async function checkAndApplyActivePipelineTag(contact: Contact, ghlContactId?: string): Promise<void> {
-  try {
-    if (!ghlContactId) ghlContactId = contact.ghlContactId || undefined;
-    if (!ghlContactId) return;
-
-    const deals = await storage.getDealsByContact(contact.id);
-    const hasActiveDeal = deals.some(d => (ACTIVE_DEAL_STAGES as readonly string[]).includes(d.stage));
-
-    const currentTags = contact.tags || [];
-    const hasActiveTag = currentTags.includes("LB-ACTIVE-PIPELINE");
-
-    if (hasActiveDeal && !hasActiveTag) {
-      const updatedTags = [...currentTags, "LB-ACTIVE-PIPELINE"];
-      await storage.updateContact(contact.id, { tags: updatedTags });
-
-      await ghlFetch(`/contacts/${ghlContactId}`, {
-        method: "PUT",
-        body: JSON.stringify({
-          tags: updatedTags,
-          customFields: [{ key: "lb_do_not_sdr", field_value: "true" }],
-        }),
-      });
-      console.log(`[GHL Sync] Applied LB-ACTIVE-PIPELINE tag to contact ${contact.id}`);
-    } else if (!hasActiveDeal && hasActiveTag) {
-      const updatedTags = currentTags.filter(t => t !== "LB-ACTIVE-PIPELINE");
-      await storage.updateContact(contact.id, { tags: updatedTags });
-
-      await ghlFetch(`/contacts/${ghlContactId}`, {
-        method: "PUT",
-        body: JSON.stringify({
-          tags: updatedTags,
-          customFields: [{ key: "lb_do_not_sdr", field_value: "false" }],
-        }),
-      });
-      console.log(`[GHL Sync] Removed LB-ACTIVE-PIPELINE tag from contact ${contact.id}`);
-    }
-  } catch (err: any) {
-    if (isGhlSyncDeferred(err?.message)) throw new GhlSyncDeferredError(err.message);
-    console.error(`[GHL Sync] Failed to check active pipeline for contact ${contact.id}:`, err.message);
+  const id = ghlContactId || contact.ghlContactId || undefined;
+  if (!id) return;
+  const outcome = await applyTagsAndParentComponent(contact, id);
+  if (outcome.state === "failed") {
+    console.error(`[GHL Sync] Active-pipeline tag not applied for contact ${contact.id} (${outcome.code}); local tags unchanged so it retries`);
   }
 }
 

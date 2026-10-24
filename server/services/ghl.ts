@@ -563,7 +563,16 @@ export async function lookupGhlContactByEmail(email: string): Promise<string | n
 export type GhlIdentityLookup =
   | { status: "found"; id: string; createdAt: string | null; matchedEmail: string | null }
   | { status: "absent" }
-  | { status: "ambiguous"; count: number };
+  | { status: "ambiguous"; count: number; reason?: "multiple_matches" | "match_without_email" | "match_on_other_email" };
+
+/**
+ * The provider answered the read-only duplicate lookup with a body this code does not understand. That is neither
+ * a match nor proof of absence: nothing may be created or linked from it.
+ */
+export class GhlLookupUnsupportedResponseError extends Error {
+  readonly code = "GHL_LOOKUP_RESPONSE_UNSUPPORTED";
+  constructor() { super("GHL_LOOKUP_RESPONSE_UNSUPPORTED"); this.name = "GhlLookupUnsupportedResponseError"; }
+}
 
 /**
  * Read-only remote identity lookup that distinguishes exact match, confirmed absence and ambiguity from a failed
@@ -580,13 +589,26 @@ export async function lookupGhlContactStrict(identity: { email?: string | null; 
     `/contacts/search/duplicate?locationId=${encodeURIComponent(config.locationId)}&${selector}`,
     { method: "GET" },
   );
-  const candidates: any[] = Array.isArray(result?.contacts) ? result.contacts : result?.contact ? [result.contact] : [];
-  const withId = candidates.filter(candidate => candidate?.id);
+  // Absence is a positive statement: only a recognized empty answer proves it. Any other body is unsupported.
+  const supported = !!result && typeof result === "object" && !Array.isArray(result)
+    && (Array.isArray(result.contacts) || "contact" in result);
+  if (!supported) throw new GhlLookupUnsupportedResponseError();
+  const candidates: any[] = Array.isArray(result.contacts) ? result.contacts : result.contact ? [result.contact] : [];
+  if (candidates.some(candidate => !candidate || typeof candidate !== "object")) throw new GhlLookupUnsupportedResponseError();
+  const withId = candidates.filter(candidate => candidate.id);
+  if (candidates.length > 0 && withId.length === 0) throw new GhlLookupUnsupportedResponseError();
   if (withId.length === 0) return { status: "absent" };
   if (withId.length > 1 || new Set(withId.map(candidate => String(candidate.id))).size > 1) {
-    return { status: "ambiguous", count: withId.length };
+    return { status: "ambiguous", count: withId.length, reason: "multiple_matches" };
   }
   const match = withId[0];
+  if (email) {
+    // An email lookup proves identity only when the returned record states the same email. A record with no email,
+    // or a different one, was matched on something else and is never treated as the exact-email match.
+    const returned = typeof match.email === "string" ? match.email.trim().toLowerCase() : "";
+    if (!returned) return { status: "ambiguous", count: 1, reason: "match_without_email" };
+    if (returned !== email.toLowerCase()) return { status: "ambiguous", count: 1, reason: "match_on_other_email" };
+  }
   return {
     status: "found", id: String(match.id),
     createdAt: typeof match.dateAdded === "string" ? match.dateAdded : typeof match.createdAt === "string" ? match.createdAt : null,
@@ -642,7 +664,7 @@ export interface GhlComponentOutcome { state: GhlComponentState; heldKeys?: stri
 export interface GhlUpsertOutcome {
   ghlContactId: string;
   identity: "created" | "linked_existing" | "updated";
-  components: { identity: GhlComponentOutcome; profile_fields: GhlComponentOutcome; permissions: GhlComponentOutcome };
+  components: { identity: GhlComponentOutcome; profile_fields: GhlComponentOutcome; permissions: GhlComponentOutcome; tags?: GhlComponentOutcome };
 }
 
 /** Thrown by the legacy string-returning wrapper when a required component failed at the provider. */
@@ -932,7 +954,8 @@ async function buildGhlPermissionFields(contact: GhlContactInput): Promise<GhlFi
 
 async function assertGhlLinkNotOwnedElsewhere(localId: number | undefined, remoteId: string): Promise<void> {
   if (!localId) return;
-  const currentOwner = await storage.getContactByGhlContactId(remoteId).catch(() => null);
+  // Fail closed: a failed ownership lookup is not proof that nobody owns the remote id.
+  const currentOwner = await storage.getContactByGhlContactId(remoteId);
   if (currentOwner && currentOwner.id !== localId) {
     console.warn(`[GHL] Identity conflict: GHL ID ${remoteId} is already owned by local contact ${currentOwner.id} — will not relink contact ${localId}`);
     await storage.createAuditLog({
@@ -973,14 +996,23 @@ async function doUpsertGhlContactInner(contact: GhlContactInput, config: NonNull
     email: contact.email,
     phone: contact.phone,
     companyName: contact.companyName || undefined,
-    tags: contact.tags || [],
+    // Tags are deliberately NOT part of this write: a tag can start a native workflow, so tags are a separate later
+    // component, sent only after identity, suppression and permissions have been written.
   };
-  if (profileFields.length > 0) payload.customFields = profileFields;
+  // A suppression that is true travels in the FIRST write that creates or updates the remote record, so there is
+  // no moment at which the record exists without it. (Installation was verified above.)
+  const suppressionFields: GhlFieldList = [
+    ...(contact.doNotContact ? [{ key: "lb_do_not_contact", field_value: "true" }] : []),
+    ...(contact.doNotAutoContact ? [{ key: "lb_do_not_autocontact", field_value: "true" }] : []),
+  ];
+  const firstWriteFields = [...profileFields, ...suppressionFields];
+  if (firstWriteFields.length > 0) payload.customFields = firstWriteFields;
   // GHL only accepts locationId on contact CREATE (POST), not UPDATE (PUT).
   const { locationId: _loc, ...updatePayload } = payload;
 
   let resolvedGhlId: string;
   let identityResult: GhlUpsertOutcome["identity"];
+  const hasEmail = typeof contact.email === "string" && contact.email.trim().length > 0;
 
   if (contact.ghlContactId) {
     await ghlFetch(`/contacts/${contact.ghlContactId}`, { method: "PUT", body: JSON.stringify(updatePayload) });
@@ -989,12 +1021,11 @@ async function doUpsertGhlContactInner(contact: GhlContactInput, config: NonNull
   } else {
     // Strict lookup before create. Email is the identity when present; a phone-only contact may be created only when
     // the provider confirms the phone is absent. Mailbox or phone alone never merges two records.
-    const hasEmail = typeof contact.email === "string" && contact.email.trim().length > 0;
     const lookup = await lookupGhlContactStrict(hasEmail ? { email: contact.email } : { phone: contact.phone });
-    if (lookup.status === "ambiguous") throw new GhlIdentityAmbiguousError("multiple_remote_matches");
+    if (lookup.status === "ambiguous") throw new GhlIdentityAmbiguousError(lookup.reason ?? "multiple_remote_matches");
     if (lookup.status === "found") {
       if (!hasEmail) throw new GhlIdentityAmbiguousError("phone_only_match_requires_review");
-      if (lookup.matchedEmail && lookup.matchedEmail.trim().toLowerCase() !== String(contact.email).trim().toLowerCase()) {
+      if (!lookup.matchedEmail || lookup.matchedEmail.trim().toLowerCase() !== String(contact.email).trim().toLowerCase()) {
         throw new GhlIdentityAmbiguousError("remote_match_on_other_identifier");
       }
       await assertGhlLinkNotOwnedElsewhere(contact.id, lookup.id);
@@ -1023,8 +1054,19 @@ async function doUpsertGhlContactInner(contact: GhlContactInput, config: NonNull
         // propagates (the remote id stays linked) instead of being reported as a successful upsert.
         const msg = String(err?.message || "");
         const existingId = msg.includes("400") && /duplicat|already exist/i.test(msg)
-          ? msg.match(/"(?:id|contactId)"\s*:\s*"([a-zA-Z0-9]+)"/)?.[1] : undefined;
+          ? msg.match(/"(?:id|contactId)"\s*:\s*"([A-Za-z0-9_-]+)"/)?.[1] : undefined;
         if (!existingId) throw err;
+        // The error text only names a candidate. Prove it by reading that exact remote record: an email-bearing
+        // local contact links only when the remote record states the same email; a phone-only local contact is never
+        // linked from a duplicate-phone answer.
+        const localEmail = hasEmail ? String(contact.email).trim().toLowerCase() : "";
+        if (!localEmail) throw new GhlIdentityAmbiguousError("duplicate_phone_requires_review");
+        const remote = await ghlFetch(`/contacts/${existingId}`, { method: "GET" });
+        const remoteRecord = remote?.contact ?? null;
+        if (!remoteRecord || String(remoteRecord.id ?? "") !== existingId) throw new GhlLookupUnsupportedResponseError();
+        const remoteEmail = typeof remoteRecord.email === "string" ? remoteRecord.email.trim().toLowerCase() : "";
+        if (!remoteEmail) throw new GhlIdentityAmbiguousError("duplicate_remote_without_email");
+        if (remoteEmail !== localEmail) throw new GhlIdentityAmbiguousError("duplicate_remote_other_identifier");
         await assertGhlLinkNotOwnedElsewhere(contact.id, existingId);
         if (contact.id) await storage.updateContact(contact.id, { ghlContactId: existingId });
         await ghlFetch(`/contacts/${existingId}`, { method: "PUT", body: JSON.stringify(updatePayload) });

@@ -27,7 +27,7 @@ process.env.REPL_DEPLOYMENT_ID = "ghl-projection-cert-deployment";
 process.env.RELEASE_SHA = process.env.RELEASE_SHA || "ghlcert0000000000000000000000000000000000";
 
 // Fake final transport: GHL host only. Everything else keeps the deny boundary.
-type Call = { method: string; url: string };
+type Call = { method: string; url: string; body?: any };
 const ghlCalls: Call[] = [];
 const denyFetch = globalThis.fetch;
 const installedFields = ["lb_consent_email", "lb_consent_sms", "lb_do_not_sdr", "lb_promo_code", "lb_pain_points", "lb_lead_source", "external_contact_id", "lead_score", "contact_role"];
@@ -118,7 +118,7 @@ const syncOk = async () => ({ success: true });
 const migrationSql = readFileSync("migrations/0375_ghl_projection_operations_and_intake_evidence.sql", "utf8");
 const normalize = (s: string) => s.replace(/\s+/g, " ").trim();
 check(normalize(migrationSql).includes(normalize(convergence.GHL_LEGACY_CREATION_TIME_CORRECTION_STATEMENT)),
-  "Migration 0375 contains the legacy creation-time correction statement used at runtime (build-time and runtime cannot drift)");
+  "Migration 0375 carries the one-time legacy creation-time correction verbatim; at runtime the broader authority reconcile (not this statement) keeps every open exportable row evidence-backed");
 check(execFileSync("git", ["diff", "--quiet", "HEAD", "--", "migrations/0374_ghl_projection_generation_authority.sql"]).length === 0,
   "Migration 0374 is unedited (corrections ship as a new migration)");
 check(/"tag":\s*"0374_ghl_projection_generation_authority"/.test(readFileSync("migrations/meta/_journal.json", "utf8")), "Migration 0374 is registered in the journal");
@@ -249,7 +249,7 @@ await sync.processEligibleContactProjections(50, {
 check(lookupAttempts === 1 && dispatchedAfterLookupFailure === 0 && (await projRows(cAmb))[0].dispatch_state === "ambiguous",
   "A failed reconciliation lookup defers without another create (no blind duplicate create)");
 await makeDue(cAmb);
-await sync.processEligibleContactProjections(50, { lookupFn: async () => ({ status: "found", id: `ghl_${run}_found` }), syncFn: async (id) => (id === cAmb ? { success: true } : syncOk()) });
+await sync.processEligibleContactProjections(50, { lookupFn: async (identity: any) => ({ status: "found", id: `ghl_${run}_found`, createdAt: null, matchedEmail: identity.email }), syncFn: async (id) => (id === cAmb ? { success: true } : syncOk()) });
 const ambContact = (await pool.query(`SELECT ghl_contact_id FROM contacts WHERE id=$1`, [cAmb])).rows[0];
 check(ambContact.ghl_contact_id === `ghl_${run}_found` && (await projRows(cAmb))[0].state === "succeeded", "A found remote record is linked read-only and the projection continues as an update");
 const cAmb2 = await mkContact();
@@ -675,8 +675,19 @@ server.close();
     lookupFn: async () => ({ status: "found", id: `ghl_${run}_newphone`, createdAt: new Date(Date.now() + 5_000).toISOString(), matchedEmail: null }),
     syncFn: syncOk,
   });
-  check((await pool.query(`SELECT ghl_contact_id FROM contacts WHERE id=$1`, [cPhone2])).rows[0].ghl_contact_id === `ghl_${run}_newphone` && (await projRows(cPhone2))[0].state === "succeeded",
-    "A unique phone-only record created after the request is accepted as the lost create");
+  check((await pool.query(`SELECT ghl_contact_id FROM contacts WHERE id=$1`, [cPhone2])).rows[0].ghl_contact_id === null
+    && (await projRows(cPhone2))[0].state === "terminal" && (await projRows(cPhone2))[0].last_error_code === "AMBIGUOUS_PHONE_IDENTITY_NEEDS_REVIEW",
+    "A phone-only match is held for review even when the remote record is newer than the request: recency is not identity proof");
+
+  const cNoEmail = await mkContact();
+  await ambiguousFor(cNoEmail);
+  await sync.processEligibleContactProjections(50, {
+    lookupFn: async () => ({ status: "found", id: `ghl_${run}_noemail`, createdAt: null, matchedEmail: null }),
+    syncFn: syncOk,
+  });
+  check((await projRows(cNoEmail))[0].last_error_code === "AMBIGUOUS_REMOTE_IDENTITY_NEEDS_REVIEW"
+    && (await pool.query(`SELECT ghl_contact_id FROM contacts WHERE id=$1`, [cNoEmail])).rows[0].ghl_contact_id === null,
+    "An email-bearing create is not linked to a remote record that states no email");
 
   const cAmbig = await mkContact();
   await ambiguousFor(cAmbig);
@@ -775,13 +786,14 @@ server.close();
         inventoryRevision: controlService.hashNativeWorkflowInventory(workflows), workflows, workflowActionEvidence: [],
         customFields: fields, customFieldInventoryRevision: controlService.hashGhlCustomFieldInventory(fields),
         allowedOperations: [
-          { method: "POST", path: "/contacts", fields: identityFields, tags: [], stageIds: [], customFieldIds: fields.map(f => f.id), purpose: "cert identity create", safetyEvidence: "fixture" },
-          { method: "PUT", path: "/contacts/:contactId", fields: identityFields, tags: [], stageIds: [], customFieldIds: fields.map(f => f.id), purpose: "cert identity update", safetyEvidence: "fixture" },
+          { method: "POST", path: "/contacts", fields: identityFields, tags: ["LB-ACTIVE-PIPELINE", "lb_parent_account", "promo_tag", "keep_me"], stageIds: [], customFieldIds: fields.map(f => f.id), purpose: "cert identity create", safetyEvidence: "fixture" },
+          { method: "PUT", path: "/contacts/:contactId", fields: identityFields, tags: ["LB-ACTIVE-PIPELINE", "lb_parent_account", "promo_tag", "keep_me"], stageIds: [], customFieldIds: fields.map(f => f.id), purpose: "cert identity update", safetyEvidence: "fixture" },
         ],
       },
     };
     await pool.query(`INSERT INTO system_settings(key,value,updated_at) VALUES('ghlSyncControl',$1::jsonb,NOW()) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value`, [JSON.stringify(value)]);
   };
+  const controlRowFn = controlRow;
   await controlRow(true);
   // Global outbound pause stays PAUSED; CRM projections join the pause barrier but may run while paused.
   if ((await pool.query(`UPDATE outbound_pause_control SET state='paused', reason='ghl projection certification', committed_at=NOW()`)).rowCount === 0) {
@@ -792,19 +804,31 @@ server.close();
   type Remote = { id: string; email: string | null; phone: string | null; dateAdded: string };
   const remote = new Map<string, Remote>();
   let remoteSeq = 0;
-  const behaviour = { fuzzyEmail: false, loseNextPost: false, failCustomFieldPut: false, duplicate400For: null as string | null, failPutFor: null as string | null };
+  const behaviour = {
+    fuzzyEmail: false, loseNextPost: false, failCustomFieldPut: false, duplicate400For: null as string | null, failPutFor: null as string | null,
+    lookupMode: "normal" as "normal" | "noEmail" | "unsupported", dupRemoteEmail: null as string | null, duplicate400Phone: null as string | null,
+    failTagPut: false,
+  };
   const journeyResponder = (call: Call, body: any): Response => {
     const u = new URL(call.url);
     const path = u.pathname;
     if (/\/customFields$/.test(path)) return json({ customFields: installedFields.map((k, i) => ({ id: `cf_${i}`, fieldKey: `contact.${k}` })) });
     if (/^\/workflows\/?$/.test(path)) return json({ workflows: [] });
+    if (call.method === "GET" && /^\/contacts\/remote_dup_1$/.test(path)) {
+      return json({ contact: { id: "remote_dup_1", email: behaviour.dupRemoteEmail } });
+    }
+    if (path === "/contacts/search/duplicate" && behaviour.lookupMode === "unsupported") return json({ ok: true });
+    if (path === "/contacts/search/duplicate" && behaviour.lookupMode === "noEmail") {
+      return json({ contacts: [{ id: "remote_noemail", email: null, phone: null }] });
+    }
     if (path === "/contacts/search/duplicate") {
       const email = u.searchParams.get("email"); const number = u.searchParams.get("number");
       const hits = behaviour.fuzzyEmail && email ? [remote.get("remote_other_mailbox")!] : [...remote.values()].filter(r => (email && r.email?.toLowerCase() === email.toLowerCase()) || (number && r.phone === number));
       return json({ contacts: hits });
     }
     if (call.method === "POST" && /^\/contacts\/?$/.test(path)) {
-      if (behaviour.duplicate400For && body?.email === behaviour.duplicate400For) {
+      if ((behaviour.duplicate400For && body?.email === behaviour.duplicate400For)
+        || (behaviour.duplicate400Phone && body?.phone === behaviour.duplicate400Phone)) {
         return json({ message: "This location does not allow duplicated contacts.", meta: { contactId: "remote_dup_1" } }, 400);
       }
       const created: Remote = { id: `remote_${run}_${++remoteSeq}`, email: body?.email || null, phone: body?.phone || null, dateAdded: new Date().toISOString() };
@@ -815,6 +839,7 @@ server.close();
     if (call.method === "PUT" && /^\/contacts\/[^/]+$/.test(path)) {
       if (behaviour.failPutFor && path.endsWith(behaviour.failPutFor)) return json({ message: "boom" }, 500);
       if (behaviour.failCustomFieldPut && Array.isArray(body?.customFields)) return json({ message: "perm boom" }, 500);
+      if (behaviour.failTagPut && Array.isArray(body?.tags)) return json({ message: "tag boom" }, 500);
       return json({ contact: { id: path.split("/").pop() } });
     }
     return json({});
@@ -826,7 +851,7 @@ server.close();
     if (url.includes("services.leadconnectorhq.com")) {
       let parsed: any = null;
       try { parsed = typeof init?.body === "string" ? JSON.parse(init.body) : null; } catch { parsed = null; }
-      const call = { method: String(init?.method ?? "GET").toUpperCase(), url };
+      const call = { method: String(init?.method ?? "GET").toUpperCase(), url, body: parsed };
       ghlCalls.push(call);
       try { return journeyResponder(call, parsed); } catch (error) { throw error; }
     }
@@ -892,21 +917,21 @@ server.close();
   mark = ghlCalls.length;
   await runWorker();
   const mRow = (await projRows(cM))[0];
-  check(mutationsSince(mark).length === 0 && mRow.state === "terminal" && /GHL_IDENTITY_AMBIGUOUS:remote_match_on_other_identifier/.test(String(mRow.last_error_code)),
+  check(mutationsSince(mark).length === 0 && mRow.state === "terminal" && /GHL_IDENTITY_AMBIGUOUS:(remote_match_on_other_identifier|match_on_other_email)/.test(String(mRow.last_error_code)),
     "Journey: a provider match on a different mailbox is held for review, never merged, with no provider write");
   behaviour.fuzzyEmail = false;
 
   // 5. duplicate-400 recovery whose follow-up PUT fails must fail the projection, not report success
   const cD = await mkContact();
   const emailD = (await contactIdentity(cD)).email!;
-  behaviour.duplicate400For = emailD;
+  behaviour.duplicate400For = emailD; behaviour.dupRemoteEmail = emailD;
   behaviour.failPutFor = "/remote_dup_1";
   await enqueue(cD);
   await runWorker();
   const dRow = (await projRows(cD))[0];
   check(dRow.state === "retry" && Number(dRow.attempt_count) === 1 && dRow.last_error_code !== null,
     "Journey: a duplicate-400 recovery whose update fails is a failed attempt, never a success");
-  behaviour.duplicate400For = null; behaviour.failPutFor = null;
+  behaviour.duplicate400For = null; behaviour.failPutFor = null; behaviour.dupRemoteEmail = null;
 
   // 6. permission write failure is a failed component with the identity linked, and no tags go out
   const cC = await mkContact();
@@ -935,6 +960,118 @@ server.close();
   check(mutationsSince(mark).length === 0 && sRow.state === "retry" && sRow.last_error_code === "GHL_REQUIRED_SUPPRESSION_FIELD_UNAVAILABLE" && Number(sRow.attempt_count) === 0,
     "Journey: a do-not-contact suppression with no installed provider field defers before any mutation and consumes no attempt");
 
+
+  // ---- H1/H3/H4: strict identity proof, suppression on the first write, durable tag outcomes (reproduced cases 1,2,3,4,7)
+  const bodiesSince = (n: number) => ghlCalls.slice(n).filter(c => c.method !== "GET").map(c => c.body ?? {});
+  const linkedOf = async (id: number) => (await pool.query(`SELECT ghl_contact_id, tags FROM contacts WHERE id=$1`, [id])).rows[0];
+  // case 4: an unrecognized lookup body is not proof of absence: no create, no link
+  const cU = await mkContact();
+  behaviour.lookupMode = "unsupported";
+  await enqueue(cU);
+  mark = ghlCalls.length;
+  await runWorker();
+  const uRow = (await projRows(cU))[0];
+  check(mutationsSince(mark).length === 0 && uRow.state !== "succeeded" && (await linkedOf(cU)).ghl_contact_id === null,
+    "H1 case 4: an unsupported duplicate-lookup response is never read as 'absent' (no create, no link)");
+  // case 1: a found record that states no email is not an exact-email match
+  const cN = await mkContact();
+  behaviour.lookupMode = "noEmail";
+  await enqueue(cN);
+  mark = ghlCalls.length;
+  await runWorker();
+  const nRow = (await projRows(cN))[0];
+  check(mutationsSince(mark).length === 0 && nRow.state === "terminal" && /GHL_IDENTITY_AMBIGUOUS:match_without_email/.test(String(nRow.last_error_code)) && (await linkedOf(cN)).ghl_contact_id === null,
+    "H1 case 1: a remote record with no email is held for review, not accepted as the exact-email match");
+  behaviour.lookupMode = "normal";
+  // case 2: duplicate-400 recovery proves the exact remote record before linking
+  const cD2 = await mkContact();
+  behaviour.duplicate400For = (await contactIdentity(cD2)).email; behaviour.dupRemoteEmail = null;
+  await enqueue(cD2);
+  mark = ghlCalls.length;
+  await runWorker();
+  const d2 = (await projRows(cD2))[0];
+  check(!ghlCalls.slice(mark).some(c => c.method === "PUT") && d2.state === "terminal" && /duplicate_remote_without_email/.test(String(d2.last_error_code)) && (await linkedOf(cD2)).ghl_contact_id === null,
+    "H1 case 2: a duplicate-400 whose remote record states no email is held: no link and no update of the named record");
+  const cD3 = await mkContact();
+  behaviour.duplicate400For = (await contactIdentity(cD3)).email; behaviour.dupRemoteEmail = "someone-else@fixture.invalid";
+  await enqueue(cD3);
+  mark = ghlCalls.length;
+  await runWorker();
+  check(!ghlCalls.slice(mark).some(c => c.method === "PUT") && (await linkedOf(cD3)).ghl_contact_id === null && /duplicate_remote_other_identifier/.test(String((await projRows(cD3))[0].last_error_code)),
+    "H1 case 2: a duplicate-400 naming a record with a different email is held");
+  const cD4 = await mkContact({ phoneOnly: true });
+  behaviour.duplicate400For = null; behaviour.duplicate400Phone = (await contactIdentity(cD4)).phone;
+  await enqueue(cD4);
+  mark = ghlCalls.length;
+  await runWorker();
+  check(!ghlCalls.slice(mark).some(c => c.method === "PUT") && (await linkedOf(cD4)).ghl_contact_id === null && /duplicate_phone_requires_review/.test(String((await projRows(cD4))[0].last_error_code)),
+    "H1 case 2: a phone-only duplicate-400 is never linked");
+  await pool.query(`UPDATE contacts SET ghl_contact_id = NULL WHERE ghl_contact_id = 'remote_dup_1'`);
+  const cD5 = await mkContact();
+  behaviour.duplicate400Phone = null; behaviour.duplicate400For = (await contactIdentity(cD5)).email; behaviour.dupRemoteEmail = behaviour.duplicate400For!.toUpperCase();
+  await enqueue(cD5);
+  mark = ghlCalls.length;
+  await runWorker();
+  check((await linkedOf(cD5)).ghl_contact_id === "remote_dup_1", "H1: a duplicate-400 whose remote record states the same email (case-insensitively) is linked and updated");
+  await pool.query(`UPDATE contacts SET ghl_contact_id = NULL WHERE id=$1`, [cD5]);
+  behaviour.duplicate400For = null; behaviour.dupRemoteEmail = null;
+
+  // case 3: a true suppression travels in the first write
+  installedFields.push("lb_do_not_contact", "lb_do_not_autocontact");
+  await controlRowFn(true);
+  const cSup = await mkContact();
+  await pool.query(`UPDATE contacts SET do_not_contact=true, tags=ARRAY['promo_tag'] WHERE id=$1`, [cSup]);
+  await enqueue(cSup);
+  mark = ghlCalls.length;
+  await runWorker();
+  const firstWrites = ghlCalls.slice(mark).filter(c => c.method === "POST" || c.method === "PUT");
+  const firstCreate = firstWrites.find(c => c.method === "POST");
+  check(!!firstCreate && (firstCreate.body.customFields ?? []).some((f: any) => f.id === `cf_${installedFields.indexOf("lb_do_not_contact")}` && f.field_value === "true") && !("tags" in firstCreate.body),
+    "H3 case 3: the first create carries lb_do_not_contact=true and no tags");
+  const firstTagIdx = firstWrites.findIndex(c => Array.isArray(c.body?.tags));
+  const lastPermIdx = firstWrites.reduce((acc, c, i) => (Array.isArray(c.body?.customFields) && !Array.isArray(c.body?.tags) && c.method === "PUT" ? i : acc), -1);
+  check(firstTagIdx > lastPermIdx && firstTagIdx > 0 && firstWrites[firstTagIdx].body.tags.includes("promo_tag"),
+    "H3: tags (which can start a workflow) are written only after identity, suppression and permission writes");
+  // suppression present but permissions disabled: the whole first write is refused before any mutation
+  await controlRowFn(false);
+  const cSup2 = await mkContact();
+  await pool.query(`UPDATE contacts SET do_not_auto_contact=true WHERE id=$1`, [cSup2]);
+  await enqueue(cSup2);
+  mark = ghlCalls.length;
+  await runWorker();
+  check(mutationsSince(mark).length === 0 && (await linkedOf(cSup2)).ghl_contact_id === null && (await projRows(cSup2))[0].state !== "succeeded",
+    "H3: with permission writes disabled a suppressed contact is not created at all (no record exists without its suppression)");
+  await controlRowFn(true);
+  // case 7: a failed tag write fails the projection, local tags do not move, retry re-sends the full tag set
+  const cT = await mkContact();
+  await pool.query(`UPDATE contacts SET is_parent_account=true, tags=ARRAY['keep_me'] WHERE id=$1`, [cT]);
+  behaviour.failTagPut = true;
+  await enqueue(cT);
+  mark = ghlCalls.length;
+  await runWorker();
+  const tRow = (await projRows(cT))[0];
+  check(tRow.state === "retry" && /^GHL_COMPONENT_FAILED:tags/.test(String(tRow.last_error_code)) && !(await linkedOf(cT)).tags.includes("lb_parent_account")
+    && ghlCalls.slice(mark).some(c => c.method === "PUT" && Array.isArray(c.body?.tags) && c.body.tags.includes("lb_parent_account")),
+    "H4 case 7: a failed tag write is a failed component and the local tag set is not changed");
+  behaviour.failTagPut = false;
+  await makeDue(cT);
+  mark = ghlCalls.length;
+  await runWorker();
+  const tagPuts = ghlCalls.slice(mark).filter(c => c.method === "PUT" && Array.isArray(c.body?.tags));
+  check((await projRows(cT))[0].state === "succeeded" && tagPuts.length === 1 && tagPuts[0].body.tags.includes("keep_me") && tagPuts[0].body.tags.includes("lb_parent_account")
+    && (await linkedOf(cT)).tags.includes("lb_parent_account") && postsSince(mark).length === 0,
+    "H4: the retry re-sends the full desired tag set, then updates local tags, with no second create");
+  // missing lb_location_of is reported as a held component, not silently dropped
+  const cLoc = await mkContact();
+  await pool.query(`UPDATE contacts SET parent_contact_id=$2 WHERE id=$1`, [cLoc, cT]);
+  await enqueue(cLoc);
+  await runWorker();
+  const locReceipts = (await projRows(cLoc))[0].component_receipts;
+  check(locReceipts?.components?.tags?.state === "held" && (locReceipts.components.tags.heldKeys ?? []).includes("lb_location_of"),
+    "H4: a parent link whose lb_location_of field is not installed is reported as a held component");
+  installedFields.splice(installedFields.indexOf("lb_do_not_contact"), 2);
+  await controlRowFn(true);
+
   // 8. backlog mirrors the claimant: held and exhausted rows are not reported eligible
   await pool.query(`UPDATE contact_provider_projections SET next_attempt_at = now() + interval '1 day' WHERE state IN ('pending','retry')`);
   const cB = await mkContact();
@@ -948,6 +1085,111 @@ server.close();
   globalThis.fetch = wrapped;
   ghlResponder = defaultResponder;
   await setControl(true);
+}
+
+// ================================================================ H2: final fences at every mutation boundary
+{
+  const pushAway = (cid: number) => pool.query(`UPDATE contact_provider_projections SET next_attempt_at = now() + interval '1 day' WHERE state IN ('pending','retry') AND contact_id <> $1`, [cid]);
+  const opCount = async (cid: number) => Number((await pool.query(`SELECT count(*)::int n FROM ghl_projection_operations WHERE contact_id=$1`, [cid])).rows[0].n);
+  const c1 = await mkContact();
+  await enqueue(c1);
+  await pushAway(c1);
+  const row1 = (await authority.claimEligibleProjections(5)).find(r => r.contactId === c1)!;
+  await enqueue(c1);
+  const gens = (await projRows(c1))[0];
+  check(BigInt(gens.desired_generation) > BigInt(gens.claimed_generation), "H2: an edit committed after the claim raises desired_generation above the claimed generation");
+  check(!await authority.beginProjectionOperation(row1, { operationId: randomUUID(), operationClass: "contact_update", method: "PUT" }) && (await opCount(c1)) === 0,
+    "H2: a claim for a stale generation is refused before any new mutation and records no operation");
+  await pool.query(`UPDATE contact_provider_projections SET lease_expires_at = now() - interval '1 second' WHERE id=$1`, [row1.id]);
+  check(!await authority.settleProjection(row1, { kind: "success", receipts: {} }) && (await projRows(c1))[0].state === "processing",
+    "H2: a worker whose lease expired cannot settle the row");
+  check(!await authority.clearProjectionAmbiguity(row1), "H2: an expired claim cannot clear an ambiguity");
+  check(!await authority.linkReconciledIdentity(row1, `ghl_${run}_late_link`) && (await pool.query(`SELECT ghl_contact_id FROM contacts WHERE id=$1`, [c1])).rows[0].ghl_contact_id === null,
+    "H2: a reconciled identity is not linked by an expired claim");
+  await pool.query(`UPDATE contact_provider_projections SET state='retry', claim_token=NULL, lease_expires_at=NULL, claimed_generation=NULL, next_attempt_at = now() + interval '1 day' WHERE id=$1`, [row1.id]);
+
+  // runtime ownership lost between two mutations of one row: the second request is never sent
+  const c2 = await mkContact();
+  await enqueue(c2);
+  await pushAway(c2);
+  let asserts = 0, requests = 0;
+  let thrown: any = null;
+  await sync.processEligibleContactProjections(5, {
+    assertOwnership: async () => { asserts++; if (asserts >= 3) throw new Error("GHL_SYNC_RUNTIME_LEASE_LOST"); },
+    syncFn: async (id) => {
+      if (id !== c2) return syncOk();
+      for (let i = 0; i < 2; i++) { const settle = await recorder.markGhlDispatch("PUT", "/contacts/abc", {}); requests++; await settle("ok"); }
+      return { success: true };
+    },
+  }).catch(e => { thrown = e; });
+  const r2 = (await projRows(c2))[0];
+  check(thrown?.message === "GHL_SYNC_RUNTIME_LEASE_LOST" && requests === 1 && r2.state === "retry" && Number(r2.attempt_count) === 0 && r2.last_error_code === "GHL_RUNTIME_OWNERSHIP_LOST_PARTIAL",
+    "H2: runtime ownership is re-verified before every mutation; losing it mid-row sends nothing further, spends no attempt and stops the batch");
+
+  // a recorded operation that never reported an outcome blocks a success claim
+  const c3 = await mkContact();
+  await enqueue(c3);
+  await pushAway(c3);
+  await sync.processEligibleContactProjections(5, {
+    syncFn: async (id) => {
+      if (id !== c3) return syncOk();
+      await recorder.markGhlDispatch("PUT", "/contacts/abc", {});
+      return { success: true };
+    },
+  });
+  const r3 = (await projRows(c3))[0];
+  check(r3.state !== "succeeded" && r3.dispatch_state === "ambiguous", "H2: an unsettled provider operation is read as ambiguous, never as success");
+}
+
+// ================================================================ H7: one authority rule for linked contacts, drift and convergence
+{
+  const { classifyExportDisposition } = authority;
+  const base = { recordClass: "unknown", archived: false, hasGhlContactId: true, localOnlyFence: false, currentIntakeEvidence: false };
+  check(classifyExportDisposition({ ...base, existingOpenDisposition: null }).disposition === "historical_hold"
+    && classifyExportDisposition({ ...base, existingOpenDisposition: "linked_update" }).disposition === "historical_hold"
+    && classifyExportDisposition({ ...base, currentIntakeEvidence: true, existingOpenDisposition: null }).disposition === "linked_update",
+    "H7: a linked contact is exportable only with current-intake evidence, independent of whether an open row exists");
+  const cLink = await mkContact({ intake: false, ghl: `ghl_${run}_hist` });
+  const eLink = await enqueue(cLink);
+  check(eLink.disposition === "historical_hold" && !(await claimable([cLink])), "H7: an edit to a linked historical contact is held, not exported");
+  const cLink2 = await mkContact({ ghl: `ghl_${run}_cur` });
+  check((await enqueue(cLink2)).disposition === "linked_update" && await claimable([cLink2]), "H7: a linked contact with current-intake evidence is a linked update and is claimable");
+
+  // a pre-fix producer changed source_kind / dispatch history of an evidence-free exportable row
+  const cDrift = await mkContact({ intake: false });
+  await pool.query(
+    `INSERT INTO contact_provider_projections(contact_id,provider,projection_key,state,authority_version,export_disposition,source_kind,dispatch_count,next_attempt_at)
+     VALUES($1,'ghl',$2,'pending',1,'current_intake','background_update',3, now() - interval '1 second')`, [cDrift, `drift:${cDrift}`]);
+  check(!(await claimable([cDrift])), "H7: final eligibility proves authority: an exportable disposition without evidence is not claimable");
+  check(await convergence.projectionConvergenceNeeded(), "H7: evidence-free exportable rows are detected as convergence work");
+  await convergence.convergeLegacyProjectionRows();
+  const drift = (await projRows(cDrift))[0];
+  check(drift.export_disposition === "historical_hold" && drift.state === "pending" && Number(drift.dispatch_count) === 3,
+    "H7: the reconcile returns the row to the hold whatever its source_kind/dispatch history, preserving the row");
+
+  // runtime dedupe: a live lease outranks an authoritative row; operation linkage follows the survivor; other providers untouched
+  const cDup = await mkContact();
+  const legacyId = (await pool.query(
+    `INSERT INTO contact_provider_projections(contact_id,provider,projection_key,state,claim_token,lease_expires_at,created_at)
+     VALUES($1,'ghl',$2,'processing',$3,now() + interval '10 minutes', now() - interval '2 days') RETURNING id`, [cDup, `legacy:${cDup}:live`, randomUUID()])).rows[0].id;
+  const authId = (await pool.query(
+    `INSERT INTO contact_provider_projections(contact_id,provider,projection_key,state,authority_version,export_disposition,dispatch_state,next_attempt_at)
+     VALUES($1,'ghl',$2,'retry',1,'current_intake','ambiguous', now() + interval '1 day') RETURNING id`, [cDup, `contact:${cDup}:auth`])).rows[0].id;
+  const opId = randomUUID();
+  await pool.query(`INSERT INTO ghl_projection_operations(id,projection_id,contact_id,operation_class,method,state,identity) VALUES($1,$2,$3,'contact_create','POST','ambiguous',$4::jsonb)`,
+    [opId, authId, cDup, JSON.stringify({ email: "orig@fixture.invalid", phone: null })]);
+  const otherId = (await pool.query(
+    `INSERT INTO contact_provider_projections(contact_id,provider,projection_key,state) VALUES($1,'other_cert',$2,'pending') RETURNING id`, [cDup, `other:${cDup}`])).rows[0].id;
+  await convergence.convergeLegacyProjectionRows();
+  const live = (await pool.query(`SELECT state, authority_version, claim_token, lease_expires_at, dispatch_state FROM contact_provider_projections WHERE id=$1`, [legacyId])).rows[0];
+  const sup = (await pool.query(`SELECT state, superseded_by FROM contact_provider_projections WHERE id=$1`, [authId])).rows[0];
+  const opRow = (await pool.query(`SELECT projection_id, identity FROM ghl_projection_operations WHERE id=$1`, [opId])).rows[0];
+  const other = (await pool.query(`SELECT state, authority_version FROM contact_provider_projections WHERE id=$1`, [otherId])).rows[0];
+  check(live.state === "processing" && live.claim_token !== null && live.authority_version === 1 && live.dispatch_state === "ambiguous"
+    && sup.state === "superseded" && sup.superseded_by === legacyId,
+    "H7: a live lease is never superseded by adoption; the survivor inherits the uncertainty");
+  check(opRow.projection_id === legacyId && opRow.identity.email === "orig@fixture.invalid", "H7: an unresolved operation keeps its original identity and follows the surviving row");
+  check(other.state === "pending" && other.authority_version === null, "H7: convergence never touches another provider's rows");
 }
 
 // ================================================================ H5/H6: durable webhook effects and appointment serialization

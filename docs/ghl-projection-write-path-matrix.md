@@ -28,11 +28,17 @@ listed so each lane has exactly one owner. Nothing here changes native GHL confi
 
 | Disposition | Exportable | Notes |
 |---|---|---|
-| current_intake, linked_update | yes | new desired state on a contact without / with a GHL id |
-| historical_hold | no | open work created before 2026-10-23T04:00Z; waits for an explicit owner-scope release (activation prerequisite) |
+| current_intake, linked_update | yes, only while the contact has current-intake evidence | new desired state on a contact without / with a GHL id. Final eligibility re-proves the evidence, so a persisted disposition alone never authorizes export |
+| historical_hold | no | no current-intake evidence (linked or not). Waits for an explicit, optional owner-scope release; current intake does not depend on it |
 | local_only | no | pipeline local-only fence; never reopened |
 | test_local_only | no | record class test/demo/synthetic; also rechecked at claim time and in `syncContactToGhl` |
 | closed | no | archived or missing contact |
+
+Linked-contact policy: a contact that already has a `ghlContactId` but no current-intake evidence is historical; its
+edits are held exactly like any other historical contact, whether or not an open row exists. Evidence is a source event of
+category website_form, partner_referral, merchant_application or manual_crm on or after `ghl_export_policy.currentIntakeSince`.
+Runtime convergence returns any open exportable row without evidence to the hold, whatever its `source_kind` or dispatch
+history, and never touches rows a worker currently leases or another provider's rows.
 
 Rows that must never reopen: `pipeline_local_only`, `superseded_by_merge`, `DISPATCH_AMBIGUOUS_UNRESOLVED`.
 `enqueueContactProjection` reports these as `not_exported` instead of throwing.
@@ -48,9 +54,15 @@ Rows that must never reopen: `pipeline_local_only`, `superseded_by_merge`, `DISP
 | `fullSyncToGhl` | no | retired no-op | cannot create records |
 | Delete detection | yes | deletes stay disabled | |
 
-Ambiguous creates (response lost on POST): never retried blindly. The next claim reconciles with a read-only lookup by
-email: found → link and continue as an update; absent → one new create; lookup failure → deferred. Unresolved
-ambiguity ends in terminal `DISPATCH_AMBIGUOUS_UNRESOLVED` after the budget.
+Components per contact, in order: (1) identity + profile + any true suppression, (2) permissions, (3) tags and
+parent/pipeline fields. Tags are never part of the first write. A failed tag write fails the projection (local tags change
+only after provider success) and a missing `lb_location_of` is reported as a held component.
+
+Ambiguous creates (response lost on POST): never retried blindly. The next claim reconciles with a read-only lookup using
+the identity pinned on the original create: an email-bearing create is linked only to a record stating the same email;
+phone-only creates and records without an email are held for review; absent → one new create; an unsupported lookup
+answer or a failed lookup → deferred. Every fence (runtime ownership, claim, lease, generation) is re-checked before the
+link is written. Unresolved ambiguity ends in terminal `DISPATCH_AMBIGUOUS_UNRESOLVED` after the budget.
 
 A payload that names a custom field the provider inventory does not verify (`GHL_CUSTOM_FIELD_ID_UNVERIFIED`) defers
 for 15 minutes with code `GHL_CUSTOM_FIELD_CONTRACT_BLOCKED`, consumes no budget, and is never weakened.
@@ -79,11 +91,23 @@ processing → 409; duplicate of an applied event → 200 without reprocessing. 
 - Installed custom fields (nine): lb_consent_email, lb_consent_sms, lb_do_not_sdr, lb_promo_code, lb_pain_points,
   lb_lead_source, external_contact_id, lead_score, contact_role.
 - `ghl.ts` can also emit vertical, lb_vertical, monthly_volume, lb_monthly_volume, lb_current_processor and
-  lb_partner_code when a contact has values. These are not installed, so such contacts wait under
-  `GHL_CUSTOM_FIELD_CONTRACT_BLOCKED` until the fields are installed or the payload contract changes.
+  lb_partner_code when a contact has values. Optional profile fields that are not installed are recorded as held and
+  omitted; they do not block the contact. Only a required suppression field, or a payload naming a field whose id the
+  provider inventory does not verify, defers the projection.
 - Pipeline stage mappings are empty; opportunity and stage holds never block contact projection.
 - Calendars (appointment reader selection): Sales Meeting `YFiIy7oIOUXN2qZZPnOr`, Callbacks `e96swr0hmZSJVdnfGwCd`.
   Appointment recording does not read or change the booking-link configuration.
+
+## Webhook effect idempotency
+
+Receipt identity is a location-scoped occurrence key (legacy keys still resolve); `webhookId` alone is not an event
+identity. The same occurrence key with a different payload is adopted only before any durable effect exists, otherwise it
+is a held collision (409). Handlers split into steps record each local effect in the same transaction as its step and
+each external effect as a leased step with a stable key, so a settlement fault or crash retries only the unfinished step
+(an external step that already reached the provider but whose marker was lost can repeat once; its callee must be
+idempotent). Handlers that are not split remain at-least-once. Appointment booked/updated/canceled are serialized per
+appointment; the booked effect has its own owner and never regresses a later state; effects superseded by a later
+accepted terminal transition do not run.
 
 ## Certification
 
@@ -94,8 +118,10 @@ fatal). Run: `npx tsx scripts/run-sfp2060-predeploy-disposable.ts --only scripts
 
 - Every provider mutation passes the final fence and appends a `ghl_projection_operations` row before the request; the
   transport recorder hooks (`ghl-dispatch-recorder.ts`) enforce this for retries too.
-- Export authority is evidence only (intake source events on or after the cutoff). Producers do not decide it.
+- Export authority is evidence only (intake source events on or after the cutoff). Producers do not decide it, and the
+  claim query, final fence and backlog counts all prove it.
 - Lookup before create is `lookupGhlContactStrict`; the reconciler of ambiguous creates uses the identity pinned on the
   original create operation.
-- Webhook receipt identity is the stable occurrence key; effect-applied is recorded before the acknowledgement.
+- Webhook receipt identity is the stable occurrence key; there is no response-time effect marker (see Webhook effect
+  idempotency). Migration 0376 adds effect-step and appointment-booked ownership storage and needs a publish.
 - Owner-facing approval material: `docs/ghl-native-safety-approval-package.md`.

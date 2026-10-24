@@ -60,15 +60,15 @@ export function classifyExportDisposition(facts: ExportFacts): { disposition: Ex
       ? { disposition: "linked_update", reason: "linked_contact_with_current_intake" }
       : { disposition: "current_intake", reason: "current_intake_evidence" };
   }
+  // Policy: export authority is current-intake evidence and nothing else. A contact that is already linked to a GHL
+  // record but has no current-intake evidence is historical: ordinary edits to it are held like any other
+  // historical contact until the owner scopes a release. This never depends on whether an open row exists.
   const existing = facts.existingOpenDisposition ?? null;
-  if (existing === "current_intake" || existing === "linked_update") {
-    return { disposition: existing, reason: "existing_exportable_projection_preserved" };
-  }
   if (existing === "historical_hold" || existing === "unclassified") {
     return { disposition: "historical_hold", reason: "existing_historical_hold_preserved" };
   }
   return facts.hasGhlContactId
-    ? { disposition: "linked_update", reason: "linked_contact_changed" }
+    ? { disposition: "historical_hold", reason: "linked_without_current_intake" }
     : { disposition: "historical_hold", reason: "no_current_intake_evidence" };
 }
 
@@ -206,6 +206,7 @@ export async function enqueueContactProjection(
  */
 export const EXPORT_ELIGIBLE_SQL = `p.authority_version IS NOT NULL
         AND p.export_disposition IN ('current_intake', 'linked_update')
+        AND ${ghlIntakeEvidenceSql("p.contact_id")}
         AND c.record_class NOT IN ('test', 'demo', 'synthetic')
         AND c.archived_at IS NULL
         AND NOT EXISTS (SELECT 1 FROM contact_provider_projections f
@@ -299,7 +300,8 @@ export interface ProjectionOperationRecord {
 /**
  * Final dispatch fence plus durable operation record, in one statement, immediately before every provider mutation
  * (including transport retries). It succeeds only while this worker still holds the claim with an unexpired lease,
- * for the claimed generation, and the contact is still export-eligible; it extends the lease and appends the
+ * for the claimed generation, no newer desired generation has been committed (a stale intent never makes a new
+ * mutation; the next claim reads current data), and the contact is still export-eligible; it extends the lease and appends the
  * operation row in the same atomic step. A false result means no request may be sent.
  */
 export async function beginProjectionOperation(row: ClaimedProjection, op: ProjectionOperationRecord): Promise<boolean> {
@@ -310,6 +312,7 @@ export async function beginProjectionOperation(row: ClaimedProjection, op: Proje
        FROM contacts c
        WHERE p.id = $1 AND p.claim_token = $2 AND p.state = 'processing'
          AND p.claimed_generation = $3 AND p.lease_expires_at > now()
+         AND p.desired_generation <= p.claimed_generation
          AND c.id = p.contact_id AND ${EXPORT_ELIGIBLE_SQL}
        RETURNING p.id, p.contact_id
      )
@@ -378,7 +381,10 @@ export type ProjectionSettlement =
  * fresh failure budget instead of completing it.
  */
 export async function settleProjection(row: ClaimedProjection, outcome: ProjectionSettlement): Promise<boolean> {
-  const where = sql`id = ${row.id} AND claim_token = ${row.claimToken} AND state = 'processing'`;
+  // The claim must still be live: a worker whose lease expired may not settle (the row is reclaimed and any
+  // reserved-but-unsettled dispatch is then treated as ambiguous).
+  const where = sql`id = ${row.id} AND claim_token = ${row.claimToken} AND state = 'processing'
+    AND claimed_generation = ${row.claimedGeneration} AND lease_expires_at > now()`;
   let result: any;
   switch (outcome.kind) {
     case "success":
@@ -462,11 +468,37 @@ export async function settleProjection(row: ClaimedProjection, outcome: Projecti
 }
 
 /** Clear an unresolved ambiguity after a read-only reconciliation proved the remote identity state. */
-export async function clearProjectionAmbiguity(row: ClaimedProjection): Promise<void> {
-  await pool.query(
+export async function clearProjectionAmbiguity(row: ClaimedProjection): Promise<boolean> {
+  const result = await pool.query(
     `UPDATE contact_provider_projections SET dispatch_state = 'none', dispatch_operation_id = NULL, updated_at = now()
-     WHERE id = $1 AND claim_token = $2 AND state = 'processing'`,
+     WHERE id = $1 AND claim_token = $2 AND state = 'processing'
+       AND claimed_generation = $3 AND lease_expires_at > now()`,
+    [row.id, row.claimToken, row.claimedGeneration]);
+  return (result.rowCount ?? 0) === 1;
+}
+
+/**
+ * Links a reconciled remote identity under the final claim fence, in one statement: the contact is updated only
+ * while this worker still holds an unexpired claim for the claimed generation.
+ */
+export async function linkReconciledIdentity(row: ClaimedProjection, ghlContactId: string): Promise<boolean> {
+  const result = await pool.query(
+    `UPDATE contacts c SET ghl_contact_id = $4, updated_at = now()
+     FROM contact_provider_projections p
+     WHERE c.id = $5 AND c.ghl_contact_id IS NULL
+       AND p.id = $1 AND p.claim_token = $2 AND p.state = 'processing'
+       AND p.claimed_generation = $3 AND p.lease_expires_at > now()
+     RETURNING c.id`,
+    [row.id, row.claimToken, row.claimedGeneration, ghlContactId, row.contactId]);
+  return (result.rowCount ?? 0) === 1;
+}
+
+/** True when a provider operation recorded for this claim never reported an outcome (read as ambiguous). */
+export async function hasUnsettledOperation(row: ClaimedProjection): Promise<boolean> {
+  const r = await pool.query(
+    `SELECT 1 FROM ghl_projection_operations WHERE projection_id = $1 AND claim_token = $2::uuid AND state = 'reserved' LIMIT 1`,
     [row.id, row.claimToken]);
+  return (r.rowCount ?? 0) > 0;
 }
 
 /**

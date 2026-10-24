@@ -1,10 +1,11 @@
 /**
  * Idempotent data convergence for legacy contact_provider_projections rows.
  *
- * The same statements are embedded verbatim in migration 0374 (clean apply and
- * upgrade-with-duplicates). Publish delivers schema but not migration data
- * steps, so the full tick also runs them (cheaply, only when work remains).
- * A test asserts the migration file contains each statement unchanged.
+ * GHL_PROJECTION_CONVERGENCE_STATEMENTS are embedded verbatim in applied migration 0374 and are never edited.
+ * The runtime loop runs GHL_RUNTIME_RECONCILE_STATEMENTS instead (the same classification statement, a corrected
+ * dedupe, and an authority reconcile); the legacy creation-time correction is applied by migration 0375 only and is
+ * subsumed at runtime by the authority reconcile. Publish delivers schema, not data steps, so the full tick runs
+ * the loop (cheaply, only when work remains).
  *
  * Nothing is deleted. Duplicate open rows become `superseded` evidence that
  * points at the surviving row; export disposition is a persisted, reasoned
@@ -110,6 +111,75 @@ WHERE p.provider = 'ghl'
       AND e.source_category IN ('website_form', 'partner_referral', 'merchant_application', 'manual_crm')
       AND e.created_at >= ${GHL_INTAKE_CUTOFF_SQL})`;
 
+/**
+ * Runtime-only reconciliation (migration 0374 is applied history and is never rewritten; the two statements above
+ * stay byte-identical to it so clean-apply and runtime cannot drift).
+ *
+ * DEDUPE_V2 replaces statement 2 at runtime. Differences, each a defect of the applied version:
+ *  - a live lease ranks first, so adoption never supersedes work a worker is executing;
+ *  - a row with a live lease is never superseded; if two live leases exist for one contact the group is left alone;
+ *  - every provider operation record of a superseded row is re-pointed at the survivor, so an unresolved create's
+ *    original identity stays reachable for ambiguity recovery.
+ * Statement 3 reconciles authority of EVERY open exportable row: an exportable disposition without current-intake
+ * evidence is returned to the historical hold whatever its source_kind or dispatch history. Rows in processing are
+ * not touched here (a worker owns them; the final eligibility predicate also proves evidence, so they cannot dispatch).
+ */
+export const GHL_RUNTIME_DEDUPE_STATEMENT = `WITH batch AS (
+  SELECT DISTINCT contact_id FROM contact_provider_projections
+  WHERE provider = 'ghl' AND state IN ('pending', 'retry', 'processing') AND authority_version IS NULL
+  ORDER BY contact_id LIMIT $1
+), ranked AS (
+  SELECT p.id, p.contact_id,
+         row_number() OVER w AS rn,
+         first_value(p.id) OVER w AS survivor,
+         bool_or(p.dispatch_state IN ('reserved', 'ambiguous')) OVER (PARTITION BY p.contact_id, p.provider) AS any_uncertain,
+         count(*) FILTER (WHERE p.state = 'processing' AND p.lease_expires_at > now()) OVER (PARTITION BY p.contact_id, p.provider) AS live_leases
+  FROM contact_provider_projections p
+  WHERE p.provider = 'ghl' AND p.state IN ('pending', 'retry', 'processing')
+    AND p.contact_id IN (SELECT contact_id FROM batch)
+  WINDOW w AS (PARTITION BY p.contact_id, p.provider
+               ORDER BY (p.state = 'processing' AND p.lease_expires_at > now()) DESC,
+                        (p.dispatch_state IN ('reserved', 'ambiguous')) DESC,
+                        (p.authority_version IS NOT NULL) DESC,
+                        p.created_at DESC, p.id DESC)
+), actionable AS (
+  SELECT * FROM ranked WHERE live_leases <= 1
+), moved AS (
+  UPDATE ghl_projection_operations o SET projection_id = a.survivor
+  FROM actionable a WHERE a.rn > 1 AND o.projection_id = a.id
+  RETURNING o.id
+)
+UPDATE contact_provider_projections p
+SET state = CASE WHEN a.rn = 1 THEN p.state ELSE 'superseded' END,
+    authority_version = CASE WHEN a.rn = 1 THEN 1 ELSE p.authority_version END,
+    terminal_reason = CASE WHEN a.rn = 1 THEN p.terminal_reason ELSE 'superseded_duplicate' END,
+    superseded_by = CASE WHEN a.rn = 1 THEN NULL ELSE a.survivor END,
+    superseded_at = CASE WHEN a.rn = 1 THEN NULL ELSE now() END,
+    claim_token = CASE WHEN a.rn = 1 THEN p.claim_token ELSE NULL END,
+    lease_expires_at = CASE WHEN a.rn = 1 THEN p.lease_expires_at ELSE NULL END,
+    dispatch_state = CASE WHEN a.rn = 1 AND a.any_uncertain AND p.dispatch_state = 'none' THEN 'ambiguous' ELSE p.dispatch_state END,
+    completed_at = CASE WHEN a.rn = 1 THEN p.completed_at ELSE now() END,
+    updated_at = now()
+FROM actionable a
+WHERE p.id = a.id AND (a.rn > 1 OR p.authority_version IS NULL)`;
+
+export const GHL_AUTHORITY_RECONCILE_STATEMENT = `UPDATE contact_provider_projections p
+SET export_disposition = 'historical_hold',
+    export_reason = 'no_current_intake_evidence',
+    updated_at = now()
+WHERE p.id IN (
+  SELECT x.id FROM contact_provider_projections x
+  WHERE x.provider = 'ghl' AND x.state IN ('pending', 'retry')
+    AND x.export_disposition IN ('current_intake', 'linked_update')
+    AND NOT ${ghlIntakeEvidenceSql("x.contact_id")}
+  ORDER BY x.id LIMIT $1)`;
+
+export const GHL_RUNTIME_RECONCILE_STATEMENTS: readonly string[] = [
+  GHL_PROJECTION_CONVERGENCE_STATEMENTS[0],
+  GHL_RUNTIME_DEDUPE_STATEMENT,
+  GHL_AUTHORITY_RECONCILE_STATEMENT,
+];
+
 export const GHL_CONVERGENCE_BATCH_SIZE = 500;
 export const GHL_CONVERGENCE_MAX_BATCHES_PER_RUN = 20;
 
@@ -119,7 +189,9 @@ export async function projectionConvergenceNeeded(): Promise<boolean> {
        SELECT 1 FROM contact_provider_projections
        WHERE provider = 'ghl'
          AND (export_disposition = 'unclassified'
-              OR (state IN ('pending', 'retry', 'processing') AND authority_version IS NULL))
+              OR (state IN ('pending', 'retry', 'processing') AND authority_version IS NULL)
+              OR (state IN ('pending', 'retry') AND export_disposition IN ('current_intake', 'linked_update')
+                  AND NOT ${ghlIntakeEvidenceSql("contact_provider_projections.contact_id")}))
      ) AS needed`,
   );
   return result.rows[0]?.needed === true;
@@ -145,7 +217,7 @@ export async function convergeLegacyProjectionRows(): Promise<{ ran: boolean; ba
         return { ran: batches > 0, batches, remaining: true };
       }
       let touched = 0;
-      for (const statement of GHL_PROJECTION_CONVERGENCE_STATEMENTS) {
+      for (const statement of GHL_RUNTIME_RECONCILE_STATEMENTS) {
         const result = await client.query(statement, [GHL_CONVERGENCE_BATCH_SIZE]);
         touched += result.rowCount ?? 0;
       }
