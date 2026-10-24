@@ -3,9 +3,43 @@ import { Button } from "@/components/ui/button";
 import { CheckCircle2, AlertCircle, RefreshCw } from "lucide-react";
 import type { Contact } from "@shared/schema";
 
+type ReceiptLevel = "recorded_locally" | "waiting" | "processing" | "provider_accepted" | "held" | "ambiguous" | "failed" | "not_applicable";
+
+export interface ContactProjectionStatus {
+  present: boolean;
+  receiptLevel: ReceiptLevel;
+  state: string | null;
+  exportDisposition: string | null;
+  exportReason: string | null;
+  desiredGeneration: number | null;
+  settledGeneration: number | null;
+  attemptCount: number | null;
+  deferralCount: number | null;
+  dispatchState: string | null;
+  lastDispatchAt: string | null;
+  nextAttemptAt: string | null;
+  lastErrorCode: string | null;
+  terminalReason: string | null;
+  componentReceipts: Record<string, { attempted?: number; ok?: number; failed?: number; ambiguous?: number; lastHttpStatus?: number | null }>;
+}
+
+export const PROJECTION_LEVEL_LABELS: Record<ReceiptLevel, { label: string; detail: string }> = {
+  recorded_locally: { label: "Recorded locally", detail: "Saved in Liberty and queued; no GHL request has been made yet." },
+  waiting: { label: "Waiting", detail: "Queued for a later attempt (deferred or scheduled retry); nothing has been confirmed by GHL." },
+  processing: { label: "Processing", detail: "A worker currently holds this contact." },
+  provider_accepted: { label: "Provider accepted", detail: "GHL accepted the request. This is not a read-back verification." },
+  held: { label: "Held", detail: "Not exported: outside the current export scope, local-only, or test data." },
+  ambiguous: { label: "Needs reconciliation", detail: "A create request may have reached GHL without a recorded response; it will not be repeated blindly." },
+  failed: { label: "Failed (terminal)", detail: "Retries are exhausted or the contact cannot be exported." },
+  not_applicable: { label: "No projection recorded", detail: "No GHL export is queued for this contact." },
+};
+
 interface Props {
   contact: Contact;
-  ghlSyncStatus?: { isSynced?: boolean; isRecent?: boolean; ghlContactId?: string | null; lastSyncedAt?: string | null };
+  ghlSyncStatus?: {
+    isSynced?: boolean; isRecent?: boolean; ghlContactId?: string | null; lastSyncedAt?: string | null;
+    projection?: ContactProjectionStatus | null;
+  };
   resyncToGhlMutation: { mutate: () => void; isPending: boolean };
 }
 
@@ -30,7 +64,7 @@ export function GhlSyncStatus({ contact, ghlSyncStatus, resyncToGhlMutation }: P
         </Badge>
         {ghlId && (
           <span className="ml-2 text-xs text-muted-foreground font-mono" data-testid="text-ghl-contact-id">
-            {ghlId}
+            GHL contact ID (provider identity, not a business assignment): {ghlId}
           </span>
         )}
         {lastSyncedAt && (
@@ -50,9 +84,48 @@ export function GhlSyncStatus({ contact, ghlSyncStatus, resyncToGhlMutation }: P
         <RefreshCw className={`h-3.5 w-3.5 mr-1 ${resyncToGhlMutation.isPending ? "animate-spin" : ""}`} />
         Re-sync to GHL
       </Button>
+      <ProjectionReceipts projection={ghlSyncStatus?.projection} loaded={!!ghlSyncStatus} />
       <p id="ghl-write-hold-reason" className="basis-full text-xs">
         Writes to GHL are unavailable: synchronization is incoming-only. This does not pause incoming synchronization.
       </p>
+    </div>
+  );
+}
+
+function ProjectionReceipts({ projection, loaded }: { projection?: ContactProjectionStatus | null; loaded: boolean }) {
+  if (!loaded || projection === undefined || projection === null) {
+    return (
+      <p className="basis-full text-xs text-muted-foreground" data-testid="text-projection-unavailable">
+        Outgoing export state is unavailable (unknown). It is not shown as healthy or empty.
+      </p>
+    );
+  }
+  const level = PROJECTION_LEVEL_LABELS[projection.receiptLevel];
+  const receipts = Object.entries(projection.componentReceipts ?? {});
+  return (
+    <div className="basis-full space-y-1 text-xs" data-testid="section-projection-receipts">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-medium">Outgoing export:</span>
+        <Badge variant="secondary" className="whitespace-normal" data-testid="badge-projection-level">{level.label}</Badge>
+        {projection.exportDisposition && <span className="text-muted-foreground">scope: {projection.exportDisposition.replace(/_/g, " ")}</span>}
+      </div>
+      <p className="text-muted-foreground">{level.detail}</p>
+      {projection.present && (
+        <p className="text-muted-foreground" data-testid="text-projection-counters">
+          Generation {projection.settledGeneration ?? "?"} of {projection.desiredGeneration ?? "?"} applied; provider attempts {projection.attemptCount ?? "?"};
+          local deferrals {projection.deferralCount ?? "?"}
+          {projection.nextAttemptAt && ["waiting", "recorded_locally"].includes(projection.receiptLevel) ? `; next attempt ${new Date(projection.nextAttemptAt).toLocaleString()}` : ""}
+          {projection.lastErrorCode ? `; last reason ${projection.lastErrorCode}` : ""}
+          {projection.terminalReason ? `; terminal reason ${projection.terminalReason}` : ""}.
+        </p>
+      )}
+      {receipts.length > 0 && (
+        <ul className="text-muted-foreground" data-testid="list-projection-component-receipts">
+          {receipts.map(([name, r]) => (
+            <li key={name}>{name.replace(/_/g, " ")}: {r.ok ?? 0} accepted, {r.failed ?? 0} rejected, {r.ambiguous ?? 0} unconfirmed</li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

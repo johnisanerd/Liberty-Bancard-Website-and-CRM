@@ -80,6 +80,13 @@ interface SyncTruth {
       lastEntityType: string | null;
       lastReason: string | null;
     } | null;
+    exportBacklog?: {
+      eligiblePending: number; eligibleRetryDue: number; eligibleRetryWaiting: number; processing: number;
+      heldHistorical: number; localOnlyOrTest: number; ambiguous: number; terminal: number; succeeded: number;
+      deferralsTotal: number; oldestEligibleAt: string | null; oldestHeldAt: string | null; asOf: string;
+    } | null;
+    lastTick?: { at?: string; outcome?: string; reason?: string; error?: string | null; circuitState?: string } | null;
+    exportPolicy?: { currentIntakeSince: string | null; legacyPhases: Record<string, boolean> | null } | null;
     errors: Record<string, string | null> | null;
   } | null;
 }
@@ -195,7 +202,7 @@ export function GhlSyncControlCard({ canControl, summaryOnly = false }: { canCon
               )}
             </CardTitle>
             <CardDescription className="mt-1">
-              Dedicated CRM sync control and runtime evidence. This does not pause outbound messaging.
+              Outgoing CRM export control and runtime evidence. This does not pause outbound messaging, and a connected badge elsewhere does not mean this worker is running; incoming sync is controlled separately.
             </CardDescription>
           </div>
           {truthQuery.isFetching && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-label="Refreshing sync truth" />}
@@ -231,7 +238,8 @@ export function GhlSyncControlCard({ canControl, summaryOnly = false }: { canCon
         )}
 
         {!summaryOnly && control && canControl && (
-          <div className="grid gap-3 rounded-md border p-3 sm:grid-cols-2" data-testid="section-ghl-sync-control">
+          <div className="grid gap-3 rounded-md border p-3 sm:grid-cols-2" data-testid="section-ghl-sync-control" role="group" aria-label="Outgoing CRM export controls">
+            <div className="text-sm font-semibold sm:col-span-2">Outgoing CRM export (separate from incoming sync)</div>
             <div className="flex items-center justify-between gap-3">
               <div>
                 <div className="text-sm font-medium">CRM sync</div>
@@ -378,6 +386,40 @@ export function GhlSyncControlCard({ canControl, summaryOnly = false }: { canCon
                   ) : <p className="text-sm text-muted-foreground">Deferred-work evidence is unavailable (unknown).</p>}
                 </div>
               )}
+              {truth.runtime && (
+                <div className="mt-3 rounded-md border p-3" data-testid="section-ghl-export-backlog">
+                  <div className="mb-2 text-sm font-medium">Outgoing contact export</div>
+                  {truth.runtime.exportBacklog ? (
+                    <>
+                      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                        <TruthValue label="Eligible, waiting to run" value={truth.runtime.exportBacklog.eligiblePending + truth.runtime.exportBacklog.eligibleRetryDue} />
+                        <TruthValue label="Scheduled retry" value={truth.runtime.exportBacklog.eligibleRetryWaiting} />
+                        <TruthValue label="Processing" value={truth.runtime.exportBacklog.processing} />
+                        <TruthValue label="Needs reconciliation" value={truth.runtime.exportBacklog.ambiguous} />
+                        <TruthValue label="Held (outside export scope)" value={truth.runtime.exportBacklog.heldHistorical} />
+                        <TruthValue label="Local-only or test (never exported)" value={truth.runtime.exportBacklog.localOnlyOrTest} />
+                        <TruthValue label="Terminal" value={truth.runtime.exportBacklog.terminal} />
+                        <TruthValue label="Provider accepted" value={truth.runtime.exportBacklog.succeeded} />
+                        <TruthValue label="Oldest eligible" value={showTime(truth.runtime.exportBacklog.oldestEligibleAt)} />
+                        <TruthValue label="Oldest held" value={showTime(truth.runtime.exportBacklog.oldestHeldAt)} />
+                        <TruthValue label="Total local deferrals" value={truth.runtime.exportBacklog.deferralsTotal} />
+                        <TruthValue label="Counts as of" value={showTime(truth.runtime.exportBacklog.asOf)} />
+                      </div>
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        Held contacts are not exported until an owner-approved export scope releases them. Counts cover every projection row, including test and local-only contacts, and are a point-in-time read, not a live feed.
+                      </p>
+                    </>
+                  ) : <p className="text-sm text-muted-foreground">Export backlog evidence is unavailable (unknown).</p>}
+                  {truth.runtime.lastTick ? (
+                    <p className="mt-2 text-xs text-muted-foreground" data-testid="text-ghl-last-tick">
+                      Last worker pass: {showTime(truth.runtime.lastTick.at)} — {valueOrUnknown(truth.runtime.lastTick.outcome)}
+                      {truth.runtime.lastTick.reason ? ` (${truth.runtime.lastTick.reason.replace(/_/g, " ")})` : ""}
+                      {truth.runtime.lastTick.circuitState ? `; circuit ${truth.runtime.lastTick.circuitState}` : ""}
+                      {truth.runtime.lastTick.error ? `; error ${truth.runtime.lastTick.error}` : ""}.
+                    </p>
+                  ) : <p className="mt-2 text-xs text-muted-foreground">No worker pass has been recorded (unknown, not healthy).</p>}
+                </div>
+              )}
               {truth.runtime?.errors && Object.entries(truth.runtime.errors).some(([, error]) => error) && (
                 <div className="mt-3 rounded-md border border-amber-300 p-3">
                   <div className="mb-1 text-sm font-medium">Runtime evidence errors</div>
@@ -417,6 +459,18 @@ export function GhlSyncControlCard({ canControl, summaryOnly = false }: { canCon
             safetyUnavailable={nativeSafetyQuery.isError}
           />
         )}
+        {control?.nativeReview?.expiresAt && (() => {
+          const remaining = new Date(control.nativeReview!.expiresAt!).getTime() - Date.now();
+          if (!Number.isFinite(remaining) || remaining <= 0 || remaining > 4 * 60 * 60 * 1000) return null;
+          return (
+            <Alert className="border-amber-300 bg-amber-50 dark:bg-amber-950/30" data-testid="alert-ghl-native-review-expiring">
+              <Clock3 className="h-4 w-4 text-amber-600" />
+              <AlertDescription>
+                The native-trigger safety review expires in about {Math.max(1, Math.round(remaining / 60000))} minutes. Pending contact exports pause when it lapses and resume automatically after a legitimate renewal.
+              </AlertDescription>
+            </Alert>
+          );
+        })()}
         {control?.nativeReview && (
           <div className="rounded-md border p-3 text-xs text-muted-foreground" data-testid="text-ghl-native-review-evidence">
             Server review metadata: {valueOrUnknown(control.nativeReview.state)}; reviewed {showTime(control.nativeReview.reviewedAt)};

@@ -1567,6 +1567,7 @@ function ContactDetailRecord() {
     isRecent: boolean;
     lastSyncedAt: string | null;
     syncAgeMs: number | null;
+    projection?: import("./contact-detail-tabs/GhlSyncStatus").ContactProjectionStatus | null;
   }>({
     queryKey: ["/api/ghl/sync-status/contact", contactId],
     queryFn: async ({ signal }) => {

@@ -197,3 +197,4 @@
 - [Partner intake & review policy](partner-application-review-policy.md) — shared resume routine; owner/due only from recorded policy; no public timing promises.
 - [Ack override refusal & worker liveness](ack-worker-liveness.md) — override refused, final recheck, heartbeat in status; new certs are selected suites only.
 - [Partner approval delivery & binding](partner-approval-delivery-and-binding.md) — same-tx mailbox pin, durable approval rows, review reconcile, HTML-only final preview; tsc/intake-pages baseline failures.
+- [GHL projection generation authority](ghl-projection-generation-authority.md) — one open row per contact, generation CAS, deferrals free, not_exported never throws, cert pitfalls.

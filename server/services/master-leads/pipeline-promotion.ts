@@ -436,9 +436,11 @@ export async function promoteMasterLead(options: PromoteOptions): Promise<Promot
       // signal — it must be written atomically with the contact row.
       await tx.execute(sql`
         INSERT INTO contact_provider_projections
-          (contact_id, provider, projection_key, state, attempt_count, next_attempt_at, terminal_reason, created_at, updated_at)
+          (contact_id, provider, projection_key, state, attempt_count, next_attempt_at, terminal_reason, created_at, updated_at,
+           authority_version, export_disposition, export_reason, source_kind)
         VALUES
-          (${contactId}, 'ghl', ${'pipeline_local_only:' + masterLeadId}, 'terminal', 0, NOW(), 'pipeline_local_only', NOW(), NOW())
+          (${contactId}, 'ghl', ${'pipeline_local_only:' + masterLeadId}, 'terminal', 0, NOW(), 'pipeline_local_only', NOW(), NOW(),
+           1, 'local_only', 'pipeline_local_only_fence', 'pipeline_promotion')
         ON CONFLICT (contact_id, provider, projection_key) DO NOTHING
       `);
 

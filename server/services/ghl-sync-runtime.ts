@@ -306,7 +306,10 @@ export interface GhlSyncRuntimeTruth {
     historicEntityCounts: Record<string, { syncedCount: number; errorCount: number }> | null;
   };
   blockedDeferred: { count: number; lastAt: string | null; lastEntityType: string | null; lastReason: string | null } | null;
-  errors: { owner: string | null; worker: string | null; queueBacklog: string | null; metrics: string | null; deferred: string | null };
+  exportBacklog: (import("./ghl-projection-authority").ProjectionBacklog & { oldestEligibleAt: string | null; oldestHeldAt: string | null; asOf: string }) | null;
+  lastTick: Record<string, unknown> | null;
+  exportPolicy: { currentIntakeSince: string | null; legacyPhases: Record<string, boolean> | null } | null;
+  errors: { owner: string | null; worker: string | null; queueBacklog: string | null; metrics: string | null; deferred: string | null; exportBacklog?: string | null };
 }
 
 /** Read-only operational truth; unknown database/queue values stay null. */
@@ -318,6 +321,9 @@ export async function getGhlSyncRuntimeTruth(): Promise<GhlSyncRuntimeTruth> {
     queueBacklog: null,
     metrics: { currentEntityCounts: null, historicEntityCounts: null },
     blockedDeferred: null,
+    exportBacklog: null,
+    lastTick: null,
+    exportPolicy: null,
     errors: { owner: null, worker: null, queueBacklog: null, metrics: null, deferred: null },
   };
   try {
@@ -418,6 +424,29 @@ export async function getGhlSyncRuntimeTruth(): Promise<GhlSyncRuntimeTruth> {
     }
   } catch (error) {
     truth.errors.deferred = (error as Error).message;
+  }
+  try {
+    const { getProjectionBacklog } = await import("./ghl-projection-authority");
+    const backlog = await getProjectionBacklog();
+    const ages = (await pool.query(`
+      SELECT min(created_at) FILTER (WHERE state IN ('pending','retry') AND export_disposition IN ('current_intake','linked_update')) AS oldest_eligible,
+             min(created_at) FILTER (WHERE state IN ('pending','retry') AND export_disposition IN ('historical_hold','unclassified')) AS oldest_held
+      FROM contact_provider_projections WHERE provider = 'ghl'`)).rows[0];
+    truth.exportBacklog = {
+      ...backlog,
+      oldestEligibleAt: ages?.oldest_eligible ? new Date(ages.oldest_eligible).toISOString() : null,
+      oldestHeldAt: ages?.oldest_held ? new Date(ages.oldest_held).toISOString() : null,
+      asOf: new Date().toISOString(),
+    };
+    const settings = (await pool.query(
+      `SELECT key, value FROM system_settings WHERE key IN ('ghl_sync_last_tick', 'ghl_export_policy')`)).rows;
+    truth.lastTick = (settings.find(r => r.key === "ghl_sync_last_tick")?.value ?? null) as Record<string, unknown> | null;
+    const policy = settings.find(r => r.key === "ghl_export_policy")?.value as any;
+    truth.exportPolicy = policy
+      ? { currentIntakeSince: policy.currentIntakeSince ?? null, legacyPhases: policy.legacyPhases ?? null }
+      : null;
+  } catch (error) {
+    truth.errors.exportBacklog = (error as Error).message;
   }
   return truth;
 }

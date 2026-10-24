@@ -118,6 +118,8 @@ export const CERTIFICATION_FIXTURE_SUITES: Suite[] = [
     timeoutSecs:900,requiresDisposableTestDatabase:true},
   {name:"First-party native install",script:"scripts/certification/test-first-party-native-install.ts",
     timeoutSecs:900,requiresDisposableTestDatabase:true},
+  {name:"GHL projection generation authority",script:"scripts/certification/test-ghl-projection-authority.ts",
+    timeoutSecs:900,requiresDisposableTestDatabase:true},
   {name:"Intake review pages",script:"scripts/certification/test-intake-review-pages.ts",
     timeoutSecs:900,requiresDisposableTestDatabase:true},
   {name:"Inbound acknowledgement owner",script:"scripts/certification/test-inbound-acknowledgement.ts",

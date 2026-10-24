@@ -277,7 +277,7 @@ async function main() {
     FAIL("No webhook verification active — set GHL_WEBHOOK_SIGNATURE_PUBLIC_KEY (Ed25519) or GHL_WEBHOOK_SECRET (HMAC legacy)");
   }
   OK("Replay protection: events with dateAdded/createdAt/x-ghl-timestamp > 5 min old are rejected");
-  OK("Dedup middleware: SHA-256(event_type + body) → webhook_event_log unique constraint");
+  OK("Durable receipts: SHA-256(event_type + body) → ghl_provider_event_receipts (received → claimed → applied|failed)");
 
   // ── 14. Suppression counts ──────────────────────────────────────────────────
   INFO("14. Suppression / DNC Counts");

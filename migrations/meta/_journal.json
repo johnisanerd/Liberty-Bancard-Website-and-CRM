@@ -2639,6 +2639,13 @@
       "when":1800400200000,
       "tag":"0373_partner_approval_deliveries",
       "breakpoints":true
+    },
+    {
+      "idx":377,
+      "version":"7",
+      "when":1800400210000,
+      "tag":"0374_ghl_projection_generation_authority",
+      "breakpoints":true
     }
   ]
 }

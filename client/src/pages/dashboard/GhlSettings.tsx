@@ -148,7 +148,7 @@ export default function GhlSettings() {
   const [draftStageMappings, setDraftStageMappings] = useState<SemanticStageMapping[]>([]);
   const [selectedLocalPipeline, setSelectedLocalPipeline] = useState("");
   const [draftExternalPipelineIds, setDraftExternalPipelineIds] = useState<Record<string, string>>({});
-  const [outboundControlsOpen, setOutboundControlsOpen] = useState(false);
+  const [outboundControlsOpen, setOutboundControlsOpen] = useState(true);
 
   const { data: status, isLoading: statusLoading } = useQuery<GhlStatus>({
     queryKey: ["/api/ghl/status"],
@@ -753,11 +753,13 @@ export default function GhlSettings() {
       {/* Provider-write controls are distinct and not needed by the one-way import. */}
       {user?.role === "admin" && <details
         className="rounded-lg border p-4"
+        open={outboundControlsOpen}
+        data-testid="section-ghl-outgoing-controls"
         onToggle={event => setOutboundControlsOpen(event.currentTarget.open)}
       >
-        <summary className="cursor-pointer text-sm font-medium">Optional writes back to GHL — not needed for incoming contact sync</summary>
+        <summary className="cursor-pointer text-sm font-medium">Outgoing contact export to GHL — status, blockers and controls (separate from incoming sync)</summary>
         {outboundControlsOpen && <div className="mt-4 space-y-4">
-        <Alert><AlertDescription>Leave these provider-write controls disabled for one-way GHL → database synchronization. Native-trigger review applies only to writes back to GHL.</AlertDescription></Alert>
+        <Alert><AlertDescription>These controls govern writes from Liberty to GHL only. Incoming GHL → Liberty synchronization does not depend on them, and a green connection badge above does not mean the outgoing worker is selected or running. Native-trigger review applies only to writes back to GHL.</AlertDescription></Alert>
         <GhlSyncControlCard canControl />
         <Card data-testid="card-force-permission-sync">
         <CardHeader>

@@ -15,6 +15,8 @@ import { getAllFlags, featureFlags } from "../services/feature-flags";
 import { validateWebhookSignature, getSdrGhlConfig, isSdrGhlConfigured, fetchCalendars } from "../services/sdr/ghl-client";
 import { handleContactUpdated, handleMessageReceived, handleCallOutcome, handleAppointmentBooked, handleAppointmentCanceled, handleOptOut, handleEmailBounce } from "../services/sdr/webhook-handlers";
 import { handleAppointmentShowed } from "../services/sdr/scheduling";
+import { ghlWebhookReceiptMiddleware } from "../services/ghl-webhook-receipts";
+import { recordGhlAppointmentEvent, configuredAppointmentCalendarIds, type AppointmentEventKind } from "../services/ghl-appointment-events";
 import { handleConversationCreated, handleChatMessage, handleSmsThread, handleEmailThread, handleChatBooking } from "../services/sdr/chat-handlers";
 import { parse } from "csv-parse/sync";
 import { createContactLocalFirst } from "../services/contact-writer";
@@ -745,35 +747,12 @@ export function registerSdrRoutes(app: Express) {
     next();
   });
 
-  // ── Webhook idempotency middleware ─────────────────────────────────────────
-  // GHL retries failed webhook deliveries with an identical payload.
-  // We deduplicate by computing SHA-256(eventType + rawBody) and inserting into
-  // webhook_event_log with a UNIQUE constraint on event_id.  Duplicate deliveries
-  // get a 200 immediately; new events proceed to the handler.
-  app.use("/api/webhooks/ghl/", async (req, res, next) => {
-    const rawBody  = getSdrWebhookRawBody(req);
-    const eventType = req.path.replace(/^\//, "").replace(/\//g, "-") || "unknown";
-    let eventId = "";
-    try {
-      const { createHash } = await import("node:crypto");
-      eventId = createHash("sha256").update(`${eventType}:${rawBody}`).digest("hex").slice(0, 64);
-      const { db: whlDb } = await import("../db");
-      const { sql: whlSql } = await import("drizzle-orm");
-      const result = await whlDb.execute(whlSql`
-        INSERT INTO webhook_event_log (event_id, event_type, source, processed_at)
-        VALUES (${eventId}, ${eventType}, 'ghl', NOW())
-        ON CONFLICT (event_id) DO NOTHING
-        RETURNING id
-      `);
-      if (result.rows.length === 0) {
-        console.log(`[SDR Webhook] Duplicate event (${eventType}): ${eventId.slice(0, 16)}…`);
-        return res.json({ received: true, duplicate: true });
-      }
-    } catch (dedupeErr) {
-      console.warn("[SDR Webhook] Dedup check failed (non-fatal):", dedupeErr);
-    }
-    next();
-  });
+  // ── Durable webhook receipts ───────────────────────────────────────────────
+  // received → claimed → applied | failed. The acknowledgement is held until the receipt outcome is
+  // durable; duplicates of an applied event are acknowledged without reprocessing, retries of a failed
+  // event are re-claimed, and receipt-storage faults are refused (503) so the sender retries.
+  // webhook_event_log is intentionally left untouched (other certified paths read it).
+  app.use("/api/webhooks/ghl/", ghlWebhookReceiptMiddleware());
 
   app.post("/api/webhooks/ghl/contact-updated", async (req, res) => {
     try {
@@ -848,6 +827,7 @@ export function registerSdrRoutes(app: Express) {
       const occurrence = await claimExplicitGhlOccurrence("appointment_booked", payload, payload.appointmentId ?? payload.id ?? payload.eventId);
       await handleAppointmentBooked(payload);
       await linkExplicitGhlOccurrence(occurrence.id, payload);
+      await recordAppointmentLifecycleBestEffort("booked", payload);
       res.json({ received: true });
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
@@ -866,6 +846,7 @@ export function registerSdrRoutes(app: Express) {
       }
 
       await handleAppointmentShowed(req.body);
+      await recordAppointmentLifecycleBestEffort("showed", req.body);
       res.json({ received: true });
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
@@ -883,6 +864,7 @@ export function registerSdrRoutes(app: Express) {
       }
 
       await handleAppointmentCanceled(req.body);
+      await recordAppointmentLifecycleBestEffort("canceled", req.body);
       res.json({ received: true });
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
@@ -891,6 +873,54 @@ export function registerSdrRoutes(app: Express) {
       res.status(500).json({ message: safeMessage(errMsg) });
     }
   });
+
+  // Lifecycle ordering for booked/showed/canceled is recorded after their (unchanged) handlers. A recording
+  // fault is logged but cannot re-run those handlers' enrollment/tag chains on a retry.
+  async function recordAppointmentLifecycleBestEffort(kind: AppointmentEventKind, payload: unknown) {
+    try {
+      await recordGhlAppointmentEvent({
+        kind, payload: (payload ?? {}) as Record<string, unknown>,
+        allowedLocationId: process.env.GHL_LOCATION_ID || null,
+        allowedCalendarIds: configuredAppointmentCalendarIds(),
+      });
+    } catch (error) {
+      console.warn(`[SDR Webhook] appointment ${kind} ordering record failed (non-fatal):`, (error as Error).message);
+    }
+  }
+
+  // Updated / rescheduled appointments: ordering record plus an audit event. These never enroll workflows,
+  // tag contacts, or move lead stage — booked/canceled own those chains.
+  for (const kind of ["updated", "rescheduled"] as const) {
+    app.post(`/api/webhooks/ghl/appointment-${kind}`, async (req, res) => {
+      try {
+        const signature = req.headers["x-ghl-signature"] as string || "";
+        if (!validateWebhookSignature(getSdrWebhookRawBody(req), signature)) {
+          return res.status(401).json({ message: "Invalid webhook signature" });
+        }
+        const payload = (req.body ?? {}) as Record<string, unknown>;
+        const result = await recordGhlAppointmentEvent({
+          kind, payload,
+          allowedLocationId: process.env.GHL_LOCATION_ID || null,
+          allowedCalendarIds: configuredAppointmentCalendarIds(),
+        });
+        if (result.applied && typeof payload.contactId === "string") {
+          const [merchant] = await db.select().from(sdrMerchants).where(eq(sdrMerchants.ghlContactId, payload.contactId));
+          if (merchant) {
+            await db.insert(sdrLeadEvents).values({
+              merchantId: merchant.id, eventType: `appointment_${kind}`, channel: "calendar", actorType: "merchant",
+              payloadJson: payload, ghlRefId: String(payload.appointmentId ?? payload.id ?? payload.contactId),
+            });
+          }
+        }
+        res.json({ received: true, applied: result.applied, reason: result.reason });
+      } catch (err: unknown) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error(`[SDR Webhook] appointment-${kind} error:`, errMsg);
+        trackWebhookFailure();
+        res.status(500).json({ message: safeMessage(errMsg) });
+      }
+    });
+  }
 
   app.post("/api/webhooks/ghl/opt-out", async (req, res) => {
     try {

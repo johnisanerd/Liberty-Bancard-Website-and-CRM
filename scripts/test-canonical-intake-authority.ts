@@ -16,7 +16,7 @@ const execution = read("server/services/import-execution.ts");
 const recovery = read("server/services/csv-import-recovery.ts");
 const schema = read("shared/schema.ts");
 
-for (const required of ["contactProviderProjections", 'mode: "local_first"', "recordContactIdentityObservations", "contact_intake_matched"]) {
+for (const required of ["enqueueContactProjection", 'mode: "local_first"', "recordContactIdentityObservations", "contact_intake_matched"]) {
   if (!writer.includes(required)) failures.push(`contact writer missing ${required}`);
 }
 if (/mode:\s*"ghl_upsert_first"/.test(writer)) failures.push("contact writer still exposes provider-first mode");
@@ -24,7 +24,8 @@ if (/\b(?:create|update)ContactGhlFirst\b/.test(writer)) failures.push("contact 
 if (!imports.includes("claimCsvExecution") || !imports.includes("recordImportRowDisposition")) {
   failures.push("CSV route is not wired to durable execution/ledger primitives");
 }
-if (!sync.includes("processPendingContactProviderProjections")) failures.push("GHL sync does not process durable projection intents");
+if (!sync.includes("processPendingContactProviderProjections") || !sync.includes("processEligibleContactProjections")) failures.push("GHL sync does not process durable projection intents");
+if (/insert\(contactProviderProjections\)/.test(writer)) failures.push("contact writer writes projection rows directly instead of using the projection authority");
 if (writer.includes('from "./ghl-sync"') || writer.includes("syncContactToGhl(")) {
   failures.push("contact writer bypasses the claimed provider projection worker");
 }

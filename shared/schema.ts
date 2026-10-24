@@ -349,7 +349,8 @@ export const contactProviderProjections = pgTable("contact_provider_projections"
   contactId: integer("contact_id").notNull().references(() => contacts.id, { onDelete: "cascade" }),
   provider: text("provider").notNull().default("ghl"),
   projectionKey: text("projection_key").notNull(),
-  state: text("state").notNull().default("pending"), // pending|processing|succeeded|retry|terminal
+  state: text("state").notNull().default("pending"), // pending|processing|succeeded|retry|terminal|superseded
+  // attemptCount counts provider dispatch attempts (not claims or local deferrals).
   attemptCount: integer("attempt_count").notNull().default(0),
   nextAttemptAt: timestamp("next_attempt_at").notNull().defaultNow(),
   claimToken: uuid("claim_token"),
@@ -359,11 +360,79 @@ export const contactProviderProjections = pgTable("contact_provider_projections"
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
   completedAt: timestamp("completed_at"),
+  // Projection authority (migration 0374). authorityVersion is NULL on legacy rows until adopted.
+  authorityVersion: integer("authority_version"),
+  desiredGeneration: bigint("desired_generation", { mode: "number" }).notNull().default(1),
+  claimedGeneration: bigint("claimed_generation", { mode: "number" }),
+  settledGeneration: bigint("settled_generation", { mode: "number" }).notNull().default(0),
+  exportDisposition: text("export_disposition").notNull().default("unclassified"), // current_intake|linked_update|historical_hold|local_only|test_local_only|closed|unclassified
+  exportReason: text("export_reason"),
+  sourceKind: text("source_kind"),
+  dispatchCount: integer("dispatch_count").notNull().default(0),
+  deferralCount: integer("deferral_count").notNull().default(0),
+  dispatchState: text("dispatch_state").notNull().default("none"), // none|reserved|ambiguous
+  dispatchOperationId: uuid("dispatch_operation_id"),
+  lastDispatchAt: timestamp("last_dispatch_at"),
+  componentReceipts: jsonb("component_receipts").notNull().default(sql`'{}'::jsonb`),
+  supersededBy: uuid("superseded_by"),
+  supersededAt: timestamp("superseded_at"),
 }, (table) => [
   uniqueIndex("contact_provider_projections_contact_key_uidx").on(table.contactId, table.provider, table.projectionKey),
   index("contact_provider_projections_claim_idx").on(table.provider, table.state, table.nextAttemptAt),
+  uniqueIndex("contact_provider_projections_open_contact_uidx").on(table.contactId, table.provider)
+    .where(sql`state IN ('pending', 'retry', 'processing') AND authority_version IS NOT NULL`),
+  index("contact_provider_projections_eligible_idx").on(table.provider, table.nextAttemptAt, table.createdAt)
+    .where(sql`state IN ('pending', 'retry') AND export_disposition IN ('current_intake', 'linked_update')`),
+  index("contact_provider_projections_processing_lease_idx").on(table.provider, table.leaseExpiresAt)
+    .where(sql`state = 'processing'`),
 ]);
 export type ContactProviderProjection = typeof contactProviderProjections.$inferSelect;
+
+export const ghlProviderEventReceipts = pgTable("ghl_provider_event_receipts", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  eventKey: text("event_key").notNull(),
+  eventType: text("event_type").notNull(),
+  provider: text("provider").notNull().default("ghl"),
+  state: text("state").notNull().default("received"), // received|claimed|applied|failed
+  claimToken: uuid("claim_token"),
+  leaseExpiresAt: timestamp("lease_expires_at"),
+  deliveryCount: integer("delivery_count").notNull().default(1),
+  attemptCount: integer("attempt_count").notNull().default(0),
+  locationId: text("location_id"),
+  calendarId: text("calendar_id"),
+  remoteEventId: text("remote_event_id"),
+  appointmentId: text("appointment_id"),
+  ghlContactId: text("ghl_contact_id"),
+  eventAt: timestamp("event_at", { withTimezone: true }),
+  receivedAt: timestamp("received_at").notNull().defaultNow(),
+  claimedAt: timestamp("claimed_at"),
+  appliedAt: timestamp("applied_at"),
+  failedAt: timestamp("failed_at"),
+  lastError: text("last_error"),
+}, (table) => [
+  uniqueIndex("ghl_provider_event_receipts_key_uidx").on(table.provider, table.eventKey),
+  index("ghl_provider_event_receipts_open_idx").on(table.state, table.receivedAt)
+    .where(sql`state IN ('received', 'claimed', 'failed')`),
+]);
+export type GhlProviderEventReceipt = typeof ghlProviderEventReceipts.$inferSelect;
+
+export const ghlAppointmentState = pgTable("ghl_appointment_state", {
+  appointmentId: text("appointment_id").primaryKey(),
+  ghlContactId: text("ghl_contact_id"),
+  calendarId: text("calendar_id"),
+  locationId: text("location_id"),
+  status: text("status").notNull(), // booked|rescheduled|updated|showed|canceled
+  startTime: timestamp("start_time", { withTimezone: true }),
+  endTime: timestamp("end_time", { withTimezone: true }),
+  lastEventAt: timestamp("last_event_at", { withTimezone: true }).notNull(),
+  lastReceiptId: uuid("last_receipt_id"),
+  rescheduleCount: integer("reschedule_count").notNull().default(0),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => [
+  index("ghl_appointment_state_contact_idx").on(table.ghlContactId),
+]);
+export type GhlAppointmentState = typeof ghlAppointmentState.$inferSelect;
 
 // ---------------------------------------------------------------------------
 // BT-10 provider health, durable operations, and safe eligibility controls.

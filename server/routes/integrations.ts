@@ -327,6 +327,8 @@ export function registerIntegrationsRoutes(app: Express) {
       const lastOutboundSync = logs.find(l => l.direction === "outbound" && l.channel === "sync");
       const { getContactPermissionProjectionStatus } = await import("../services/ghl-specialized-commands");
       const permissionProjection = await getContactPermissionProjectionStatus(contactId);
+      const { describeContactProjection } = await import("../services/ghl-projection-authority");
+      const projection = await describeContactProjection(contactId).catch(() => null);
       const lastSyncedAt = lastOutboundSync?.createdAt || null;
       const isSynced = !!contact.ghlContactId && !!lastSyncedAt;
       const syncAge = lastSyncedAt ? Date.now() - new Date(lastSyncedAt).getTime() : null;
@@ -337,6 +339,8 @@ export function registerIntegrationsRoutes(app: Express) {
         isRecent,
         lastSyncedAt: lastSyncedAt ? new Date(lastSyncedAt).toISOString() : null,
         syncAgeMs: syncAge,
+        // null means the projection state could not be read; it is never shown as healthy or zero.
+        projection,
         permissionProjection: permissionProjection ? {
           runId: permissionProjection.runId,
           state: permissionProjection.state,

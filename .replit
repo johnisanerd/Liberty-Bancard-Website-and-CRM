@@ -150,7 +150,7 @@ SENDER_DOMAIN_SPF_VERIFIED = "true"
 CRO03C_TRUSTED_APPROVAL_ISSUERS = '{"cro03d-operator":"-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAMXf+CcBj0P58gRL4eRQUYqhPxXlaWDGdQFBJk9wEtg4=\n-----END PUBLIC KEY-----\n"}'
 CRO03C_TRUSTED_DEPLOYMENT_INVENTORY_ISSUERS = '{"cro03d-operator":"-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAMXf+CcBj0P58gRL4eRQUYqhPxXlaWDGdQFBJk9wEtg4=\n-----END PUBLIC KEY-----\n"}'
 FREE_ENRICHMENT_ENABLED = "true"
-BACKGROUND_JOB_PROFILE = "selective:enrichment,free-enrichment-lane,provider-live,email-validation,sunbiz-backfill,sfp-free-classification,sfp-campaign-staging,sfp-continuous-discovery"
+BACKGROUND_JOB_PROFILE = "selective:enrichment,free-enrichment-lane,provider-live,email-validation,sunbiz-backfill,sfp-free-classification,sfp-campaign-staging,sfp-continuous-discovery,ghl-sync-only"
 GHL_APPOINTMENT_CALENDAR_ID = "YFiIy7oIOUXN2qZZPnOr"
 
 [userenv.production]

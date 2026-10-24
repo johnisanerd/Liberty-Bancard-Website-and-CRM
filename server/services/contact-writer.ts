@@ -6,7 +6,6 @@ import {selectMailboxContact,ContactIdentityAmbiguityError,lockContactMailboxes,
 import {
   contacts,
   contactSourceEvents,
-  contactProviderProjections,
   importRowDispositions,
   importExecutions,
   type InsertContact,
@@ -16,6 +15,7 @@ import {
 } from "@shared/schema";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { normalizeGhlId } from "../utils/normalize";
+import { enqueueContactProjection } from "./ghl-projection-authority";
 import { READINESS_DEPENDENT_FIELDS, enqueueReadinessRecalculation } from "./contact-readiness";
 import { requestContactLeadScoring } from "./contact-lead-scoring-trigger";
 import { recordContactIdentityObservations } from "./contact-identity";
@@ -369,12 +369,7 @@ export async function writeContact(args: {
           : rowDisposition?.matchedReasonCode ?? "EXACT_ELIGIBLE_IDENTITY_MATCH",
       );
       if (shouldProject && !existing.ghlContactId && !syntheticPlaceholder) {
-        await tx.insert(contactProviderProjections).values({
-          contactId: existing.id,
-          provider: "ghl",
-          projectionKey: `contact:${existing.id}`,
-          state: "pending",
-        }).onConflictDoNothing();
+        await enqueueContactProjection(tx, { contactId: existing.id, sourceKind: "intake_matched" });
       }
       return {
         contact: existing,
@@ -449,12 +444,7 @@ export async function writeContact(args: {
     await recordLedger(updatedContact.id, "created", rowDisposition?.createdReasonCode ?? "LOCAL_CONTACT_CREATED");
     const pending = shouldProject && !updatedContact.ghlContactId && !syntheticPlaceholder;
     if (pending) {
-      await tx.insert(contactProviderProjections).values({
-        contactId: updatedContact.id,
-        provider: "ghl",
-        projectionKey: `contact:${updatedContact.id}`,
-        state: "pending",
-      }).onConflictDoNothing();
+      await enqueueContactProjection(tx, { contactId: updatedContact.id, sourceKind: "intake_created" });
     }
     return { contact: updatedContact, outcome: "created" as const, pending, sourceEventId: sourceEvent.id };
   };
@@ -591,7 +581,6 @@ export async function updateContactLocalFirst(
   const safeUpdates = stripProvenanceFields(updates as Record<string, unknown>) as UpdateContactRequest;
   const changedKeys = Object.keys(safeUpdates) as Array<keyof typeof safeUpdates>;
   const hasReadinessChange = changedKeys.some(k => READINESS_DEPENDENT_FIELDS.includes(k as any));
-  const fingerprint = crypto.createHash("sha256").update(JSON.stringify(safeUpdates)).digest("hex").slice(0, 32);
   const updateInsideTransaction = async (tx: any) => {
     // Mailbox lock protocol: any email change takes the per-mailbox advisory lock (address being left and address
     // being taken, sorted) BEFORE the contact row lock, the same order as writeContact, storage.updateContact and
@@ -644,12 +633,7 @@ export async function updateContactLocalFirst(
     }
     const syntheticPlaceholder = /^no-email-[0-9a-f-]+@no-email\.libertybancard\.internal$/i.test(local.email);
     if (!syntheticPlaceholder && !hookPolicy?.suppressProviderProjection) {
-      await tx.insert(contactProviderProjections).values({
-        contactId,
-        provider: "ghl",
-        projectionKey: `profile:${contactId}:${fingerprint}`,
-        state: "pending",
-      }).onConflictDoNothing();
+      await enqueueContactProjection(tx, { contactId, sourceKind: "profile_update" });
     }
     const { auditChange } = await import("./audit-change");
     await auditChange({

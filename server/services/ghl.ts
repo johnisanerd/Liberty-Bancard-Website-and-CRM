@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import { markGhlDispatch, GhlAmbiguousDispatchError } from "./ghl-dispatch-recorder";
 import { storage } from "../storage";
 import type { Contact, Deal } from "@shared/schema";
 import OpenAI from "openai";
@@ -283,8 +284,26 @@ async function ghlFetch(path: string, options: GhlFetchOptions = {}, retries = 3
           );
         }
       }
-      const response = await fetch(url, { ...fetchOptions, headers, signal: controller.signal });
+      const settleDispatch = markGhlDispatch(method, path);
+      let response: Response;
+      try {
+        response = await fetch(url, { ...fetchOptions, headers, signal: controller.signal });
+      } catch (transportError) {
+        // The request may have been processed even though no response arrived.
+        // A create (POST) is never blindly repeated on a lost response; the
+        // projection executor reconciles remote identity first.
+        settleDispatch("ambiguous");
+        if (method === "POST") {
+          clearTimeout(timeoutId);
+          throw new GhlAmbiguousDispatchError(`${method} ${path.split("?")[0]}: ${transportError instanceof Error ? transportError.message : String(transportError)}`);
+        }
+        throw transportError;
+      }
       clearTimeout(timeoutId);
+      settleDispatch(response.ok ? "ok" : (response.status >= 500 && method === "POST" ? "ambiguous" : "http_error"), response.status);
+      if (response.status >= 500 && method === "POST") {
+        throw new GhlAmbiguousDispatchError(`${method} ${path.split("?")[0]}: HTTP ${response.status}`);
+      }
 
       if (response.status === 429) {
         const retryAfter = parseInt(response.headers.get("retry-after") || "5", 10);
@@ -315,6 +334,7 @@ async function ghlFetch(path: string, options: GhlFetchOptions = {}, retries = 3
       return text ? JSON.parse(text) : {};
     } catch (err: unknown) {
       clearTimeout(timeoutId);
+      if (err instanceof GhlAmbiguousDispatchError) throw err;
       if (attempt === retries - 1) throw err;
       const errMsg = err instanceof Error ? err.message : String(err);
       // AbortError = our own 20 s timeout fired; treat like any other transient error.
@@ -531,6 +551,21 @@ export async function lookupGhlContactByEmail(email: string): Promise<string | n
   } catch {
     return null;
   }
+}
+
+/**
+ * Read-only remote identity lookup that distinguishes "no match" from a failed lookup.
+ * Used to reconcile an earlier create whose response was lost. Never creates or updates.
+ */
+export async function lookupGhlContactByEmailStrict(email: string): Promise<{ status: "found"; id: string } | { status: "absent" }> {
+  const config = getConfig();
+  if (!config) throw new Error("GHL not configured");
+  const result = await ghlFetch(
+    `/contacts/search/duplicate?locationId=${encodeURIComponent(config.locationId)}&email=${encodeURIComponent(email)}`,
+    { method: "GET" },
+  );
+  const id = result?.contact?.id ?? result?.contacts?.[0]?.id ?? null;
+  return id ? { status: "found", id: String(id) } : { status: "absent" };
 }
 
 /**

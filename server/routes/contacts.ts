@@ -439,11 +439,18 @@ export function registerContactsRoutes(app: Express, creationDependencies: Parti
           const request = ["accepted", "completed"].includes(inboundClaim.request.lifecycleState)
             ? inboundClaim.request
             : await handoffLocalContact({ requestId: inboundClaim.request.id, contactId: existing.id });
-          const projection = await pool.query<{ state: string }>(
-            "SELECT state FROM contact_provider_projections WHERE contact_id=$1 AND provider='ghl' LIMIT 1", [existing.id],
+          // Authoritative row: the open projection if one exists, otherwise the most recent closed one.
+          const projection = await pool.query<{ state: string; export_disposition: string }>(
+            `SELECT state, export_disposition FROM contact_provider_projections
+             WHERE contact_id=$1 AND provider='ghl' AND state <> 'superseded'
+             ORDER BY (state IN ('pending','retry','processing')) DESC, updated_at DESC, id DESC LIMIT 1`, [existing.id],
           );
-          const projectionState = projection.rows[0]?.state ?? "not_observed";
-          const projectionPending = projection.rows.length > 0 && projectionState !== "completed";
+          const projectionRow = projection.rows[0];
+          const exportable = projectionRow?.export_disposition === "current_intake" || projectionRow?.export_disposition === "linked_update";
+          const projectionState = !projectionRow ? "not_observed"
+            : !exportable && ["pending", "retry", "processing"].includes(projectionRow.state) ? `held:${projectionRow.export_disposition}`
+            : projectionRow.state;
+          const projectionPending = !!projectionRow && exportable && ["pending", "retry", "processing"].includes(projectionRow.state);
           return res.status(!projectionPending && ["accepted", "completed"].includes(request.lifecycleState) ? 200 : 202)
             .json({ ...existing, _ghlSyncPending: projectionPending,
               _handoff: { requestId: request.id, state: request.lifecycleState, replay: true,

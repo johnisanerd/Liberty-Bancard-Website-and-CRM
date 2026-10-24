@@ -1459,22 +1459,26 @@ function PromptsDocument() {
   );
 }
 
+type GhlConnectionState = "verified" | "failed" | "unknown";
+
+// Shown only when a read-only provider check FAILED. A passing or unverified check never shows token guidance.
+const GHL_TOKEN_STEP = {
+  step: 1,
+  title: "GHL connection check failed — review the token",
+  detail: "The read-only GHL connection check failed. In GHL → Settings → Private Integrations confirm the token and its scopes, then update GHL_PRIVATE_INTEGRATION_TOKEN in Replit Secrets and restart the app. Do not rotate the token if the check passes.",
+  link: "https://app.gohighlevel.com/settings/private-integrations",
+  linkLabel: "GHL Private Integrations",
+  critical: true,
+};
+
 const GHL_SETUP_STEPS = [
   {
-    step: 1,
-    title: "Fix your GHL token",
-    detail: "In GHL → Settings → Private Integrations, regenerate your token. Then set the env var GHL_PRIVATE_INTEGRATION_TOKEN in Replit Secrets and restart the app.",
-    link: "https://app.gohighlevel.com/settings/private-integrations",
-    linkLabel: "GHL Private Integrations",
-    critical: true,
-  },
-  {
     step: 2,
-    title: "Build only the supported handoff workflows in GHL",
+    title: "Build only the supported handoff workflows in GHL (executable handoffs)",
     detail: "Replit owns sequence cadence, eligibility and timing under the global outbound pause. In GHL → Automation → Workflows, build only the supported handoff workflows listed on System Readiness (for example form confirmation, booking and proposal handoffs). Sequence workflows are optional reference material and are not needed to run Liberty sequences.",
     link: "https://app.gohighlevel.com/automation/workflows",
     linkLabel: "GHL Automation",
-    critical: true,
+    critical: false,
   },
   {
     step: 3,
@@ -1496,14 +1500,17 @@ const GHL_SETUP_STEPS = [
   },
 ];
 
-function GhlSetupGuide({ configuredCount, totalCount }: { configuredCount: number; totalCount: number }) {
-  const [open, setOpen] = useState(configuredCount === 0);
+function GhlSetupGuide({ configuredCount, totalCount, connection }: { configuredCount: number; totalCount: number; connection: GhlConnectionState }) {
+  const steps = connection === "failed" ? [GHL_TOKEN_STEP, ...GHL_SETUP_STEPS] : GHL_SETUP_STEPS;
+  const [open, setOpen] = useState(false);
   const allDone = configuredCount === totalCount;
+  // Missing optional reference IDs are informational, never an alarm.
+  const alarm = connection === "failed";
 
   return (
-    <Card className={`border-2 ${allDone ? "border-green-400 dark:border-green-700" : "border-amber-400 dark:border-amber-700"}`} data-testid="card-ghl-setup-guide">
+    <Card className={`border-2 ${alarm ? "border-amber-400 dark:border-amber-700" : "border-border"}`} data-testid="card-ghl-setup-guide">
       <div
-        className={`flex items-center justify-between p-4 cursor-pointer rounded-t-lg transition-colors ${allDone ? "bg-green-50 dark:bg-green-900/20" : "bg-amber-50 dark:bg-amber-900/20"}`}
+        className={`flex items-center justify-between p-4 cursor-pointer rounded-t-lg transition-colors ${alarm ? "bg-amber-50 dark:bg-amber-900/20" : "bg-muted/40"}`}
         onClick={() => setOpen(v => !v)}
         role="button"
         tabIndex={0}
@@ -1512,12 +1519,12 @@ function GhlSetupGuide({ configuredCount, totalCount }: { configuredCount: numbe
         aria-expanded={open}
       >
         <div className="flex items-center gap-3">
-          {allDone
-            ? <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-400 shrink-0" />
-            : <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0" />
+          {alarm
+            ? <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0" />
+            : <CheckCircle className="w-5 h-5 text-muted-foreground shrink-0" />
           }
           <div>
-            <p className={`font-semibold text-sm ${allDone ? "text-green-800 dark:text-green-300" : "text-amber-800 dark:text-amber-300"}`}>
+            <p className="font-semibold text-sm text-foreground">
               {allDone
                 ? "Reference IDs recorded for all sequences"
                 : `Reference IDs: ${configuredCount} of ${totalCount} recorded (optional — not a launch requirement)`}
@@ -1530,8 +1537,8 @@ function GhlSetupGuide({ configuredCount, totalCount }: { configuredCount: numbe
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${allDone ? "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300" : "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"}`}>
-            {configuredCount}/{totalCount} connected
+          <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+            {configuredCount}/{totalCount} optional IDs recorded
           </span>
           {open ? <ChevronDown className="w-4 h-4 text-muted-foreground" /> : <ChevronRight className="w-4 h-4 text-muted-foreground" />}
         </div>
@@ -1548,7 +1555,7 @@ function GhlSetupGuide({ configuredCount, totalCount }: { configuredCount: numbe
           </div>
 
           <div className="space-y-3 mt-4">
-            {GHL_SETUP_STEPS.map(s => (
+            {steps.map(s => (
               <div key={s.step} className="flex gap-3" data-testid={`setup-step-${s.step}`}>
                 <div className={`shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold ${s.critical ? "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" : "bg-muted text-muted-foreground"}`}>
                   {s.step}
@@ -1632,6 +1639,14 @@ export default function GhlWorkflowManager() {
   const { data: mappings = [], isLoading } = useQuery<WorkflowMapping[]>({
     queryKey: ["/api/ghl/workflow-mappings"],
   });
+  // Read-only provider check. Token guidance appears only when this check actually fails.
+  const connectionQuery = useQuery<{ connected: boolean; error?: string }>({
+    queryKey: ["/api/ghl/health-check"],
+    retry: false,
+    staleTime: 60_000,
+  });
+  const connection: GhlConnectionState = connectionQuery.isError ? "unknown"
+    : connectionQuery.data ? (connectionQuery.data.connected ? "verified" : "failed") : "unknown";
 
   const mappingByName = Object.fromEntries(mappings.map(m => [m.sequenceName, m]));
 
@@ -1747,7 +1762,7 @@ export default function GhlWorkflowManager() {
         </TabsList>
 
         <TabsContent value="id-manager" className="space-y-4 mt-4">
-          <GhlSetupGuide configuredCount={configuredCount} totalCount={ALL_SEQUENCES.length} />
+          <GhlSetupGuide configuredCount={configuredCount} totalCount={ALL_SEQUENCES.length} connection={connection} />
 
           <div className="flex items-center justify-between flex-wrap gap-3">
             <Card className="flex-1" data-testid="card-ghl-workflow-summary">
@@ -1755,16 +1770,16 @@ export default function GhlWorkflowManager() {
                 <div className="flex items-center gap-6 flex-wrap">
                   <div className="flex items-center gap-2">
                     <CheckCircle className="w-4 h-4 text-green-500" />
-                    <span className="text-sm"><span className="font-semibold">{configuredCount}</span> of <span className="font-semibold">{ALL_SEQUENCES.length}</span> sequences connected to GHL</span>
+                    <span className="text-sm"><span className="font-semibold">{configuredCount}</span> of <span className="font-semibold">{ALL_SEQUENCES.length}</span> optional reference IDs recorded</span>
                   </div>
                   <div className="flex items-center gap-2">
-                    <XCircle className="w-4 h-4 text-amber-400" />
-                    <span className="text-sm"><span className="font-semibold">{ALL_SEQUENCES.length - configuredCount}</span> need a GHL workflow ID</span>
+                    <XCircle className="w-4 h-4 text-muted-foreground" />
+                    <span className="text-sm"><span className="font-semibold">{ALL_SEQUENCES.length - configuredCount}</span> have no reference ID (optional; Replit runs these sequences itself)</span>
                   </div>
                 </div>
                 <div className="mt-2 h-2 w-full rounded-full bg-muted overflow-hidden">
                   <div
-                    className="h-full rounded-full bg-green-500 transition-all"
+                    className="h-full rounded-full bg-primary/60 transition-all"
                     style={{ width: `${Math.round((configuredCount / ALL_SEQUENCES.length) * 100)}%` }}
                   />
                 </div>

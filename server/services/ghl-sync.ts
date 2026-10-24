@@ -26,8 +26,13 @@ import { enqueuePromotionalEnrollment } from "./promotional-enrollment-eligibili
 import { eq, sql, and, isNull, desc } from "drizzle-orm";
 import { GO_LIVE_GATE_STAGES, checkGoLiveReadiness } from "./go-live-gate";
 import { canExecute } from "./outbound-queue-coordinator";
+import { markGhlDispatch, GhlAmbiguousDispatchError, withGhlDispatchRecorder, summarizeDispatches } from "./ghl-dispatch-recorder";
+import {
+  CONTACT_PROJECTION_MAX_ATTEMPTS, AMBIGUOUS_RETRY_MS, DEFERRAL_RETRY_MS,
+  claimEligibleProjections, renewProjectionLease, reserveProjectionDispatch, settleProjection,
+  clearProjectionAmbiguity, type ClaimedProjection,
+} from "./ghl-projection-authority";
 
-const CONTACT_PROJECTION_MAX_ATTEMPTS = 8;
 const GHL_SYNC_DEFERRED_STATS_KEY = "ghl_sync_deferred_stats";
 
 async function recordGhlSyncDeferred(entityType: string, reason: string): Promise<void> {
@@ -50,99 +55,170 @@ async function recordGhlSyncDeferred(entityType: string, reason: string): Promis
   }
 }
 
-/**
- * Claims committed local contact projection intents. This is deliberately
- * separate from contact selection: every provider mutation has a durable
- * source, bounded retry schedule, and terminal reason.
- */
-export async function processPendingContactProviderProjections(limit = 10): Promise<{ completed: number; retried: number; terminal: number }> {
-  const claimToken = crypto.randomUUID();
-  const leaseUntil = new Date(Date.now() + 2 * 60 * 1000);
-  const claimed = await db.execute(sql`
-    WITH candidates AS (
-      SELECT id
-      FROM contact_provider_projections
-      WHERE provider = 'ghl'
-        AND (state IN ('pending', 'retry') OR (state = 'processing' AND lease_expires_at < now()))
-        AND attempt_count < ${CONTACT_PROJECTION_MAX_ATTEMPTS}
-        AND (next_attempt_at IS NULL OR next_attempt_at <= now())
-        AND (lease_expires_at IS NULL OR lease_expires_at < now())
-      ORDER BY created_at
-      FOR UPDATE SKIP LOCKED
-      LIMIT ${limit}
-    )
-    UPDATE contact_provider_projections p
-    SET state = 'processing',
-        claim_token = ${claimToken},
-        lease_expires_at = ${leaseUntil},
-        attempt_count = p.attempt_count + 1,
-        updated_at = now()
-    FROM candidates
-    WHERE p.id = candidates.id
-    RETURNING p.id, p.contact_id, p.attempt_count
-  `);
-  const rows = ((claimed as any).rows ?? []) as Array<{ id: string; contact_id: number; attempt_count: number }>;
-  let completed = 0;
-  let retried = 0;
-  let terminal = 0;
-  for (const projection of rows) {
-    try {
-      const result = await syncContactToGhl(projection.contact_id);
-      if (result.success) {
-        await db.update(contactProviderProjections).set({
-          state: "succeeded",
-          completedAt: new Date(),
-          claimToken: null,
-          leaseExpiresAt: null,
-          terminalReason: null,
-        }).where(sql`${contactProviderProjections.id} = ${projection.id} AND ${contactProviderProjections.claimToken} = ${claimToken}`);
-        completed++;
-        continue;
-      }
-      const kind = classifyGhlSyncError(result.error);
-      if (isGhlSyncDeferred(result.error)) {
-        await db.update(contactProviderProjections).set({
-          state: "retry",
-          nextAttemptAt: new Date(Date.now() + 60_000),
-          lastErrorCode: "GHL_SYNC_DEFERRED_BLOCKED",
-          claimToken: null,
-          leaseExpiresAt: null,
-        }).where(sql`${contactProviderProjections.id} = ${projection.id} AND ${contactProviderProjections.claimToken} = ${claimToken}`);
-        retried++;
-      } else if (kind === "skip" || kind === "auth" || projection.attempt_count >= CONTACT_PROJECTION_MAX_ATTEMPTS) {
-        await db.update(contactProviderProjections).set({
-          state: "terminal",
-          terminalReason: kind === "skip" ? "INVALID_OR_UNUSABLE_IDENTITY" : kind === "auth" ? "PROVIDER_AUTH_FAILURE" : "MAX_ATTEMPTS_EXHAUSTED",
-          lastErrorCode: kind,
-          claimToken: null,
-          leaseExpiresAt: null,
-        }).where(sql`${contactProviderProjections.id} = ${projection.id} AND ${contactProviderProjections.claimToken} = ${claimToken}`);
-        terminal++;
-      } else {
-        const delaySeconds = Math.min(3600, 30 * 2 ** Math.min(projection.attempt_count, 6));
-        await db.update(contactProviderProjections).set({
-          state: "retry",
-          nextAttemptAt: new Date(Date.now() + delaySeconds * 1000),
-          lastErrorCode: "PROVIDER_TRANSIENT_FAILURE",
-          claimToken: null,
-          leaseExpiresAt: null,
-        }).where(sql`${contactProviderProjections.id} = ${projection.id} AND ${contactProviderProjections.claimToken} = ${claimToken}`);
-        retried++;
-      }
-    } catch (error) {
-      const delaySeconds = Math.min(3600, 30 * 2 ** Math.min(projection.attempt_count, 6));
-      await db.update(contactProviderProjections).set({
-        state: projection.attempt_count >= CONTACT_PROJECTION_MAX_ATTEMPTS ? "terminal" : "retry",
-        terminalReason: projection.attempt_count >= CONTACT_PROJECTION_MAX_ATTEMPTS ? "MAX_ATTEMPTS_EXHAUSTED" : null,
-        nextAttemptAt: new Date(Date.now() + delaySeconds * 1000),
-        lastErrorCode: "PROJECTION_EXCEPTION",
-        claimToken: null,
-        leaseExpiresAt: null,
-      }).where(sql`${contactProviderProjections.id} = ${projection.id} AND ${contactProviderProjections.claimToken} = ${claimToken}`);
-      projection.attempt_count >= CONTACT_PROJECTION_MAX_ATTEMPTS ? terminal++ : retried++;
+export type ProjectionRowOutcome =
+  | "success" | "deferred" | "skip" | "auth" | "failure" | "ambiguous" | "terminal" | "claim_lost";
+
+export interface ProjectionBatchSummary {
+  claimed: number;
+  completed: number;
+  deferred: number;
+  retried: number;
+  terminal: number;
+  ambiguous: number;
+  claimLost: number;
+  released: number;
+  stoppedReason: string | null;
+}
+
+export interface ProjectionExecutorDeps {
+  assertOwnership?: () => Promise<void>;
+  syncFn?: (contactId: number) => Promise<{ success: boolean; ghlContactId?: string; error?: string }>;
+  /** Read-only remote lookup used to resolve an ambiguous earlier create. Must throw on lookup failure. */
+  lookupFn?: (email: string) => Promise<{ status: "found"; id: string } | { status: "absent" }>;
+  /** Called after each settled row; return false to stop and release the remaining claimed rows. */
+  onOutcome?: (outcome: ProjectionRowOutcome, contactId: number) => boolean | void;
+  /** Pause between provider calls (ms). */
+  paceMs?: number;
+}
+
+function projectionRetryDelayMs(attemptCount: number): number {
+  return Math.min(3600, 30 * 2 ** Math.min(attemptCount, 6)) * 1000;
+}
+
+const NOT_EXPORTABLE_ERROR = /^(?:PIPELINE_LOCAL_ONLY|EXPORT_NOT_ELIGIBLE)/;
+
+async function reconcileAmbiguousProjection(
+  row: ClaimedProjection,
+  deps: ProjectionExecutorDeps,
+): Promise<"resolved" | "unresolved" | "conflict"> {
+  const contact = await storage.getContact(row.contactId);
+  if (!contact) return "resolved";
+  if (contact.ghlContactId) { await clearProjectionAmbiguity(row); return "resolved"; }
+  const email = (contact.email ?? "").trim();
+  if (!email) { await clearProjectionAmbiguity(row); return "resolved"; }
+  const lookup = deps.lookupFn ?? (async (value: string) => {
+    const { lookupGhlContactByEmailStrict } = await import("./ghl");
+    return lookupGhlContactByEmailStrict(value);
+  });
+  let found: Awaited<ReturnType<NonNullable<ProjectionExecutorDeps["lookupFn"]>>>;
+  try { found = await lookup(email); } catch { return "unresolved"; }
+  if (found.status === "absent") { await clearProjectionAmbiguity(row); return "resolved"; }
+  const owner = ((await db.execute(sql`
+    SELECT id FROM contacts WHERE ghl_contact_id = ${found.id} AND id <> ${row.contactId} LIMIT 1
+  `)) as any).rows as any[];
+  if (owner.length > 0) return "conflict";
+  await db.execute(sql`UPDATE contacts SET ghl_contact_id = ${found.id}, updated_at = now() WHERE id = ${row.contactId} AND ghl_contact_id IS NULL`);
+  await clearProjectionAmbiguity(row);
+  return "resolved";
+}
+
+/** Execute one claimed projection: reserve, dispatch, settle by generation CAS. */
+async function executeClaimedProjection(row: ClaimedProjection, deps: ProjectionExecutorDeps): Promise<ProjectionRowOutcome> {
+  if (deps.assertOwnership) await deps.assertOwnership();
+  if (!await renewProjectionLease(row)) return "claim_lost";
+
+  if (row.dispatchState === "ambiguous") {
+    const resolved = await reconcileAmbiguousProjection(row, deps);
+    if (resolved === "unresolved") {
+      return (await settleProjection(row, { kind: "deferred", code: "AMBIGUOUS_RECONCILIATION_PENDING", retryAfterMs: AMBIGUOUS_RETRY_MS })) ? "deferred" : "claim_lost";
+    }
+    if (resolved === "conflict") {
+      return (await settleProjection(row, { kind: "terminal", reason: "GHL_IDENTITY_CONFLICT", code: "ghl_identity_conflict", receipts: {}, consumedAttempt: false, dispatched: false })) ? "terminal" : "claim_lost";
     }
   }
-  return { completed, retried, terminal };
+
+  if (!await reserveProjectionDispatch(row)) return "claim_lost";
+  const syncFn = deps.syncFn ?? syncContactToGhl;
+  const run = await withGhlDispatchRecorder(() => syncFn(row.contactId));
+  const evidence = summarizeDispatches(run.recorder);
+  const result = "result" in run ? run.result : null;
+  const thrown = "error" in run ? (run.error instanceof Error ? run.error.message : String(run.error)) : null;
+
+  if (result?.success) {
+    return (await settleProjection(row, { kind: "success", receipts: evidence.receipts })) ? "success" : "claim_lost";
+  }
+  const error = result?.error ?? thrown ?? undefined;
+  const ambiguous = evidence.ambiguous || (typeof error === "string" && /GHL_AMBIGUOUS_DISPATCH/.test(error));
+  if (ambiguous) {
+    return (await settleProjection(row, { kind: "ambiguous", code: "GHL_AMBIGUOUS_DISPATCH", receipts: evidence.receipts })) ? "ambiguous" : "claim_lost";
+  }
+  const nextAttempt = row.attemptCount + 1;
+  if (typeof error === "string" && NOT_EXPORTABLE_ERROR.test(error)) {
+    return (await settleProjection(row, { kind: "terminal", reason: "EXPORT_NOT_ELIGIBLE", code: error.slice(0, 120), receipts: {}, consumedAttempt: false, dispatched: false })) ? "terminal" : "claim_lost";
+  }
+  if (isGhlSyncDeferred(error)) {
+    if (evidence.dispatched) {
+      // Some components reached the provider before a later component was deferred.
+      return (await settleProjection(row, { kind: "retry", code: "GHL_SYNC_DEFERRED_PARTIAL", receipts: evidence.receipts, consumedAttempt: false, dispatched: true, delayMs: DEFERRAL_RETRY_MS })) ? "deferred" : "claim_lost";
+    }
+    return (await settleProjection(row, { kind: "deferred", code: "GHL_SYNC_DEFERRED_BLOCKED" })) ? "deferred" : "claim_lost";
+  }
+  if (!evidence.dispatched && typeof error === "string" && /GHL_CUSTOM_FIELD_(?:ID_UNVERIFIED|INVENTORY_EVIDENCE_INCOMPLETE)/.test(error)) {
+    // The emitted payload names a custom field the provider inventory does not verify. Nothing was sent and
+    // retrying cannot help until the inventory or payload contract changes, so it waits without spending budget.
+    return (await settleProjection(row, { kind: "deferred", code: "GHL_CUSTOM_FIELD_CONTRACT_BLOCKED", retryAfterMs: 15 * 60 * 1000 })) ? "deferred" : "claim_lost";
+  }
+  const kind = classifyGhlSyncError(error);
+  if (kind === "auth") {
+    return (await settleProjection(row, { kind: "deferred", code: "PROVIDER_AUTH_FAILURE", retryAfterMs: 5 * 60 * 1000 })) ? "auth" : "claim_lost";
+  }
+  if (kind === "skip") {
+    return (await settleProjection(row, { kind: "terminal", reason: "INVALID_OR_UNUSABLE_IDENTITY", code: kind, receipts: evidence.receipts, consumedAttempt: false, dispatched: evidence.dispatched })) ? "skip" : "claim_lost";
+  }
+  if (nextAttempt >= CONTACT_PROJECTION_MAX_ATTEMPTS) {
+    return (await settleProjection(row, { kind: "terminal", reason: "MAX_ATTEMPTS_EXHAUSTED", code: thrown ? "PROJECTION_EXCEPTION" : kind, receipts: evidence.receipts, consumedAttempt: true, dispatched: evidence.dispatched })) ? "failure" : "claim_lost";
+  }
+  return (await settleProjection(row, {
+    kind: "retry", code: thrown ? "PROJECTION_EXCEPTION" : "PROVIDER_TRANSIENT_FAILURE", receipts: evidence.receipts,
+    consumedAttempt: true, dispatched: evidence.dispatched, delayMs: projectionRetryDelayMs(nextAttempt),
+  })) ? "failure" : "claim_lost";
+}
+
+/**
+ * Claims eligible committed projection intents and settles each by generation compare-and-swap.
+ * Provider dispatches are the only thing that consume the failure budget. When `onOutcome`
+ * stops the batch (circuit trip, lost ownership) every still-claimed row is released at once.
+ */
+export async function processEligibleContactProjections(limit: number, deps: ProjectionExecutorDeps = {}): Promise<ProjectionBatchSummary> {
+  const summary: ProjectionBatchSummary = { claimed: 0, completed: 0, deferred: 0, retried: 0, terminal: 0, ambiguous: 0, claimLost: 0, released: 0, stoppedReason: null };
+  const rows = await claimEligibleProjections(limit);
+  summary.claimed = rows.length;
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    let outcome: ProjectionRowOutcome;
+    try {
+      outcome = await executeClaimedProjection(row, deps);
+    } catch (error) {
+      // Ownership loss or an unexpected local fault before/around dispatch: release without consuming budget.
+      for (const remaining of rows.slice(i)) {
+        if (await settleProjection(remaining, { kind: "released" }).catch(() => false)) summary.released++;
+      }
+      summary.stoppedReason = error instanceof Error ? error.message.slice(0, 160) : "UNEXPECTED_ERROR";
+      throw Object.assign(error instanceof Error ? error : new Error(String(error)), { projectionSummary: summary });
+    }
+    if (outcome === "success") summary.completed++;
+    else if (outcome === "deferred" || outcome === "auth") summary.deferred++;
+    else if (outcome === "failure") summary.retried++;
+    else if (outcome === "skip" || outcome === "terminal") summary.terminal++;
+    else if (outcome === "ambiguous") summary.ambiguous++;
+    else summary.claimLost++;
+    const proceed = deps.onOutcome?.(outcome, row.contactId);
+    if (proceed === false) {
+      for (const remaining of rows.slice(i + 1)) {
+        if (await settleProjection(remaining, { kind: "released" }).catch(() => false)) summary.released++;
+      }
+      summary.stoppedReason = `stopped_after_${outcome}`;
+      break;
+    }
+    if (deps.paceMs && i < rows.length - 1) await new Promise(r => setTimeout(r, deps.paceMs));
+  }
+  return summary;
+}
+
+/** Compatibility wrapper kept for callers that only need counts. */
+export async function processPendingContactProviderProjections(limit = 10): Promise<{ completed: number; retried: number; terminal: number }> {
+  const summary = await processEligibleContactProjections(limit);
+  return { completed: summary.completed, retried: summary.retried + summary.deferred + summary.ambiguous, terminal: summary.terminal };
 }
 
 const CONFLICT_FIELDS: Array<{ ghlKey: string; contactKey: keyof Contact }> = [
@@ -406,7 +482,18 @@ async function ghlFetch(path: string, options: RequestInit & { pauseEpoch?: bigi
           customFields: (bodyValue as any).customFields.map(({ key: _key, ...field }: any) => field),
         })
       : options.body;
-    return fetch(url, { ...options, body: transportBody, headers, signal: options.signal ?? AbortSignal.timeout(20_000) });
+    const settleDispatch = markGhlDispatch(method, path);
+    try {
+      const dispatched = await fetch(url, { ...options, body: transportBody, headers, signal: options.signal ?? AbortSignal.timeout(20_000) });
+      settleDispatch(dispatched.ok ? "ok" : (dispatched.status >= 500 && method === "POST" ? "ambiguous" : "http_error"), dispatched.status);
+      return dispatched;
+    } catch (transportError) {
+      settleDispatch("ambiguous");
+      if (method === "POST") {
+        throw new GhlAmbiguousDispatchError(`${method} ${path.split("?")[0]}: ${transportError instanceof Error ? transportError.message : String(transportError)}`);
+      }
+      throw transportError;
+    }
   };
   const isCrmWrite = crmDecision?.capability === "crm_write" || crmDecision?.capability === "permission_write";
   const response = isCrmWrite
@@ -493,6 +580,12 @@ export async function syncContactToGhl(contactId: number): Promise<{ success: bo
       console.log(`[GHL Sync] Contact #${contactId} is pipeline_local_only — skipping GHL export`);
       return { success: false, error: "PIPELINE_LOCAL_ONLY" };
     }
+    // Central export recheck for every lane (projection worker, probe, direct callers).
+    const exportRecordClass = String((contact as { recordClass?: string | null }).recordClass ?? "unknown").toLowerCase();
+    if (exportRecordClass === "test" || exportRecordClass === "demo" || exportRecordClass === "synthetic") {
+      return { success: false, error: `EXPORT_NOT_ELIGIBLE:record_class_${exportRecordClass}` };
+    }
+    if (contact.archivedAt) return { success: false, error: "EXPORT_NOT_ELIGIBLE:contact_archived" };
 
     // ── Pre-send payload validation (task #1604) ─────────────────────────────
     // A single malformed/placeholder email causes GHL to 422, which (as a
@@ -857,66 +950,14 @@ export async function syncContactFromGhl(ghlContact: any): Promise<{ contactId: 
   }
 }
 
+/**
+ * Retired bulk export. A broad scan of unlinked contacts is exactly the historical-bulk-export lane the
+ * projection authority forbids: contact export is queued only by `enqueueContactProjection` and executed by
+ * `processEligibleContactProjections`. Kept as a no-op so legacy callers cannot create GHL records.
+ */
 export async function fullSyncToGhl(): Promise<{ synced: number; failed: number; skipped: number }> {
-  if (!isGhlConfigured()) return { synced: 0, failed: 0, skipped: 0 };
-
-  let synced = 0;
-  let failed = 0;
-  const skipped = 0;
-
-  const BATCH_SIZE = 10;
-  const BATCH_DELAY_MS = 1000;
-  const FETCH_SIZE = 100;
-
-  // Keyset-paginated scan — ordered by id ASC, cursor advances past every batch
-  // regardless of sync success or failure.  This guarantees the loop terminates
-  // in at most ceil(N / FETCH_SIZE) DB round-trips even when contacts persistently
-  // fail to obtain a GHL ID (they stay ghl_contact_id IS NULL but their id is
-  // already past the cursor, so they are not re-fetched in the same run).
-  // Uses contacts_ghl_unsynced_idx partial index for O(unsynced) scans.
-  let cursorId = 0;
-  while (true) {
-    const unsyncedBatch = await storage.getUnsyncedContactsForGhl(FETCH_SIZE, cursorId);
-    if (unsyncedBatch.length === 0) break;
-
-    // Advance cursor past this entire batch before processing — bound the loop
-    // even if every contact in the batch fails.
-    cursorId = unsyncedBatch[unsyncedBatch.length - 1].id;
-
-    console.log(`[GHL Sync] Full sync batch: ids ${unsyncedBatch[0].id}–${cursorId}, ${unsyncedBatch.length} contacts (${synced} synced so far)`);
-
-    for (let i = 0; i < unsyncedBatch.length; i += BATCH_SIZE) {
-      const batch = unsyncedBatch.slice(i, i + BATCH_SIZE);
-      await Promise.all(batch.map(async (contact) => {
-        try {
-          const result = await syncContactToGhl(contact.id);
-          if (result.success) {
-            synced++;
-          } else {
-            failed++;
-          }
-        } catch (err) {
-          console.error(`[GHL Sync] Error syncing contact ${contact.id}:`, err);
-          failed++;
-        }
-      }));
-      if (i + BATCH_SIZE < unsyncedBatch.length) {
-        await new Promise(resolve => setTimeout(resolve, BATCH_DELAY_MS));
-      }
-    }
-  }
-
-  // skipped count is not derivable here without an extra query; synced/failed are the meaningful signals.
-  console.log(`[GHL Sync] Full sync complete: ${synced} synced, ${failed} failed`);
-
-  await storage.setSystemSetting("ghl_last_sync_to", {
-    timestamp: new Date().toISOString(),
-    synced,
-    failed,
-    skipped,
-  });
-
-  return { synced, failed, skipped };
+  console.warn("[GHL Sync] fullSyncToGhl is retired: contact export is governed by the projection authority");
+  return { synced: 0, failed: 0, skipped: 0 };
 }
 
 export async function fullSyncFromGhl(): Promise<{ created: number; updated: number; failed: number }> {
@@ -2076,6 +2117,7 @@ export function classifyGhlSyncError(error: string | undefined, httpStatus?: num
   if (/GHL API error 401/i.test(error) || /\bunauthorized\b/i.test(error)) return "auth";
   if (/GHL API error 429/i.test(error) || /rate.?limit/i.test(error)) return "rate-limit";
   if (error === "ghl_identity_conflict") return "skip";
+  if (/^(?:PIPELINE_LOCAL_ONLY|EXPORT_NOT_ELIGIBLE)/.test(error)) return "skip";
   if (error === GHL_NO_USABLE_IDENTITY) return "skip";
   if (error === GHL_EMAIL_VALIDATION_REJECTED) return "skip";
   // GHL 422 field-validation on email — permanent data-quality issue with one
@@ -2388,13 +2430,21 @@ export const __ghlCircuitTestHooks = {
  *
  * `deps` exists only for tests to stub the storage fetch and sync call.
  */
-export async function runHalfOpenProbeTick(deps?: {
+async function runCursorProbeTick(deps: {
   getCandidates?: (limit: number, afterId: number) => Promise<Array<{ id: number }>>;
   syncFn?: (contactId: number) => Promise<{ success: boolean; error?: string }>;
 }): Promise<void> {
-  const getCandidates = deps?.getCandidates
-    ?? ((limit: number, afterId: number) => storage.getUnsyncedContactsForGhl(limit, afterId));
-  const syncFn = deps?.syncFn ?? syncContactToGhl;
+  const getCandidates = deps.getCandidates
+    ?? (async (limit: number, afterId: number) => ((await db.execute(sql`
+      SELECT p.contact_id AS id FROM contact_provider_projections p
+      JOIN contacts c ON c.id = p.contact_id
+      WHERE p.provider = 'ghl' AND p.authority_version IS NOT NULL
+        AND p.state IN ('pending', 'retry')
+        AND p.export_disposition IN ('current_intake', 'linked_update')
+        AND c.record_class NOT IN ('test', 'demo', 'synthetic') AND c.archived_at IS NULL
+        AND p.contact_id > ${afterId}
+      ORDER BY p.contact_id LIMIT ${limit}`)) as any).rows.map((r: any) => ({ id: Number(r.id) })));
+  const syncFn = deps.syncFn ?? syncContactToGhl;
 
   const probeCandidates = await getCandidates(PROBE_PAGE_SIZE, halfOpenProbeCursorId);
 
@@ -2477,161 +2527,95 @@ export async function runHalfOpenProbeTick(deps?: {
 }
 
 /**
- * Owner-fenced CRM reconciliation tick (contacts, retry projections, deals,
- * recent tasks, unsynced companies). Provider writes are independently
- * authorized at the CRM transport boundary.
+ * Half-open probe. Default path is export-filtered: it claims at most one eligible projection (never a
+ * held, historical, test or local-only contact) and settles it through the same executor as the closed
+ * path, so deferrals are counted and generations are respected. With no eligible work it uses the
+ * read-only provider health check. `deps` selects the legacy cursor path used by cursor tests.
  */
-export async function runGhlFullSyncTick(): Promise<void> {
-  if (!isGhlConfigured()) return;
-  const { acquireJobLock, releaseJobLock, startJobLockHeartbeat, JOB_NAMES } = await import("./job-registry");
-  const lease = await acquireJobLock(JOB_NAMES.GHL_SYNC);
-  if (lease.status !== "acquired") return;
-  const lockToken = lease.lockToken;
-  const heartbeat = startJobLockHeartbeat(JOB_NAMES.GHL_SYNC, lockToken);
-  const { acquireGhlSyncRuntimeLease } = await import("./ghl-sync-runtime");
-  const runtimeLease = await acquireGhlSyncRuntimeLease();
-  if (runtimeLease.status !== "acquired" || !runtimeLease.assertOwned || !runtimeLease.release) {
-    heartbeat.stop();
-    await releaseJobLock(JOB_NAMES.GHL_SYNC, true, undefined, lockToken);
-    return;
+export async function runHalfOpenProbeTick(deps?: {
+  getCandidates?: (limit: number, afterId: number) => Promise<Array<{ id: number }>>;
+  syncFn?: (contactId: number) => Promise<{ success: boolean; error?: string }>;
+  assertOwnership?: () => Promise<void>;
+}): Promise<void> {
+  if (deps?.getCandidates || deps?.syncFn) return runCursorProbeTick({ getCandidates: deps.getCandidates, syncFn: deps.syncFn });
+  let outcome: ProjectionRowOutcome | null = null;
+  const summary = await processEligibleContactProjections(1, {
+    assertOwnership: deps?.assertOwnership,
+    onOutcome: (o) => { outcome = o; return false; },
+  });
+  if (summary.claimed === 0) {
+    const health = await (await import("./ghl")).checkGhlHealth();
+    outcome = health.connected ? "success" : (classifyGhlSyncError(health.error) === "auth" ? "auth" : "failure");
   }
-  const assertOwnership = async () => {
-    heartbeat.assertOwned();
-    await runtimeLease.assertOwned!();
+  if (outcome === "success") {
+    halfOpenProbeSuccesses++;
+    console.log(`[Queue:ghl-sync] Half-open probe success ${halfOpenProbeSuccesses}/${GHL_HALF_OPEN_PROBES_REQUIRED}`);
+    if (halfOpenProbeSuccesses >= GHL_HALF_OPEN_PROBES_REQUIRED) closeCircuitAfterProbes(); else persistGhlCircuit();
+  } else if (outcome === "auth") {
+    tripCircuitAuth("half-open probe");
+  } else if (outcome === "failure" || outcome === "ambiguous") {
+    ghlCircuitState = "open";
+    halfOpenProbeSuccesses = 0;
+    console.error("[Queue:ghl-sync] GHL_CIRCUIT_OPEN — half-open probe failed, re-opening circuit");
+    persistGhlCircuit();
+  } else {
+    // deferred / skip / terminal / claim_lost: inconclusive; counters untouched, deferral is recorded on the row.
+    persistGhlCircuit();
+  }
+}
+
+const GHL_LAST_TICK_KEY = "ghl_sync_last_tick";
+
+async function recordGhlTick(record: Record<string, unknown>): Promise<void> {
+  try {
+    await pool.query(
+      `INSERT INTO system_settings(key, value, updated_at) VALUES ($1, $2::jsonb, NOW())
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+      [GHL_LAST_TICK_KEY, JSON.stringify({ at: new Date().toISOString(), ...record })]);
+  } catch (error) {
+    console.warn("[Queue:ghl-sync] Could not record tick outcome:", (error as Error).message);
+  }
+}
+
+export async function readGhlExportPolicy(): Promise<{ currentIntakeSince: string; legacyPhases: { deals: boolean; tasks: boolean; companies: boolean } }> {
+  const row = ((await pool.query(`SELECT value FROM system_settings WHERE key = 'ghl_export_policy'`)).rows[0]?.value ?? {}) as any;
+  return {
+    currentIntakeSince: typeof row.currentIntakeSince === "string" ? row.currentIntakeSince : "2026-10-23T04:00:00Z",
+    legacyPhases: {
+      deals: row.legacyPhases?.deals === true,
+      tasks: row.legacyPhases?.tasks === true,
+      companies: row.legacyPhases?.companies === true,
+    },
   };
+}
 
-  try {
-  // Restore persisted circuit state on first owner-fenced tick after restart.
-  await restoreGhlCircuit();
-  await assertOwnership();
-  // Durable operator commands share this owner, but not the legacy full-contact
-  // projection. Advance only one bounded page and await its fenced completion.
-  const { runPendingGhlSpecializedCommands } = await import("./ghl-specialized-commands");
-  await runPendingGhlSpecializedCommands();
-  await assertOwnership();
-  // ── Circuit entry transitions (inside the lock) ──────────────────────────
-  if (ghlCircuitState === "open") {
-    // Open circuit → half-open: attempt a single probe, not a full batch.
-    ghlCircuitState = "half-open";
-    halfOpenProbeSuccesses = 0;
-    console.log("[Queue:ghl-sync] GHL_CIRCUIT_HALF_OPEN — circuit was open, entering half-open probe mode");
-    storage.createAuditLog({ action: "GHL_CIRCUIT_HALF_OPEN", entityType: "system", details: "Circuit transitioned open → half-open; single probe sync this tick" }).catch(() => {});
-    persistGhlCircuit();
-  } else if (ghlCircuitState === "closed" && Date.now() - lastFullSuccessTickAt > GHL_ROLLING_UNHEALTHY_MS) {
-    // Rolling unhealthy window: zero successful full ticks in the last 60 min —
-    // do not run a full batch until a probe proves GHL is healthy again.
-    ghlCircuitState = "half-open";
-    halfOpenProbeSuccesses = 0;
-    console.log(`[Queue:ghl-sync] GHL_CIRCUIT_HALF_OPEN — no successful full tick since ${new Date(lastFullSuccessTickAt).toISOString()}, entering probe mode`);
-    storage.createAuditLog({ action: "GHL_CIRCUIT_HALF_OPEN", entityType: "system", details: `Rolling unhealthy window exceeded (${Math.round((Date.now() - lastFullSuccessTickAt) / 60000)} min since last successful tick) — probe mode` }).catch(() => {});
-    persistGhlCircuit();
-  }
-
-  // ── Half-open: probe a bounded page with a deterministic cursor, then
-  //    return. Never a full batch. ──
-  if (ghlCircuitState === "half-open") {
-    try {
-      heartbeat.assertOwned();
-      await runHalfOpenProbeTick();
-      await releaseJobLock(JOB_NAMES.GHL_SYNC, true, undefined, lockToken);
-    } catch (err: any) {
-      await releaseJobLock(JOB_NAMES.GHL_SYNC, false, err.message, lockToken);
-      throw err;
-    }
-    return;
-  }
-
-  try {
-    heartbeat.assertOwned();
-    // Durable projections are the recovery authority for local-first intake.
-    // Do not derive retries from mutable audit logs.
-    const projectionSummary = await processPendingContactProviderProjections(10);
-    if (projectionSummary.completed || projectionSummary.retried || projectionSummary.terminal) {
-      console.log(`[Queue:ghl-sync] contact projections completed=${projectionSummary.completed} retried=${projectionSummary.retried} terminal=${projectionSummary.terminal}`);
-    }
-    // Indexed DB query — fetches only contacts without a ghlContactId; never limited to 500 rows.
-    const unsyncedContacts = await storage.getUnsyncedContactsForGhl(10);
-    // Local-first contacts are owned exclusively by their durable projection
-    // intent. Never let the legacy broad scan bypass a scheduled retry,
-    // terminal disposition, or an in-flight projection lease.
-    const projectionRows = await db.execute(sql`
-      SELECT contact_id
-      FROM contact_provider_projections
-      WHERE provider = 'ghl'
-        AND state IN ('pending', 'processing', 'retry', 'terminal')
-    `);
-    const projectionOwnedIds = new Set<number>(((projectionRows as any).rows ?? []).map((row: any) => Number(row.contact_id)));
-    const legacyUnsyncedContacts = unsyncedContacts.filter((contact) => !projectionOwnedIds.has(contact.id));
-    let synced = 0;
-    for (const contact of legacyUnsyncedContacts) {
-      heartbeat.assertOwned();
-      if (consecutiveGhlFailures >= GHL_CIRCUIT_THRESHOLD) {
-        tripCircuitThreshold("contacts phase");
-        await releaseJobLock(JOB_NAMES.GHL_SYNC, false, "GHL_CIRCUIT_OPEN", lockToken);
-        return;
-      }
-      try {
-        const result = await syncContactToGhl(contact.id);
-        if (result.success) {
-          consecutiveGhlFailures = 0;
-          synced++;
-        } else {
-          const kind = classifyGhlSyncError(result.error);
-          if (kind === "auth") {
-            tripCircuitAuth("contacts phase");
-            await releaseJobLock(JOB_NAMES.GHL_SYNC, false, "GHL_CIRCUIT_OPEN_AUTH", lockToken);
-            return;
-          } else if (kind === "skip") {
-            console.log(`[Queue:ghl-sync] Contact ${contact.id} skipped (${result.error}) — not counted as GHL failure`);
-          } else {
-            consecutiveGhlFailures++;
-          }
-        }
-        await new Promise(r => setTimeout(r, 300));
-      } catch (e: any) {
-        if (classifyGhlSyncError(e?.message) === "auth") {
-          tripCircuitAuth("contacts phase");
-          await releaseJobLock(JOB_NAMES.GHL_SYNC, false, "GHL_CIRCUIT_OPEN_AUTH", lockToken);
-          return;
-        }
-        consecutiveGhlFailures++;
-        console.error(`[Queue:ghl-sync] Contact ${contact.id} sync error:`, e.message);
-      }
-    }
-
-    if (consecutiveGhlFailures >= GHL_CIRCUIT_THRESHOLD) {
-      tripCircuitThreshold("after contacts phase");
-      await releaseJobLock(JOB_NAMES.GHL_SYNC, false, "GHL_CIRCUIT_OPEN", lockToken);
-      return;
-    }
-
-    if (consecutiveGhlFailures >= GHL_CIRCUIT_THRESHOLD) {
-      tripCircuitThreshold("before deals phase");
-      await releaseJobLock(JOB_NAMES.GHL_SYNC, false, "GHL_CIRCUIT_OPEN", lockToken);
-      return;
-    }
-
+/** Legacy entity phases. Contained by default: they used process-local de-duplication and a two-minute window
+ *  and cannot be proven idempotent. They only run when explicitly enabled in the export policy. */
+async function runLegacyEntityPhases(
+  flags: { deals: boolean; tasks: boolean; companies: boolean },
+  assertOwnership: () => Promise<void>,
+): Promise<{ ok: boolean; error?: string; counts: { deals: number; tasks: number; companies: number } }> {
+  const counts = { deals: 0, tasks: 0, companies: 0 };
+  if (flags.deals) {
     const { data: deals } = await storage.getDeals({ limit: 500 });
     const unsyncedDeals = deals.filter(d => !d.ghlOpportunityId && d.contactId);
     let dealsSynced = 0;
     for (const deal of unsyncedDeals.slice(0, 5)) {
-      heartbeat.assertOwned();
+      await assertOwnership();
       if (consecutiveGhlFailures >= GHL_CIRCUIT_THRESHOLD) {
         tripCircuitThreshold("deals phase");
-        await releaseJobLock(JOB_NAMES.GHL_SYNC, false, "GHL_CIRCUIT_OPEN", lockToken);
-        return;
+        return { ok: false, error: "GHL_CIRCUIT_OPEN", counts };
       }
       try {
         const result = await syncDealToGhl(deal.id);
         if (result.success) {
           consecutiveGhlFailures = 0;
-          dealsSynced++;
+          dealsSynced++; counts.deals = dealsSynced;
         } else {
           const kind = classifyGhlSyncError(result.error);
           if (kind === "auth") {
             tripCircuitAuth("deals phase");
-            await releaseJobLock(JOB_NAMES.GHL_SYNC, false, "GHL_CIRCUIT_OPEN_AUTH", lockToken);
-            return;
+            return { ok: false, error: "GHL_CIRCUIT_OPEN_AUTH", counts };
           } else if (kind === "skip") {
             // Data-dependency skip, stage-map config error, or GHL 400 not-found —
             // not a transient API failure; do not trip the circuit.
@@ -2645,8 +2629,7 @@ export async function runGhlFullSyncTick(): Promise<void> {
       } catch (e: any) {
         if (classifyGhlSyncError(e?.message) === "auth") {
           tripCircuitAuth("deals phase");
-          await releaseJobLock(JOB_NAMES.GHL_SYNC, false, "GHL_CIRCUIT_OPEN_AUTH", lockToken);
-          return;
+          return { ok: false, error: "GHL_CIRCUIT_OPEN_AUTH", counts };
         }
         consecutiveGhlFailures++;
         console.error(`[Queue:ghl-sync] Deal ${deal.id} sync error:`, e.message);
@@ -2655,10 +2638,11 @@ export async function runGhlFullSyncTick(): Promise<void> {
 
     if (consecutiveGhlFailures >= GHL_CIRCUIT_THRESHOLD) {
       tripCircuitThreshold("after deals phase");
-      await releaseJobLock(JOB_NAMES.GHL_SYNC, false, "GHL_CIRCUIT_OPEN", lockToken);
-      return;
+      return { ok: false, error: "GHL_CIRCUIT_OPEN", counts };
     }
 
+  }
+  if (flags.tasks) {
     const allTasks = await storage.getTasks({ limit: 100 });
     const recentTasks = allTasks.filter((t: any) => {
       if (!t.contactId || syncedTaskIds.has(t.id)) return false;
@@ -2667,24 +2651,22 @@ export async function runGhlFullSyncTick(): Promise<void> {
     });
     let tasksSynced = 0;
     for (const task of recentTasks.slice(0, 5)) {
-      heartbeat.assertOwned();
+      await assertOwnership();
       if (consecutiveGhlFailures >= GHL_CIRCUIT_THRESHOLD) {
         tripCircuitThreshold("tasks phase");
-        await releaseJobLock(JOB_NAMES.GHL_SYNC, false, "GHL_CIRCUIT_OPEN", lockToken);
-        return;
+        return { ok: false, error: "GHL_CIRCUIT_OPEN", counts };
       }
       try {
         const result = await syncTaskToGhl(task.id);
         if (result.success) {
           consecutiveGhlFailures = 0;
-          tasksSynced++;
+          tasksSynced++; counts.tasks = tasksSynced;
           syncedTaskIds.add(task.id);
         } else {
           const kind = classifyGhlSyncError(result.error);
           if (kind === "auth") {
             tripCircuitAuth("tasks phase");
-            await releaseJobLock(JOB_NAMES.GHL_SYNC, false, "GHL_CIRCUIT_OPEN_AUTH", lockToken);
-            return;
+            return { ok: false, error: "GHL_CIRCUIT_OPEN_AUTH", counts };
           } else if (kind === "skip") {
             // Data-availability skips AND GHL 400 not-found (stale task-linked
             // contact IDs) — not real GHL API failures; don't count toward the
@@ -2699,8 +2681,7 @@ export async function runGhlFullSyncTick(): Promise<void> {
       } catch (e: any) {
         if (classifyGhlSyncError(e?.message) === "auth") {
           tripCircuitAuth("tasks phase");
-          await releaseJobLock(JOB_NAMES.GHL_SYNC, false, "GHL_CIRCUIT_OPEN_AUTH", lockToken);
-          return;
+          return { ok: false, error: "GHL_CIRCUIT_OPEN_AUTH", counts };
         }
         consecutiveGhlFailures++;
         console.error(`[Queue:ghl-sync] Task ${task.id} sync error:`, e.message);
@@ -2709,25 +2690,25 @@ export async function runGhlFullSyncTick(): Promise<void> {
 
     if (consecutiveGhlFailures >= GHL_CIRCUIT_THRESHOLD) {
       tripCircuitThreshold("after tasks phase");
-      await releaseJobLock(JOB_NAMES.GHL_SYNC, false, "GHL_CIRCUIT_OPEN", lockToken);
-      return;
+      return { ok: false, error: "GHL_CIRCUIT_OPEN", counts };
     }
 
+  }
+  if (flags.companies) {
     const companies = await storage.getCompanies();
     const unsyncedCompanies = companies.filter(c => !syncedCompanyIds.has(c.id));
     let companiesSynced = 0;
     for (const company of unsyncedCompanies.slice(0, 5)) {
-      heartbeat.assertOwned();
+      await assertOwnership();
       if (consecutiveGhlFailures >= GHL_CIRCUIT_THRESHOLD) {
         tripCircuitThreshold("companies phase");
-        await releaseJobLock(JOB_NAMES.GHL_SYNC, false, "GHL_CIRCUIT_OPEN", lockToken);
-        return;
+        return { ok: false, error: "GHL_CIRCUIT_OPEN", counts };
       }
       try {
         const result = await syncCompanyToGhl(company.id);
         if (result.success) {
           consecutiveGhlFailures = 0;
-          companiesSynced++;
+          companiesSynced++; counts.companies = companiesSynced;
           syncedCompanyIds.add(company.id);
         } else if (result.skip) {
           // Known API limitation (e.g. 404 on GHL companies endpoint) — don't
@@ -2738,8 +2719,7 @@ export async function runGhlFullSyncTick(): Promise<void> {
           const kind = classifyGhlSyncError(result.error);
           if (kind === "auth") {
             tripCircuitAuth("companies phase");
-            await releaseJobLock(JOB_NAMES.GHL_SYNC, false, "GHL_CIRCUIT_OPEN_AUTH", lockToken);
-            return;
+            return { ok: false, error: "GHL_CIRCUIT_OPEN_AUTH", counts };
           } else if (kind === "skip") {
             // "Company not found" / "GHL not configured" — local data misses,
             // not API failures; mark as synced so we stop retrying every tick.
@@ -2753,38 +2733,171 @@ export async function runGhlFullSyncTick(): Promise<void> {
       } catch (e: any) {
         if (classifyGhlSyncError(e?.message) === "auth") {
           tripCircuitAuth("companies phase");
-          await releaseJobLock(JOB_NAMES.GHL_SYNC, false, "GHL_CIRCUIT_OPEN_AUTH", lockToken);
-          return;
+          return { ok: false, error: "GHL_CIRCUIT_OPEN_AUTH", counts };
         }
         consecutiveGhlFailures++;
         console.error(`[Queue:ghl-sync] Company ${company.id} sync error:`, e.message);
       }
     }
 
-    try {
-      heartbeat.assertOwned();
-      const { runDeleteDetectionTick } = await import("./ghl-delete-sync");
-      const deleteResult = await runDeleteDetectionTick();
-      if (deleteResult.contactsDeleted > 0 || deleteResult.dealsDeleted > 0) {
-        console.log(`[Queue:ghl-sync] Delete detection: ${deleteResult.contactsDeleted} contacts, ${deleteResult.dealsDeleted} deals soft-deleted`);
-      }
-    } catch (delErr: any) {
-      console.warn("[Queue:ghl-sync] Delete detection tick failed (non-fatal):", delErr.message);
-    }
+  }
+  return { ok: true, counts };
+}
 
-    if (synced > 0 || dealsSynced > 0 || tasksSynced > 0 || companiesSynced > 0) {
-      console.log(`[Queue:ghl-sync] Batch: ${synced} contacts, ${dealsSynced} deals, ${tasksSynced} tasks, ${companiesSynced} companies`);
-      // Rolling health window: only a tick with at least one successful entity
-      // sync counts as a "successful full tick".
-      lastFullSuccessTickAt = Date.now();
+type TickBody = { ok: boolean; error?: string; reason: string; detail?: Record<string, unknown> };
+
+/**
+ * Owner-fenced CRM reconciliation tick. Every exit path (no work, half-open, circuit trip, exception)
+ * stops both heartbeats and releases the runtime lease and job lock exactly once; every early exit
+ * records its reason so "no progress" is always explainable.
+ */
+export async function runGhlFullSyncTick(): Promise<void> {
+  if (!isGhlConfigured()) { await recordGhlTick({ outcome: "skipped", reason: "ghl_not_configured" }); return; }
+  const { acquireJobLock, releaseJobLock, startJobLockHeartbeat, JOB_NAMES } = await import("./job-registry");
+  const lease = await acquireJobLock(JOB_NAMES.GHL_SYNC);
+  if (lease.status !== "acquired") { await recordGhlTick({ outcome: "skipped", reason: `job_lock_${lease.status}` }); return; }
+  const lockToken = lease.lockToken;
+  const heartbeat = startJobLockHeartbeat(JOB_NAMES.GHL_SYNC, lockToken);
+  const { acquireGhlSyncRuntimeLease } = await import("./ghl-sync-runtime");
+  let runtimeLease: Awaited<ReturnType<typeof acquireGhlSyncRuntimeLease>> | null = null;
+  let body: TickBody = { ok: false, error: "TICK_NOT_COMPLETED", reason: "unknown" };
+  let thrown: unknown = null;
+  try {
+    runtimeLease = await acquireGhlSyncRuntimeLease();
+    if (runtimeLease.status !== "acquired" || !runtimeLease.assertOwned || !runtimeLease.release) {
+      body = { ok: true, reason: `runtime_lease_${runtimeLease.status}` };
+      return;
     }
-    persistGhlCircuit(); // carry counter/state forward across ticks and restarts
-    await releaseJobLock(JOB_NAMES.GHL_SYNC, true, undefined, lockToken);
-  } catch (err: any) {
-    await releaseJobLock(JOB_NAMES.GHL_SYNC, false, err.message, lockToken);
-    throw err;
-  }
+    const lockedLease = runtimeLease;
+    const assertOwnership = async () => {
+      heartbeat.assertOwned();
+      await lockedLease.assertOwned!();
+    };
+    body = await runGhlTickBody(assertOwnership);
+  } catch (err) {
+    thrown = err;
+    body = { ok: false, error: err instanceof Error ? err.message : String(err), reason: "exception" };
   } finally {
+    try { runtimeLease?.stopHeartbeat?.(); } catch { /* best effort */ }
+    try { await runtimeLease?.release?.(); } catch { /* expiry is the recovery path */ }
     heartbeat.stop();
+    await releaseJobLock(JOB_NAMES.GHL_SYNC, body.ok, body.error, lockToken).catch(() => {});
+    await recordGhlTick({
+      outcome: body.ok ? "ok" : "failed", reason: body.reason, error: body.error ?? null,
+      circuitState: ghlCircuitState, ...(body.detail ?? {}),
+    });
   }
+  if (thrown) throw thrown;
+}
+
+async function runGhlTickBody(assertOwnership: () => Promise<void>): Promise<TickBody> {
+  await restoreGhlCircuit();
+  await assertOwnership();
+  const detail: Record<string, unknown> = {};
+
+  // Legacy rows converge to the authority model; stranded deferral rows are released. Failures are
+  // recorded but never block the tick: only authority-adopted rows are claimable.
+  try {
+    const { convergeLegacyProjectionRows } = await import("./ghl-projection-convergence");
+    detail.convergence = (await convergeLegacyProjectionRows()).ran ? "ran" : "none_needed";
+    const { repairStrandedProjections } = await import("./ghl-projection-authority");
+    const repaired = await repairStrandedProjections();
+    if (repaired > 0) detail.strandedReleased = repaired;
+  } catch (error) {
+    detail.convergenceError = (error as Error).message.slice(0, 200);
+  }
+  await assertOwnership();
+
+  // Provider-write commands obey the circuit; only the read-only identity backfill runs while it is not closed.
+  const { runPendingGhlSpecializedCommands } = await import("./ghl-specialized-commands");
+  const commandResult = await runPendingGhlSpecializedCommands(undefined, ghlCircuitState !== "closed");
+  detail.specializedCommand = commandResult.reason ?? (commandResult.advanced ? "advanced" : "idle");
+  await assertOwnership();
+
+  const { getProjectionBacklog } = await import("./ghl-projection-authority");
+  const backlog = await getProjectionBacklog();
+  detail.backlog = backlog;
+  const dueWork = backlog.eligiblePending + backlog.eligibleRetryDue + backlog.processing;
+  if (dueWork === 0 && ghlCircuitState === "closed") {
+    // Healthy idle: nothing eligible is not evidence of provider failure.
+    lastFullSuccessTickAt = Date.now();
+  }
+
+  if (ghlCircuitState === "open") {
+    ghlCircuitState = "half-open";
+    halfOpenProbeSuccesses = 0;
+    console.log("[Queue:ghl-sync] GHL_CIRCUIT_HALF_OPEN — circuit was open, entering half-open probe mode");
+    storage.createAuditLog({ action: "GHL_CIRCUIT_HALF_OPEN", entityType: "system", details: "Circuit transitioned open → half-open; single probe sync this tick" }).catch(() => {});
+    persistGhlCircuit();
+  } else if (ghlCircuitState === "closed" && dueWork > 0 && Date.now() - lastFullSuccessTickAt > GHL_ROLLING_UNHEALTHY_MS) {
+    ghlCircuitState = "half-open";
+    halfOpenProbeSuccesses = 0;
+    console.log(`[Queue:ghl-sync] GHL_CIRCUIT_HALF_OPEN — eligible work without a successful projection since ${new Date(lastFullSuccessTickAt).toISOString()}, entering probe mode`);
+    storage.createAuditLog({ action: "GHL_CIRCUIT_HALF_OPEN", entityType: "system", details: `Eligible work waited ${Math.round((Date.now() - lastFullSuccessTickAt) / 60000)} min without a successful projection — probe mode` }).catch(() => {});
+    persistGhlCircuit();
+  }
+
+  if (ghlCircuitState === "half-open") {
+    await runHalfOpenProbeTick({ assertOwnership });
+    detail.circuitAfterProbe = ghlCircuitState;
+    return { ok: true, reason: "half_open_probe", detail };
+  }
+
+  let stopError: string | undefined;
+  const summary = await processEligibleContactProjections(10, {
+    assertOwnership,
+    paceMs: 300,
+    onOutcome: (outcome) => {
+      if (outcome === "success") {
+        consecutiveGhlFailures = 0;
+        lastFullSuccessTickAt = Date.now();
+        return true;
+      }
+      if (outcome === "auth") {
+        tripCircuitAuth("projection phase");
+        stopError = "GHL_CIRCUIT_OPEN_AUTH";
+        return false;
+      }
+      if (outcome === "failure" || outcome === "ambiguous") {
+        consecutiveGhlFailures++;
+        if (consecutiveGhlFailures >= GHL_CIRCUIT_THRESHOLD) {
+          tripCircuitThreshold("projection phase");
+          stopError = "GHL_CIRCUIT_OPEN";
+          return false;
+        }
+      }
+      return true; // deferred, skip, terminal and claim_lost never touch the circuit counters
+    },
+  });
+  detail.projections = summary;
+  if (summary.completed || summary.retried || summary.terminal || summary.deferred) {
+    console.log(`[Queue:ghl-sync] contact projections completed=${summary.completed} deferred=${summary.deferred} retried=${summary.retried} terminal=${summary.terminal} ambiguous=${summary.ambiguous}`);
+  }
+  if (stopError) { persistGhlCircuit(); return { ok: false, error: stopError, reason: "circuit_opened", detail }; }
+  await assertOwnership();
+
+  const policy = await readGhlExportPolicy();
+  const legacyEnabled = policy.legacyPhases.deals || policy.legacyPhases.tasks || policy.legacyPhases.companies;
+  if (legacyEnabled) {
+    const legacy = await runLegacyEntityPhases(policy.legacyPhases, assertOwnership);
+    detail.legacyEntities = legacy.counts;
+    if (!legacy.ok) { persistGhlCircuit(); return { ok: false, error: legacy.error, reason: "circuit_opened_legacy", detail }; }
+  } else {
+    detail.legacyEntities = "contained";
+  }
+
+  try {
+    await assertOwnership();
+    const { runDeleteDetectionTick } = await import("./ghl-delete-sync");
+    const deleteResult = await runDeleteDetectionTick();
+    if (deleteResult.contactsDeleted > 0 || deleteResult.dealsDeleted > 0) {
+      console.log(`[Queue:ghl-sync] Delete detection: ${deleteResult.contactsDeleted} contacts, ${deleteResult.dealsDeleted} deals soft-deleted`);
+    }
+  } catch (delErr: any) {
+    if (/LEASE_LOST|RUNTIME_SELECTION_CHANGED|lock lost|ownership/i.test(delErr?.message ?? "")) throw delErr;
+    console.warn("[Queue:ghl-sync] Delete detection tick failed (non-fatal):", delErr.message);
+  }
+
+  persistGhlCircuit(); // carry counter/state forward across ticks and restarts
+  return { ok: true, reason: dueWork === 0 ? "idle_no_eligible_work" : "projection_batch", detail };
 }

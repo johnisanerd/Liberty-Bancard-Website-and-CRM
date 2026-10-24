@@ -1,0 +1,15 @@
+---
+name: GHL projection generation authority
+description: Rules for contact export to GHL (one open row per contact, generation CAS, counters, export policy, webhook receipts, tick cleanup) and how its cert is built
+---
+- Every producer queues through `enqueueContactProjection`; the executor `processEligibleContactProjections` is the only claimer. Settlement is a generation CAS fenced by claim token; an edit during processing advances desired generation and the old success returns the row to pending.
+- `attempt_count` is provider dispatch attempts only; local deferrals bump `deferral_count`. Unverified custom-field payloads defer (15 min) instead of spending budget.
+- Terminal rows that must never reopen (local-only fence, merge, unresolved ambiguous create) make enqueue return `not_exported`; it must never throw into a producer (the unique key makes a naive insert collide).
+- Export policy: test/demo/synthetic and local-only never export; pre-cutoff legacy work is `historical_hold` until the owner releases a scope. Bulk `fullSyncToGhl` is a retired no-op.
+- Webhook receipts are committed before the acknowledgement; do not touch `webhook_event_log`.
+- The tick has one `finally` that releases lease, lock and records `ghl_sync_last_tick`; healthy idle never opens the circuit.
+
+**Why:** the stalled projection came from deferrals consuming budget, leaked leases, and lost edits during processing.
+**How to apply:** any new GHL write lane must go through the authority and show an export negative control in `scripts/certification/test-ghl-projection-authority.ts`.
+
+Cert-writing lessons: the real tick needs `REPL_DEPLOYMENT_ID` for a runtime identity; claim helpers must release non-subject rows because claiming is a real mutation; executor runs with a default OK sync function settle other fixtures' rows, so assert per-contact state right after the step that creates it; the fake GHL custom-field inventory must list the nine installed keys or every export fails with an unverified-field error. Negative controls are explicit "mutants" because production code cannot be mutated in a test.

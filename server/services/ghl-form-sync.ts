@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import { eq } from "drizzle-orm";
 import { db } from "../db";
-import { merchantApplications, contactProviderProjections } from "@shared/schema";
+import { merchantApplications } from "@shared/schema";
 import { isGhlConfigured } from "./ghl";
 import { syncDealToGhl } from "./ghl-sync";
 import { triggerWorkflow, updateCustomFields, addTag, addNote, isSdrGhlConfigured } from "./sdr/ghl-client";
@@ -34,20 +34,9 @@ function isGhlReady(): boolean {
 }
 
 /** Idempotent durable handoff: one consumable pending projection per contact, claimed by the projection worker. */
-export async function enqueueGhlContactProjection(contactId: number): Promise<void> {
-  await db.insert(contactProviderProjections).values({
-    contactId,
-    provider: "ghl",
-    projectionKey: `contact:${contactId}`,
-    state: "pending",
-  }).onConflictDoUpdate({
-    target: [
-      contactProviderProjections.contactId,
-      contactProviderProjections.provider,
-      contactProviderProjections.projectionKey,
-    ],
-    set: { state: "pending", lastErrorCode: null, nextAttemptAt: new Date(), updatedAt: new Date() },
-  });
+export async function enqueueGhlContactProjection(contactId: number, sourceKind = "handoff"): Promise<void> {
+  const { enqueueContactProjection } = await import("./ghl-projection-authority");
+  await enqueueContactProjection(db, { contactId, sourceKind });
 }
 
 async function legacyContactSyncDisabled(): Promise<{ success: false; error: string; ghlContactId?: undefined }> {
@@ -114,21 +103,7 @@ export async function syncFormSubmissionToGhl(params: FormSyncParams): Promise<{
     (globalThis as { __BT10_LEGACY_GHL_FORM_DIRECT_OWNER__?: boolean })
       .__BT10_LEGACY_GHL_FORM_DIRECT_OWNER__ === true;
   if (!legacyDirectOwner) {
-    const { db } = await import("../db");
-    const { contactProviderProjections } = await import("@shared/schema");
-    await db.insert(contactProviderProjections).values({
-      contactId: params.contactId,
-      provider: "ghl",
-      projectionKey: `contact:${params.contactId}`,
-      state: "pending",
-    }).onConflictDoUpdate({
-      target: [
-        contactProviderProjections.contactId,
-        contactProviderProjections.provider,
-        contactProviderProjections.projectionKey,
-      ],
-      set: { state: "pending", lastErrorCode: null, nextAttemptAt: new Date(), updatedAt: new Date() },
-    });
+    await enqueueGhlContactProjection(params.contactId, "form_submission");
     return { success: true };
   }
   try {
