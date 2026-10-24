@@ -89,3 +89,13 @@ processing → 409; duplicate of an applied event → 200 without reprocessing. 
 
 `scripts/certification/test-ghl-projection-authority.ts` (disposable database, fake GHL transport, provider denial
 fatal). Run: `npx tsx scripts/run-sfp2060-predeploy-disposable.ts --only scripts/certification/test-ghl-projection-authority.ts`.
+
+## Additions after the review of the first build (migration 0375)
+
+- Every provider mutation passes the final fence and appends a `ghl_projection_operations` row before the request; the
+  transport recorder hooks (`ghl-dispatch-recorder.ts`) enforce this for retries too.
+- Export authority is evidence only (intake source events on or after the cutoff). Producers do not decide it.
+- Lookup before create is `lookupGhlContactStrict`; the reconciler of ambiguous creates uses the identity pinned on the
+  original create operation.
+- Webhook receipt identity is the stable occurrence key; effect-applied is recorded before the acknowledgement.
+- Owner-facing approval material: `docs/ghl-native-safety-approval-package.md`.

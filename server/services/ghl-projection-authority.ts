@@ -16,6 +16,7 @@
  */
 import { sql } from "drizzle-orm";
 import { db, pool } from "../db";
+import { ghlIntakeEvidenceSql } from "./ghl-projection-convergence";
 
 export const CONTACT_PROJECTION_MAX_ATTEMPTS = 8;
 export const PROJECTION_LEASE_MS = 2 * 60 * 1000;
@@ -34,9 +35,19 @@ export interface ExportFacts {
   archived: boolean;
   hasGhlContactId: boolean;
   localOnlyFence: boolean;
+  /** A source event of an intake category on or after the policy cutoff exists for this contact. */
+  currentIntakeEvidence: boolean;
+  /** Disposition of the contact's existing open projection, if any. An existing hold is never released by a producer. */
+  existingOpenDisposition?: ExportDisposition | null;
 }
 
-/** Pure export classification for a newly requested projection. */
+/**
+ * Pure export classification for a newly requested projection.
+ *
+ * Authority comes only from contact facts and source evidence. Queue row creation time and the caller's source
+ * string never grant it: an unlinked contact without current-intake evidence is held as historical bulk, and an
+ * existing hold survives every background producer.
+ */
 export function classifyExportDisposition(facts: ExportFacts): { disposition: ExportDisposition; reason: string } {
   if (facts.localOnlyFence) return { disposition: "local_only", reason: "pipeline_local_only_fence" };
   const recordClass = (facts.recordClass ?? "unknown").toLowerCase();
@@ -44,9 +55,21 @@ export function classifyExportDisposition(facts: ExportFacts): { disposition: Ex
     return { disposition: "test_local_only", reason: `record_class_${recordClass}` };
   }
   if (facts.archived) return { disposition: "closed", reason: "contact_archived" };
+  if (facts.currentIntakeEvidence) {
+    return facts.hasGhlContactId
+      ? { disposition: "linked_update", reason: "linked_contact_with_current_intake" }
+      : { disposition: "current_intake", reason: "current_intake_evidence" };
+  }
+  const existing = facts.existingOpenDisposition ?? null;
+  if (existing === "current_intake" || existing === "linked_update") {
+    return { disposition: existing, reason: "existing_exportable_projection_preserved" };
+  }
+  if (existing === "historical_hold" || existing === "unclassified") {
+    return { disposition: "historical_hold", reason: "existing_historical_hold_preserved" };
+  }
   return facts.hasGhlContactId
     ? { disposition: "linked_update", reason: "linked_contact_changed" }
-    : { disposition: "current_intake", reason: "current_intake_new_desired_state" };
+    : { disposition: "historical_hold", reason: "no_current_intake_evidence" };
 }
 
 export interface SqlExecutor { execute(query: any): Promise<any> }
@@ -55,6 +78,21 @@ const rowsOf = (result: any): any[] => (result?.rows ?? result ?? []) as any[];
 export type EnqueueOutcome =
   | { action: "coalesced" | "reopened" | "inserted"; disposition: ExportDisposition; desiredGeneration: number }
   | { action: "not_exported"; disposition: ExportDisposition; reason: string };
+
+/**
+ * Disposition the stored row ends with. Atomic in SQL so a concurrent producer cannot release a hold or demote
+ * exportable work: an existing hold stays a hold unless this request carries current-intake evidence, and an
+ * existing exportable row is never downgraded to a hold.
+ */
+const resultingDispositionSql = (disposition: string, hasEvidence: boolean) => sql`
+  CASE
+    WHEN ${disposition} IN ('current_intake', 'linked_update') THEN
+      CASE WHEN p.export_disposition IN ('historical_hold', 'unclassified') AND NOT ${hasEvidence}::boolean
+           THEN p.export_disposition ELSE ${disposition} END
+    WHEN ${disposition} = 'historical_hold' THEN
+      CASE WHEN p.export_disposition IN ('current_intake', 'linked_update') THEN p.export_disposition ELSE 'historical_hold' END
+    ELSE ${disposition}
+  END`;
 
 /** The only producer entry point for GHL contact projections. Safe inside a caller's transaction. */
 export async function enqueueContactProjection(
@@ -66,15 +104,25 @@ export async function enqueueContactProjection(
     SELECT c.record_class, (c.archived_at IS NOT NULL) AS archived, (c.ghl_contact_id IS NOT NULL) AS has_ghl,
            EXISTS (SELECT 1 FROM contact_provider_projections f
                    WHERE f.contact_id = c.id AND f.provider = 'ghl' AND f.state = 'terminal'
-                     AND f.terminal_reason = 'pipeline_local_only') AS fence
+                     AND f.terminal_reason = 'pipeline_local_only') AS fence,
+           ${sql.raw(ghlIntakeEvidenceSql("c.id"))} AS evidence,
+           (SELECT o.export_disposition FROM contact_provider_projections o
+            WHERE o.contact_id = c.id AND o.provider = 'ghl' AND o.state IN ('pending', 'retry', 'processing')
+            ORDER BY (o.authority_version IS NOT NULL) DESC, o.created_at DESC LIMIT 1) AS open_disposition
     FROM contacts c WHERE c.id = ${contactId}
   `))[0];
   if (!facts) return { action: "not_exported", disposition: "closed", reason: "contact_missing" };
+  const hasEvidence = facts.evidence === true;
   const { disposition, reason } = classifyExportDisposition({
     recordClass: facts.record_class, archived: facts.archived === true,
     hasGhlContactId: facts.has_ghl === true, localOnlyFence: facts.fence === true,
+    currentIntakeEvidence: hasEvidence,
+    existingOpenDisposition: (facts.open_disposition ?? null) as ExportDisposition | null,
   });
-  if (!EXPORTABLE_DISPOSITIONS.includes(disposition)) return { action: "not_exported", disposition, reason };
+  // Held rows are recorded (visible, never exported); work that must never exist is not recorded at all.
+  if (!EXPORTABLE_DISPOSITIONS.includes(disposition) && disposition !== "historical_hold") {
+    return { action: "not_exported", disposition, reason };
+  }
   const key = `contact:${contactId}`;
 
   for (let round = 0; round < 3; round++) {
@@ -84,8 +132,13 @@ export async function enqueueContactProjection(
       UPDATE contact_provider_projections p
       SET desired_generation = p.desired_generation + 1,
           authority_version = COALESCE(p.authority_version, 1),
-          export_disposition = ${disposition},
-          export_reason = ${reason},
+          export_reason = CASE WHEN p.export_disposition IN ('historical_hold', 'unclassified')
+                                    AND ${disposition} IN ('current_intake', 'linked_update') AND NOT ${hasEvidence}::boolean
+                               THEN p.export_reason
+                               WHEN p.export_disposition IN ('current_intake', 'linked_update') AND ${disposition} = 'historical_hold'
+                               THEN p.export_reason
+                               ELSE ${reason} END,
+          export_disposition = ${resultingDispositionSql(disposition, hasEvidence)},
           source_kind = ${input.sourceKind},
           updated_at = now()
       WHERE p.id = (
@@ -93,9 +146,11 @@ export async function enqueueContactProjection(
         WHERE contact_id = ${contactId} AND provider = 'ghl' AND state IN ('pending', 'retry', 'processing')
         ORDER BY (authority_version IS NOT NULL) DESC, created_at DESC, id DESC
         LIMIT 1 FOR UPDATE)
-      RETURNING p.desired_generation
+      RETURNING p.desired_generation, p.export_disposition
     `))[0];
-    if (coalesced) return { action: "coalesced", disposition, desiredGeneration: Number(coalesced.desired_generation) };
+    if (coalesced) {
+      return { action: "coalesced", disposition: coalesced.export_disposition as ExportDisposition, desiredGeneration: Number(coalesced.desired_generation) };
+    }
 
     // 2. A closed projection for the same contact gets a new generation with a fresh failure budget.
     //    Local-only fences, merge supersession and unresolved ambiguity are never reopened.
@@ -144,6 +199,19 @@ export async function enqueueContactProjection(
   throw new Error("GHL_PROJECTION_ENQUEUE_CONTENDED");
 }
 
+/**
+ * Live export eligibility, shared by the claimant, the final dispatch fence and the backlog counts so they cannot
+ * drift: exportable disposition, real (non test/demo/synthetic) record, not archived, no local-only fence.
+ * Expects aliases p (projection) and c (contact).
+ */
+export const EXPORT_ELIGIBLE_SQL = `p.authority_version IS NOT NULL
+        AND p.export_disposition IN ('current_intake', 'linked_update')
+        AND c.record_class NOT IN ('test', 'demo', 'synthetic')
+        AND c.archived_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM contact_provider_projections f
+                        WHERE f.contact_id = p.contact_id AND f.provider = 'ghl'
+                          AND f.state = 'terminal' AND f.terminal_reason = 'pipeline_local_only')`;
+
 export interface ClaimedProjection {
   id: string;
   contactId: number;
@@ -169,12 +237,7 @@ export async function claimEligibleProjections(limit: number): Promise<ClaimedPr
       JOIN contacts c ON c.id = p.contact_id
       WHERE p.provider = 'ghl'
         AND p.authority_version IS NOT NULL
-        AND p.export_disposition IN ('current_intake', 'linked_update')
-        AND c.record_class NOT IN ('test', 'demo', 'synthetic')
-        AND c.archived_at IS NULL
-        AND NOT EXISTS (SELECT 1 FROM contact_provider_projections f
-                        WHERE f.contact_id = p.contact_id AND f.provider = 'ghl'
-                          AND f.state = 'terminal' AND f.terminal_reason = 'pipeline_local_only')
+        AND ${sql.raw(EXPORT_ELIGIBLE_SQL)}
         AND p.attempt_count < ${CONTACT_PROJECTION_MAX_ATTEMPTS}
         AND ((p.state IN ('pending', 'retry') AND p.next_attempt_at <= now())
              OR (p.state = 'processing' AND p.lease_expires_at < now()))
@@ -197,23 +260,106 @@ export async function claimEligibleProjections(limit: number): Promise<ClaimedPr
   }));
 }
 
-/** Extend a held claim. Returns false when the claim was lost (never write after a false). */
+/** Extend a held claim. Returns false when the claim was lost or its lease already expired (never write after a false). */
 export async function renewProjectionLease(row: ClaimedProjection): Promise<boolean> {
   const result = await pool.query(
     `UPDATE contact_provider_projections SET lease_expires_at = now() + ($3::int * interval '1 millisecond'), updated_at = now()
-     WHERE id = $1 AND claim_token = $2 AND state = 'processing'`,
-    [row.id, row.claimToken, PROJECTION_LEASE_MS]);
+     WHERE id = $1 AND claim_token = $2 AND state = 'processing'
+       AND claimed_generation = $4 AND lease_expires_at > now()`,
+    [row.id, row.claimToken, PROJECTION_LEASE_MS, row.claimedGeneration]);
   return (result.rowCount ?? 0) === 1;
 }
 
-/** Persist dispatch identity before any provider I/O is possible. */
+/** Persist dispatch identity before any provider I/O is possible. Requires a live, unexpired claim. */
 export async function reserveProjectionDispatch(row: ClaimedProjection): Promise<string | null> {
   const operationId = globalThis.crypto.randomUUID();
   const result = await pool.query(
     `UPDATE contact_provider_projections SET dispatch_state = 'reserved', dispatch_operation_id = $3, updated_at = now()
-     WHERE id = $1 AND claim_token = $2 AND state = 'processing'`,
-    [row.id, row.claimToken, operationId]);
+     WHERE id = $1 AND claim_token = $2 AND state = 'processing'
+       AND claimed_generation = $4 AND lease_expires_at > now()`,
+    [row.id, row.claimToken, operationId, row.claimedGeneration]);
   return (result.rowCount ?? 0) === 1 ? operationId : null;
+}
+
+export class GhlProjectionFenceError extends Error {
+  readonly code = "GHL_PROJECTION_FENCE_LOST";
+  constructor(detail = "claim, lease, generation or export eligibility changed before the provider request") {
+    super(`GHL_PROJECTION_FENCE_LOST:${detail}`);
+    this.name = "GhlProjectionFenceError";
+  }
+}
+
+export interface ProjectionOperationRecord {
+  operationId: string;
+  operationClass: string;
+  method: string;
+  identity?: { email?: string | null; phone?: string | null } | null;
+}
+
+/**
+ * Final dispatch fence plus durable operation record, in one statement, immediately before every provider mutation
+ * (including transport retries). It succeeds only while this worker still holds the claim with an unexpired lease,
+ * for the claimed generation, and the contact is still export-eligible; it extends the lease and appends the
+ * operation row in the same atomic step. A false result means no request may be sent.
+ */
+export async function beginProjectionOperation(row: ClaimedProjection, op: ProjectionOperationRecord): Promise<boolean> {
+  const result = await pool.query(
+    `WITH fenced AS (
+       UPDATE contact_provider_projections p
+       SET lease_expires_at = now() + ($4::int * interval '1 millisecond'), updated_at = now()
+       FROM contacts c
+       WHERE p.id = $1 AND p.claim_token = $2 AND p.state = 'processing'
+         AND p.claimed_generation = $3 AND p.lease_expires_at > now()
+         AND c.id = p.contact_id AND ${EXPORT_ELIGIBLE_SQL}
+       RETURNING p.id, p.contact_id
+     )
+     INSERT INTO ghl_projection_operations
+       (id, projection_id, contact_id, claim_token, generation, operation_class, method, state, identity)
+     SELECT $5::uuid, f.id, f.contact_id, $2::uuid, $3::bigint, $6, $7, 'reserved', $8::jsonb FROM fenced f
+     RETURNING id`,
+    [row.id, row.claimToken, row.claimedGeneration, PROJECTION_LEASE_MS, op.operationId, op.operationClass, op.method,
+      op.identity ? JSON.stringify({ email: op.identity.email ?? null, phone: op.identity.phone ?? null }) : null]);
+  return (result.rowCount ?? 0) === 1;
+}
+
+/** Record the observed outcome of a provider request. Never throws: an unsettled row is read as ambiguous. */
+export async function settleProjectionOperation(operationId: string, state: "ok" | "http_error" | "ambiguous", httpStatus: number | null): Promise<void> {
+  try {
+    await pool.query(
+      `UPDATE ghl_projection_operations SET state = $2, http_status = $3, settled_at = now()
+       WHERE id = $1 AND state = 'reserved'`, [operationId, state, httpStatus]);
+  } catch (error) {
+    console.error("[GHL Projection] Could not settle operation record (it will be read as ambiguous):", (error as Error).message);
+  }
+}
+
+export interface PinnedCreateOperation {
+  operationId: string;
+  state: string;
+  createdAt: Date;
+  identity: { email: string | null; phone: string | null };
+}
+
+/** The original identity sent by the most recent unresolved contact create, if any. */
+export async function getUnresolvedCreateOperation(projectionId: string): Promise<PinnedCreateOperation | null> {
+  const r = (await pool.query(
+    `SELECT o.id, o.state, o.created_at, o.identity FROM ghl_projection_operations o
+     JOIN contacts c ON c.id = o.contact_id
+     WHERE o.projection_id = $1 AND o.operation_class = 'contact_create'
+       AND (o.state IN ('reserved', 'ambiguous') OR (o.state = 'ok' AND c.ghl_contact_id IS NULL))
+       AND NOT (COALESCE(o.identity, '{}'::jsonb) ? 'reconciled')
+     ORDER BY o.created_at DESC LIMIT 1`, [projectionId])).rows[0];
+  if (!r) return null;
+  return {
+    operationId: r.id, state: r.state, createdAt: new Date(r.created_at),
+    identity: { email: r.identity?.email ?? null, phone: r.identity?.phone ?? null },
+  };
+}
+
+export async function markCreateOperationReconciled(operationId: string, result: "linked" | "absent"): Promise<void> {
+  await pool.query(
+    `UPDATE ghl_projection_operations SET identity = COALESCE(identity, '{}'::jsonb) || jsonb_build_object('reconciled', $2::text)
+     WHERE id = $1`, [operationId, result]);
 }
 
 export type ProjectionSettlement =
@@ -222,7 +368,9 @@ export type ProjectionSettlement =
   | { kind: "retry"; code: string; receipts: Record<string, unknown>; consumedAttempt: boolean; dispatched: boolean; delayMs: number }
   | { kind: "ambiguous"; code: string; receipts: Record<string, unknown>; delayMs?: number }
   | { kind: "terminal"; reason: string; code: string; receipts: Record<string, unknown>; consumedAttempt: boolean; dispatched: boolean }
-  | { kind: "released" };
+  | { kind: "released" }
+  /** Unresolvable ambiguous identity: held for review with a specific code; the ambiguity evidence is retained. */
+  | { kind: "hold"; code: string };
 
 /**
  * Generation-CAS settlement fenced by the claim token. Returns false when the claim was lost.
@@ -290,6 +438,14 @@ export async function settleProjection(row: ClaimedProjection, outcome: Projecti
           dispatch_state = 'ambiguous', component_receipts = ${JSON.stringify(outcome.receipts)}::jsonb, updated_at = now()
         WHERE ${where} RETURNING id`);
       break;
+    case "hold":
+      result = await db.execute(sql`
+        UPDATE contact_provider_projections SET
+          state = 'terminal', terminal_reason = 'DISPATCH_AMBIGUOUS_UNRESOLVED', last_error_code = ${outcome.code},
+          completed_at = now(), claim_token = NULL, lease_expires_at = NULL, claimed_generation = NULL,
+          dispatch_state = 'ambiguous', updated_at = now()
+        WHERE ${where} RETURNING id`);
+      break;
     case "terminal":
       result = await db.execute(sql`
         UPDATE contact_provider_projections SET
@@ -305,7 +461,7 @@ export async function settleProjection(row: ClaimedProjection, outcome: Projecti
   return rowsOf(result).length === 1;
 }
 
-/** Clear an unresolved ambiguity after a read-only reconciliation found the remote identity state. */
+/** Clear an unresolved ambiguity after a read-only reconciliation proved the remote identity state. */
 export async function clearProjectionAmbiguity(row: ClaimedProjection): Promise<void> {
   await pool.query(
     `UPDATE contact_provider_projections SET dispatch_state = 'none', dispatch_operation_id = NULL, updated_at = now()
@@ -314,26 +470,51 @@ export async function clearProjectionAmbiguity(row: ClaimedProjection): Promise<
 }
 
 /**
- * Release rows stranded by pre-fix deferral accounting: open rows that consumed their whole budget
- * while the latest outcome was a proven local deferral (no provider dispatch recorded, contact never
- * linked to a remote record). Succeeded, terminal, in-flight and ambiguous rows are never touched.
- * Idempotent: a repaired row has attempt_count 0 and no longer matches.
+ * Release rows stranded by pre-fix deferral accounting: open rows that consumed their whole budget while the latest
+ * outcome was a proven local deferral. Proof is durable: no provider dispatch was ever recorded for the row (no
+ * dispatch timestamp, no operation record) and no dispatch is outstanding. Linked and unlinked contacts are both
+ * covered. Succeeded, terminal and in-flight rows are never touched. Idempotent: a repaired row has attempt_count 0.
  */
 export async function repairStrandedProjections(maxRows = 500): Promise<number> {
   const result = await pool.query(
     `WITH stranded AS (
        SELECT p.id FROM contact_provider_projections p
-       JOIN contacts c ON c.id = p.contact_id
        WHERE p.provider = 'ghl' AND p.state IN ('pending', 'retry')
          AND p.attempt_count >= $1
          AND p.last_error_code = 'GHL_SYNC_DEFERRED_BLOCKED'
-         AND p.dispatch_state = 'none' AND p.last_dispatch_at IS NULL
-         AND c.ghl_contact_id IS NULL
+         AND p.dispatch_state = 'none' AND p.last_dispatch_at IS NULL AND p.dispatch_count = 0
+         AND NOT EXISTS (SELECT 1 FROM ghl_projection_operations o WHERE o.projection_id = p.id AND o.method <> 'GET')
        ORDER BY p.created_at LIMIT $2
        FOR UPDATE OF p SKIP LOCKED)
      UPDATE contact_provider_projections p
      SET attempt_count = 0, next_attempt_at = now(), updated_at = now()
      FROM stranded WHERE p.id = stranded.id
+     RETURNING p.id`,
+    [CONTACT_PROJECTION_MAX_ATTEMPTS, maxRows]);
+  return result.rowCount ?? 0;
+}
+
+/**
+ * Rows whose lease expired while they were `processing` with an exhausted failure budget are never claimable again
+ * (the claimant requires attempts < max). They are closed with a proof-driven disposition: an unresolved dispatch
+ * becomes the never-reopened DISPATCH_AMBIGUOUS_UNRESOLVED terminal; a row with no outstanding dispatch becomes
+ * MAX_ATTEMPTS_EXHAUSTED. A live lease is never touched.
+ */
+export async function reconcileExhaustedProjections(maxRows = 500): Promise<number> {
+  const result = await pool.query(
+    `WITH exhausted AS (
+       SELECT p.id FROM contact_provider_projections p
+       WHERE p.provider = 'ghl' AND p.state = 'processing' AND p.lease_expires_at < now()
+         AND p.attempt_count >= $1
+       ORDER BY p.created_at LIMIT $2
+       FOR UPDATE OF p SKIP LOCKED)
+     UPDATE contact_provider_projections p
+     SET state = 'terminal',
+         terminal_reason = CASE WHEN p.dispatch_state IN ('reserved', 'ambiguous') THEN 'DISPATCH_AMBIGUOUS_UNRESOLVED' ELSE 'MAX_ATTEMPTS_EXHAUSTED' END,
+         dispatch_state = CASE WHEN p.dispatch_state = 'reserved' THEN 'ambiguous' ELSE p.dispatch_state END,
+         last_error_code = COALESCE(p.last_error_code, 'LEASE_EXPIRED_AFTER_BUDGET'),
+         completed_at = now(), claim_token = NULL, lease_expires_at = NULL, claimed_generation = NULL, updated_at = now()
+     FROM exhausted WHERE p.id = exhausted.id
      RETURNING p.id`,
     [CONTACT_PROJECTION_MAX_ATTEMPTS, maxRows]);
   return result.rowCount ?? 0;
@@ -353,19 +534,23 @@ export interface ProjectionBacklog {
 }
 
 export async function getProjectionBacklog(): Promise<ProjectionBacklog> {
+  // Eligible counts mirror the claimant exactly (shared predicate + attempt budget); everything an exportable row
+  // cannot actually claim (archived, test, local-only fence, exhausted budget) is reported as held, not eligible.
+  const eligible = `${EXPORT_ELIGIBLE_SQL} AND p.attempt_count < ${CONTACT_PROJECTION_MAX_ATTEMPTS}`;
   const r = (await pool.query(`
     SELECT
-      count(*) FILTER (WHERE state = 'pending' AND export_disposition IN ('current_intake','linked_update')) AS eligible_pending,
-      count(*) FILTER (WHERE state = 'retry' AND export_disposition IN ('current_intake','linked_update') AND next_attempt_at <= now()) AS eligible_retry_due,
-      count(*) FILTER (WHERE state = 'retry' AND export_disposition IN ('current_intake','linked_update') AND next_attempt_at > now()) AS eligible_retry_waiting,
-      count(*) FILTER (WHERE state = 'processing') AS processing,
-      count(*) FILTER (WHERE state IN ('pending','retry') AND export_disposition IN ('historical_hold','unclassified')) AS held_historical,
-      count(*) FILTER (WHERE export_disposition IN ('local_only','test_local_only')) AS local_only_or_test,
-      count(*) FILTER (WHERE dispatch_state = 'ambiguous') AS ambiguous,
-      count(*) FILTER (WHERE state = 'terminal') AS terminal,
-      count(*) FILTER (WHERE state = 'succeeded') AS succeeded,
-      COALESCE(sum(deferral_count), 0) AS deferrals_total
-    FROM contact_provider_projections WHERE provider = 'ghl'`)).rows[0];
+      count(*) FILTER (WHERE p.state = 'pending' AND ${eligible}) AS eligible_pending,
+      count(*) FILTER (WHERE p.state = 'retry' AND ${eligible} AND p.next_attempt_at <= now()) AS eligible_retry_due,
+      count(*) FILTER (WHERE p.state = 'retry' AND ${eligible} AND p.next_attempt_at > now()) AS eligible_retry_waiting,
+      count(*) FILTER (WHERE p.state = 'processing') AS processing,
+      count(*) FILTER (WHERE p.state IN ('pending','retry') AND p.export_disposition IN ('historical_hold','unclassified')) AS held_historical,
+      count(*) FILTER (WHERE p.export_disposition IN ('local_only','test_local_only')
+                          OR (p.export_disposition IN ('current_intake','linked_update') AND p.state IN ('pending','retry') AND NOT (${eligible}))) AS local_only_or_test,
+      count(*) FILTER (WHERE p.dispatch_state = 'ambiguous') AS ambiguous,
+      count(*) FILTER (WHERE p.state = 'terminal') AS terminal,
+      count(*) FILTER (WHERE p.state = 'succeeded') AS succeeded,
+      COALESCE(sum(p.deferral_count), 0) AS deferrals_total
+    FROM contact_provider_projections p JOIN contacts c ON c.id = p.contact_id WHERE p.provider = 'ghl'`)).rows[0];
   const n = (v: unknown) => Number(v ?? 0);
   return {
     eligiblePending: n(r.eligible_pending), eligibleRetryDue: n(r.eligible_retry_due),
@@ -377,7 +562,7 @@ export async function getProjectionBacklog(): Promise<ProjectionBacklog> {
 }
 
 export type ProjectionReceiptLevel =
-  | "recorded_locally" | "waiting" | "processing" | "provider_accepted" | "held" | "ambiguous" | "failed" | "not_applicable";
+  | "recorded_locally" | "waiting" | "processing" | "provider_accepted" | "provider_accepted_partial" | "held" | "ambiguous" | "failed" | "not_applicable";
 
 export interface ContactProjectionView {
   present: boolean;
@@ -421,7 +606,12 @@ export async function describeContactProjection(contactId: number): Promise<Cont
   else if (row.state === "processing") receiptLevel = "processing";
   else if (row.state === "retry") receiptLevel = "waiting";
   else if (row.state === "pending") receiptLevel = Number(row.deferral_count) > 0 ? "waiting" : "recorded_locally";
-  else if (row.state === "succeeded") receiptLevel = Number(row.settled_generation) >= Number(row.desired_generation) ? "provider_accepted" : "waiting";
+  else if (row.state === "succeeded") {
+    const components = ((row.component_receipts ?? {}) as { components?: Record<string, { state?: string }> }).components ?? {};
+    const held = Object.values(components).some(component => component?.state === "held");
+    receiptLevel = Number(row.settled_generation) >= Number(row.desired_generation)
+      ? (held ? "provider_accepted_partial" : "provider_accepted") : "waiting";
+  }
   else receiptLevel = "recorded_locally";
   return {
     present: true, receiptLevel, state: row.state, exportDisposition: row.export_disposition, exportReason: row.export_reason,

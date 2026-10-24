@@ -1459,7 +1459,7 @@ function PromptsDocument() {
   );
 }
 
-type GhlConnectionState = "verified" | "failed" | "unknown";
+type GhlConnectionState = "verified" | "failed" | "auth_failed" | "unknown";
 
 // Shown only when a read-only provider check FAILED. A passing or unverified check never shows token guidance.
 const GHL_TOKEN_STEP = {
@@ -1468,6 +1468,16 @@ const GHL_TOKEN_STEP = {
   detail: "The read-only GHL connection check failed. In GHL → Settings → Private Integrations confirm the token and its scopes, then update GHL_PRIVATE_INTEGRATION_TOKEN in Replit Secrets and restart the app. Do not rotate the token if the check passes.",
   link: "https://app.gohighlevel.com/settings/private-integrations",
   linkLabel: "GHL Private Integrations",
+  critical: true,
+};
+
+// A read-only check that failed for a non-authentication reason (timeout, provider 5xx, rate limit) is not a token problem.
+const GHL_READ_FAILURE_STEP = {
+  step: 1,
+  title: "GHL read check failed — the token is not implicated",
+  detail: "The read-only GHL connection check failed, but not with an authentication error. It may be a timeout, a provider outage or rate limiting. Re-run the check later before changing any credential.",
+  link: undefined as string | undefined,
+  linkLabel: undefined as string | undefined,
   critical: true,
 };
 
@@ -1501,11 +1511,12 @@ const GHL_SETUP_STEPS = [
 ];
 
 function GhlSetupGuide({ configuredCount, totalCount, connection }: { configuredCount: number; totalCount: number; connection: GhlConnectionState }) {
-  const steps = connection === "failed" ? [GHL_TOKEN_STEP, ...GHL_SETUP_STEPS] : GHL_SETUP_STEPS;
+  const steps = connection === "auth_failed" ? [GHL_TOKEN_STEP, ...GHL_SETUP_STEPS]
+    : connection === "failed" ? [GHL_READ_FAILURE_STEP, ...GHL_SETUP_STEPS] : GHL_SETUP_STEPS;
   const [open, setOpen] = useState(false);
   const allDone = configuredCount === totalCount;
   // Missing optional reference IDs are informational, never an alarm.
-  const alarm = connection === "failed";
+  const alarm = connection === "failed" || connection === "auth_failed";
 
   return (
     <Card className={`border-2 ${alarm ? "border-amber-400 dark:border-amber-700" : "border-border"}`} data-testid="card-ghl-setup-guide">
@@ -1646,7 +1657,10 @@ export default function GhlWorkflowManager() {
     staleTime: 60_000,
   });
   const connection: GhlConnectionState = connectionQuery.isError ? "unknown"
-    : connectionQuery.data ? (connectionQuery.data.connected ? "verified" : "failed") : "unknown";
+    : connectionQuery.data
+      ? (connectionQuery.data.connected ? "verified"
+        : /\b(?:401|403)\b|unauthori[sz]ed|forbidden|invalid.*(?:token|api key)|not configured/i.test(connectionQuery.data.error ?? "") ? "auth_failed" : "failed")
+      : "unknown";
 
   const mappingByName = Object.fromEntries(mappings.map(m => [m.sequenceName, m]));
 

@@ -8,8 +8,12 @@
  * - a provider attempt that returned a classified result, and
  * - an ambiguous outcome (request may have been processed; response lost).
  *
- * Nothing here performs I/O or stores payloads: only method, a coarse
- * operation class and an outcome. No contact data, no tokens.
+ * The recorder can carry durable hooks. `begin` runs BEFORE every provider mutation (including each transport retry):
+ * it is the final dispatch fence (claim, unexpired lease, generation, export eligibility) and appends the durable
+ * operation row; if it refuses or fails, no request is sent. `settle` records the observed outcome.
+ *
+ * Only method, a coarse operation class, an outcome and (for creates) the identity actually sent are stored. No
+ * tokens, no payload bodies.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
 
@@ -31,8 +35,19 @@ export interface GhlDispatchRecord {
   httpStatus: number | null;
 }
 
+export interface GhlDispatchMeta {
+  identity?: { email?: string | null; phone?: string | null } | null;
+}
+
+export interface GhlDispatchHooks {
+  /** Throws (or rejects) to forbid the request; nothing is sent in that case. */
+  begin(record: GhlDispatchRecord, meta: GhlDispatchMeta): Promise<void>;
+  settle(record: GhlDispatchRecord): Promise<void>;
+}
+
 export interface GhlDispatchRecorder {
   records: GhlDispatchRecord[];
+  hooks?: GhlDispatchHooks;
 }
 
 const storage = new AsyncLocalStorage<GhlDispatchRecorder>();
@@ -62,8 +77,8 @@ export function isAmbiguousDispatchMessage(message: string | undefined): boolean
   return !!message && /GHL_AMBIGUOUS_DISPATCH|aborted|AbortError|timed? ?out|ETIMEDOUT|ECONNRESET|socket hang up|fetch failed/i.test(message);
 }
 
-export function withGhlDispatchRecorder<T>(fn: () => Promise<T>): Promise<{ result: T; recorder: GhlDispatchRecorder } | { error: unknown; recorder: GhlDispatchRecorder }> {
-  const recorder: GhlDispatchRecorder = { records: [] };
+export function withGhlDispatchRecorder<T>(fn: () => Promise<T>, hooks?: GhlDispatchHooks): Promise<{ result: T; recorder: GhlDispatchRecorder } | { error: unknown; recorder: GhlDispatchRecorder }> {
+  const recorder: GhlDispatchRecorder = { records: [], hooks };
   return storage.run(recorder, async () => {
     try {
       return { result: await fn(), recorder };
@@ -73,10 +88,12 @@ export function withGhlDispatchRecorder<T>(fn: () => Promise<T>): Promise<{ resu
   });
 }
 
-/** Called immediately before the final HTTP request. Returns a settle function. */
-export function markGhlDispatch(method: string, path: string): (outcome: Exclude<GhlDispatchOutcome, "pending">, httpStatus?: number | null) => void {
+/** Called immediately before the final HTTP request. Rejects when the final dispatch fence refuses the request. */
+export async function markGhlDispatch(
+  method: string, path: string, meta: GhlDispatchMeta = {},
+): Promise<(outcome: Exclude<GhlDispatchOutcome, "pending">, httpStatus?: number | null) => Promise<void>> {
   const recorder = storage.getStore();
-  if (!recorder) return () => {};
+  if (!recorder) return async () => {};
   const record: GhlDispatchRecord = {
     operationId: globalThis.crypto.randomUUID(),
     method: method.toUpperCase(),
@@ -84,10 +101,14 @@ export function markGhlDispatch(method: string, path: string): (outcome: Exclude
     outcome: "pending",
     httpStatus: null,
   };
+  const isMutation = record.method !== "GET" && record.operation !== "contact_read";
+  // Fence and durable append happen BEFORE the record joins the in-memory list: a refused request is not a dispatch.
+  if (isMutation && recorder.hooks) await recorder.hooks.begin(record, meta);
   recorder.records.push(record);
-  return (outcome, httpStatus = null) => {
+  return async (outcome, httpStatus = null) => {
     record.outcome = outcome;
     record.httpStatus = httpStatus;
+    if (isMutation && recorder.hooks) await recorder.hooks.settle(record);
   };
 }
 

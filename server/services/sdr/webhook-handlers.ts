@@ -343,9 +343,8 @@ export async function handleCallOutcome(rawPayload: unknown): Promise<void> {
 
   if (ghlContactId && merchant) {
     const { enrollInGhlWorkflowCompliant } = await import("../ghl-workflows");
-    enrollInGhlWorkflowCompliant({ workflowKey: "post_call_review", ghlContactId, contactId: crmContactForCallOutcome?.id, metadata: { callId: (payload as any).callId, disposition: (payload as any).status, merchantId: merchant.id } }).catch(err =>
-      console.error(`[SDR Webhook] GHL post_call_review enrollment error for contact ${ghlContactId}:`, err)
-    );
+    // Awaited (not fire-and-forget): a failed handoff fails the receipt so the provider retry recovers it.
+    await enrollInGhlWorkflowCompliant({ workflowKey: "post_call_review", ghlContactId, contactId: crmContactForCallOutcome?.id, metadata: { callId: (payload as any).callId, disposition: (payload as any).status, merchantId: merchant.id } });
   }
 
   // ── Wave C1: Auto-trigger statement request on positive call outcomes ────────
@@ -409,11 +408,12 @@ export async function handleAppointmentBooked(rawPayload: unknown): Promise<void
       const [crmContact] = await db.select().from(contacts).where(eq(contacts.ghlContactId, ghlContactId)).limit(1);
       if (crmContact) {
         const appointmentDate = payload.startTime ? new Date(payload.startTime) : new Date(Date.now() + 24 * 60 * 60 * 1000);
-        enrollInAppointmentWorkflow({
+        // Enrollment and tagging are awaited so a failure fails the receipt and the provider retry recovers it.
+        await enrollInAppointmentWorkflow({
           contactId: crmContact.id,
           appointmentDate,
           calendarType: "sales",
-        }).catch(err => console.error("[SDR Webhook] Appointment workflow enrollment failed:", err));
+        });
 
         import("../analytics-events").then(({ recordAnalyticsEvent }) => {
           recordAnalyticsEvent({
@@ -424,15 +424,15 @@ export async function handleAppointmentBooked(rawPayload: unknown): Promise<void
           });
         }).catch(() => {});
 
-        tagContactForInboxOrganization({
+        await tagContactForInboxOrganization({
           contactId: crmContact.id,
           ghlContactId,
           sequenceName: "Appointment Booked",
           stage: "meeting_set",
-        }).catch(err => console.warn("[SDR Webhook] Appointment tagging failed:", err));
+        });
       }
-    } catch (lookupErr) {
-      console.warn("[SDR Webhook] CRM contact lookup for appointment failed:", lookupErr);
+    } catch (handoffErr) {
+      throw handoffErr instanceof Error ? handoffErr : new Error(String(handoffErr));
     }
   }
 

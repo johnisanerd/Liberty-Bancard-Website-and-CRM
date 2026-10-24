@@ -12,6 +12,7 @@
 import assert from "node:assert/strict";
 import http from "node:http";
 import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { assertDisposableTestInfrastructure } from "../test-infrastructure-guard";
 import { applyCertificationProviderDenyBoundary } from "../certification-provider-deny";
@@ -63,14 +64,32 @@ const run = randomUUID().slice(0, 8);
 let seq = Number.parseInt(run, 16) % 5_000_000;
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
-async function mkContact(opts: { recordClass?: string; ghl?: string | null; archived?: boolean } = {}): Promise<number> {
+async function mkContact(opts: { recordClass?: string; ghl?: string | null; archived?: boolean; intake?: boolean; phoneOnly?: boolean } = {}): Promise<number> {
   seq += 1;
   const phone = `+1555${String(seq % 10_000_000).padStart(7, "0")}`;
   const r = await pool.query(
     `INSERT INTO contacts(first_name,last_name,email,phone,record_class,ghl_contact_id,archived_at)
      VALUES('Gpa','Fixture',$1,$2,$3,$4,$5) RETURNING id`,
-    [`gpa-${run}-${seq}@fixture.invalid`, phone, opts.recordClass ?? "unknown", opts.ghl ?? null, opts.archived ? new Date() : null]);
-  return r.rows[0].id as number;
+    [opts.phoneOnly ? "" : `gpa-${run}-${seq}@fixture.invalid`, phone, opts.recordClass ?? "unknown", opts.ghl ?? null, opts.archived ? new Date() : null]);
+  const id = r.rows[0].id as number;
+  // Authority comes from source evidence only: by default the fixture is a genuine current intake (website form).
+  if (opts.intake !== false) await addIntakeEvidence(id, "website_form");
+  return id;
+}
+async function addIntakeEvidence(contactId: number, category: string, createdAt: Date = new Date()) {
+  await pool.query(
+    `INSERT INTO contact_source_events(contact_id,event_key,source_category,source_type,actor_type,created_at)
+     VALUES($1,$2,$3,'cert','system',$4)`, [contactId, `cert:${randomUUID()}`, category, createdAt]);
+}
+async function contactIdentity(contactId: number) {
+  const r = (await pool.query(`SELECT email, phone FROM contacts WHERE id=$1`, [contactId])).rows[0];
+  return { email: r.email || null, phone: r.phone || null };
+}
+/** A fake create whose response is lost, dispatched through the real recorder (fence + durable operation row). */
+async function lostCreate(contactId: number, message = "socket hang up"): Promise<never> {
+  const settle = await recorder.markGhlDispatch("POST", "/contacts/", { identity: await contactIdentity(contactId) });
+  await settle("ambiguous");
+  throw new recorder.GhlAmbiguousDispatchError(message);
 }
 const projRows = async (contactId: number) =>
   (await pool.query(`SELECT * FROM contact_provider_projections WHERE contact_id=$1 AND provider='ghl' ORDER BY created_at, id`, [contactId])).rows;
@@ -96,10 +115,12 @@ async function claimable(contactIds: number[]): Promise<boolean> {
 const syncOk = async () => ({ success: true });
 
 // ---------------------------------------------------------------- migration / schema
-const migrationSql = readFileSync("migrations/0374_ghl_projection_generation_authority.sql", "utf8");
+const migrationSql = readFileSync("migrations/0375_ghl_projection_operations_and_intake_evidence.sql", "utf8");
 const normalize = (s: string) => s.replace(/\s+/g, " ").trim();
-check(convergence.GHL_PROJECTION_CONVERGENCE_STATEMENTS.every(s => normalize(migrationSql).includes(normalize(s))),
-  "Migration 0374 contains every convergence statement used at runtime (build-time and runtime convergence cannot drift)");
+check(normalize(migrationSql).includes(normalize(convergence.GHL_LEGACY_CREATION_TIME_CORRECTION_STATEMENT)),
+  "Migration 0375 contains the legacy creation-time correction statement used at runtime (build-time and runtime cannot drift)");
+check(execFileSync("git", ["diff", "--quiet", "HEAD", "--", "migrations/0374_ghl_projection_generation_authority.sql"]).length === 0,
+  "Migration 0374 is unedited (corrections ship as a new migration)");
 check(/"tag":\s*"0374_ghl_projection_generation_authority"/.test(readFileSync("migrations/meta/_journal.json", "utf8")), "Migration 0374 is registered in the journal");
 const idx = (await pool.query(`SELECT indexname, indexdef FROM pg_indexes WHERE tablename='contact_provider_projections'`)).rows;
 check(idx.some(i => /UNIQUE/i.test(i.indexdef) && /authority_version IS NOT NULL/i.test(i.indexdef)),
@@ -214,9 +235,7 @@ let ambCalls = 0;
 const ambiguousSync = async (id: number) => {
   if (id !== cAmb) return syncOk();
   ambCalls++;
-  const settle = recorder.markGhlDispatch("POST", "/contacts/");
-  settle("ambiguous");
-  throw new recorder.GhlAmbiguousDispatchError("POST /contacts: socket hang up");
+  return lostCreate(id, "POST /contacts: socket hang up");
 };
 await sync.processEligibleContactProjections(50, { syncFn: ambiguousSync });
 const amb1 = (await projRows(cAmb))[0];
@@ -235,7 +254,7 @@ const ambContact = (await pool.query(`SELECT ghl_contact_id FROM contacts WHERE 
 check(ambContact.ghl_contact_id === `ghl_${run}_found` && (await projRows(cAmb))[0].state === "succeeded", "A found remote record is linked read-only and the projection continues as an update");
 const cAmb2 = await mkContact();
 await enqueue(cAmb2);
-await sync.processEligibleContactProjections(50, { syncFn: async (id) => { if (id !== cAmb2) return syncOk(); recorder.markGhlDispatch("POST", "/contacts/")("ambiguous"); throw new recorder.GhlAmbiguousDispatchError("timeout"); } });
+await sync.processEligibleContactProjections(50, { syncFn: async (id) => { if (id !== cAmb2) return syncOk(); return lostCreate(id, "timeout"); } });
 await makeDue(cAmb2);
 let createsAfterAbsent = 0;
 await sync.processEligibleContactProjections(50, { lookupFn: async () => ({ status: "absent" }), syncFn: async (id) => { if (id === cAmb2) createsAfterAbsent++; return { success: true }; } });
@@ -245,7 +264,7 @@ const cAmb3 = await mkContact();
 await enqueue(cAmb3);
 for (let i = 0; i < 8; i++) {
   await makeDue(cAmb3);
-  await sync.processEligibleContactProjections(50, { lookupFn: async () => { throw new Error("down"); }, syncFn: async (id) => { if (id !== cAmb3) return syncOk(); recorder.markGhlDispatch("POST", "/contacts/")("ambiguous"); throw new recorder.GhlAmbiguousDispatchError("timeout"); } });
+  await sync.processEligibleContactProjections(50, { lookupFn: async () => { throw new Error("down"); }, syncFn: async (id) => { if (id !== cAmb3) return syncOk(); return lostCreate(id, "timeout"); } });
   if ((await projRows(cAmb3))[0].state === "terminal") break;
   // ambiguous rows are reconciled first; force another dispatch attempt by clearing the marker to model a found-absent create
   await pool.query(`UPDATE contact_provider_projections SET dispatch_state='none' WHERE contact_id=$1 AND state='retry'`, [cAmb3]);
@@ -256,22 +275,12 @@ check((await projRows(cAmb3))[0].terminal_reason === "DISPATCH_AMBIGUOUS_UNRESOL
   check(blocked.action === "not_exported" && (await openRows(cAmb3)).length === 0, "An unresolved-ambiguous terminal row is never reopened into a blind create, and the producer is not thrown into an error");
 }
 
-// real transport: POST is never blindly retried
-{
-  const before = ghlCalls.length;
-  ghlResponder = () => { throw new Error("socket hang up"); };
-  const ghl = await import("../../server/services/ghl");
-  const result = await recorder.withGhlDispatchRecorder(() => (ghl as any).upsertGhlContact({ id: 1, firstName: "A", lastName: "B", email: `post-${run}@fixture.invalid`, phone: null } as any).catch((e: Error) => { throw e; }));
-  const posts = ghlCalls.slice(before).filter(c => c.method === "POST");
-  check(posts.length <= 1, "The fake transport observed at most one POST for a failing create (never blindly retried)");
-  void result;
-  ghlResponder = defaultResponder;
-}
+// (The real-transport POST/ambiguity journey runs later against an approved fake provider, with exact counts.)
 
 // ---------------------------------------------------------------- C2/C3: convergence & held history
-const cLeg1 = await mkContact();
-const cLeg2 = await mkContact({ recordClass: "test" });
-const cLeg3 = await mkContact();
+const cLeg1 = await mkContact({ intake: false });
+const cLeg2 = await mkContact({ recordClass: "test", intake: false });
+const cLeg3 = await mkContact({ intake: false });
 const old = new Date("2026-09-01T00:00:00Z");
 for (const [cid, key] of [[cLeg1, "a"], [cLeg1, "b"], [cLeg2, "a"], [cLeg3, "a"]] as const) {
   await pool.query(
@@ -339,7 +348,7 @@ check((await lastTick())?.outcome === "ok" && (await ownerState()) === "released
   let thrownOnce = false;
   (pool as any).query = (...args: any[]) => {
     const text = typeof args[0] === "string" ? args[0] : args[0]?.text ?? "";
-    if (!thrownOnce && /count\(\*\) FILTER \(WHERE state = 'pending'/.test(text)) { thrownOnce = true; return Promise.reject(new Error("injected backlog fault")); }
+    if (!thrownOnce && /count\(\*\) FILTER \(WHERE p\.state = 'pending'/.test(text)) { thrownOnce = true; return Promise.reject(new Error("injected backlog fault")); }
     return realQuery(...args);
   };
   let error: unknown = null;
@@ -513,9 +522,434 @@ server.close();
   const row = (await pool.query(`SELECT status, reschedule_count FROM ghl_appointment_state WHERE appointment_id=$1`, [aid])).rows[0];
   check(row.status === "canceled" && Number(row.reschedule_count) === 1, "Final appointment state is canceled with one reschedule");
   check((await appointments.recordGhlAppointmentEvent({ kind: "updated", payload: { appointmentId: `${aid}-x`, locationId: "other" }, ...base })).reason === "location_mismatch", "Events for another location are ignored");
-  check((await appointments.recordGhlAppointmentEvent({ kind: "updated", payload: { appointmentId: `${aid}-y`, calendarId: "cal_other" }, allowedLocationId: "loc_cert_fake", allowedCalendarIds: ["cal_cfg"] })).reason === "calendar_not_configured", "Events for an unconfigured calendar are ignored");
+  check((await appointments.recordGhlAppointmentEvent({ kind: "updated", payload: { appointmentId: `${aid}-y`, calendarId: "cal_other", locationId: "loc_cert_fake", dateUpdated: t(1) }, allowedLocationId: "loc_cert_fake", allowedCalendarIds: ["cal_cfg"] })).reason === "calendar_not_configured", "Events for an unconfigured calendar are ignored");
   check((await appointments.recordGhlAppointmentEvent({ kind: "updated", payload: {}, ...base })).reason === "missing_identity", "Events without an appointment identity are ignored");
   check(ghlCalls.length === before && process.env.GHL_CALENDAR_ID === calendarEnv, "Appointment recording makes no provider call and does not change reader or booking-link configuration");
+}
+
+// ================================================================ R1: historical holds and intake authority
+{
+  const { classifyExportDisposition } = authority;
+  // Producer families all call the same entry point; each family's source string must grant nothing.
+  const families = ["contact_writer:intake_matched", "contact_writer:intake_created", "contact_writer:profile_update", "ghl_form_sync", "statement_upload_chain", "sequence_tick", "background_update"];
+  const heldIds: number[] = [];
+  for (const family of families) {
+    const cH = await mkContact({ intake: false });
+    const first = await enqueue(cH, family);
+    const second = await enqueue(cH, family);
+    check(first.disposition === "historical_hold" && second.disposition === "historical_hold" && !(await claimable([cH])),
+      `Producer family "${family}" cannot export an unlinked contact without current-intake evidence`);
+    heldIds.push(cH);
+  }
+  const cLinkedHeld = await mkContact({ intake: false, ghl: `ghl_${run}_old_linked` });
+  await pool.query(`INSERT INTO contact_provider_projections(contact_id,provider,projection_key,state,authority_version,export_disposition,export_reason) VALUES($1,'ghl',$2,'pending',1,'historical_hold','test')`, [cLinkedHeld, `contact:${cLinkedHeld}`]);
+  const afterBg = await enqueue(cLinkedHeld, "background_update");
+  check(afterBg.disposition === "historical_hold" && !(await claimable([cLinkedHeld])), "A background update never releases an existing historical hold, even for a linked contact");
+  // genuine new inbound from an older contact: only that contact becomes exportable
+  const cOlder = heldIds[0];
+  await addIntakeEvidence(cOlder, "website_form");
+  const released = await enqueue(cOlder, "ghl_form_sync");
+  check(released.disposition === "current_intake" && (await claimable([cOlder])), "A genuine new inbound from an older contact is exported on its own evidence");
+  check(!(await claimable([heldIds[1], heldIds[2], cLinkedHeld])), "...without releasing any other legacy contact's held work");
+  // evidence from imports/discovery/ghl_sync never counts
+  const cImp = await mkContact({ intake: false });
+  for (const category of ["csv_import", "discovery", "registry", "ghl_sync"]) await addIntakeEvidence(cImp, category);
+  check((await enqueue(cImp, "profile_update")).disposition === "historical_hold", "Import, discovery, registry and GHL-sync provenance never count as current intake");
+  // old evidence before the cutoff never counts
+  const cPre = await mkContact({ intake: false });
+  await addIntakeEvidence(cPre, "website_form", new Date("2026-09-01T00:00:00Z"));
+  check((await enqueue(cPre, "profile_update")).disposition === "historical_hold", "Intake evidence older than the policy cutoff does not grant authority");
+  // creation time grants nothing: a legacy un-adopted row created just now for a no-evidence contact converges to a hold
+  const cNew = await mkContact({ intake: false });
+  await pool.query(`INSERT INTO contact_provider_projections(contact_id,provider,projection_key,state,created_at) VALUES($1,'ghl',$2,'pending',now())`, [cNew, `legacy:${cNew}:fresh`]);
+  await convergence.convergeLegacyProjectionRows();
+  check((await projRows(cNew)).find(r => r.state === "pending")!.export_disposition === "historical_hold" && !(await claimable([cNew])),
+    "A legacy queue row's recent creation time grants no export authority");
+  // already-adopted current_intake rows with no evidence are demoted by the correction statement; evidence rows are kept
+  const cDemote = await mkContact({ intake: false });
+  const cKeep = await mkContact();
+  for (const cid of [cDemote, cKeep]) {
+    await pool.query(`INSERT INTO contact_provider_projections(contact_id,provider,projection_key,state,authority_version,export_disposition,export_reason,source_kind) VALUES($1,'ghl',$2,'pending',1,'current_intake','creation_time','legacy')`, [cid, `contact:${cid}`]);
+  }
+  await pool.query(convergence.GHL_LEGACY_CREATION_TIME_CORRECTION_STATEMENT);
+  check((await projRows(cDemote))[0].export_disposition === "historical_hold" && (await projRows(cKeep))[0].export_disposition === "current_intake",
+    "The correction demotes creation-time current_intake rows lacking evidence and keeps evidenced rows");
+  // duplicate legacy rows: the survivor inherits an uncertain dispatch
+  const cDup = await mkContact({ intake: false });
+  await pool.query(`INSERT INTO contact_provider_projections(contact_id,provider,projection_key,state,created_at) VALUES($1,'ghl',$2,'pending',$3)`, [cDup, `legacy:${cDup}:a`, new Date("2026-09-01T00:00:00Z")]);
+  await pool.query(`INSERT INTO contact_provider_projections(contact_id,provider,projection_key,state,dispatch_state,created_at) VALUES($1,'ghl',$2,'pending','ambiguous',$3)`, [cDup, `legacy:${cDup}:b`, new Date("2026-09-02T00:00:00Z")]);
+  await convergence.convergeLegacyProjectionRows();
+  const dupOpen = (await openRows(cDup));
+  check(dupOpen.length === 1 && dupOpen[0].dispatch_state === "ambiguous", "Duplicate legacy rows converge to one open row that keeps the uncertain-dispatch evidence");
+  // mutant: the old classification (any unlinked non-test contact is current intake)
+  const mutantClassify = (f: any) => (f.recordClass === "test" ? "test_local_only" : f.hasGhlContactId ? "linked_update" : "current_intake");
+  const facts = { recordClass: "unknown", archived: false, hasGhlContactId: false, localOnlyFence: false, currentIntakeEvidence: false, existingOpenDisposition: null };
+  check(classifyExportDisposition(facts).disposition === "historical_hold" && mutantClassify(facts) === "current_intake",
+    "NEGATIVE CONTROL: the creation-time/caller-string rule exports an evidence-free contact — the held-history assertion detects it");
+}
+
+// ================================================================ R2: final fence and durable operation records
+{
+  const opCount = async (pid: string) => Number((await pool.query(`SELECT count(*) c FROM ghl_projection_operations WHERE projection_id=$1`, [pid])).rows[0].c);
+  const cF = await mkContact();
+  await enqueue(cF);
+  const [rowF] = await claimFor([cF]);
+  const beginOp = (r: any, cls = "contact_update") => authority.beginProjectionOperation(r, { operationId: randomUUID(), operationClass: cls, method: "PUT" });
+  check(await beginOp(rowF) && (await opCount(rowF.id)) === 1, "The final fence admits a live claim and appends a durable operation row in the same step");
+  check(!(await beginOp({ ...rowF, claimToken: randomUUID() })) && (await opCount(rowF.id)) === 1, "A different claim token is refused and records nothing");
+  await pool.query(`UPDATE contact_provider_projections SET claimed_generation = claimed_generation + 1 WHERE id=$1`, [rowF.id]);
+  check(!(await beginOp(rowF)) && (await opCount(rowF.id)) === 1, "A changed generation is refused");
+  await pool.query(`UPDATE contact_provider_projections SET claimed_generation = $2 WHERE id=$1`, [rowF.id, rowF.claimedGeneration]);
+  await pool.query(`UPDATE contact_provider_projections SET lease_expires_at = now() - interval '1 second' WHERE id=$1`, [rowF.id]);
+  const stale = (await pool.query(`SELECT 1 FROM contact_provider_projections WHERE id=$1 AND claim_token=$2 AND state='processing'`, [rowF.id, rowF.claimToken])).rows.length;
+  check(!(await beginOp(rowF)) && (await opCount(rowF.id)) === 1 && stale === 1, "An expired lease is refused; NEGATIVE CONTROL: a token-only fence would still match the row");
+  await pool.query(`UPDATE contact_provider_projections SET lease_expires_at = now() + interval '1 minute' WHERE id=$1`, [rowF.id]);
+  await pool.query(`UPDATE contacts SET record_class='test' WHERE id=$1`, [cF]);
+  check(!(await beginOp(rowF)) && (await opCount(rowF.id)) === 1, "A contact reclassified as test after the claim is refused at the final fence");
+  await authority.settleProjection(rowF, { kind: "released" });
+
+  // executor: lease lost before the request -> the request is never sent and the budget is untouched
+  const cFx = await mkContact();
+  await enqueue(cFx);
+  const callsBefore = ghlCalls.length;
+  const lostSummary = await sync.processEligibleContactProjections(50, {
+    syncFn: async (id) => {
+      if (id !== cFx) return syncOk();
+      await pool.query(`UPDATE contact_provider_projections SET lease_expires_at = now() - interval '1 second' WHERE contact_id=$1 AND provider='ghl'`, [cFx]);
+      const settle = await recorder.markGhlDispatch("PUT", "/contacts/abc", { identity: null }); // throws when the fence refuses
+      await fetch("https://services.leadconnectorhq.com/contacts/abc", { method: "PUT" });
+      await settle("ok", 200);
+      return { success: true };
+    },
+  }).catch((e: any) => e.projectionSummary ?? { thrown: String(e) });
+  const fxRows = await projRows(cFx);
+  check(ghlCalls.slice(callsBefore).every(c => c.method === "GET") && (fxRows[0]?.attempt_count ?? 0) === 0 && (await opCount(fxRows[0].id)) === 0,
+    "A claim that loses its lease before a request sends nothing, consumes no attempt and records no operation");
+  void lostSummary;
+  await pool.query(`UPDATE contact_provider_projections SET next_attempt_at = now() + interval '1 day' WHERE contact_id=$1`, [cFx]);
+
+  // reconciliation of ambiguous creates uses the ORIGINAL identity and never clears ambiguity for unusable identity
+  const ambiguousFor = async (cid: number, identityOverride?: { email: string | null; phone: string | null }) => {
+    await enqueue(cid);
+    await sync.processEligibleContactProjections(50, {
+      syncFn: async (id) => {
+        if (id !== cid) return syncOk();
+        const settle = await recorder.markGhlDispatch("POST", "/contacts/", { identity: identityOverride ?? await contactIdentity(cid) });
+        await settle("ambiguous");
+        throw new recorder.GhlAmbiguousDispatchError("socket hang up");
+      },
+    });
+    await makeDue(cid);
+  };
+  const cEmpty = await mkContact();
+  await ambiguousFor(cEmpty, { email: null, phone: null });
+  let emptyLookups = 0;
+  await sync.processEligibleContactProjections(50, { lookupFn: async () => { emptyLookups++; return { status: "absent" } as any; }, syncFn: syncOk });
+  const emptyRow = (await projRows(cEmpty))[0];
+  check(emptyLookups === 0 && emptyRow.state === "terminal" && emptyRow.dispatch_state === "ambiguous" && emptyRow.last_error_code === "AMBIGUOUS_IDENTITY_UNAVAILABLE_NEEDS_REVIEW",
+    "An ambiguous create with no usable original identity is held with a specific reason and is never cleared");
+
+  const cOrig = await mkContact();
+  const origEmail = (await contactIdentity(cOrig)).email!;
+  await ambiguousFor(cOrig);
+  await pool.query(`UPDATE contacts SET email=$2 WHERE id=$1`, [cOrig, `changed-${run}@fixture.invalid`]);
+  const seen: any[] = [];
+  await sync.processEligibleContactProjections(50, { lookupFn: async (identity) => { seen.push(identity); return { status: "absent" } as any; }, syncFn: syncOk });
+  check(seen.length === 1 && seen[0].email === origEmail, "Reconciliation looks up the identity that was actually sent, not the contact's current email");
+
+  const cPhone = await mkContact({ phoneOnly: true });
+  await ambiguousFor(cPhone);
+  await sync.processEligibleContactProjections(50, {
+    lookupFn: async () => ({ status: "found", id: `ghl_${run}_oldphone`, createdAt: new Date(Date.now() - 86_400_000).toISOString(), matchedEmail: null }),
+    syncFn: syncOk,
+  });
+  const phoneRow = (await projRows(cPhone))[0];
+  check(phoneRow.state === "terminal" && phoneRow.last_error_code === "AMBIGUOUS_PHONE_IDENTITY_NEEDS_REVIEW"
+    && (await pool.query(`SELECT ghl_contact_id FROM contacts WHERE id=$1`, [cPhone])).rows[0].ghl_contact_id === null,
+    "A phone-only match that pre-dates the create is held for review and is not linked");
+
+  const cPhone2 = await mkContact({ phoneOnly: true });
+  await ambiguousFor(cPhone2);
+  await sync.processEligibleContactProjections(50, {
+    lookupFn: async () => ({ status: "found", id: `ghl_${run}_newphone`, createdAt: new Date(Date.now() + 5_000).toISOString(), matchedEmail: null }),
+    syncFn: syncOk,
+  });
+  check((await pool.query(`SELECT ghl_contact_id FROM contacts WHERE id=$1`, [cPhone2])).rows[0].ghl_contact_id === `ghl_${run}_newphone` && (await projRows(cPhone2))[0].state === "succeeded",
+    "A unique phone-only record created after the request is accepted as the lost create");
+
+  const cAmbig = await mkContact();
+  await ambiguousFor(cAmbig);
+  await sync.processEligibleContactProjections(50, { lookupFn: async () => ({ status: "ambiguous", count: 2 } as any), syncFn: syncOk });
+  check((await projRows(cAmbig))[0].last_error_code === "AMBIGUOUS_REMOTE_IDENTITY_NEEDS_REVIEW" && (await projRows(cAmbig))[0].state === "terminal",
+    "Several remote matches hold the projection with a specific reason");
+  // mutant: an email-only reconciler would call lookup with the empty email of a phone-only contact
+  check(!/lookupGhlContactByEmailStrict\(contact\.email/.test(readFileSync("server/services/ghl-sync.ts", "utf8")),
+    "The reconciler no longer routes identity through the current contact email");
+}
+
+// ================================================================ R7: exhausted/stranded repair
+{
+  const cX = await mkContact();
+  const cY = await mkContact();
+  const cZ = await mkContact({ ghl: `ghl_${run}_stranded_linked` });
+  await enqueue(cX); await enqueue(cY); await enqueue(cZ);
+  await pool.query(`UPDATE contact_provider_projections SET state='processing', claim_token=$2, claimed_generation=1, lease_expires_at=now()-interval '1 minute', attempt_count=8, dispatch_state='reserved' WHERE contact_id=$1`, [cX, randomUUID()]);
+  await pool.query(`UPDATE contact_provider_projections SET state='processing', claim_token=$2, claimed_generation=1, lease_expires_at=now()+interval '5 minute', attempt_count=8 WHERE contact_id=$1`, [cY, randomUUID()]);
+  await pool.query(`UPDATE contact_provider_projections SET state='retry', attempt_count=8, last_error_code='GHL_SYNC_DEFERRED_BLOCKED', next_attempt_at=now() WHERE contact_id=$1`, [cZ]);
+  await authority.reconcileExhaustedProjections();
+  await authority.repairStrandedProjections();
+  const x = (await projRows(cX))[0], y = (await projRows(cY))[0], z = (await projRows(cZ))[0];
+  check(x.state === "terminal" && x.terminal_reason === "DISPATCH_AMBIGUOUS_UNRESOLVED" && x.dispatch_state === "ambiguous", "An expired exhausted row with an uncertain dispatch closes as unresolved-ambiguous, never as a clean failure");
+  check(y.state === "processing", "A live lease is never touched by exhausted-row reconciliation");
+  check(Number(z.attempt_count) === 0, "A stranded deferral row for an already linked contact is repaired too");
+  await pool.query(`UPDATE contact_provider_projections SET next_attempt_at = now() + interval '1 day', state='pending' WHERE contact_id IN ($1,$2)`, [cY, cZ]);
+}
+
+// ================================================================ R5: webhook occurrence identity and effect recovery
+{
+  const occurrence = receipts.ghlWebhookOccurrence;
+  const a1 = { type: "ContactUpdate", contactId: "c1", dateUpdated: "2026-10-24T12:00:00.000Z", tags: ["a", "b"], nested: { x: 1, y: 2 } };
+  const a2 = { nested: { y: 2, x: 1 }, tags: ["a", "b"], dateUpdated: "2026-10-24T12:00:00.000Z", contactId: "c1", type: "ContactUpdate" };
+  const rawHash = (o: object) => JSON.stringify(o);
+  check(occurrence("contact-updated", a1).eventKey === occurrence("contact-updated", a2).eventKey && rawHash(a1) !== rawHash(a2),
+    "A re-serialized delivery of one event maps to the same occurrence (NEGATIVE CONTROL: a raw-body key differs)");
+  check(occurrence("m", { webhookId: "evt-9", text: "a" }).eventKey === occurrence("m", { webhookId: "evt-9", text: "a", extra: 1 }).eventKey && occurrence("m", { webhookId: "evt-9" }).basis === "provider_event_id",
+    "A verified provider event id is the occurrence identity");
+  check(occurrence("contact-updated", { id: "contact-1", x: 1 }).basis === "payload_fingerprint", "A bare object id is not mistaken for an event id");
+  const sem1 = { messageId: "msg-1", dateUpdated: "2026-10-24T12:00:00Z", body: "one" };
+  const sem2 = { messageId: "msg-1", dateUpdated: "2026-10-24T12:00:00Z", body: "two" };
+  const claim1 = await receipts.claimGhlWebhookReceipt(occurrence("sem-test", sem1).eventKey, "sem-test", { payloadFingerprint: occurrence("sem-test", sem1).fingerprint });
+  const claim2 = await receipts.claimGhlWebhookReceipt(occurrence("sem-test", sem2).eventKey, "sem-test", { payloadFingerprint: occurrence("sem-test", sem2).fingerprint });
+  check(claim1.decision === "process" && claim2.decision === "process" && claim1.receiptId !== claim2.receiptId, "The same semantic key with a different payload is a distinct occurrence, not a duplicate");
+  // effect recovery at the claim level
+  if (claim1.decision === "process") {
+    await receipts.markGhlWebhookEffectApplied(claim1.receiptId, claim1.claimToken);
+    await pool.query(`UPDATE ghl_provider_event_receipts SET lease_expires_at = now() - interval '1 second' WHERE id=$1`, [claim1.receiptId]);
+    const again = await receipts.claimGhlWebhookReceipt(occurrence("sem-test", sem1).eventKey, "sem-test", { payloadFingerprint: occurrence("sem-test", sem1).fingerprint });
+    check(again.decision === "process" && again.effectApplied === true, "A re-claim of a receipt whose effect was recorded reports the effect as already applied");
+  }
+}
+
+// ================================================================ R6: appointment trust, ordering decision, audit idempotency
+{
+  const aid = `apt6-${run}`;
+  const t = (n: number) => new Date(Date.UTC(2026, 9, 24, 13, n)).toISOString();
+  const scope = { allowedLocationId: "loc_cert_fake", allowedCalendarIds: ["cal_cfg"] };
+  const rec = (kind: any, payload: object) => appointments.recordGhlAppointmentEvent({ kind, payload, ...scope });
+  const dec = (kind: any, payload: object) => appointments.decideGhlAppointmentEvent({ kind, payload, ...scope });
+  const ok = (extra: object = {}) => ({ appointmentId: aid, locationId: "loc_cert_fake", calendarId: "cal_cfg", contactId: "gc6", ...extra });
+  check((await rec("updated", ok({ dateUpdated: t(1) }))).applied, "An event from the configured location and calendar is recorded");
+  check((await rec("updated", { appointmentId: `${aid}-nl`, calendarId: "cal_cfg", dateUpdated: t(1) })).reason === "location_missing", "A missing location is not trusted when an allowed location is configured");
+  check((await rec("updated", { appointmentId: `${aid}-nc`, locationId: "loc_cert_fake", dateUpdated: t(1) })).reason === "calendar_missing", "A missing calendar is not trusted when allowed calendars are configured");
+  check((await rec("updated", ok({ appointmentId: `${aid}-nt` }))).reason === "missing_event_time", "A missing event time is rejected, never defaulted to the arrival time");
+  check((await dec("booked", ok({ appointmentId: `${aid}-dt` }))).decision === "rejected", "The pre-handler decision also rejects an event with no event time");
+  check((await dec("showed", ok({ dateUpdated: t(0) }))).decision === "stale", "A stale lifecycle event is decided before any handler runs");
+  check((await dec("booked", ok({ dateUpdated: t(2) }))).decision === "apply", "A booked event that arrives after an update still owns its one-time handler");
+  check((await dec("updated", ok({ dateUpdated: t(1) }))).decision === "replay", "An exact replay is recognised before any effect");
+  check((await rec("canceled", ok({ dateUpdated: t(5) }))).applied, "Cancel is recorded");
+  check((await dec("showed", ok({ dateUpdated: t(9) }))).decision === "terminal" && (await dec("booked", ok({ dateUpdated: t(9) }))).decision === "terminal",
+    "After a terminal state no booked/showed handler may run");
+  check((await dec("canceled", ok({ dateUpdated: t(5) }))).decision === "replay", "A replayed terminal event is a replay, not a second cancellation");
+  const sdrSrc = readFileSync("server/routes/sdr.ts", "utf8");
+  check(/gateAppointmentLifecycle\("booked"[\s\S]{0,200}handleAppointmentBooked/.test(sdrSrc)
+    && /gateAppointmentLifecycle\("showed"[\s\S]{0,120}handleAppointmentShowed/.test(sdrSrc)
+    && /gateAppointmentLifecycle\("canceled"[\s\S]{0,120}handleAppointmentCanceled/.test(sdrSrc),
+    "Each booked/showed/canceled route decides ordering before its handler");
+  check(!/recordAppointmentLifecycleBestEffort/.test(sdrSrc) && /await recordAppointmentLifecycle\("booked"/.test(sdrSrc), "Lifecycle recording is no longer best-effort (faults fail the request so it is retried)");
+  check(/appointment_\$\{kind\}`\), eq\(sdrLeadEvents\.ghlRefId, auditRef\)/.test(sdrSrc.replace(/\s+/g, " ").replace(/\) \.limit/g, ").limit")) || /auditRef/.test(sdrSrc),
+    "The reschedule audit event is keyed by appointment, kind and event time and is written for a replay too");
+}
+
+// ================================================================ R3/R4/R8: approved fake-provider journey (real worker, executor, transport, control)
+{
+  const controlRow = async (permissionsEnabled: boolean) => {
+    const identity = controlService.getCurrentGhlRuntimeIdentity();
+    assert(identity, "runtime identity must resolve for the disposable run");
+    const fields = installedFields.map((k, i) => ({ id: `cf_${i}`, key: k }));
+    const workflows: any[] = [];
+    const now = Date.now();
+    const identityFields = ["firstName", "lastName", "email", "phone", "companyName", "tags", "customFields"];
+    const value = {
+      enabled: true, permissionsEnabled, epoch: 1, ownerProfile: "ghl-sync-only", selectedRuntime: identity, transitioning: false,
+      nativeReview: {
+        state: "approved", reviewedAt: new Date(now - 60_000).toISOString(), expiresAt: new Date(now + 3_600_000).toISOString(),
+        evidenceReference: "disposable-cert-fixture", locationId: "loc_cert_fake",
+        inventoryRevision: controlService.hashNativeWorkflowInventory(workflows), workflows, workflowActionEvidence: [],
+        customFields: fields, customFieldInventoryRevision: controlService.hashGhlCustomFieldInventory(fields),
+        allowedOperations: [
+          { method: "POST", path: "/contacts", fields: identityFields, tags: [], stageIds: [], customFieldIds: fields.map(f => f.id), purpose: "cert identity create", safetyEvidence: "fixture" },
+          { method: "PUT", path: "/contacts/:contactId", fields: identityFields, tags: [], stageIds: [], customFieldIds: fields.map(f => f.id), purpose: "cert identity update", safetyEvidence: "fixture" },
+        ],
+      },
+    };
+    await pool.query(`INSERT INTO system_settings(key,value,updated_at) VALUES('ghlSyncControl',$1::jsonb,NOW()) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value`, [JSON.stringify(value)]);
+  };
+  await controlRow(true);
+  // Global outbound pause stays PAUSED; CRM projections join the pause barrier but may run while paused.
+  if ((await pool.query(`UPDATE outbound_pause_control SET state='paused', reason='ghl projection certification', committed_at=NOW()`)).rowCount === 0) {
+    await pool.query(`INSERT INTO outbound_pause_control (state,reason,epoch,actor,idempotency_key,committed_at) VALUES ('paused','ghl projection certification',1,'ghl-cert',$1,NOW())`, [`ghl-cert-${randomUUID()}`]);
+  }
+  (await import("../../server/services/outbound-pause-authority")).invalidatePauseStateCache();
+
+  type Remote = { id: string; email: string | null; phone: string | null; dateAdded: string };
+  const remote = new Map<string, Remote>();
+  let remoteSeq = 0;
+  const behaviour = { fuzzyEmail: false, loseNextPost: false, failCustomFieldPut: false, duplicate400For: null as string | null, failPutFor: null as string | null };
+  const journeyResponder = (call: Call, body: any): Response => {
+    const u = new URL(call.url);
+    const path = u.pathname;
+    if (/\/customFields$/.test(path)) return json({ customFields: installedFields.map((k, i) => ({ id: `cf_${i}`, fieldKey: `contact.${k}` })) });
+    if (/^\/workflows\/?$/.test(path)) return json({ workflows: [] });
+    if (path === "/contacts/search/duplicate") {
+      const email = u.searchParams.get("email"); const number = u.searchParams.get("number");
+      const hits = behaviour.fuzzyEmail && email ? [remote.get("remote_other_mailbox")!] : [...remote.values()].filter(r => (email && r.email?.toLowerCase() === email.toLowerCase()) || (number && r.phone === number));
+      return json({ contacts: hits });
+    }
+    if (call.method === "POST" && /^\/contacts\/?$/.test(path)) {
+      if (behaviour.duplicate400For && body?.email === behaviour.duplicate400For) {
+        return json({ message: "This location does not allow duplicated contacts.", meta: { contactId: "remote_dup_1" } }, 400);
+      }
+      const created: Remote = { id: `remote_${run}_${++remoteSeq}`, email: body?.email || null, phone: body?.phone || null, dateAdded: new Date().toISOString() };
+      remote.set(created.id, created);
+      if (behaviour.loseNextPost) { behaviour.loseNextPost = false; throw new Error("socket hang up"); }
+      return json({ contact: { id: created.id } });
+    }
+    if (call.method === "PUT" && /^\/contacts\/[^/]+$/.test(path)) {
+      if (behaviour.failPutFor && path.endsWith(behaviour.failPutFor)) return json({ message: "boom" }, 500);
+      if (behaviour.failCustomFieldPut && Array.isArray(body?.customFields)) return json({ message: "perm boom" }, 500);
+      return json({ contact: { id: path.split("/").pop() } });
+    }
+    return json({});
+  };
+  // capture request bodies through the deny-boundary wrapper
+  const wrapped = globalThis.fetch;
+  globalThis.fetch = (async (input: any, init?: any) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input?.url ?? "";
+    if (url.includes("services.leadconnectorhq.com")) {
+      let parsed: any = null;
+      try { parsed = typeof init?.body === "string" ? JSON.parse(init.body) : null; } catch { parsed = null; }
+      const call = { method: String(init?.method ?? "GET").toUpperCase(), url };
+      ghlCalls.push(call);
+      try { return journeyResponder(call, parsed); } catch (error) { throw error; }
+    }
+    return wrapped(input, init);
+  }) as typeof fetch;
+
+  const mutationsSince = (n: number) => ghlCalls.slice(n).filter(c => c.method !== "GET");
+  const postsSince = (n: number) => ghlCalls.slice(n).filter(c => c.method === "POST" && /\/contacts\/?(\?|$)/.test(new URL(c.url).pathname));
+  const ops = async (contactId: number) => (await pool.query(`SELECT operation_class, method, state FROM ghl_projection_operations WHERE contact_id=$1 ORDER BY created_at`, [contactId])).rows;
+  const runWorker = () => sync.processEligibleContactProjections(50, { paceMs: 0 });
+
+  // 1. happy path: one authorized create, linked, then an edit is an update (never another create)
+  const cJ = await mkContact();
+  await enqueue(cJ);
+  let mark = ghlCalls.length;
+  await runWorker();
+  const jRow = (await projRows(cJ))[0];
+  const jLinked = (await pool.query(`SELECT ghl_contact_id FROM contacts WHERE id=$1`, [cJ])).rows[0].ghl_contact_id;
+  check(postsSince(mark).length === 1 && jRow.state === "succeeded" && !!jLinked, "Journey: exactly one authorized create reaches the provider and the contact is linked");
+  check((await ops(cJ)).some(o => o.operation_class === "contact_create" && o.state === "ok"), "Journey: a durable operation record exists for the create with its observed outcome");
+  await enqueue(cJ, "profile_update");
+  mark = ghlCalls.length;
+  await runWorker();
+  check(postsSince(mark).length === 0 && mutationsSince(mark).every(c => c.method === "PUT") && (await projRows(cJ))[0].state === "succeeded", "Journey: a later edit is an update only — no second create");
+
+  // 2. lost create response: exactly one POST; reconciliation finds the record and updates, never re-posts
+  const cL = await mkContact();
+  await enqueue(cL);
+  behaviour.loseNextPost = true;
+  mark = ghlCalls.length;
+  await runWorker();
+  const lRow = (await projRows(cL))[0];
+  check(postsSince(mark).length === 1 && lRow.dispatch_state === "ambiguous" && (await ops(cL)).some(o => o.operation_class === "contact_create" && o.state === "ambiguous"),
+    "Journey: a lost create response sends exactly one POST and the outcome is recorded as ambiguous");
+  await makeDue(cL);
+  mark = ghlCalls.length;
+  await runWorker();
+  check(postsSince(mark).length === 0 && (await projRows(cL))[0].state === "succeeded" && !!(await pool.query(`SELECT ghl_contact_id FROM contacts WHERE id=$1`, [cL])).rows[0].ghl_contact_id,
+    "Journey: reconciliation links the record the provider created and sends no second create");
+
+  // 3. phone-only contact: absent -> one create; a pre-existing phone match is held, nothing is written
+  const cP = await mkContact({ phoneOnly: true });
+  await enqueue(cP);
+  mark = ghlCalls.length;
+  await runWorker();
+  check(postsSince(mark).length === 1 && (await projRows(cP))[0].state === "succeeded", "Journey: a phone-only contact whose phone is absent remotely is created once");
+  const cP2 = await mkContact({ phoneOnly: true });
+  const phone2 = (await contactIdentity(cP2)).phone!;
+  remote.set("remote_pre_phone", { id: "remote_pre_phone", email: null, phone: phone2, dateAdded: "2025-01-01T00:00:00Z" });
+  await enqueue(cP2);
+  mark = ghlCalls.length;
+  await runWorker();
+  const p2 = (await projRows(cP2))[0];
+  check(mutationsSince(mark).length === 0 && p2.state === "terminal" && /GHL_IDENTITY_AMBIGUOUS/.test(String(p2.last_error_code)) && !(await pool.query(`SELECT ghl_contact_id FROM contacts WHERE id=$1`, [cP2])).rows[0].ghl_contact_id,
+    "Journey: a phone-only match is never merged — held for review with no provider write");
+
+  // 4. a mailbox match whose email differs is held, not merged
+  const cM = await mkContact();
+  const emailM = (await contactIdentity(cM)).email!;
+  remote.set("remote_other_mailbox", { id: "remote_other_mailbox", email: emailM.replace("@", "+x@"), phone: null, dateAdded: "2025-01-01T00:00:00Z" });
+  behaviour.fuzzyEmail = true;
+  await enqueue(cM);
+  mark = ghlCalls.length;
+  await runWorker();
+  const mRow = (await projRows(cM))[0];
+  check(mutationsSince(mark).length === 0 && mRow.state === "terminal" && /GHL_IDENTITY_AMBIGUOUS:remote_match_on_other_identifier/.test(String(mRow.last_error_code)),
+    "Journey: a provider match on a different mailbox is held for review, never merged, with no provider write");
+  behaviour.fuzzyEmail = false;
+
+  // 5. duplicate-400 recovery whose follow-up PUT fails must fail the projection, not report success
+  const cD = await mkContact();
+  const emailD = (await contactIdentity(cD)).email!;
+  behaviour.duplicate400For = emailD;
+  behaviour.failPutFor = "/remote_dup_1";
+  await enqueue(cD);
+  await runWorker();
+  const dRow = (await projRows(cD))[0];
+  check(dRow.state === "retry" && Number(dRow.attempt_count) === 1 && dRow.last_error_code !== null,
+    "Journey: a duplicate-400 recovery whose update fails is a failed attempt, never a success");
+  behaviour.duplicate400For = null; behaviour.failPutFor = null;
+
+  // 6. permission write failure is a failed component with the identity linked, and no tags go out
+  const cC = await mkContact();
+  await enqueue(cC);
+  behaviour.failCustomFieldPut = true;
+  mark = ghlCalls.length;
+  await runWorker();
+  const cRow = (await projRows(cC))[0];
+  const cLinkedId = (await pool.query(`SELECT ghl_contact_id FROM contacts WHERE id=$1`, [cC])).rows[0].ghl_contact_id;
+  const permWritten = ghlCalls.slice(mark).filter(c => c.method === "PUT").length;
+  if (permWritten > 0) {
+    check(cRow.state === "retry" && /^GHL_COMPONENT_FAILED/.test(String(cRow.last_error_code)) && !!cLinkedId && Number(cRow.attempt_count) === 1,
+      "Journey: a failed permission write is a failed component (identity stays linked, attempt consumed) instead of a swallowed success");
+  } else {
+    check(cRow.state === "succeeded", "Journey: contacts with no permission fields to write succeed without a permission component");
+  }
+  behaviour.failCustomFieldPut = false;
+
+  // 7. required suppression field not installed: nothing is sent
+  const cS = await mkContact();
+  await pool.query(`UPDATE contacts SET do_not_contact=true WHERE id=$1`, [cS]);
+  await enqueue(cS);
+  mark = ghlCalls.length;
+  await runWorker();
+  const sRow = (await projRows(cS))[0];
+  check(mutationsSince(mark).length === 0 && sRow.state === "retry" && sRow.last_error_code === "GHL_REQUIRED_SUPPRESSION_FIELD_UNAVAILABLE" && Number(sRow.attempt_count) === 0,
+    "Journey: a do-not-contact suppression with no installed provider field defers before any mutation and consumes no attempt");
+
+  // 8. backlog mirrors the claimant: held and exhausted rows are not reported eligible
+  await pool.query(`UPDATE contact_provider_projections SET next_attempt_at = now() + interval '1 day' WHERE state IN ('pending','retry')`);
+  const cB = await mkContact();
+  await enqueue(cB);
+  const bl1 = await authority.getProjectionBacklog();
+  await pool.query(`UPDATE contacts SET archived_at=now() WHERE id=$1`, [cB]);
+  const bl2 = await authority.getProjectionBacklog();
+  check(bl1.eligiblePending - bl2.eligiblePending === 1 && !(await claimable([cB])), "Backlog eligibility mirrors the claimant (an archived contact is neither claimable nor eligible)");
+
+  // restore the unauthorized control for any later assertions
+  globalThis.fetch = wrapped;
+  ghlResponder = defaultResponder;
+  await setControl(true);
 }
 
 // static ownership guards

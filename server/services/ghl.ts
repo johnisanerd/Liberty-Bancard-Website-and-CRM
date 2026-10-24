@@ -284,7 +284,12 @@ async function ghlFetch(path: string, options: GhlFetchOptions = {}, retries = 3
           );
         }
       }
-      const settleDispatch = markGhlDispatch(method, path);
+      const settleDispatch = await markGhlDispatch(method, path, {
+        identity: bodyValue && typeof bodyValue === "object" && !Array.isArray(bodyValue)
+          ? { email: typeof (bodyValue as any).email === "string" ? (bodyValue as any).email : null,
+              phone: typeof (bodyValue as any).phone === "string" ? (bodyValue as any).phone : null }
+          : null,
+      });
       let response: Response;
       try {
         response = await fetch(url, { ...fetchOptions, headers, signal: controller.signal });
@@ -292,7 +297,7 @@ async function ghlFetch(path: string, options: GhlFetchOptions = {}, retries = 3
         // The request may have been processed even though no response arrived.
         // A create (POST) is never blindly repeated on a lost response; the
         // projection executor reconciles remote identity first.
-        settleDispatch("ambiguous");
+        await settleDispatch("ambiguous");
         if (method === "POST") {
           clearTimeout(timeoutId);
           throw new GhlAmbiguousDispatchError(`${method} ${path.split("?")[0]}: ${transportError instanceof Error ? transportError.message : String(transportError)}`);
@@ -300,7 +305,7 @@ async function ghlFetch(path: string, options: GhlFetchOptions = {}, retries = 3
         throw transportError;
       }
       clearTimeout(timeoutId);
-      settleDispatch(response.ok ? "ok" : (response.status >= 500 && method === "POST" ? "ambiguous" : "http_error"), response.status);
+      await settleDispatch(response.ok ? "ok" : (response.status >= 500 && method === "POST" ? "ambiguous" : "http_error"), response.status);
       if (response.status >= 500 && method === "POST") {
         throw new GhlAmbiguousDispatchError(`${method} ${path.split("?")[0]}: HTTP ${response.status}`);
       }
@@ -335,6 +340,8 @@ async function ghlFetch(path: string, options: GhlFetchOptions = {}, retries = 3
     } catch (err: unknown) {
       clearTimeout(timeoutId);
       if (err instanceof GhlAmbiguousDispatchError) throw err;
+      // The final dispatch fence refused the request: it is never retried or reinterpreted.
+      if ((err as { code?: string } | null)?.code === "GHL_PROJECTION_FENCE_LOST") throw err;
       if (attempt === retries - 1) throw err;
       const errMsg = err instanceof Error ? err.message : String(err);
       // AbortError = our own 20 s timeout fired; treat like any other transient error.
@@ -553,19 +560,45 @@ export async function lookupGhlContactByEmail(email: string): Promise<string | n
   }
 }
 
+export type GhlIdentityLookup =
+  | { status: "found"; id: string; createdAt: string | null; matchedEmail: string | null }
+  | { status: "absent" }
+  | { status: "ambiguous"; count: number };
+
 /**
- * Read-only remote identity lookup that distinguishes "no match" from a failed lookup.
- * Used to reconcile an earlier create whose response was lost. Never creates or updates.
+ * Read-only remote identity lookup that distinguishes exact match, confirmed absence and ambiguity from a failed
+ * lookup (which throws). By email when present, otherwise by phone. Never creates, updates or links.
  */
-export async function lookupGhlContactByEmailStrict(email: string): Promise<{ status: "found"; id: string } | { status: "absent" }> {
+export async function lookupGhlContactStrict(identity: { email?: string | null; phone?: string | null }): Promise<GhlIdentityLookup> {
   const config = getConfig();
   if (!config) throw new Error("GHL not configured");
+  const email = (identity.email ?? "").trim();
+  const phone = (identity.phone ?? "").trim();
+  if (!email && !phone) throw new Error("GHL_LOOKUP_IDENTITY_MISSING");
+  const selector = email ? `email=${encodeURIComponent(email)}` : `number=${encodeURIComponent(phone)}`;
   const result = await ghlFetch(
-    `/contacts/search/duplicate?locationId=${encodeURIComponent(config.locationId)}&email=${encodeURIComponent(email)}`,
+    `/contacts/search/duplicate?locationId=${encodeURIComponent(config.locationId)}&${selector}`,
     { method: "GET" },
   );
-  const id = result?.contact?.id ?? result?.contacts?.[0]?.id ?? null;
-  return id ? { status: "found", id: String(id) } : { status: "absent" };
+  const candidates: any[] = Array.isArray(result?.contacts) ? result.contacts : result?.contact ? [result.contact] : [];
+  const withId = candidates.filter(candidate => candidate?.id);
+  if (withId.length === 0) return { status: "absent" };
+  if (withId.length > 1 || new Set(withId.map(candidate => String(candidate.id))).size > 1) {
+    return { status: "ambiguous", count: withId.length };
+  }
+  const match = withId[0];
+  return {
+    status: "found", id: String(match.id),
+    createdAt: typeof match.dateAdded === "string" ? match.dateAdded : typeof match.createdAt === "string" ? match.createdAt : null,
+    matchedEmail: typeof match.email === "string" ? match.email : null,
+  };
+}
+
+/** Email-only convenience wrapper kept for callers that predate phone support. Ambiguity throws. */
+export async function lookupGhlContactByEmailStrict(email: string): Promise<{ status: "found"; id: string } | { status: "absent" }> {
+  const found = await lookupGhlContactStrict({ email });
+  if (found.status === "ambiguous") throw new GhlIdentityAmbiguousError("multiple_remote_matches");
+  return found.status === "found" ? { status: "found", id: found.id } : { status: "absent" };
 }
 
 /**
@@ -583,6 +616,42 @@ export class GhlIdentityConflictError extends Error {
     this.ghlContactId = opts.ghlContactId;
     this.localContactId = opts.localContactId;
     this.owningContactId = opts.owningContactId;
+  }
+}
+
+/** Remote identity cannot be established safely (multiple matches, or a phone-only match that needs review). */
+export class GhlIdentityAmbiguousError extends Error {
+  readonly code = "GHL_IDENTITY_AMBIGUOUS";
+  constructor(readonly reason: string) {
+    super(`GHL_IDENTITY_AMBIGUOUS:${reason}`);
+    this.name = "GhlIdentityAmbiguousError";
+  }
+}
+
+/** A suppression that must travel with the contact has no installed provider field; nothing may be exported. */
+export class GhlRequiredFieldUnavailableError extends Error {
+  readonly code = "GHL_REQUIRED_SUPPRESSION_FIELD_UNAVAILABLE";
+  constructor(readonly keys: string[]) {
+    super(`GHL_REQUIRED_SUPPRESSION_FIELD_UNAVAILABLE:${keys.join(",")}`);
+    this.name = "GhlRequiredFieldUnavailableError";
+  }
+}
+
+export type GhlComponentState = "ok" | "held" | "failed" | "not_applicable";
+export interface GhlComponentOutcome { state: GhlComponentState; heldKeys?: string[]; code?: string }
+export interface GhlUpsertOutcome {
+  ghlContactId: string;
+  identity: "created" | "linked_existing" | "updated";
+  components: { identity: GhlComponentOutcome; profile_fields: GhlComponentOutcome; permissions: GhlComponentOutcome };
+}
+
+/** Thrown by the legacy string-returning wrapper when a required component failed at the provider. */
+export class GhlComponentFailureError extends Error {
+  constructor(readonly outcome: GhlUpsertOutcome) {
+    const failed = Object.entries(outcome.components).filter(([, c]) => c.state === "failed")
+      .map(([name, c]) => `${name}:${c.code ?? "failed"}`);
+    super(`GHL_COMPONENT_FAILED:${failed.join(",")}`);
+    this.name = "GhlComponentFailureError";
   }
 }
 
@@ -677,7 +746,23 @@ export async function syncGhlPermissionFields(input: {
   });
 }
 
-export async function upsertGhlContact(contact: GhlContactInput): Promise<string> {
+/** Rethrown unchanged by the upsert boundary: these carry their own durable disposition. */
+function isGhlPassThroughUpsertError(err: unknown): boolean {
+  return err instanceof GhlInvalidContactError
+    || err instanceof GhlIdentityConflictError
+    || err instanceof GhlIdentityAmbiguousError
+    || err instanceof GhlRequiredFieldUnavailableError
+    || err instanceof GhlAmbiguousDispatchError
+    || (err as { code?: string } | null)?.code === "GHL_PROJECTION_FENCE_LOST";
+}
+
+/**
+ * Structured upsert: identity, optional profile fields and permission fields are separate components with separate
+ * outcomes. Identity must succeed for any component to be attempted. Permission-field failures are reported as a
+ * failed component (never swallowed); optional profile fields without an installed provider field are recorded as
+ * held and never block an otherwise approved minimal profile.
+ */
+export async function upsertGhlContactDetailed(contact: GhlContactInput): Promise<GhlUpsertOutcome> {
   await denyCro03cForbiddenEffect("ghl_mutation");
   const identity = validateGhlIdentityFields({ email: contact.email, phone: contact.phone });
   if (!identity.ok) {
@@ -694,7 +779,7 @@ export async function upsertGhlContact(contact: GhlContactInput): Promise<string
   try {
     return await doUpsertGhlContact(toSend);
   } catch (err: any) {
-    if (err instanceof GhlInvalidContactError || err instanceof GhlIdentityConflictError) throw err;
+    if (isGhlPassThroughUpsertError(err)) throw err;
     if (isGhlEmailValidation422(err?.message)) {
       console.warn(`[GHL] Contact ${contact.id || "(new)"} rejected by GHL email validation (422) — terminal skip, not retried`);
       await writeInvalidContactSkipAudit(contact.id || null, GHL_EMAIL_VALIDATION_REJECTED, "provider_422_email_validation");
@@ -704,7 +789,16 @@ export async function upsertGhlContact(contact: GhlContactInput): Promise<string
   }
 }
 
-async function doUpsertGhlContact(contact: GhlContactInput): Promise<string> {
+/** String-returning wrapper for callers that need only the remote id. A failed required component throws. */
+export async function upsertGhlContact(contact: GhlContactInput): Promise<string> {
+  const outcome = await upsertGhlContactDetailed(contact);
+  if (Object.values(outcome.components).some(component => component.state === "failed")) {
+    throw new GhlComponentFailureError(outcome);
+  }
+  return outcome.ghlContactId;
+}
+
+async function doUpsertGhlContact(contact: GhlContactInput): Promise<GhlUpsertOutcome> {
   const config = getConfig();
   if (!config) throw new Error("GHL not configured");
   // CRM identity upserts use the independent GHL CRM control and transport
@@ -713,11 +807,12 @@ async function doUpsertGhlContact(contact: GhlContactInput): Promise<string> {
   return doUpsertGhlContactInner(contact, config);
 }
 
-async function doUpsertGhlContactInner(contact: GhlContactInput, config: NonNullable<ReturnType<typeof getConfig>>): Promise<string> {
+type GhlFieldList = Array<{ key: string; field_value: string }>;
 
-  const customFields: Array<{ key: string; field_value: string }> = [];
+/** Optional profile (non-permission) fields. Consent keys are permission components, not profile. */
+function buildGhlProfileFields(contact: GhlContactInput): GhlFieldList {
+  const customFields: GhlFieldList = [];
   const addCF = (key: string, value: string) => customFields.push({ key, field_value: value });
-
   if (contact.vertical) {
     addCF("vertical", contact.vertical);
     addCF("lb_vertical", contact.vertical);
@@ -734,22 +829,12 @@ async function doUpsertGhlContactInner(contact: GhlContactInput, config: NonNull
     addCF("current_provider", contact.currentProvider);
     addCF("lb_current_processor", contact.currentProvider);
   }
-  if (contact.primaryOfferPath) {
-    addCF("lb_offer_route", contact.primaryOfferPath);
-  }
+  if (contact.primaryOfferPath) addCF("lb_offer_route", contact.primaryOfferPath);
   const contactAny = contact as any;
-  if (contactAny.offerConfidence != null) {
-    addCF("lb_offer_confidence", String(contactAny.offerConfidence));
-  }
-  if (contactAny.recommendedNextAction) {
-    addCF("lb_recommended_action", contactAny.recommendedNextAction);
-  }
-  if (contactAny.offerReasoning) {
-    addCF("lb_offer_reasoning", contactAny.offerReasoning.slice(0, 500));
-  }
-  if (contactAny.processorDetected) {
-    addCF("lb_processor_detected", contactAny.processorDetected);
-  }
+  if (contactAny.offerConfidence != null) addCF("lb_offer_confidence", String(contactAny.offerConfidence));
+  if (contactAny.recommendedNextAction) addCF("lb_recommended_action", contactAny.recommendedNextAction);
+  if (contactAny.offerReasoning) addCF("lb_offer_reasoning", contactAny.offerReasoning.slice(0, 500));
+  if (contactAny.processorDetected) addCF("lb_processor_detected", contactAny.processorDetected);
   if (contact.painPoints && Array.isArray(contact.painPoints) && contact.painPoints.length > 0) {
     addCF("lb_pain_points", contact.painPoints.join(", "));
   }
@@ -766,12 +851,6 @@ async function doUpsertGhlContactInner(contact: GhlContactInput, config: NonNull
   if (contact.referralSource) addCF("lb_referral_source", contact.referralSource);
   const partnerCodeForGhl = contact.referralPartnerCode || contact.promoCode;
   if (partnerCodeForGhl) addCF("lb_partner_code", partnerCodeForGhl);
-  if (contact.consentSms !== undefined && contact.consentSms !== null) {
-    addCF("lb_consent_sms", contact.consentSms ? "Yes" : "No");
-  }
-  if (contact.consentEmail !== undefined && contact.consentEmail !== null) {
-    addCF("lb_consent_email", contact.consentEmail ? "Yes" : "No");
-  }
   if (contact.landingPage) {
     const sourceMap: Record<string, string> = {
       "/free-analysis": "free-analysis",
@@ -784,6 +863,108 @@ async function doUpsertGhlContactInner(contact: GhlContactInput, config: NonNull
     };
     addCF("lb_lead_source", sourceMap[contact.landingPage] || contact.landingPage);
   }
+  return customFields;
+}
+
+/** Permission / suppression fields (the reviewed canonical permission keys only). */
+async function buildGhlPermissionFields(contact: GhlContactInput): Promise<GhlFieldList> {
+  let permPayload = contact.ghlPermissionPayload;
+  if (!permPayload && contact.id) {
+    try {
+      // Five-channel dry-run matrix — never use enforcement mode here
+      const { evaluateContactability } = await import("./contactability");
+      const channels = ["email", "sms", "voice_ai", "ringless_vm", "manual_call"] as const;
+      const results = await Promise.allSettled(
+        channels.map(ch => evaluateContactability({ contactId: contact.id!, channel: ch, mode: "dryRun" }))
+      );
+      const [emailR, smsR, voiceR, rvmR, callR] = results;
+      const emailPayload = emailR.status === "fulfilled" ? emailR.value.ghlPermissionPayload : undefined;
+      if (emailPayload) {
+        permPayload = {
+          ...emailPayload,
+          lb_sms_allowed: smsR.status === "fulfilled" ? (smsR.value.ghlPermissionPayload?.lb_sms_allowed ?? false) : false,
+          lb_voice_ai_allowed: voiceR.status === "fulfilled" ? (voiceR.value.ghlPermissionPayload?.lb_voice_ai_allowed ?? false) : false,
+          lb_ringless_vm_allowed: rvmR.status === "fulfilled" ? (rvmR.value.ghlPermissionPayload?.lb_ringless_vm_allowed ?? false) : false,
+          lb_manual_call_allowed: callR.status === "fulfilled" ? (callR.value.ghlPermissionPayload?.lb_manual_call_allowed ?? false) : false,
+        };
+      }
+    } catch {
+      // Contactability may not have the contact yet; the base permission fields below are still written.
+    }
+  }
+  const permFields: GhlFieldList = [
+    { key: "lb_do_not_contact", field_value: contact.doNotContact ? "true" : "false" },
+    { key: "lb_do_not_autocontact", field_value: contact.doNotAutoContact ? "true" : "false" },
+    { key: "lb_lifecycle_stage", field_value: contact.lifecycleStage || "prospect" },
+    { key: "lb_channel_permissions_updated_at", field_value: new Date().toISOString() },
+  ];
+  if (contact.consentSms !== undefined && contact.consentSms !== null) {
+    permFields.push({ key: "lb_consent_sms", field_value: contact.consentSms ? "Yes" : "No" });
+  }
+  if (contact.consentEmail !== undefined && contact.consentEmail !== null) {
+    permFields.push({ key: "lb_consent_email", field_value: contact.consentEmail ? "Yes" : "No" });
+  }
+  if (contact.consentTier) permFields.push({ key: "lb_consent_tier", field_value: contact.consentTier });
+  if (permPayload) {
+    permFields.push(
+      { key: "lb_can_email", field_value: permPayload.lb_email_allowed ? "true" : "false" },
+      { key: "lb_can_manual_call", field_value: permPayload.lb_manual_call_allowed ? "true" : "false" },
+      { key: "lb_can_sms", field_value: permPayload.lb_sms_allowed ? "true" : "false" },
+      { key: "lb_can_ai_voice", field_value: permPayload.lb_voice_ai_allowed ? "true" : "false" },
+      { key: "lb_can_ringless_vm", field_value: permPayload.lb_ringless_vm_allowed ? "true" : "false" },
+    );
+    permFields.push({
+      key: "lb_channel_permissions",
+      field_value: JSON.stringify({
+        email: permPayload.lb_email_allowed,
+        manual_call: permPayload.lb_manual_call_allowed,
+        sms: permPayload.lb_sms_allowed,
+        voice_ai: permPayload.lb_voice_ai_allowed,
+        ringless_vm: permPayload.lb_ringless_vm_allowed,
+      }),
+    });
+    if (permPayload.lb_channel_block_reason) {
+      permFields.push({ key: "lb_channel_block_reason", field_value: permPayload.lb_channel_block_reason });
+    }
+  }
+  return permFields;
+}
+
+async function assertGhlLinkNotOwnedElsewhere(localId: number | undefined, remoteId: string): Promise<void> {
+  if (!localId) return;
+  const currentOwner = await storage.getContactByGhlContactId(remoteId).catch(() => null);
+  if (currentOwner && currentOwner.id !== localId) {
+    console.warn(`[GHL] Identity conflict: GHL ID ${remoteId} is already owned by local contact ${currentOwner.id} — will not relink contact ${localId}`);
+    await storage.createAuditLog({
+      action: "ghl_sync_identity_conflict",
+      entityType: "contact",
+      entityId: localId,
+      details: {
+        ghlContactId: remoteId,
+        owningContactId: currentOwner.id,
+        message: "Remote identity is already owned by another local contact — relinking skipped",
+      },
+    }).catch(() => {});
+    throw new GhlIdentityConflictError({ ghlContactId: remoteId, localContactId: localId, owningContactId: currentOwner.id });
+  }
+}
+
+async function doUpsertGhlContactInner(contact: GhlContactInput, config: NonNullable<ReturnType<typeof getConfig>>): Promise<GhlUpsertOutcome> {
+  // Preflight (read-only): installed provider fields decide what can be written and what is held.
+  const inventory = await getGhlCustomFieldInventory(config.locationId);
+  const installed = new Set(inventory.map(field => field.key));
+  const requiredSuppression = [
+    ...(contact.doNotContact ? ["lb_do_not_contact"] : []),
+    ...(contact.doNotAutoContact ? ["lb_do_not_autocontact"] : []),
+  ].filter(key => !installed.has(key));
+  if (requiredSuppression.length > 0) {
+    // A suppression must travel with the contact; exporting without it could let a native workflow contact them.
+    throw new GhlRequiredFieldUnavailableError(requiredSuppression);
+  }
+
+  const profileAll = buildGhlProfileFields(contact);
+  const profileFields = profileAll.filter(field => installed.has(field.key));
+  const profileHeld = profileAll.filter(field => !installed.has(field.key)).map(field => field.key);
 
   const payload: Record<string, unknown> = {
     locationId: config.locationId,
@@ -794,198 +975,112 @@ async function doUpsertGhlContactInner(contact: GhlContactInput, config: NonNull
     companyName: contact.companyName || undefined,
     tags: contact.tags || [],
   };
-  if (customFields.length > 0) {
-    payload.customFields = customFields;
-  }
-
+  if (profileFields.length > 0) payload.customFields = profileFields;
   // GHL only accepts locationId on contact CREATE (POST), not UPDATE (PUT).
-  // Build a separate update payload without locationId to avoid 422 errors.
   const { locationId: _loc, ...updatePayload } = payload;
 
   let resolvedGhlId: string;
+  let identityResult: GhlUpsertOutcome["identity"];
 
   if (contact.ghlContactId) {
-    await ghlFetch(`/contacts/${contact.ghlContactId}`, {
-      method: "PUT",
-      body: JSON.stringify(updatePayload),
-    });
+    await ghlFetch(`/contacts/${contact.ghlContactId}`, { method: "PUT", body: JSON.stringify(updatePayload) });
     resolvedGhlId = contact.ghlContactId;
+    identityResult = "updated";
+  } else {
+    // Strict lookup before create. Email is the identity when present; a phone-only contact may be created only when
+    // the provider confirms the phone is absent. Mailbox or phone alone never merges two records.
+    const hasEmail = typeof contact.email === "string" && contact.email.trim().length > 0;
+    const lookup = await lookupGhlContactStrict(hasEmail ? { email: contact.email } : { phone: contact.phone });
+    if (lookup.status === "ambiguous") throw new GhlIdentityAmbiguousError("multiple_remote_matches");
+    if (lookup.status === "found") {
+      if (!hasEmail) throw new GhlIdentityAmbiguousError("phone_only_match_requires_review");
+      if (lookup.matchedEmail && lookup.matchedEmail.trim().toLowerCase() !== String(contact.email).trim().toLowerCase()) {
+        throw new GhlIdentityAmbiguousError("remote_match_on_other_identifier");
+      }
+      await assertGhlLinkNotOwnedElsewhere(contact.id, lookup.id);
+      // Persist the link first so a failed update never loses the proven remote identity.
+      if (contact.id) await storage.updateContact(contact.id, { ghlContactId: lookup.id });
+      await ghlFetch(`/contacts/${lookup.id}`, { method: "PUT", body: JSON.stringify(updatePayload) });
+      resolvedGhlId = lookup.id;
+      identityResult = "linked_existing";
+    } else {
+      try {
+        const result = await ghlFetch("/contacts/", { method: "POST", body: JSON.stringify(payload) });
+        const createdId = typeof result?.contact?.id === "string" ? result.contact.id : "";
+        if (!createdId) throw new GhlAmbiguousDispatchError("POST /contacts: accepted without a contact id");
+        resolvedGhlId = createdId;
+        identityResult = "created";
+        if (contact.id) {
+          try {
+            await storage.updateContact(contact.id, { ghlContactId: createdId });
+          } catch {
+            throw new GhlAmbiguousDispatchError("POST /contacts: created remotely but the local link could not be saved");
+          }
+        }
+      } catch (err: any) {
+        if (err instanceof GhlAmbiguousDispatchError) throw err;
+        // Duplicate-400 race: the provider names the existing record. Link and update strictly; a failed update
+        // propagates (the remote id stays linked) instead of being reported as a successful upsert.
+        const msg = String(err?.message || "");
+        const existingId = msg.includes("400") && /duplicat|already exist/i.test(msg)
+          ? msg.match(/"(?:id|contactId)"\s*:\s*"([a-zA-Z0-9]+)"/)?.[1] : undefined;
+        if (!existingId) throw err;
+        await assertGhlLinkNotOwnedElsewhere(contact.id, existingId);
+        if (contact.id) await storage.updateContact(contact.id, { ghlContactId: existingId });
+        await ghlFetch(`/contacts/${existingId}`, { method: "PUT", body: JSON.stringify(updatePayload) });
+        resolvedGhlId = existingId;
+        identityResult = "linked_existing";
+      }
+    }
+  }
+
+  // Permission / suppression fields: a separate write after identity is proven. Only installed canonical keys are
+  // written; the rest are recorded as held. A provider failure is a failed component, never a silent success.
+  const permAll = await buildGhlPermissionFields(contact);
+  const permFields = permAll.filter(field => installed.has(field.key));
+  const permHeld = permAll.filter(field => !installed.has(field.key)).map(field => field.key);
+  let permissions: GhlComponentOutcome;
+  if (permFields.length === 0) {
+    permissions = { state: permHeld.length > 0 ? "held" : "not_applicable", heldKeys: permHeld };
   } else {
     try {
-      const result = await ghlFetch("/contacts/", {
-        method: "POST",
-        body: JSON.stringify(payload),
-      });
-      resolvedGhlId = result.contact?.id;
-      if (resolvedGhlId && contact.id) {
-        await storage.updateContact(contact.id, { ghlContactId: resolvedGhlId });
+      await syncGhlPermissionFields({ ghlContactId: resolvedGhlId, locationId: config.locationId, fields: permFields });
+      permissions = { state: permHeld.length > 0 ? "held" : "ok", heldKeys: permHeld };
+    } catch (permErr: any) {
+      if (isGhlPassThroughUpsertError(permErr) || isGhlSyncDeferredMessage(permErr?.message)) throw permErr;
+      const permMsg = String(permErr?.message || "");
+      const httpStatus = permMsg.match(/GHL API error (\d+)/)?.[1] || "unknown";
+      console.warn(`[GHL] Permission field write failed (${httpStatus}) for contact ${resolvedGhlId}:`, permMsg.slice(0, 200));
+      if (contact.id) {
+        storage.createGhlActivityLog({
+          contactId: contact.id, dealId: null, direction: "outbound", channel: "sync_error", templateId: null,
+          subject: null, body: null, status: "error", ghlMessageId: resolvedGhlId,
+          metadata: {
+            operation: "permission_field_write", attemptedFields: permFields.map(field => field.key),
+            httpStatus: Number(httpStatus) || null, errorBody: permMsg.slice(0, 500),
+          },
+        }).catch(() => {});
       }
-    } catch (err: any) {
-      // GHL returns 400 with the existing contact ID when a duplicate is detected.
-      // Parse it out, link, and update — this turns a hard error into a successful upsert.
-      const msg = String(err?.message || "");
-      if (msg.includes("400") && /duplicat|already exist/i.test(msg)) {
-        const idMatch = msg.match(/"(?:id|contactId)"\s*:\s*"([a-zA-Z0-9]+)"/);
-        const existingId = idMatch?.[1];
-        if (existingId) {
-          // ── Ownership pre-check ──────────────────────────────────────────────
-          // Before relinking, verify that existingId is not already owned by a
-          // *different* local contact. If it is, updating contact.id would hit
-          // the contacts_ghl_contact_id_unique constraint and crash sync —
-          // tripping the circuit breaker on every tick. Detect and skip instead.
-          if (contact.id) {
-            const currentOwner = await storage.getContactByGhlContactId(existingId).catch(() => null);
-            if (currentOwner && currentOwner.id !== contact.id) {
-              console.warn(
-                `[GHL] Identity conflict: GHL ID ${existingId} is already owned by local contact ${currentOwner.id} — will not relink contact ${contact.id}`
-              );
-              await storage.createAuditLog({
-                action: "ghl_sync_identity_conflict",
-                entityType: "contact",
-                entityId: contact.id,
-                details: {
-                  ghlContactId: existingId,
-                  owningContactId: currentOwner.id,
-                  message: "GHL returned duplicate ID that is already owned by another local contact — relinking skipped",
-                },
-              }).catch(() => {});
-              throw new GhlIdentityConflictError({
-                ghlContactId: existingId,
-                localContactId: contact.id,
-                owningContactId: currentOwner.id,
-              });
-            }
-          }
-          // ────────────────────────────────────────────────────────────────────
-          try {
-            await ghlFetch(`/contacts/${existingId}`, {
-              method: "PUT",
-              body: JSON.stringify(updatePayload),
-            });
-            if (contact.id) {
-              await storage.updateContact(contact.id, { ghlContactId: existingId });
-            }
-            resolvedGhlId = existingId;
-          } catch (putErr: any) {
-            if (putErr instanceof GhlIdentityConflictError) throw putErr;
-            console.warn(`[GHL] Linked existing contact ${existingId} but PUT update failed:`, putErr?.message);
-            if (contact.id) {
-              await storage.updateContact(contact.id, { ghlContactId: existingId });
-            }
-            resolvedGhlId = existingId;
-          }
-        } else {
-          throw err;
-        }
-      } else {
-        throw err;
-      }
+      permissions = { state: "failed", heldKeys: permHeld, code: `HTTP_${httpStatus}` };
     }
   }
 
-  // ── Wave 7: Write Replit permission fields to GHL as a SEPARATE call ──────
-  // Isolated so a 422 (missing GHL custom field definition) never aborts the
-  // base contact identity sync. GHL requires the lb_* fields to be created in
-  // GHL Location Settings before they can be written — log 422 clearly.
-  if (resolvedGhlId) {
-    try {
-      let permPayload = contact.ghlPermissionPayload;
+  return {
+    ghlContactId: resolvedGhlId,
+    identity: identityResult,
+    components: {
+      identity: { state: "ok" },
+      profile_fields: profileAll.length === 0
+        ? { state: "not_applicable" }
+        : { state: profileHeld.length > 0 ? "held" : "ok", heldKeys: profileHeld },
+      permissions,
+    },
+  };
+}
 
-      if (!permPayload && contact.id) {
-        try {
-          // Five-channel dry-run matrix — never use enforcement mode here
-          const { evaluateContactability } = await import("./contactability");
-          const channels = ["email", "sms", "voice_ai", "ringless_vm", "manual_call"] as const;
-          const results = await Promise.allSettled(
-            channels.map(ch => evaluateContactability({ contactId: contact.id!, channel: ch, mode: "dryRun" }))
-          );
-          const [emailR, smsR, voiceR, rvmR, callR] = results;
-          // Prefer the email result's ghlPermissionPayload shape as the base (it has all keys)
-          const emailPayload = emailR.status === "fulfilled" ? emailR.value.ghlPermissionPayload : undefined;
-          if (emailPayload) {
-            permPayload = {
-              ...emailPayload,
-              lb_sms_allowed: smsR.status === "fulfilled" ? (smsR.value.ghlPermissionPayload?.lb_sms_allowed ?? false) : false,
-              lb_voice_ai_allowed: voiceR.status === "fulfilled" ? (voiceR.value.ghlPermissionPayload?.lb_voice_ai_allowed ?? false) : false,
-              lb_ringless_vm_allowed: rvmR.status === "fulfilled" ? (rvmR.value.ghlPermissionPayload?.lb_ringless_vm_allowed ?? false) : false,
-              lb_manual_call_allowed: callR.status === "fulfilled" ? (callR.value.ghlPermissionPayload?.lb_manual_call_allowed ?? false) : false,
-            };
-          }
-        } catch {
-          // Non-fatal — contactability may not have the contact yet
-        }
-      }
-
-      const permFields: Array<{ key: string; field_value: string }> = [
-        { key: "lb_do_not_contact", field_value: contact.doNotContact ? "true" : "false" },
-        { key: "lb_do_not_autocontact", field_value: contact.doNotAutoContact ? "true" : "false" },
-        { key: "lb_lifecycle_stage", field_value: contact.lifecycleStage || "prospect" },
-        { key: "lb_channel_permissions_updated_at", field_value: new Date().toISOString() },
-      ];
-
-      if (contact.consentTier) {
-        permFields.push({ key: "lb_consent_tier", field_value: contact.consentTier });
-      }
-
-      if (permPayload) {
-        permFields.push(
-          { key: "lb_can_email", field_value: permPayload.lb_email_allowed ? "true" : "false" },
-          { key: "lb_can_manual_call", field_value: permPayload.lb_manual_call_allowed ? "true" : "false" },
-          { key: "lb_can_sms", field_value: permPayload.lb_sms_allowed ? "true" : "false" },
-          { key: "lb_can_ai_voice", field_value: permPayload.lb_voice_ai_allowed ? "true" : "false" },
-          { key: "lb_can_ringless_vm", field_value: permPayload.lb_ringless_vm_allowed ? "true" : "false" },
-        );
-        const channelPermJson = JSON.stringify({
-          email: permPayload.lb_email_allowed,
-          manual_call: permPayload.lb_manual_call_allowed,
-          sms: permPayload.lb_sms_allowed,
-          voice_ai: permPayload.lb_voice_ai_allowed,
-          ringless_vm: permPayload.lb_ringless_vm_allowed,
-        });
-        permFields.push({ key: "lb_channel_permissions", field_value: channelPermJson });
-        if (permPayload.lb_channel_block_reason) {
-          permFields.push({ key: "lb_channel_block_reason", field_value: permPayload.lb_channel_block_reason });
-        }
-      }
-
-      const attemptedFields = permFields.map(f => f.key);
-      try {
-        await syncGhlPermissionFields({
-          ghlContactId: resolvedGhlId,
-          locationId: config.locationId,
-          fields: permFields,
-        });
-      } catch (permErr: any) {
-        const permMsg = String(permErr?.message || "");
-        const httpStatus = permMsg.match(/GHL API error (\d+)/)?.[1] || "unknown";
-        console.warn(`[GHL Wave7] Permission field write failed (${httpStatus}) for contact ${resolvedGhlId}:`, permMsg.slice(0, 200));
-        // Log to ghlActivityLog — never abort base sync
-        if (contact.id) {
-          storage.createGhlActivityLog({
-            contactId: contact.id,
-            dealId: null,
-            direction: "outbound",
-            channel: "sync_error",
-            templateId: null,
-            subject: null,
-            body: null,
-            status: "error",
-            ghlMessageId: resolvedGhlId,
-            metadata: {
-              operation: "permission_field_write",
-              attemptedFields,
-              httpStatus: Number(httpStatus) || null,
-              errorBody: permMsg.slice(0, 500),
-            },
-          }).catch(() => {});
-        }
-      }
-    } catch (outerPermErr: any) {
-      console.warn("[GHL Wave7] Unexpected error in permission field write (non-fatal):", outerPermErr?.message);
-    }
-  }
-
-  return resolvedGhlId;
+/** Local policy deferrals (control disabled, review pending, epoch changed) must propagate, not become component failures. */
+function isGhlSyncDeferredMessage(message: string | undefined): boolean {
+  return !!message && /GHL_SYNC_DEFERRED_BLOCKED|GHL CRM operation blocked|GHL_CRM_(?:OPERATION_)?(?:BLOCKED|DEFERRED)|GHL mutation blocked/i.test(message);
 }
 
 export async function sendGhlEmail(params: {

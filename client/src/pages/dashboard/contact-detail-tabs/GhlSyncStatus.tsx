@@ -101,7 +101,9 @@ function ProjectionReceipts({ projection, loaded }: { projection?: ContactProjec
     );
   }
   const level = PROJECTION_LEVEL_LABELS[projection.receiptLevel];
-  const receipts = Object.entries(projection.componentReceipts ?? {});
+  const { components: componentOutcomes, ...requestReceipts } = (projection.componentReceipts ?? {}) as Record<string, any>;
+  const receipts = Object.entries(requestReceipts) as Array<[string, { ok?: number; failed?: number; ambiguous?: number }]>;
+  const outcomes = Object.entries((componentOutcomes ?? {}) as Record<string, { state?: string; heldKeys?: string[]; code?: string }>);
   return (
     <div className="basis-full space-y-1 text-xs" data-testid="section-projection-receipts">
       <div className="flex flex-wrap items-center gap-2">
@@ -118,6 +120,17 @@ function ProjectionReceipts({ projection, loaded }: { projection?: ContactProjec
           {projection.lastErrorCode ? `; last reason ${projection.lastErrorCode}` : ""}
           {projection.terminalReason ? `; terminal reason ${projection.terminalReason}` : ""}.
         </p>
+      )}
+      {outcomes.length > 0 && (
+        <ul className="text-muted-foreground" data-testid="list-projection-component-outcomes">
+          {outcomes.map(([name, o]) => (
+            <li key={name}>
+              {name.replace(/_/g, " ")}: {String(o?.state ?? "unknown").replace(/_/g, " ")}
+              {o?.heldKeys && o.heldKeys.length > 0 ? ` (held, not installed in GHL: ${o.heldKeys.join(", ")})` : ""}
+              {o?.code ? ` (${o.code})` : ""}
+            </li>
+          ))}
+        </ul>
       )}
       {receipts.length > 0 && (
         <ul className="text-muted-foreground" data-testid="list-projection-component-receipts">

@@ -300,9 +300,8 @@ export async function handleAppointmentBooked(webhookData: {
   });
 
   if (merchant.ghlContactId) {
-    enrollMerchantWorkflow(merchant, "booking_confirmation", { meetingId, startTime: webhookData.startTime }).catch(err =>
-      console.error(`[Scheduling] GHL booking_confirmation enrollment error for merchant ${merchant.id}:`, err)
-    );
+    // Awaited: a failed handoff fails the webhook receipt so the provider retry recovers it.
+    await enrollMerchantWorkflow(merchant, "booking_confirmation", { meetingId, startTime: webhookData.startTime });
   }
 
   console.log(`[Scheduling] Appointment booked for merchant ${merchant.id}: ${meetingId}`);
@@ -366,9 +365,7 @@ export async function handleAppointmentShowed(webhookData: {
 
   // Enroll in statement-request GHL workflow (fire-and-forget)
   if (merchant.ghlContactId && isSdrGhlConfigured()) {
-    enrollMerchantWorkflow(merchant, "statement_request_after_meeting", { meetingId, shownAt: webhookData.startTime }).catch(err =>
-      console.error(`[Scheduling] statement_request_after_meeting enrollment error for merchant ${merchant.id}:`, err)
-    );
+    await enrollMerchantWorkflow(merchant, "statement_request_after_meeting", { meetingId, shownAt: webhookData.startTime });
   }
 
   await db.insert(sdrLeadEvents).values({
@@ -437,9 +434,7 @@ export async function handleAppointmentCanceled(webhookData: {
   });
 
   if (merchant.ghlContactId) {
-    enrollMerchantWorkflow(merchant, "no_show_reschedule", { canceledAppointmentId: webhookData.appointmentId || webhookData.id }).catch(err =>
-      console.error(`[Scheduling] GHL no_show_reschedule enrollment error for merchant ${merchant.id}:`, err)
-    );
+    await enrollMerchantWorkflow(merchant, "no_show_reschedule", { canceledAppointmentId: webhookData.appointmentId || webhookData.id });
   }
 
   console.log(`[Scheduling] Appointment canceled for merchant ${merchant.id}`);

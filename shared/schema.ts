@@ -403,6 +403,8 @@ export const ghlProviderEventReceipts = pgTable("ghl_provider_event_receipts", {
   remoteEventId: text("remote_event_id"),
   appointmentId: text("appointment_id"),
   ghlContactId: text("ghl_contact_id"),
+  payloadFingerprint: text("payload_fingerprint"),
+  effectAppliedAt: timestamp("effect_applied_at"),
   eventAt: timestamp("event_at", { withTimezone: true }),
   receivedAt: timestamp("received_at").notNull().defaultNow(),
   claimedAt: timestamp("claimed_at"),
@@ -414,6 +416,25 @@ export const ghlProviderEventReceipts = pgTable("ghl_provider_event_receipts", {
   index("ghl_provider_event_receipts_open_idx").on(table.state, table.receivedAt)
     .where(sql`state IN ('received', 'claimed', 'failed')`),
 ]);
+export const ghlProjectionOperations = pgTable("ghl_projection_operations", {
+  id: uuid("id").primaryKey(),
+  projectionId: uuid("projection_id").notNull(),
+  contactId: integer("contact_id").notNull(),
+  claimToken: uuid("claim_token"),
+  generation: bigint("generation", { mode: "number" }),
+  operationClass: text("operation_class").notNull(),
+  method: text("method").notNull(),
+  state: text("state").notNull().default("reserved"), // reserved|ok|http_error|ambiguous
+  httpStatus: integer("http_status"),
+  identity: jsonb("identity"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  settledAt: timestamp("settled_at"),
+}, (table) => [
+  index("ghl_projection_operations_projection_idx").on(table.projectionId, table.createdAt),
+  index("ghl_projection_operations_contact_idx").on(table.contactId, table.createdAt),
+]);
+export type GhlProjectionOperation = typeof ghlProjectionOperations.$inferSelect;
+
 export type GhlProviderEventReceipt = typeof ghlProviderEventReceipts.$inferSelect;
 
 export const ghlAppointmentState = pgTable("ghl_appointment_state", {

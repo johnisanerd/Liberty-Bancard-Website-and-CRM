@@ -2646,6 +2646,13 @@
       "when":1800400210000,
       "tag":"0374_ghl_projection_generation_authority",
       "breakpoints":true
+    },
+    {
+      "idx":378,
+      "version":"7",
+      "when":1800400220000,
+      "tag":"0375_ghl_projection_operations_and_intake_evidence",
+      "breakpoints":true
     }
   ]
 }

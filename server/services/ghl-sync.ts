@@ -6,8 +6,13 @@ import type { Contact, Deal, Company, Task, Ticket, Note, UpdateContactRequest }
 import { ghlSyncStatus, ACTIVE_DEAL_STAGES, systemSettings, contactProviderProjections, pipelineStages, tasks, contacts, taskAuthorityEvents } from "@shared/schema";
 import { commandProducedTask, WorkCommandError } from "./work-item-command";
 import {
-  upsertGhlContact,
+  upsertGhlContactDetailed,
   isGhlConfigured,
+  GhlIdentityAmbiguousError,
+  GhlRequiredFieldUnavailableError,
+  lookupGhlContactStrict,
+  type GhlUpsertOutcome,
+  type GhlIdentityLookup,
   sendGhlEmail,
   GhlIdentityConflictError,
   GhlInvalidContactError,
@@ -26,11 +31,12 @@ import { enqueuePromotionalEnrollment } from "./promotional-enrollment-eligibili
 import { eq, sql, and, isNull, desc } from "drizzle-orm";
 import { GO_LIVE_GATE_STAGES, checkGoLiveReadiness } from "./go-live-gate";
 import { canExecute } from "./outbound-queue-coordinator";
-import { markGhlDispatch, GhlAmbiguousDispatchError, withGhlDispatchRecorder, summarizeDispatches } from "./ghl-dispatch-recorder";
+import { markGhlDispatch, GhlAmbiguousDispatchError, withGhlDispatchRecorder, summarizeDispatches, type GhlDispatchHooks } from "./ghl-dispatch-recorder";
 import {
   CONTACT_PROJECTION_MAX_ATTEMPTS, AMBIGUOUS_RETRY_MS, DEFERRAL_RETRY_MS,
   claimEligibleProjections, renewProjectionLease, reserveProjectionDispatch, settleProjection,
-  clearProjectionAmbiguity, type ClaimedProjection,
+  clearProjectionAmbiguity, beginProjectionOperation, settleProjectionOperation, getUnresolvedCreateOperation,
+  markCreateOperationReconciled, GhlProjectionFenceError, type ClaimedProjection,
 } from "./ghl-projection-authority";
 
 const GHL_SYNC_DEFERRED_STATS_KEY = "ghl_sync_deferred_stats";
@@ -40,13 +46,13 @@ async function recordGhlSyncDeferred(entityType: string, reason: string): Promis
     || "CRM_WRITE_DEFERRED";
   try { await pool.query(
     `INSERT INTO system_settings(key, value, updated_at)
-     VALUES ($1, jsonb_build_object('count', 1, 'lastAt', NOW(), 'lastEntityType', $2, 'lastReason', $3), NOW())
+     VALUES ($1, jsonb_build_object('count', 1, 'lastAt', NOW(), 'lastEntityType', $2::text, 'lastReason', $3::text), NOW())
      ON CONFLICT (key) DO UPDATE SET
        value = jsonb_build_object(
          'count', COALESCE((system_settings.value->>'count')::bigint, 0) + 1,
          'lastAt', NOW(),
-         'lastEntityType', $2,
-         'lastReason', $3
+         'lastEntityType', $2::text,
+         'lastReason', $3::text
        ),
        updated_at = NOW()`,
     [GHL_SYNC_DEFERRED_STATS_KEY, entityType, reasonCode],
@@ -72,9 +78,9 @@ export interface ProjectionBatchSummary {
 
 export interface ProjectionExecutorDeps {
   assertOwnership?: () => Promise<void>;
-  syncFn?: (contactId: number) => Promise<{ success: boolean; ghlContactId?: string; error?: string }>;
-  /** Read-only remote lookup used to resolve an ambiguous earlier create. Must throw on lookup failure. */
-  lookupFn?: (email: string) => Promise<{ status: "found"; id: string } | { status: "absent" }>;
+  syncFn?: (contactId: number) => Promise<SyncContactResult>;
+  /** Read-only strict remote lookup used to resolve an ambiguous earlier create. Must throw on lookup failure. */
+  lookupFn?: (identity: { email?: string | null; phone?: string | null }) => Promise<GhlIdentityLookup>;
   /** Called after each settled row; return false to stop and release the remaining claimed rows. */
   onOutcome?: (outcome: ProjectionRowOutcome, contactId: number) => boolean | void;
   /** Pause between provider calls (ms). */
@@ -87,29 +93,59 @@ function projectionRetryDelayMs(attemptCount: number): number {
 
 const NOT_EXPORTABLE_ERROR = /^(?:PIPELINE_LOCAL_ONLY|EXPORT_NOT_ELIGIBLE)/;
 
+export type SyncContactResult = {
+  success: boolean; ghlContactId?: string; error?: string; components?: GhlUpsertOutcome["components"];
+};
+
+type ReconcileResult = { status: "resolved" | "unresolved" | "conflict" } | { status: "hold"; code: string };
+
+/** A phone-only create can be proven only by a unique, owner-free remote record created after the request was sent. */
+const PHONE_ONLY_PROOF_SKEW_MS = 60_000;
+
+/**
+ * Resolve an ambiguous earlier create with read-only lookups using the ORIGINAL identity that was sent (recorded in
+ * the durable operation row), never the contact's current identity. Never clears ambiguity for a contact without a
+ * usable identity, and never accepts a phone-only match without independent proof: those are held with a specific
+ * reason for review.
+ */
 async function reconcileAmbiguousProjection(
   row: ClaimedProjection,
   deps: ProjectionExecutorDeps,
-): Promise<"resolved" | "unresolved" | "conflict"> {
+): Promise<ReconcileResult> {
   const contact = await storage.getContact(row.contactId);
-  if (!contact) return "resolved";
-  if (contact.ghlContactId) { await clearProjectionAmbiguity(row); return "resolved"; }
-  const email = (contact.email ?? "").trim();
-  if (!email) { await clearProjectionAmbiguity(row); return "resolved"; }
-  const lookup = deps.lookupFn ?? (async (value: string) => {
-    const { lookupGhlContactByEmailStrict } = await import("./ghl");
-    return lookupGhlContactByEmailStrict(value);
-  });
-  let found: Awaited<ReturnType<NonNullable<ProjectionExecutorDeps["lookupFn"]>>>;
-  try { found = await lookup(email); } catch { return "unresolved"; }
-  if (found.status === "absent") { await clearProjectionAmbiguity(row); return "resolved"; }
+  if (!contact) return { status: "resolved" };
+  // A local link proves identity; remaining operations (update, tags, permissions) are idempotent.
+  if (contact.ghlContactId) { await clearProjectionAmbiguity(row); return { status: "resolved" }; }
+  const op = await getUnresolvedCreateOperation(row.id);
+  const email = ((op ? op.identity.email : contact.email) ?? "").trim();
+  const phone = ((op ? op.identity.phone : contact.phone) ?? "").trim();
+  if (!email && !phone) return { status: "hold", code: "AMBIGUOUS_IDENTITY_UNAVAILABLE_NEEDS_REVIEW" };
+  const lookup = deps.lookupFn ?? lookupGhlContactStrict;
+  let found: GhlIdentityLookup;
+  try { found = await lookup(email ? { email } : { phone }); } catch { return { status: "unresolved" }; }
+  if (found.status === "absent") {
+    if (op) await markCreateOperationReconciled(op.operationId, "absent");
+    await clearProjectionAmbiguity(row);
+    return { status: "resolved" };
+  }
+  if (found.status === "ambiguous") return { status: "hold", code: "AMBIGUOUS_REMOTE_IDENTITY_NEEDS_REVIEW" };
+  if (email && found.matchedEmail && found.matchedEmail.trim().toLowerCase() !== email.toLowerCase()) {
+    return { status: "hold", code: "AMBIGUOUS_REMOTE_IDENTITY_NEEDS_REVIEW" };
+  }
   const owner = ((await db.execute(sql`
     SELECT id FROM contacts WHERE ghl_contact_id = ${found.id} AND id <> ${row.contactId} LIMIT 1
   `)) as any).rows as any[];
-  if (owner.length > 0) return "conflict";
+  if (owner.length > 0) return { status: "conflict" };
+  if (!email) {
+    const createdMs = found.createdAt ? Date.parse(found.createdAt) : NaN;
+    if (!op || !Number.isFinite(createdMs) || createdMs < op.createdAt.getTime() - PHONE_ONLY_PROOF_SKEW_MS) {
+      return { status: "hold", code: "AMBIGUOUS_PHONE_IDENTITY_NEEDS_REVIEW" };
+    }
+  }
   await db.execute(sql`UPDATE contacts SET ghl_contact_id = ${found.id}, updated_at = now() WHERE id = ${row.contactId} AND ghl_contact_id IS NULL`);
+  if (op) await markCreateOperationReconciled(op.operationId, "linked");
   await clearProjectionAmbiguity(row);
-  return "resolved";
+  return { status: "resolved" };
 }
 
 /** Execute one claimed projection: reserve, dispatch, settle by generation CAS. */
@@ -118,7 +154,11 @@ async function executeClaimedProjection(row: ClaimedProjection, deps: Projection
   if (!await renewProjectionLease(row)) return "claim_lost";
 
   if (row.dispatchState === "ambiguous") {
-    const resolved = await reconcileAmbiguousProjection(row, deps);
+    const reconciled = await reconcileAmbiguousProjection(row, deps);
+    const resolved = reconciled.status;
+    if (reconciled.status === "hold") {
+      return (await settleProjection(row, { kind: "hold", code: reconciled.code })) ? "ambiguous" : "claim_lost";
+    }
     if (resolved === "unresolved") {
       return (await settleProjection(row, { kind: "deferred", code: "AMBIGUOUS_RECONCILIATION_PENDING", retryAfterMs: AMBIGUOUS_RETRY_MS })) ? "deferred" : "claim_lost";
     }
@@ -129,18 +169,41 @@ async function executeClaimedProjection(row: ClaimedProjection, deps: Projection
 
   if (!await reserveProjectionDispatch(row)) return "claim_lost";
   const syncFn = deps.syncFn ?? syncContactToGhl;
-  const run = await withGhlDispatchRecorder(() => syncFn(row.contactId));
+  // Final fence + durable operation record before every provider mutation (including transport retries).
+  const hooks: GhlDispatchHooks = {
+    async begin(record, meta) {
+      const allowed = await beginProjectionOperation(row, {
+        operationId: record.operationId, operationClass: record.operation, method: record.method,
+        identity: record.operation === "contact_create" ? meta.identity ?? null : null,
+      });
+      if (!allowed) throw new GhlProjectionFenceError();
+    },
+    async settle(record) {
+      await settleProjectionOperation(record.operationId, record.outcome === "pending" ? "ambiguous" : record.outcome, record.httpStatus);
+    },
+  };
+  const run = await withGhlDispatchRecorder(() => syncFn(row.contactId), hooks);
   const evidence = summarizeDispatches(run.recorder);
   const result = "result" in run ? run.result : null;
   const thrown = "error" in run ? (run.error instanceof Error ? run.error.message : String(run.error)) : null;
 
+  const receipts: Record<string, unknown> = result?.components
+    ? { ...evidence.receipts, components: result.components } : { ...evidence.receipts };
   if (result?.success) {
-    return (await settleProjection(row, { kind: "success", receipts: evidence.receipts })) ? "success" : "claim_lost";
+    return (await settleProjection(row, { kind: "success", receipts })) ? "success" : "claim_lost";
   }
   const error = result?.error ?? thrown ?? undefined;
+  if (typeof error === "string" && /GHL_PROJECTION_FENCE_LOST/.test(error)) {
+    // The claim, lease, generation or eligibility changed before a request: nothing further may be sent for this claim.
+    if (evidence.dispatched) {
+      return (await settleProjection(row, { kind: "retry", code: "GHL_PROJECTION_FENCE_LOST_PARTIAL", receipts, consumedAttempt: false, dispatched: true, delayMs: DEFERRAL_RETRY_MS })) ? "deferred" : "claim_lost";
+    }
+    await settleProjection(row, { kind: "released" });
+    return "claim_lost";
+  }
   const ambiguous = evidence.ambiguous || (typeof error === "string" && /GHL_AMBIGUOUS_DISPATCH/.test(error));
   if (ambiguous) {
-    return (await settleProjection(row, { kind: "ambiguous", code: "GHL_AMBIGUOUS_DISPATCH", receipts: evidence.receipts })) ? "ambiguous" : "claim_lost";
+    return (await settleProjection(row, { kind: "ambiguous", code: "GHL_AMBIGUOUS_DISPATCH", receipts })) ? "ambiguous" : "claim_lost";
   }
   const nextAttempt = row.attemptCount + 1;
   if (typeof error === "string" && NOT_EXPORTABLE_ERROR.test(error)) {
@@ -149,7 +212,7 @@ async function executeClaimedProjection(row: ClaimedProjection, deps: Projection
   if (isGhlSyncDeferred(error)) {
     if (evidence.dispatched) {
       // Some components reached the provider before a later component was deferred.
-      return (await settleProjection(row, { kind: "retry", code: "GHL_SYNC_DEFERRED_PARTIAL", receipts: evidence.receipts, consumedAttempt: false, dispatched: true, delayMs: DEFERRAL_RETRY_MS })) ? "deferred" : "claim_lost";
+      return (await settleProjection(row, { kind: "retry", code: "GHL_SYNC_DEFERRED_PARTIAL", receipts, consumedAttempt: false, dispatched: true, delayMs: DEFERRAL_RETRY_MS })) ? "deferred" : "claim_lost";
     }
     return (await settleProjection(row, { kind: "deferred", code: "GHL_SYNC_DEFERRED_BLOCKED" })) ? "deferred" : "claim_lost";
   }
@@ -158,18 +221,34 @@ async function executeClaimedProjection(row: ClaimedProjection, deps: Projection
     // retrying cannot help until the inventory or payload contract changes, so it waits without spending budget.
     return (await settleProjection(row, { kind: "deferred", code: "GHL_CUSTOM_FIELD_CONTRACT_BLOCKED", retryAfterMs: 15 * 60 * 1000 })) ? "deferred" : "claim_lost";
   }
+  if (!evidence.dispatched && typeof error === "string" && /GHL_IDENTITY_AMBIGUOUS/.test(error)) {
+    // Remote identity cannot be established safely and nothing was sent. Held for review with the specific reason.
+    const reason = error.replace(/^.*GHL_IDENTITY_AMBIGUOUS:?/, "").trim().slice(0, 80) || "unspecified";
+    return (await settleProjection(row, { kind: "terminal", reason: "IDENTITY_NEEDS_REVIEW", code: `GHL_IDENTITY_AMBIGUOUS:${reason}`, receipts, consumedAttempt: false, dispatched: false })) ? "terminal" : "claim_lost";
+  }
+  if (!evidence.dispatched && typeof error === "string" && /GHL_REQUIRED_SUPPRESSION_FIELD_UNAVAILABLE/.test(error)) {
+    // A suppression must travel with the contact but the provider field is not installed: nothing is sent.
+    return (await settleProjection(row, { kind: "deferred", code: "GHL_REQUIRED_SUPPRESSION_FIELD_UNAVAILABLE", retryAfterMs: 15 * 60 * 1000 })) ? "deferred" : "claim_lost";
+  }
+  if (typeof error === "string" && /^GHL_COMPONENT_FAILED/.test(error)) {
+    // Identity reached the provider but a required component (permission/suppression fields) failed: retry with budget.
+    if (nextAttempt >= CONTACT_PROJECTION_MAX_ATTEMPTS) {
+      return (await settleProjection(row, { kind: "terminal", reason: "MAX_ATTEMPTS_EXHAUSTED", code: error.slice(0, 120), receipts, consumedAttempt: true, dispatched: evidence.dispatched })) ? "failure" : "claim_lost";
+    }
+    return (await settleProjection(row, { kind: "retry", code: error.slice(0, 120), receipts, consumedAttempt: true, dispatched: evidence.dispatched, delayMs: projectionRetryDelayMs(nextAttempt) })) ? "failure" : "claim_lost";
+  }
   const kind = classifyGhlSyncError(error);
   if (kind === "auth") {
     return (await settleProjection(row, { kind: "deferred", code: "PROVIDER_AUTH_FAILURE", retryAfterMs: 5 * 60 * 1000 })) ? "auth" : "claim_lost";
   }
   if (kind === "skip") {
-    return (await settleProjection(row, { kind: "terminal", reason: "INVALID_OR_UNUSABLE_IDENTITY", code: kind, receipts: evidence.receipts, consumedAttempt: false, dispatched: evidence.dispatched })) ? "skip" : "claim_lost";
+    return (await settleProjection(row, { kind: "terminal", reason: "INVALID_OR_UNUSABLE_IDENTITY", code: kind, receipts, consumedAttempt: false, dispatched: evidence.dispatched })) ? "skip" : "claim_lost";
   }
   if (nextAttempt >= CONTACT_PROJECTION_MAX_ATTEMPTS) {
-    return (await settleProjection(row, { kind: "terminal", reason: "MAX_ATTEMPTS_EXHAUSTED", code: thrown ? "PROJECTION_EXCEPTION" : kind, receipts: evidence.receipts, consumedAttempt: true, dispatched: evidence.dispatched })) ? "failure" : "claim_lost";
+    return (await settleProjection(row, { kind: "terminal", reason: "MAX_ATTEMPTS_EXHAUSTED", code: thrown ? "PROJECTION_EXCEPTION" : kind, receipts, consumedAttempt: true, dispatched: evidence.dispatched })) ? "failure" : "claim_lost";
   }
   return (await settleProjection(row, {
-    kind: "retry", code: thrown ? "PROJECTION_EXCEPTION" : "PROVIDER_TRANSIENT_FAILURE", receipts: evidence.receipts,
+    kind: "retry", code: thrown ? "PROJECTION_EXCEPTION" : "PROVIDER_TRANSIENT_FAILURE", receipts,
     consumedAttempt: true, dispatched: evidence.dispatched, delayMs: projectionRetryDelayMs(nextAttempt),
   })) ? "failure" : "claim_lost";
 }
@@ -482,13 +561,18 @@ async function ghlFetch(path: string, options: RequestInit & { pauseEpoch?: bigi
           customFields: (bodyValue as any).customFields.map(({ key: _key, ...field }: any) => field),
         })
       : options.body;
-    const settleDispatch = markGhlDispatch(method, path);
+    const settleDispatch = await markGhlDispatch(method, path, {
+      identity: bodyValue && typeof bodyValue === "object" && !Array.isArray(bodyValue)
+        ? { email: typeof (bodyValue as any).email === "string" ? (bodyValue as any).email : null,
+            phone: typeof (bodyValue as any).phone === "string" ? (bodyValue as any).phone : null }
+        : null,
+    });
     try {
       const dispatched = await fetch(url, { ...options, body: transportBody, headers, signal: options.signal ?? AbortSignal.timeout(20_000) });
-      settleDispatch(dispatched.ok ? "ok" : (dispatched.status >= 500 && method === "POST" ? "ambiguous" : "http_error"), dispatched.status);
+      await settleDispatch(dispatched.ok ? "ok" : (dispatched.status >= 500 && method === "POST" ? "ambiguous" : "http_error"), dispatched.status);
       return dispatched;
     } catch (transportError) {
-      settleDispatch("ambiguous");
+      await settleDispatch("ambiguous");
       if (method === "POST") {
         throw new GhlAmbiguousDispatchError(`${method} ${path.split("?")[0]}: ${transportError instanceof Error ? transportError.message : String(transportError)}`);
       }
@@ -552,12 +636,12 @@ async function updateSyncStatusRecord(entityType: string, direction: string, syn
  * real syncContactToGhl error-handling paths (e.g. the 422 email-validation
  * terminal skip) with a fake provider. Never set in production code paths.
  */
-let _upsertGhlContactOverride: ((contact: Contact) => Promise<string>) | null = null;
-export function __setUpsertGhlContactOverrideForTests(fn: ((contact: Contact) => Promise<string>) | null): void {
+let _upsertGhlContactOverride: ((contact: Contact) => Promise<string | GhlUpsertOutcome>) | null = null;
+export function __setUpsertGhlContactOverrideForTests(fn: ((contact: Contact) => Promise<string | GhlUpsertOutcome>) | null): void {
   _upsertGhlContactOverride = fn;
 }
 
-export async function syncContactToGhl(contactId: number): Promise<{ success: boolean; ghlContactId?: string; error?: string }> {
+export async function syncContactToGhl(contactId: number): Promise<SyncContactResult> {
   try {
     if (!isGhlConfigured() && !_upsertGhlContactOverride) return { success: false, error: "GHL not configured" };
     const contact = await storage.getContact(contactId);
@@ -616,10 +700,18 @@ export async function syncContactToGhl(contactId: number): Promise<{ success: bo
     }
     // ─────────────────────────────────────────────────────────────────────────
 
-    let rawGhlId: string;
+    let upsertOutcome: GhlUpsertOutcome;
     try {
-      rawGhlId = await (_upsertGhlContactOverride ?? upsertGhlContact)(contactForUpsert);
+      const raw = await (_upsertGhlContactOverride ?? upsertGhlContactDetailed)(contactForUpsert);
+      upsertOutcome = typeof raw === "string"
+        ? { ghlContactId: raw, identity: "updated", components: { identity: { state: "ok" }, profile_fields: { state: "ok" }, permissions: { state: "ok" } } }
+        : raw;
     } catch (upsertErr: any) {
+      if (upsertErr instanceof GhlIdentityAmbiguousError || upsertErr instanceof GhlRequiredFieldUnavailableError
+          || upsertErr?.code === "GHL_PROJECTION_FENCE_LOST" || upsertErr instanceof GhlAmbiguousDispatchError) {
+        // Typed boundary outcomes: the projection executor maps each to its own durable disposition.
+        return { success: false, error: String(upsertErr.message) };
+      }
       if (upsertErr instanceof GhlIdentityConflictError) {
         // Ownership conflict — another local contact already holds this GHL ID.
         // This is a safe data-skip, not a GHL API failure; do not log as error.
@@ -649,12 +741,21 @@ export async function syncContactToGhl(contactId: number): Promise<{ success: bo
       }
       throw upsertErr;
     }
-    const ghlId = normalizeGhlId(rawGhlId) ?? undefined;
+    const ghlId = normalizeGhlId(upsertOutcome.ghlContactId) ?? undefined;
     if (ghlId && !contact.ghlContactId) {
       await storage.updateContact(contactId, { ghlContactId: ghlId });
     }
     if (ghlId) {
       console.log(`[GHL Sync] Contact #${contactId} synced → GHL ID ${ghlId}`);
+    }
+    const failedComponents = Object.entries(upsertOutcome.components)
+      .filter(([, component]) => component.state === "failed")
+      .map(([name, component]) => `${name}:${component.code ?? "failed"}`);
+    if (failedComponents.length > 0) {
+      // Identity is linked; a required component failed. No tags (which may trigger native workflows) until the
+      // permission/suppression fields are in place.
+      await updateSyncStatusRecord("contacts", "outbound", 0, 1, `GHL_COMPONENT_FAILED:${failedComponents.join(",")}`);
+      return { success: false, ghlContactId: ghlId, error: `GHL_COMPONENT_FAILED:${failedComponents.join(",")}`, components: upsertOutcome.components };
     }
 
     await checkAndApplyActivePipelineTag(contact, ghlId);
@@ -682,7 +783,7 @@ export async function syncContactToGhl(contactId: number): Promise<{ success: bo
       actorType: "system",
       details: { ghlContactId: ghlId },
     }).catch(() => {});
-    return { success: true, ghlContactId: ghlId };
+    return { success: true, ghlContactId: ghlId, components: upsertOutcome.components };
   } catch (err: any) {
     if (isGhlSyncDeferred(err?.message)) {
       await recordGhlSyncDeferred("contacts", err.message);
@@ -1828,6 +1929,15 @@ export async function applyParentLocationTags(contact: Contact, ghlContactId?: s
       customFields.push({ key: "lb_location_of", field_value: "" });
     }
 
+    // Optional enrichment: a field the provider has not installed is held, never sent (an unverified field id would
+    // otherwise defer the whole projection after the identity already succeeded). Fields are never auto-created.
+    if (customFields.length > 0) {
+      const { getGhlCustomFieldInventory } = await import("./ghl");
+      const installedKeys = new Set((await getGhlCustomFieldInventory()).map(field => field.key));
+      for (let i = customFields.length - 1; i >= 0; i--) {
+        if (!installedKeys.has(customFields[i].key)) customFields.splice(i, 1);
+      }
+    }
     const tagsChanged = updatedTags.join(",") !== currentTags.join(",");
     if (tagsChanged || customFields.length > 0) {
       const payload: Record<string, any> = {};
@@ -2799,10 +2909,13 @@ async function runGhlTickBody(assertOwnership: () => Promise<void>): Promise<Tic
   // recorded but never block the tick: only authority-adopted rows are claimable.
   try {
     const { convergeLegacyProjectionRows } = await import("./ghl-projection-convergence");
-    detail.convergence = (await convergeLegacyProjectionRows()).ran ? "ran" : "none_needed";
-    const { repairStrandedProjections } = await import("./ghl-projection-authority");
+    const convergence = await convergeLegacyProjectionRows();
+    detail.convergence = convergence.ran ? (convergence.remaining ? "partial_resumable" : "ran") : "none_needed";
+    const { repairStrandedProjections, reconcileExhaustedProjections } = await import("./ghl-projection-authority");
     const repaired = await repairStrandedProjections();
     if (repaired > 0) detail.strandedReleased = repaired;
+    const exhausted = await reconcileExhaustedProjections();
+    if (exhausted > 0) detail.exhaustedExpiredClosed = exhausted;
   } catch (error) {
     detail.convergenceError = (error as Error).message.slice(0, 200);
   }
