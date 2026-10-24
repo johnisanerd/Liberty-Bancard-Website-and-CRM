@@ -16,7 +16,8 @@ import { validateWebhookSignature, getSdrGhlConfig, isSdrGhlConfigured, fetchCal
 import { handleContactUpdated, handleMessageReceived, handleCallOutcome, handleAppointmentBooked, handleAppointmentCanceled, handleOptOut, handleEmailBounce } from "../services/sdr/webhook-handlers";
 import { handleAppointmentShowed } from "../services/sdr/scheduling";
 import { ghlWebhookReceiptMiddleware } from "../services/ghl-webhook-receipts";
-import { recordGhlAppointmentEvent, decideGhlAppointmentEvent, configuredAppointmentCalendarIds, type AppointmentEventKind } from "../services/ghl-appointment-events";
+import { acceptGhlAppointmentTransition, configuredAppointmentCalendarIds, type AppointmentEventKind } from "../services/ghl-appointment-events";
+import { runReceiptStep, runReceiptTxStep } from "../services/ghl-webhook-effects";
 import { handleConversationCreated, handleChatMessage, handleSmsThread, handleEmailThread, handleChatBooking } from "../services/sdr/chat-handlers";
 import { parse } from "csv-parse/sync";
 import { createContactLocalFirst } from "../services/contact-writer";
@@ -828,8 +829,7 @@ export function registerSdrRoutes(app: Express) {
       if (!gate) return;
       const occurrence = await claimExplicitGhlOccurrence("appointment_booked", payload, payload.appointmentId ?? payload.id ?? payload.eventId);
       await handleAppointmentBooked(payload);
-      await linkExplicitGhlOccurrence(occurrence.id, payload);
-      await recordAppointmentLifecycle("booked", payload);
+      await runReceiptStep("booked:link_inbound_request", () => linkExplicitGhlOccurrence(occurrence.id, payload));
       res.json({ received: true });
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
@@ -849,7 +849,6 @@ export function registerSdrRoutes(app: Express) {
 
       if (!await gateAppointmentLifecycle("showed", req.body, res)) return;
       await handleAppointmentShowed(req.body);
-      await recordAppointmentLifecycle("showed", req.body);
       res.json({ received: true });
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
@@ -868,7 +867,6 @@ export function registerSdrRoutes(app: Express) {
 
       if (!await gateAppointmentLifecycle("canceled", req.body, res)) return;
       await handleAppointmentCanceled(req.body);
-      await recordAppointmentLifecycle("canceled", req.body);
       res.json({ received: true });
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
@@ -878,15 +876,19 @@ export function registerSdrRoutes(app: Express) {
     }
   });
 
-  // Lifecycle ordering is decided BEFORE the booked/showed/canceled handlers run, so a stale, terminal, replayed or
-  // untrusted event never enrolls, tags, moves a lead stage or sends anything. The state is recorded AFTER the
-  // handler; a recording fault fails the request so the provider retry re-decides (the decision is still `apply`).
+  // The transition is decided AND recorded in one transaction under a per-appointment lock, as a durable step of the
+  // receipt, BEFORE any booked/showed/canceled effect runs. A stale, terminal, replayed or untrusted event never
+  // enrolls, tags, moves a lead stage or sends anything; a retry of the same delivery reuses the stored decision
+  // and never records the transition twice. The handlers' own effects are further durable steps (see
+  // ghl-webhook-effects.ts) that re-check, under the same lock, that a later accepted transition did not supersede them.
   const appointmentScope = () => ({
     allowedLocationId: process.env.GHL_LOCATION_ID || null,
     allowedCalendarIds: configuredAppointmentCalendarIds(),
   });
+  const acceptAppointmentTransition = (kind: AppointmentEventKind, payload: unknown) =>
+    acceptGhlAppointmentTransition({ kind, payload: (payload ?? {}) as Record<string, unknown>, ...appointmentScope() });
   async function gateAppointmentLifecycle(kind: AppointmentEventKind, payload: unknown, res: import("express").Response): Promise<boolean> {
-    const verdict = await decideGhlAppointmentEvent({ kind, payload: (payload ?? {}) as Record<string, unknown>, ...appointmentScope() });
+    const verdict = await acceptAppointmentTransition(kind, payload);
     if (verdict.decision === "apply") return true;
     if (verdict.decision === "rejected") {
       console.warn(`[SDR Webhook] appointment-${kind} rejected: ${verdict.reason}`);
@@ -896,9 +898,6 @@ export function registerSdrRoutes(app: Express) {
     }
     res.json({ received: true, applied: false, reason: verdict.decision });
     return false;
-  }
-  async function recordAppointmentLifecycle(kind: AppointmentEventKind, payload: unknown) {
-    await recordGhlAppointmentEvent({ kind, payload: (payload ?? {}) as Record<string, unknown>, ...appointmentScope() });
   }
 
   // Updated / rescheduled appointments: ordering record plus an audit event. These never enroll workflows,
@@ -911,30 +910,32 @@ export function registerSdrRoutes(app: Express) {
           return res.status(401).json({ message: "Invalid webhook signature" });
         }
         const payload = (req.body ?? {}) as Record<string, unknown>;
-        const result = await recordGhlAppointmentEvent({ kind, payload, ...appointmentScope() });
-        if (result.reason !== "applied" && result.reason !== "replay" && result.reason !== "stale" && result.reason !== "terminal") {
-          console.warn(`[SDR Webhook] appointment-${kind} rejected: ${result.reason}`);
-          return res.status(422).json({ received: false, error: result.reason });
+        const verdict = await acceptAppointmentTransition(kind, payload);
+        if (verdict.decision === "rejected") {
+          console.warn(`[SDR Webhook] appointment-${kind} rejected: ${verdict.reason}`);
+          return res.status(422).json({ received: false, error: verdict.reason });
         }
-        // The audit event is written for an applied event AND for an exact replay, so a failure after the state
-        // change is repaired by the provider retry. Duplicates are prevented by the audit reference below.
-        if ((result.applied || result.reason === "replay") && typeof payload.contactId === "string") {
-          const [merchant] = await db.select().from(sdrMerchants).where(eq(sdrMerchants.ghlContactId, payload.contactId));
-          if (merchant) {
+        // The audit row is a transactional step of this receipt: written exactly once with the step record, and a
+        // retry after any later failure finds the step complete.
+        if (verdict.decision === "apply" && typeof payload.contactId === "string") {
+          const contactId = payload.contactId;
+          await runReceiptTxStep("audit_event", async tx => {
+            const [merchant] = await tx.select().from(sdrMerchants).where(eq(sdrMerchants.ghlContactId, contactId));
+            if (!merchant) return { audited: false };
             const eventTime = String(payload.dateUpdated ?? payload.dateAdded ?? payload.timestamp ?? "");
-            const auditRef = `${String(payload.appointmentId ?? payload.id ?? payload.contactId)}:${kind}:${eventTime}`;
-            const [already] = await db.select({ id: sdrLeadEvents.id }).from(sdrLeadEvents)
+            const auditRef = `${String(payload.appointmentId ?? payload.id ?? contactId)}:${kind}:${eventTime}`;
+            const [already] = await tx.select({ id: sdrLeadEvents.id }).from(sdrLeadEvents)
               .where(and(eq(sdrLeadEvents.merchantId, merchant.id), eq(sdrLeadEvents.eventType, `appointment_${kind}`), eq(sdrLeadEvents.ghlRefId, auditRef)))
               .limit(1);
-            if (!already) {
-              await db.insert(sdrLeadEvents).values({
-                merchantId: merchant.id, eventType: `appointment_${kind}`, channel: "calendar", actorType: "merchant",
-                payloadJson: payload, ghlRefId: auditRef,
-              });
-            }
-          }
+            if (already) return { audited: false };
+            await tx.insert(sdrLeadEvents).values({
+              merchantId: merchant.id, eventType: `appointment_${kind}`, channel: "calendar", actorType: "merchant",
+              payloadJson: payload, ghlRefId: auditRef,
+            });
+            return { audited: true };
+          });
         }
-        res.json({ received: true, applied: result.applied, reason: result.reason });
+        res.json({ received: true, applied: verdict.decision === "apply", reason: verdict.decision === "apply" ? "applied" : verdict.decision });
       } catch (err: unknown) {
         const errMsg = err instanceof Error ? err.message : String(err);
         console.error(`[SDR Webhook] appointment-${kind} error:`, errMsg);

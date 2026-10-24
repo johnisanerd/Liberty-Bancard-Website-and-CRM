@@ -405,6 +405,9 @@ export const ghlProviderEventReceipts = pgTable("ghl_provider_event_receipts", {
   ghlContactId: text("ghl_contact_id"),
   payloadFingerprint: text("payload_fingerprint"),
   effectAppliedAt: timestamp("effect_applied_at"),
+  collisionCount: integer("collision_count").notNull().default(0),
+  lastCollisionFingerprint: text("last_collision_fingerprint"),
+  lastCollisionAt: timestamp("last_collision_at", { withTimezone: true }),
   eventAt: timestamp("event_at", { withTimezone: true }),
   receivedAt: timestamp("received_at").notNull().defaultNow(),
   claimedAt: timestamp("claimed_at"),
@@ -437,6 +440,20 @@ export type GhlProjectionOperation = typeof ghlProjectionOperations.$inferSelect
 
 export type GhlProviderEventReceipt = typeof ghlProviderEventReceipts.$inferSelect;
 
+export const ghlWebhookEffectSteps = pgTable("ghl_webhook_effect_steps", {
+  receiptId: uuid("receipt_id").notNull(),
+  stepKey: text("step_key").notNull(),
+  state: text("state").notNull().default("running"), // running|done
+  stepToken: uuid("step_token"),
+  leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+  attemptCount: integer("attempt_count").notNull().default(1),
+  result: jsonb("result"),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+}, (table) => [
+  primaryKey({ columns: [table.receiptId, table.stepKey], name: "ghl_webhook_effect_steps_pk" }),
+]);
+
 export const ghlAppointmentState = pgTable("ghl_appointment_state", {
   appointmentId: text("appointment_id").primaryKey(),
   ghlContactId: text("ghl_contact_id"),
@@ -448,6 +465,7 @@ export const ghlAppointmentState = pgTable("ghl_appointment_state", {
   lastEventAt: timestamp("last_event_at", { withTimezone: true }).notNull(),
   lastReceiptId: uuid("last_receipt_id"),
   rescheduleCount: integer("reschedule_count").notNull().default(0),
+  bookedEffectReceiptId: uuid("booked_effect_receipt_id"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 }, (table) => [

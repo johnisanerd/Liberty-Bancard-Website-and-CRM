@@ -1143,7 +1143,7 @@ export async function tagContactForInboxOrganization(params: {
   sequenceName: string;
   vertical?: string;
   stage?: string;
-}): Promise<void> {
+}): Promise<{ success: boolean; error?: string }> {
   const { ghlContactId, sequenceName, vertical, stage } = params;
 
   const tags: string[] = [INBOX_SMART_LIST_TAGS.activeSdr];
@@ -1170,8 +1170,10 @@ export async function tagContactForInboxOrganization(params: {
 
   try {
     await addTag({ contactId: ghlContactId, tags: [...new Set(tags)] });
+    return { success: true };
   } catch (err) {
     console.warn(`[GHL Inbox] Failed to tag contact ${ghlContactId}:`, err);
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 

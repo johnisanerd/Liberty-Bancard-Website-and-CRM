@@ -516,7 +516,8 @@ server.close();
   check((await ev("updated", 5)).applied, "First appointment event is recorded");
   check((await ev("rescheduled", 3)).reason === "stale", "An older event never overwrites a newer one (reordered delivery)");
   check((await ev("rescheduled", 7, { startTime: t(30) })).applied, "A newer reschedule is applied");
-  check((await ev("booked", 9)).applied === false, "A late booked event never overwrites an existing appointment");
+  check((await ev("booked", 9)).applied === true && (await ev("booked", 9)).reason === "replay",
+    "A booked event after updates owns the one-time booked effect exactly once; a repeat is a replay");
   check((await ev("canceled", 10)).applied, "Cancel is applied");
   check((await ev("updated", 20)).reason === "terminal", "A late update cannot revive a canceled appointment");
   const row = (await pool.query(`SELECT status, reschedule_count FROM ghl_appointment_state WHERE appointment_id=$1`, [aid])).rows[0];
@@ -713,21 +714,21 @@ server.close();
   const rawHash = (o: object) => JSON.stringify(o);
   check(occurrence("contact-updated", a1).eventKey === occurrence("contact-updated", a2).eventKey && rawHash(a1) !== rawHash(a2),
     "A re-serialized delivery of one event maps to the same occurrence (NEGATIVE CONTROL: a raw-body key differs)");
-  check(occurrence("m", { webhookId: "evt-9", text: "a" }).eventKey === occurrence("m", { webhookId: "evt-9", text: "a", extra: 1 }).eventKey && occurrence("m", { webhookId: "evt-9" }).basis === "provider_event_id",
+  check(occurrence("m", { eventId: "evt-9", text: "a" }).eventKey === occurrence("m", { eventId: "evt-9", text: "a", extra: 1 }).eventKey && occurrence("m", { eventId: "evt-9" }).basis === "provider_event_id",
     "A verified provider event id is the occurrence identity");
+  check(occurrence("m", { webhookId: "wh-1", x: 1 }).basis === "payload_fingerprint" && occurrence("m", { webhookId: "wh-1", x: 2 }).eventKey !== occurrence("m", { webhookId: "wh-1", x: 1 }).eventKey,
+    "A bare webhookId is not assumed to be a delivery id and never identifies an occurrence by itself");
+  check(occurrence("m", { eventId: "evt-9", locationId: "loc_a" }).eventKey !== occurrence("m", { eventId: "evt-9", locationId: "loc_b" }).eventKey
+    && occurrence("m", { eventId: "evt-9", locationId: "loc_a" }).legacyEventKey === "m:evt:evt-9",
+    "The same provider event id in two locations is two occurrences; the pre-scoping key is still honored");
   check(occurrence("contact-updated", { id: "contact-1", x: 1 }).basis === "payload_fingerprint", "A bare object id is not mistaken for an event id");
   const sem1 = { messageId: "msg-1", dateUpdated: "2026-10-24T12:00:00Z", body: "one" };
   const sem2 = { messageId: "msg-1", dateUpdated: "2026-10-24T12:00:00Z", body: "two" };
   const claim1 = await receipts.claimGhlWebhookReceipt(occurrence("sem-test", sem1).eventKey, "sem-test", { payloadFingerprint: occurrence("sem-test", sem1).fingerprint });
   const claim2 = await receipts.claimGhlWebhookReceipt(occurrence("sem-test", sem2).eventKey, "sem-test", { payloadFingerprint: occurrence("sem-test", sem2).fingerprint });
-  check(claim1.decision === "process" && claim2.decision === "process" && claim1.receiptId !== claim2.receiptId, "The same semantic key with a different payload is a distinct occurrence, not a duplicate");
-  // effect recovery at the claim level
-  if (claim1.decision === "process") {
-    await receipts.markGhlWebhookEffectApplied(claim1.receiptId, claim1.claimToken);
-    await pool.query(`UPDATE ghl_provider_event_receipts SET lease_expires_at = now() - interval '1 second' WHERE id=$1`, [claim1.receiptId]);
-    const again = await receipts.claimGhlWebhookReceipt(occurrence("sem-test", sem1).eventKey, "sem-test", { payloadFingerprint: occurrence("sem-test", sem1).fingerprint });
-    check(again.decision === "process" && again.effectApplied === true, "A re-claim of a receipt whose effect was recorded reports the effect as already applied");
-  }
+  const collided = (await pool.query(`SELECT collision_count FROM ghl_provider_event_receipts WHERE event_key=$1`, [occurrence("sem-test", sem1).eventKey])).rows[0];
+  check(claim1.decision === "process" && claim2.decision === "collision" && Number(collided.collision_count) === 1,
+    "The same occurrence key with a different payload is a held collision, never a new occurrence and never a duplicate");
 }
 
 // ================================================================ R6: appointment trust, ordering decision, audit idempotency
@@ -754,10 +755,7 @@ server.close();
   check(/gateAppointmentLifecycle\("booked"[\s\S]{0,200}handleAppointmentBooked/.test(sdrSrc)
     && /gateAppointmentLifecycle\("showed"[\s\S]{0,120}handleAppointmentShowed/.test(sdrSrc)
     && /gateAppointmentLifecycle\("canceled"[\s\S]{0,120}handleAppointmentCanceled/.test(sdrSrc),
-    "Each booked/showed/canceled route decides ordering before its handler");
-  check(!/recordAppointmentLifecycleBestEffort/.test(sdrSrc) && /await recordAppointmentLifecycle\("booked"/.test(sdrSrc), "Lifecycle recording is no longer best-effort (faults fail the request so it is retried)");
-  check(/appointment_\$\{kind\}`\), eq\(sdrLeadEvents\.ghlRefId, auditRef\)/.test(sdrSrc.replace(/\s+/g, " ").replace(/\) \.limit/g, ").limit")) || /auditRef/.test(sdrSrc),
-    "The reschedule audit event is keyed by appointment, kind and event time and is written for a replay too");
+    "Each booked/showed/canceled route accepts the transition (one transaction, one appointment lock) before its handler");
 }
 
 // ================================================================ R3/R4/R8: approved fake-provider journey (real worker, executor, transport, control)
@@ -950,6 +948,268 @@ server.close();
   globalThis.fetch = wrapped;
   ghlResponder = defaultResponder;
   await setControl(true);
+}
+
+// ================================================================ H5/H6: durable webhook effects and appointment serialization
+{
+  const effects = await import("../../server/services/ghl-webhook-effects");
+  const { sql } = await import("drizzle-orm");
+  const handlers = await import("../../server/services/sdr/scheduling");
+  await pool.query(`CREATE TABLE IF NOT EXISTS cert_h5_effects(id serial primary key, receipt_id uuid, tag text)`);
+  const effectRows = async (tag: string) => Number((await pool.query(`SELECT count(*)::int AS n FROM cert_h5_effects WHERE tag=$1`, [tag])).rows[0].n);
+  const happ = express();
+  happ.use(express.json());
+  happ.use("/api/h5", receipts.ghlWebhookReceiptMiddleware());
+  const steps = { a: 0, b: 0, failB: true };
+  happ.post("/api/h5/x", async (req, res) => {
+    try {
+      const b = req.body;
+      if (b.behave === "fail0") return res.status(500).json({ error: "boom" });
+      if (b.behave === "multi") {
+        await effects.runReceiptStep("a", async () => { steps.a++; return { ok: true }; });
+        await effects.runReceiptStep("b", async () => { steps.b++; if (steps.failB) throw new Error("provider_down"); return { ok: true }; });
+        return res.json({ ok: true });
+      }
+      if (b.behave === "slow") {
+        await pool.query(`UPDATE ghl_provider_event_receipts SET lease_expires_at = now() + interval '1 second' WHERE id=$1`, [effects.currentReceiptId()]);
+        await effects.runReceiptTxStep("effect", tx => tx.execute(sql`INSERT INTO cert_h5_effects(receipt_id, tag) VALUES (${effects.currentReceiptId()}::uuid, ${b.tag})`));
+        await sleep(1600);
+        const held = await pool.query(`SELECT (lease_expires_at > now() + interval '30 seconds') AS renewed FROM ghl_provider_event_receipts WHERE id=$1`, [effects.currentReceiptId()]);
+        return res.json({ ok: true, renewed: held.rows[0].renewed });
+      }
+      await effects.runReceiptTxStep("effect", tx => tx.execute(sql`INSERT INTO cert_h5_effects(receipt_id, tag) VALUES (${effects.currentReceiptId()}::uuid, ${b.tag})`));
+      if (b.behave === "tx-fail") return res.status(500).json({ error: "after_effect" });
+      return res.json({ ok: true });
+    } catch (e) { return res.status(500).json({ error: String((e as Error).message) }); }
+  });
+  const hserver = http.createServer(happ);
+  await new Promise<void>(r => hserver.listen(0, "127.0.0.1", r));
+  const hport = (hserver.address() as any).port;
+  const hpost = (body: object) => new Promise<{ status: number; body: any }>((resolve, reject) => {
+    const data = JSON.stringify(body);
+    const rq = http.request({ host: "127.0.0.1", port: hport, path: "/api/h5/x", method: "POST", headers: { "content-type": "application/json", "content-length": Buffer.byteLength(data) } }, rs => {
+      let buf = ""; rs.on("data", d => (buf += d)); rs.on("end", () => resolve({ status: rs.statusCode ?? 0, body: buf ? JSON.parse(buf) : null }));
+    });
+    rq.on("error", reject); rq.end(data);
+  });
+  const receiptOf = async (eventId: string, loc = "loc_h5") =>
+    (await pool.query(`SELECT * FROM ghl_provider_event_receipts WHERE event_key=$1`, [`x:${loc}:evt:${eventId}`])).rows[0];
+  const expireLease = (eventId: string) => pool.query(`UPDATE ghl_provider_event_receipts SET lease_expires_at = now() - interval '1 second' WHERE event_key=$1`, [`x:loc_h5:evt:${eventId}`]);
+
+  // Reproduced case 6: the effect commits, the settlement write fails, the sender retries.
+  {
+    const eid = `h5-marker-${run}`, tag = `m-${run}`;
+    const realQuery = pool.query.bind(pool);
+    let faulted = 0;
+    (pool as any).query = (...args: any[]) => {
+      const text = typeof args[0] === "string" ? args[0] : args[0]?.text ?? "";
+      if (/UPDATE ghl_provider_event_receipts\s+SET state = \$3/.test(text) && faulted === 0) { faulted++; return Promise.reject(new Error("injected settlement fault")); }
+      return realQuery(...args);
+    };
+    let first: { status: number; body: any };
+    try { first = await hpost({ eventId: eid, locationId: "loc_h5", tag, behave: "tx" }); } finally { (pool as any).query = realQuery; }
+    check(first.status === 503 && faulted === 1 && (await effectRows(tag)) === 1 && (await receiptOf(eid)).state === "claimed",
+      "Case 6: the effect committed, the settlement failed, the sender sees a retryable 503 and the receipt is not applied");
+    const dup = await hpost({ eventId: eid, locationId: "loc_h5", tag, behave: "tx" });
+    check(dup.status === 409, "A retry while the lease is still live is refused, not run in parallel");
+    await expireLease(eid);
+    const retry = await hpost({ eventId: eid, locationId: "loc_h5", tag, behave: "tx" });
+    check(retry.status === 200 && (await effectRows(tag)) === 1 && (await receiptOf(eid)).state === "applied",
+      "Retry after the settlement fault completes the receipt and the persisted effect count stays exactly one");
+    const stepRow = (await pool.query(`SELECT state FROM ghl_webhook_effect_steps WHERE receipt_id=$1`, [(await receiptOf(eid)).id])).rows;
+    check(stepRow.length === 1 && stepRow[0].state === "done", "The effect step is recorded as done in the same transaction as the effect");
+  }
+
+  // Partial multi-effect: the first external effect is never repeated when the second fails.
+  {
+    const eid = `h5-multi-${run}`;
+    steps.a = 0; steps.b = 0; steps.failB = true;
+    const first = await hpost({ eventId: eid, locationId: "loc_h5", behave: "multi" });
+    check(first.status === 500 && steps.a === 1 && steps.b === 1, "A failing second effect fails the receipt after the first effect ran once");
+    steps.failB = false;
+    const retry = await hpost({ eventId: eid, locationId: "loc_h5", behave: "multi" });
+    check(retry.status === 200 && steps.a === 1 && steps.b === 2, "The retry skips the completed effect and re-runs only the failed one");
+    const again = await hpost({ eventId: eid, locationId: "loc_h5", behave: "multi" });
+    check(again.body?.duplicate === true && steps.a === 1 && steps.b === 2, "An applied multi-effect receipt is a harmless duplicate");
+  }
+
+  // Crash window: an external effect whose completion never recorded is re-run once (documented), a live one is not.
+  {
+    const eid = `h5-crash-${run}`;
+    steps.a = 0; steps.b = 0; steps.failB = false;
+    await hpost({ eventId: eid, locationId: "loc_h5", behave: "fail0" });
+    const rec = await receiptOf(eid);
+    await pool.query(`INSERT INTO ghl_webhook_effect_steps(receipt_id, step_key, state, step_token, lease_expires_at) VALUES ($1,'a','running',$2, now() + interval '5 minutes')`, [rec.id, randomUUID()]);
+    // payload unchanged so the fingerprint matches; use the same body
+    const live = await hpost({ eventId: eid, locationId: "loc_h5", behave: "fail0" });
+    check(live.status === 500, "Fixture: failing receipt re-runs");
+    await pool.query(`DELETE FROM ghl_webhook_effect_steps WHERE receipt_id=$1`, [rec.id]);
+    await pool.query(`INSERT INTO ghl_webhook_effect_steps(receipt_id, step_key, state, step_token, lease_expires_at) VALUES ($1,'a','running',$2, now() + interval '5 minutes')`, [rec.id, randomUUID()]);
+    await pool.query(`UPDATE ghl_provider_event_receipts SET state='failed', lease_expires_at=NULL, claim_token=NULL WHERE id=$1`, [rec.id]);
+    // different behave would be a collision (step row exists); use the multi handler through a direct context instead
+    const claim = await receipts.claimGhlWebhookReceipt(rec.event_key, "x", { payloadFingerprint: rec.payload_fingerprint });
+    assert(claim.decision === "process");
+    const ctx = { receiptId: claim.receiptId, claimToken: claim.claimToken, lost: false };
+    let inFlight = false;
+    await effects.receiptStepContext.run(ctx, async () => { try { await effects.runReceiptStep("a", async () => { steps.a++; }); } catch (e) { inFlight = e instanceof effects.ReceiptStepInFlightError; } });
+    check(inFlight && steps.a === 0, "An external effect with a live lease held by an earlier attempt is not started a second time");
+    await pool.query(`UPDATE ghl_webhook_effect_steps SET lease_expires_at = now() - interval '1 second' WHERE receipt_id=$1`, [rec.id]);
+    await effects.receiptStepContext.run(ctx, () => effects.runReceiptStep("a", async () => { steps.a++; }));
+    check(steps.a === 1 && Number((await pool.query(`SELECT attempt_count FROM ghl_webhook_effect_steps WHERE receipt_id=$1 AND step_key='a'`, [rec.id])).rows[0].attempt_count) === 2,
+      "After a crash (lease expired, completion never recorded) only that one effect is re-run and the attempt is counted");
+  }
+
+  // Expired-lease overlap: the stale delivery cannot start or finish an effect.
+  {
+    const eid = `h5-overlap-${run}`, tag = `o-${run}`;
+    const occ = receipts.ghlWebhookOccurrence("x", { eventId: eid, locationId: "loc_h5" });
+    const claimA = await receipts.claimGhlWebhookReceipt(occ.eventKey, "x", { payloadFingerprint: occ.fingerprint });
+    assert(claimA.decision === "process");
+    await pool.query(`UPDATE ghl_provider_event_receipts SET lease_expires_at = now() - interval '1 second' WHERE id=$1`, [claimA.receiptId]);
+    const claimB = await receipts.claimGhlWebhookReceipt(occ.eventKey, "x", { payloadFingerprint: occ.fingerprint });
+    assert(claimB.decision === "process");
+    const ctxA = { receiptId: claimA.receiptId, claimToken: claimA.claimToken, lost: false };
+    const ctxB = { receiptId: claimB.receiptId, claimToken: claimB.claimToken, lost: false };
+    const insert = (t: string) => (tx: any) => tx.execute(sql`INSERT INTO cert_h5_effects(receipt_id, tag) VALUES (${claimA.receiptId}::uuid, ${t})`);
+    let lost = false;
+    try { await effects.receiptStepContext.run(ctxA, () => effects.runReceiptTxStep("effect", insert(tag))); } catch (e) { lost = e instanceof effects.ReceiptClaimLostError; }
+    check(lost && (await effectRows(tag)) === 0 && ctxA.lost === true, "A delivery whose lease was taken over cannot start an effect");
+    await effects.receiptStepContext.run(ctxB, () => effects.runReceiptTxStep("effect", insert(tag)));
+    let lateLost = false;
+    try { await effects.receiptStepContext.run(ctxA, () => effects.runReceiptStep("ext", async () => 1)); } catch (e) { lateLost = e instanceof effects.ReceiptClaimLostError; }
+    check(lateLost && (await effectRows(tag)) === 1, "The stale delivery stays fenced after the new claimant ran the effect (exactly one persisted effect)");
+    check(await receipts.markGhlWebhookReceipt(claimA.receiptId, claimA.claimToken, "applied") === false
+      && await receipts.markGhlWebhookReceipt(claimB.receiptId, claimB.claimToken, "applied") === true, "Only the current claimant can settle the receipt");
+  }
+
+  // Changed payload under one occurrence key.
+  {
+    const eid = `h5-changed-${run}`, tag = `c-${run}`;
+    const a = await hpost({ eventId: eid, locationId: "loc_h5", tag, behave: "fail0" });
+    const b = await hpost({ eventId: eid, locationId: "loc_h5", tag, behave: "tx" });
+    check(a.status === 500 && b.status === 200 && (await effectRows(tag)) === 1,
+      "A changed payload after a failure that did nothing durable is adopted as the same occurrence and applied once");
+    const eid2 = `h5-changed2-${run}`, tag2 = `c2-${run}`;
+    const c = await hpost({ eventId: eid2, locationId: "loc_h5", tag: tag2, behave: "tx-fail" });
+    const d = await hpost({ eventId: eid2, locationId: "loc_h5", tag: tag2, behave: "tx" });
+    const rec2 = await receiptOf(eid2);
+    check(c.status === 500 && d.status === 409 && d.body.error === "occurrence_payload_conflict" && (await effectRows(tag2)) === 1 && Number(rec2.collision_count) === 1,
+      "A changed payload after an effect was committed is a held collision: no second effect, counted on the receipt");
+  }
+
+  // Occurrence identity: location scope and legacy keys.
+  {
+    const eid = `h5-loc-${run}`, tag = `l-${run}`;
+    await hpost({ eventId: eid, locationId: "loc_h5", tag, behave: "tx" });
+    await hpost({ eventId: eid, locationId: "loc_h5b", tag, behave: "tx" });
+    check((await effectRows(tag)) === 2 && (await receiptOf(eid, "loc_h5b")) !== undefined, "The same provider event id in a different location is a separate occurrence");
+    const lid = `h5-legacy-${run}`, ltag = `lg-${run}`;
+    await pool.query(`INSERT INTO ghl_provider_event_receipts(event_key, event_type, state, applied_at) VALUES ($1,'x','applied',now())`, [`x:evt:${lid}`]);
+    const dup = await hpost({ eventId: lid, locationId: "loc_h5", tag: ltag, behave: "tx" });
+    check(dup.body?.duplicate === true && (await effectRows(ltag)) === 0, "A receipt written under the pre-scoping key still deduplicates the same event");
+  }
+
+  // Long handler keeps its claim.
+  {
+    process.env.GHL_WEBHOOK_HEARTBEAT_MS = "200";
+    const eid = `h5-slow-${run}`, tag = `s-${run}`;
+    const [first, second] = await Promise.all([
+      hpost({ eventId: eid, locationId: "loc_h5", tag, behave: "slow" }),
+      (async () => { await sleep(1300); return hpost({ eventId: eid, locationId: "loc_h5", tag, behave: "slow" }); })(),
+    ]);
+    delete process.env.GHL_WEBHOOK_HEARTBEAT_MS;
+    check(first.status === 200 && first.body.renewed === true && second.status === 409 && (await effectRows(tag)) === 1,
+      "A handler that outlives its original lease keeps the claim, and a second delivery is refused while it runs");
+  }
+  hserver.close();
+
+  // H6: appointment transitions serialize before effects (real handlers, real database, real receipts).
+  {
+    const before = ghlCalls.length;
+    const t = (n: number) => new Date(Date.UTC(2026, 9, 24, 15, n)).toISOString();
+    let evSeq = 0;
+    const delivery = async (kind: "booked" | "updated" | "canceled", payload: Record<string, unknown>, handler?: (p: any) => Promise<void>) => {
+      const body = { eventId: `h6-${run}-${++evSeq}`, locationId: "loc_cert_fake", ...payload };
+      const occ = receipts.ghlWebhookOccurrence(`appointment-${kind}`, body);
+      const claim = await receipts.claimGhlWebhookReceipt(occ.eventKey, `appointment-${kind}`, { ...receipts.extractReceiptMeta(body), payloadFingerprint: occ.fingerprint }, occ.legacyEventKey);
+      assert(claim.decision === "process", `delivery claim ${claim.decision}`);
+      const ctx = { receiptId: claim.receiptId, claimToken: claim.claimToken, lost: false };
+      return effects.receiptStepContext.run(ctx, async () => {
+        const verdict = await appointments.acceptGhlAppointmentTransition({ kind, payload: body, allowedLocationId: "loc_cert_fake", allowedCalendarIds: [] });
+        if (verdict.decision === "apply" && handler) await handler(body);
+        await receipts.markGhlWebhookReceipt(claim.receiptId, claim.claimToken, "applied");
+        return verdict.decision;
+      });
+    };
+    const mkMerchant = async () => {
+      const ghl = `ghl_h6_${run}_${++evSeq}`;
+      const m = (await pool.query(`INSERT INTO sdr_merchants(business_name, ghl_contact_id) VALUES ('H6 Merchant', $1) RETURNING id`, [ghl])).rows[0];
+      return { id: Number(m.id), ghl };
+    };
+    const events = async (merchantId: number, type: string) =>
+      Number((await pool.query(`SELECT count(*)::int AS n FROM sdr_lead_events WHERE merchant_id=$1 AND event_type=$2`, [merchantId, type])).rows[0].n);
+    const stage = async (merchantId: number) => (await pool.query(`SELECT current_stage FROM sdr_lead_state WHERE merchant_id=$1`, [merchantId])).rows[0]?.current_stage ?? null;
+
+    // Reproduced case 5: a booked event that arrives after an update, then repeats.
+    {
+      const m = await mkMerchant(); const aid = `h6a-${run}`;
+      const base = { appointmentId: aid, contactId: m.ghl, calendarId: "cal_x" };
+      await delivery("updated", { ...base, dateUpdated: t(5) });
+      const v1 = await delivery("booked", { ...base, dateUpdated: t(3) }, handlers.handleAppointmentBooked);
+      const v2 = await delivery("booked", { ...base, dateUpdated: t(3) }, handlers.handleAppointmentBooked);
+      const v3 = await delivery("booked", { ...base, dateUpdated: t(4) }, handlers.handleAppointmentBooked);
+      check(v1 === "apply" && v2 === "replay" && v3 === "replay" && (await events(m.id, "appointment_booked")) === 1 && (await stage(m.id)) === "MEETING_SET",
+        "Case 5: a booked event after an update runs its effects once; repeated booked deliveries are replays with one persisted effect");
+      const st = (await pool.query(`SELECT status, last_event_at FROM ghl_appointment_state WHERE appointment_id=$1`, [aid])).rows[0];
+      check(st.status === "updated" && new Date(st.last_event_at).toISOString() === t(5), "The older booked event did not regress the newer recorded state");
+    }
+
+    // Concurrent cancel/book for one appointment, repeated to exercise both orders.
+    {
+      let bookedEffects = 0, order = { cancelFirst: 0, bookFirst: 0 };
+      for (let i = 0; i < 10; i++) {
+        const m = await mkMerchant(); const aid = `h6b-${run}-${i}`;
+        const base = { appointmentId: aid, contactId: m.ghl, calendarId: "cal_x" };
+        const [vb, vc] = await Promise.all([
+          delivery("booked", { ...base, dateUpdated: t(1) }, handlers.handleAppointmentBooked),
+          delivery("canceled", { ...base, dateUpdated: t(2) }, handlers.handleAppointmentCanceled),
+        ]);
+        const st = (await pool.query(`SELECT status FROM ghl_appointment_state WHERE appointment_id=$1`, [aid])).rows[0];
+        const booked = await events(m.id, "appointment_booked");
+        bookedEffects += booked;
+        if (vb === "terminal") order.cancelFirst++; else order.bookFirst++;
+        assert(st.status === "canceled", `final state must be canceled (${vb}/${vc})`);
+        assert((await stage(m.id)) !== "MEETING_SET", `a canceled appointment must not leave MEETING_SET (${vb}/${vc})`);
+        assert((await events(m.id, "appointment_canceled")) === 1, "exactly one cancel effect");
+        assert(booked <= 1 && (vb === "terminal" ? booked === 0 : true), "a terminal booked event ran no effect");
+      }
+      check(true, `Concurrent book/cancel over 10 appointments: every final state is canceled, no stale MEETING_SET, one cancel effect each (cancel-first ${order.cancelFirst}, book-first ${order.bookFirst}, booked effects ${bookedEffects})`);
+    }
+
+    // A booked effect superseded between acceptance and the local step does not run.
+    {
+      const m = await mkMerchant(); const aid = `h6c-${run}`;
+      const base = { appointmentId: aid, contactId: m.ghl, calendarId: "cal_x" };
+      const claimBody = { eventId: `h6c-${run}`, locationId: "loc_cert_fake", ...base, dateUpdated: t(1) };
+      const occ = receipts.ghlWebhookOccurrence("appointment-booked", claimBody);
+      const claim = await receipts.claimGhlWebhookReceipt(occ.eventKey, "appointment-booked", { payloadFingerprint: occ.fingerprint });
+      assert(claim.decision === "process");
+      const ctx = { receiptId: claim.receiptId, claimToken: claim.claimToken, lost: false };
+      await effects.receiptStepContext.run(ctx, () => appointments.acceptGhlAppointmentTransition({ kind: "booked", payload: claimBody, allowedLocationId: "loc_cert_fake", allowedCalendarIds: [] }));
+      await delivery("canceled", { ...base, dateUpdated: t(2) }, handlers.handleAppointmentCanceled);
+      await effects.receiptStepContext.run(ctx, () => handlers.handleAppointmentBooked(claimBody));
+      check((await events(m.id, "appointment_booked")) === 0 && (await stage(m.id)) !== "MEETING_SET",
+        "A booked effect accepted before a cancel is superseded: it runs no local, outreach or enrollment effect");
+    }
+
+    // Held enrollment is visible, never silent.
+    {
+      const m = await mkMerchant(); const aid = `h6d-${run}`;
+      await delivery("booked", { appointmentId: aid, contactId: m.ghl, calendarId: "cal_x", dateUpdated: t(1) }, handlers.handleAppointmentBooked);
+      check((await events(m.id, "workflow_enrollment_held")) === 1, "A workflow enrollment that could not be performed is recorded as a visible held event, not dropped");
+    }
+    check(ghlCalls.slice(before).every(c => c.method === "GET"), `The appointment delivery paths made no provider write in the disposable run (read-only requests: ${ghlCalls.length - before})`);
+  }
 }
 
 // static ownership guards

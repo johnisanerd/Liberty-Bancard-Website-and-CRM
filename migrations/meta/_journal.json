@@ -2653,6 +2653,13 @@
       "when":1800400220000,
       "tag":"0375_ghl_projection_operations_and_intake_evidence",
       "breakpoints":true
+    },
+    {
+      "idx":379,
+      "version":"7",
+      "when":1800400230000,
+      "tag":"0376_ghl_webhook_effect_steps_and_appointment_booked_owner",
+      "breakpoints":true
     }
   ]
 }

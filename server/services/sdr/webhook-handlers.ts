@@ -10,6 +10,8 @@ import { classifyIntent, executeIntentAction } from "./reply-intelligence";
 import { handleCallDisposition, CALL_DISPOSITIONS, type CallDisposition } from "./voice-orchestrator";
 import { handleAppointmentBooked as schedulingHandleBooked, handleAppointmentCanceled as schedulingHandleCanceled } from "./scheduling";
 import { enrollInAppointmentWorkflow, tagContactForInboxOrganization } from "../ghl-workflow-enrollment";
+import { runReceiptStep, currentReceiptId, ReceiptClaimLostError } from "../ghl-webhook-effects";
+import { ghlAppointmentSuperseded } from "../ghl-appointment-events";
 import { checkAndLogCompliance } from "./compliance-engine";
 import { processCommunicationEvent } from "../communication-feedback";
 import { getCanonicalLeadVertical } from "./vertical-resolver";
@@ -404,35 +406,41 @@ export async function handleAppointmentBooked(rawPayload: unknown): Promise<void
   await schedulingHandleBooked(payload);
 
   if (ghlContactId) {
-    try {
-      const [crmContact] = await db.select().from(contacts).where(eq(contacts.ghlContactId, ghlContactId)).limit(1);
-      if (crmContact) {
-        const appointmentDate = payload.startTime ? new Date(payload.startTime) : new Date(Date.now() + 24 * 60 * 60 * 1000);
-        // Enrollment and tagging are awaited so a failure fails the receipt and the provider retry recovers it.
-        await enrollInAppointmentWorkflow({
+    // Each CRM-side effect is a durable step of this receipt: a retry after a later failure never repeats a
+    // completed enrollment, analytics event or tag, and a booked effect superseded by a cancel does not start.
+    const [crmContact] = await db.select().from(contacts).where(eq(contacts.ghlContactId, ghlContactId)).limit(1);
+    if (crmContact && !(await ghlAppointmentSuperseded(null, payload, "booked"))) {
+      const appointmentDate = payload.startTime ? new Date(payload.startTime) : new Date(Date.now() + 24 * 60 * 60 * 1000);
+      await runReceiptStep("booked:crm_appointment_workflow", () => enrollInAppointmentWorkflow({
+        contactId: crmContact.id,
+        appointmentDate,
+        calendarType: "sales",
+      }));
+
+      await runReceiptStep("booked:analytics_event", async () => {
+        const { recordAnalyticsEvent } = await import("../analytics-events");
+        await recordAnalyticsEvent({
+          eventName: "appointment_booked",
           contactId: crmContact.id,
-          appointmentDate,
-          calendarType: "sales",
+          occurredAt: payload.startTime ? new Date(payload.startTime) : new Date(),
+          metadata: { calendarType: "sales", source: "ghl_webhook" },
         });
+      }).catch(err => {
+        if (err instanceof ReceiptClaimLostError) throw err;
+        console.warn("[SDR Webhook] appointment analytics event failed:", err instanceof Error ? err.message : err);
+      });
 
-        import("../analytics-events").then(({ recordAnalyticsEvent }) => {
-          recordAnalyticsEvent({
-            eventName: "appointment_booked",
-            contactId: crmContact.id,
-            occurredAt: payload.startTime ? new Date(payload.startTime) : new Date(),
-            metadata: { calendarType: "sales", source: "ghl_webhook" },
-          });
-        }).catch(() => {});
-
-        await tagContactForInboxOrganization({
+      await runReceiptStep("booked:inbox_tag", async () => {
+        const tagged = await tagContactForInboxOrganization({
           contactId: crmContact.id,
           ghlContactId,
           sequenceName: "Appointment Booked",
           stage: "meeting_set",
         });
-      }
-    } catch (handoffErr) {
-      throw handoffErr instanceof Error ? handoffErr : new Error(String(handoffErr));
+        // A structured failure fails the step so the receipt is retried; it is never reported as applied.
+        if (tagged && tagged.success === false) throw new Error(`inbox_tag_failed:${String(tagged.error ?? "unknown").slice(0, 120)}`);
+        return tagged ?? { success: true };
+      });
     }
   }
 
@@ -487,7 +495,7 @@ export async function handleOptOut(rawPayload: unknown): Promise<void> {
   // Prefer the upstream occurrence ID so retries are idempotent. When none is
   // supplied, the persisted inbound event row is the server-owned occurrence.
   const occurrenceKey = String(
-    (payload as any).eventId ?? (payload as any).messageId ?? (payload as any).id ?? webhookEvent.id,
+    (payload as any).eventId ?? (payload as any).messageId ?? (payload as any).id ?? currentReceiptId() ?? webhookEvent.id,
   );
   if (merchant) {
     await onOptOut(merchant.id, channel, occurrenceKey);

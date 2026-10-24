@@ -1,17 +1,27 @@
 /**
- * GHL appointment lifecycle ordering (#2105 C6).
+ * GHL appointment lifecycle ordering (#2105 C6, H6).
  *
  * Appointment updated/rescheduled events are recorded against ghl_appointment_state with event-time
  * ordering. They never enroll workflows, tag contacts, or change lead stage: those chains belong to
  * the booked/canceled handlers and must not fire twice for one appointment.
  *
- * Ordering rules (all enforced in one conditional upsert):
+ * Every transition for one appointment is decided and recorded inside ONE transaction that holds a per-appointment
+ * advisory lock, so two deliveries for the same appointment (book/cancel, update/cancel, duplicates) serialize and a
+ * decision is never made against state another delivery is about to change.
+ *
+ * Ordering rules:
  *  - an older event never overwrites a newer one;
  *  - canceled and showed are terminal; late update/reschedule events cannot revive or regress them
  *    (a re-book in GHL creates a new appointment id);
- *  - booked never overwrites an existing row.
+ *  - the one-time booked effect has its own identity (booked_effect_receipt_id): a booked event that arrives after
+ *    an update owns the booked effect exactly once without regressing the newer state, and a booked event that arrives
+ *    after the effect was claimed is a replay;
+ *  - an effect whose appointment was made terminal by a later accepted transition is superseded and does not run.
  */
-import { pool } from "../db";
+import { randomUUID } from "node:crypto";
+import { sql } from "drizzle-orm";
+import { db } from "../db";
+import { runReceiptTxStep, currentReceiptId, type DbTx } from "./ghl-webhook-effects";
 
 export type AppointmentEventKind = "booked" | "updated" | "rescheduled" | "showed" | "canceled";
 
@@ -91,65 +101,141 @@ function normalizeAppointmentEvent(input: AppointmentEventInput): NormalizedAppo
 
 const TERMINAL_STATUSES = ["showed", "canceled"];
 
+type Executor = Pick<DbTx, "execute">;
+
+/** Serializes everything for one appointment id for the rest of the transaction. */
+export async function lockGhlAppointment(tx: Executor, appointmentId: string): Promise<void> {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`ghl_appointment:${appointmentId}`}, 0))`);
+}
+
+export function ghlAppointmentIdOf(payload: unknown): string | null {
+  const p = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
+  const appointment = (p.appointment && typeof p.appointment === "object" ? p.appointment : {}) as Record<string, unknown>;
+  return text(p.appointmentId) ?? text(appointment.id) ?? text(p.id);
+}
+
+interface StateRow { status: string; last_event_at: string | Date; booked_effect_receipt_id: string | null }
+
+async function readState(tx: Executor, appointmentId: string): Promise<StateRow | undefined> {
+  return (await tx.execute(sql`SELECT status, last_event_at, booked_effect_receipt_id
+    FROM ghl_appointment_state WHERE appointment_id = ${appointmentId}`)).rows[0] as unknown as StateRow | undefined;
+}
+
 /**
- * Read-only ordering decision, evaluated BEFORE any booked/showed/canceled handler runs so a stale, terminal or
- * replayed event never enrolls, tags, moves a lead stage or sends anything. `apply` means the handler may run and
- * the event should then be recorded; `replay` means this exact event was already recorded.
+ * Decides and (when `persist`) records one transition under the appointment lock. Returns `apply` only for the
+ * delivery that owns the transition's effects. Booked owns the one-time booked effect; every other kind owns the
+ * recorded state change.
  */
-export async function decideGhlAppointmentEvent(input: AppointmentEventInput): Promise<AppointmentDecision> {
+export async function transitionGhlAppointment(
+  tx: Executor, input: AppointmentEventInput, persist: boolean,
+): Promise<AppointmentDecision> {
   const event = normalizeAppointmentEvent(input);
   if ("rejected" in event) return { decision: "rejected", reason: event.rejected };
-  const existing = (await pool.query(
-    `SELECT status, last_event_at FROM ghl_appointment_state WHERE appointment_id = $1`, [event.appointmentId])).rows[0];
-  if (!existing) return { decision: "apply" };
-  const sameInstant = new Date(existing.last_event_at).getTime() === event.eventAt.getTime();
-  if (input.kind === "booked") {
-    if (TERMINAL_STATUSES.includes(existing.status)) return { decision: "terminal" };
-    // A booked event that arrives after an update still owns its one-time handler; the recorder keeps the state.
-    return existing.status === "booked" ? { decision: "replay" } : { decision: "apply" };
+  const { appointmentId, calendarId, locationId, eventAt, startTime, endTime } = event;
+  const kind = input.kind;
+  const receiptId = input.receiptId ?? randomUUID();
+  await lockGhlAppointment(tx, appointmentId);
+  const existing = await readState(tx, appointmentId);
+
+  if (!existing) {
+    if (persist) {
+      await tx.execute(sql`INSERT INTO ghl_appointment_state
+        (appointment_id, ghl_contact_id, calendar_id, location_id, status, start_time, end_time, last_event_at,
+         last_receipt_id, reschedule_count, booked_effect_receipt_id)
+        VALUES (${appointmentId}, ${event.contactId}, ${calendarId}, ${locationId}, ${kind},
+          ${startTime?.toISOString() ?? null}, ${endTime?.toISOString() ?? null}, ${eventAt.toISOString()},
+          ${receiptId}::uuid, ${kind === "rescheduled" ? 1 : 0}, ${kind === "booked" ? receiptId : null}::uuid)`);
+    }
+    return { decision: "apply" };
   }
-  if (TERMINAL_STATUSES.includes(existing.status)) {
-    return existing.status === input.kind && sameInstant ? { decision: "replay" } : { decision: "terminal" };
+
+  const last = new Date(existing.last_event_at).getTime();
+  const sameInstant = last === eventAt.getTime();
+  const terminal = TERMINAL_STATUSES.includes(existing.status);
+
+  if (kind === "booked") {
+    if (terminal) return { decision: "terminal" };
+    if (existing.booked_effect_receipt_id) return { decision: "replay" };
+    if (persist) {
+      // Own the one-time booked effect. The state only moves forward: an older booked event never regresses a
+      // newer update.
+      await tx.execute(sql`UPDATE ghl_appointment_state SET
+          booked_effect_receipt_id = ${receiptId}::uuid,
+          status = CASE WHEN last_event_at < ${eventAt.toISOString()}::timestamptz THEN 'booked' ELSE status END,
+          last_event_at = GREATEST(last_event_at, ${eventAt.toISOString()}::timestamptz),
+          last_receipt_id = CASE WHEN last_event_at < ${eventAt.toISOString()}::timestamptz THEN ${receiptId}::uuid ELSE last_receipt_id END,
+          updated_at = now()
+        WHERE appointment_id = ${appointmentId}`);
+    }
+    return { decision: "apply" };
   }
-  if (sameInstant && existing.status === input.kind) return { decision: "replay" };
-  return new Date(existing.last_event_at).getTime() < event.eventAt.getTime() ? { decision: "apply" } : { decision: "stale" };
+
+  if (terminal) return existing.status === kind && sameInstant ? { decision: "replay" } : { decision: "terminal" };
+  if (sameInstant && existing.status === kind) return { decision: "replay" };
+  if (last >= eventAt.getTime()) return { decision: "stale" };
+  if (persist) {
+    await tx.execute(sql`UPDATE ghl_appointment_state SET
+        status = ${kind},
+        ghl_contact_id = COALESCE(${event.contactId}, ghl_contact_id),
+        calendar_id = COALESCE(${calendarId}, calendar_id),
+        location_id = COALESCE(${locationId}, location_id),
+        start_time = COALESCE(${startTime?.toISOString() ?? null}::timestamptz, start_time),
+        end_time = COALESCE(${endTime?.toISOString() ?? null}::timestamptz, end_time),
+        last_event_at = ${eventAt.toISOString()}::timestamptz,
+        last_receipt_id = ${receiptId}::uuid,
+        reschedule_count = reschedule_count + ${kind === "rescheduled" ? 1 : 0},
+        updated_at = now()
+      WHERE appointment_id = ${appointmentId}`);
+  }
+  return { decision: "apply" };
+}
+
+/**
+ * True when a later accepted transition made this appointment terminal in a different way, so the earlier
+ * transition's remaining effects must not run (a booked effect after a cancel, for example). Takes the appointment
+ * lock when given a transaction so it serializes with the other transition's local effects.
+ */
+export async function ghlAppointmentSuperseded(
+  tx: Executor | null, payload: unknown, kind: AppointmentEventKind,
+): Promise<boolean> {
+  const appointmentId = ghlAppointmentIdOf(payload);
+  if (!appointmentId) return false;
+  const run = async (executor: Executor) => {
+    const row = await readState(executor, appointmentId);
+    return !!row && TERMINAL_STATUSES.includes(row.status) && row.status !== kind;
+  };
+  if (tx) { await lockGhlAppointment(tx, appointmentId); return run(tx); }
+  return run(db);
+}
+
+/** Read-only preview of the decision (rolled back). The authoritative decision is made by the recording transaction. */
+export async function decideGhlAppointmentEvent(input: AppointmentEventInput): Promise<AppointmentDecision> {
+  const rollback = new Error("preview_rollback");
+  let verdict: AppointmentDecision = { decision: "stale" };
+  try {
+    await db.transaction(async tx => {
+      verdict = await transitionGhlAppointment(tx, input, false);
+      throw rollback;
+    });
+  } catch (error) {
+    if (error !== rollback) throw error;
+  }
+  return verdict;
 }
 
 export async function recordGhlAppointmentEvent(input: AppointmentEventInput): Promise<AppointmentEventResult> {
-  const event = normalizeAppointmentEvent(input);
-  if ("rejected" in event) return { applied: false, reason: event.rejected };
-  const { appointmentId, calendarId, locationId, eventAt, startTime, endTime } = event;
-  const status = input.kind;
+  const verdict = await db.transaction(tx => transitionGhlAppointment(tx, input, true));
+  if (verdict.decision === "apply") return { applied: true, reason: "applied" };
+  if (verdict.decision === "rejected") return { applied: false, reason: verdict.reason };
+  return { applied: false, reason: verdict.decision };
+}
 
-  const result = await pool.query(
-    `INSERT INTO ghl_appointment_state
-       (appointment_id, ghl_contact_id, calendar_id, location_id, status, start_time, end_time, last_event_at, last_receipt_id, reschedule_count)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CASE WHEN $5 = 'rescheduled' THEN 1 ELSE 0 END)
-     ON CONFLICT (appointment_id) DO UPDATE
-       SET status = EXCLUDED.status,
-           ghl_contact_id = COALESCE(EXCLUDED.ghl_contact_id, ghl_appointment_state.ghl_contact_id),
-           calendar_id = COALESCE(EXCLUDED.calendar_id, ghl_appointment_state.calendar_id),
-           location_id = COALESCE(EXCLUDED.location_id, ghl_appointment_state.location_id),
-           start_time = COALESCE(EXCLUDED.start_time, ghl_appointment_state.start_time),
-           end_time = COALESCE(EXCLUDED.end_time, ghl_appointment_state.end_time),
-           last_event_at = EXCLUDED.last_event_at,
-           last_receipt_id = EXCLUDED.last_receipt_id,
-           reschedule_count = ghl_appointment_state.reschedule_count
-             + CASE WHEN EXCLUDED.status = 'rescheduled' THEN 1 ELSE 0 END,
-           updated_at = now()
-       WHERE EXCLUDED.status <> 'booked'
-         AND ghl_appointment_state.last_event_at < EXCLUDED.last_event_at
-         AND ghl_appointment_state.status NOT IN ('showed', 'canceled')
-     RETURNING appointment_id`,
-    [appointmentId, event.contactId, calendarId, locationId, status,
-      startTime, endTime, eventAt, input.receiptId ?? null]);
-  if (result.rows.length === 1) return { applied: true, reason: "applied" };
-
-  const existing = (await pool.query(
-    `SELECT status, last_event_at FROM ghl_appointment_state WHERE appointment_id = $1`, [appointmentId])).rows[0];
-  if (existing && status !== "booked" && existing.status === status
-      && new Date(existing.last_event_at).getTime() === eventAt.getTime()) return { applied: false, reason: "replay" };
-  if (existing && status === "booked" && existing.status === "booked") return { applied: false, reason: "replay" };
-  if (existing && TERMINAL_STATUSES.includes(existing.status) && status !== "booked") return { applied: false, reason: "terminal" };
-  return { applied: false, reason: "stale" };
+/**
+ * Route entry point: decide and record the transition as the receipt's "transition" step (one transaction, one
+ * appointment lock). A retry of the same delivery reuses the stored decision and never records it twice.
+ */
+export async function acceptGhlAppointmentTransition(input: AppointmentEventInput): Promise<AppointmentDecision> {
+  const { result } = await runReceiptTxStep("transition", tx =>
+    transitionGhlAppointment(tx, { ...input, receiptId: input.receiptId ?? currentReceiptId() }, true));
+  return result;
 }
