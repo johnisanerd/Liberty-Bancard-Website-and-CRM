@@ -171,16 +171,38 @@ unchanged; global outbound pause, email/SMS/cold-email pauses and sequence contr
 
 ## 7. Scope
 The existing CRM population is processed by the ordinary workers under a durable, code-defined scope (no manual release
-batches):
-- A production, non-archived contact that already carries a GHL contact id is in scope for profile/permission updates.
-- An unlinked contact is in scope for a create only when it has a CRM-source event (website form, partner referral,
-  merchant application, manual CRM entry) at any date.
-- Discovery, registry (Sunbiz/DBPR), CSV imports, identity matching, inbound sync, source-less prospects, and
-  test/demo/synthetic or archived records are out of scope. Contact age never grants scope; suppression is enforced at
-  dispatch and scope never clears it.
-- `system_settings.ghl_export_policy.existingPopulation.enabled = false` switches the scope off;
-  `createSourceCategories` can narrow or extend the create categories (registry categories can never be named).
+batches). The effective rules are part of the approval (section 9): changing any of them without a new review blocks writes.
+- A production (`record_class = 'production'`), non-archived contact that already carries a GHL contact id is in scope for
+  profile/permission updates. Contacts of any other record class are never in scope.
+- An unlinked production contact is in scope for a create when it has a source event in a create category, at any date.
+  Default categories: `website_form`, `partner_referral`, `merchant_application`, `manual_crm` (current intake) plus
+  `csv_import`, `discovery`, `prospect_conversion` and `legacy_unknown` (existing population).
+- A source-less legacy production contact (no source event) is in scope for a create only when its `lead_source` label is
+  present and is not a registry label; no source event is fabricated for it. `sourceLessLegacy: false` turns that off.
+- Registry (`registry_import`, `registry`, Sunbiz, DBPR) records are never in scope and can never be named into scope.
+  Identity matching, inbound sync, test/demo/synthetic and archived records are out of scope. Contact age never grants
+  scope; suppression is enforced at dispatch and scope never clears it. Existing GHL identities are resolved (strict
+  lookup) before any create.
+- `system_settings.ghl_export_policy.existingPopulation.enabled = false` switches the scope off. `createSourceCategories`
+  replaces the default list, so it can narrow it or add categories to it by listing them (registry categories are always
+  removed).
 Because the tag component never replaces tags, already-linked contacts are no longer held for tag-loss reasons.
+
+## 9. Persistent approval (no expiry)
+An approved review has no calendar expiry. It stays valid until the owner revokes it or the reviewed contract changes;
+a day, a restart or a publish with an unchanged contract changes nothing. It is bound to: location; method/path templates
+with body-field allow-lists; custom-field id/key/dataType; the two owned tags; the workflow inventory and per-workflow
+evidence; the export-scope rules; the approval contract version; reviewer; review time; evidence reference; revocation state.
+- Provider evidence unavailable or stale (outage): writes are held before dispatch, no provider failure budget is spent,
+  and they resume automatically when the same contract is verified again.
+- Proven change (workflow added/removed/changed, field map changed, scope rule changed): writes are blocked, the changed
+  facts are reported, and a new owner review is required. It is never approved automatically.
+- Revocation blocks writes including retries and in-flight requests at their final recheck. Legacy time-limited,
+  expired, default or revoked reviews never gain authority and are not converted.
+- Lease expiry in the panel is the runtime lease, not the approval.
+- Residual: the public workflows endpoint returns metadata only (id, status, version, updatedAt). Verification compares
+  that metadata; it is not a hash of the workflow definition, so a definition edit that does not move `updatedAt` or
+  `version` cannot be detected by the platform. Change detection latency is bounded by the 20 second evidence cache.
 
 ## 8. Owner checklist (not performed by an agent)
 1. Read the live field inventory; the ids/types are in section 3 (types are evidence only; the hash binds id/key).

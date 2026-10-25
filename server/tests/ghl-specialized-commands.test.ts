@@ -46,7 +46,6 @@ const denied = evaluateGhlCapabilityPolicy({
   nativeReview: {
     state: "unverified",
     reviewedAt: null,
-    expiresAt: null,
     evidenceReference: null,
     allowedOperations: [],
   },
@@ -60,7 +59,7 @@ const readAllowed = evaluateGhlCapabilityPolicy({
 }, {
   enabled: false, permissionsEnabled: false, epoch: 0,
   ownerProfile: null, selectedRuntime: null,
-  nativeReview: { state: "unverified", reviewedAt: null, expiresAt: null,
+  nativeReview: { state: "unverified", reviewedAt: null,
     evidenceReference: null, allowedOperations: [] },
 });
 assert.equal(readAllowed.allowed, true, "disabled writes must not disable identity reads");

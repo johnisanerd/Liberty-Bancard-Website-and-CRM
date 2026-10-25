@@ -28,6 +28,7 @@
  */
 
 import { storage } from "../storage";
+import { pool } from "../db";
 import { isGhlConfigured, upsertGhlContact, sendGhlEmail, sendGhlSms, getCalendarBookingUrl } from "./ghl";
 import {
   triggerWorkflow, addTag, addNote, isSdrGhlConfigured,
@@ -996,6 +997,28 @@ export async function runInboundConfirmationFollowupJob(data: {
   }
 }
 
+type HandoffClaim = "claimed" | "accepted" | "unknown";
+
+async function claimHandoffDispatch(key: string, workflowKey: string, ghlContactId: string): Promise<HandoffClaim> {
+  const claimed = await pool.query(
+    `INSERT INTO ghl_workflow_handoff_dispatches AS d (idempotency_key, workflow_key, ghl_contact_id, state)
+     VALUES ($1, $2, $3, 'started')
+     ON CONFLICT (idempotency_key) DO UPDATE
+       SET state = 'started', attempt_count = d.attempt_count + 1, started_at = now(), settled_at = NULL
+       WHERE d.state = 'refused'
+     RETURNING state`,
+    [key, workflowKey, ghlContactId]);
+  if (claimed.rows[0]) return "claimed";
+  const existing = (await pool.query(`SELECT state FROM ghl_workflow_handoff_dispatches WHERE idempotency_key = $1`, [key])).rows[0];
+  return existing?.state === "accepted" ? "accepted" : "unknown";
+}
+
+async function settleHandoffDispatch(key: string, state: "accepted" | "refused"): Promise<void> {
+  await pool.query(
+    `UPDATE ghl_workflow_handoff_dispatches SET state = $2, settled_at = now() WHERE idempotency_key = $1 AND state = 'started'`,
+    [key, state]).catch(err => console.error("[GHL Handoff] could not settle dispatch ledger:", err instanceof Error ? err.message : err));
+}
+
 /** Stable identity of one external effect attempt: the receipt, the step and the attempt number. */
 export interface AppointmentHandoffIdentity { receiptId: string | null; stepKey: string; attempt: number }
 
@@ -1006,8 +1029,10 @@ export interface AppointmentHandoffIdentity { receiptId: string | null; stepKey:
  *  - held: refused for a reason that can clear (global pause, unverified workflow channels); `durable` is true when a
  *    deferred enrollment now owns the retry, so a pause never discards a legitimate future handoff;
  *  - failed: the provider refused or the request failed; `durable` as above;
- *  - unknown: the request may have been accepted (lost response); a deferred enrollment re-asserts it, which is safe
- *    because enrolling an already-enrolled contact is idempotent at the provider.
+ *  - unknown: the request may have been accepted (lost response). Nothing is deferred and nothing is re-sent: the
+ *    provider's workflow-enrollment endpoint is not documented as idempotent, so the outcome stays an explicit unknown
+ *    hold (audited) until it is reconciled; it is never re-asserted automatically.
+ * `durable` is true only when a pending deferred enrollment was verified to exist after the deferral write.
  */
 export type AppointmentEnrollmentOutcome =
   | { state: "enrolled"; via: "workflow" }
@@ -1023,11 +1048,12 @@ export type AppointmentEnrollmentOutcome =
  */
 export async function enrollInAppointmentWorkflow(params: {
   contactId: number;
+  appointmentId?: string;
   appointmentDate: Date;
   calendarType: "sales" | "account_management";
   dealId?: number;
 }, identity?: AppointmentHandoffIdentity): Promise<AppointmentEnrollmentOutcome> {
-  const { contactId, appointmentDate, calendarType, dealId } = params;
+  const { contactId, appointmentId, appointmentDate, calendarType, dealId } = params;
   const contact = await storage.getContact(contactId);
   if (!contact) return { state: "skipped", reason: "contact_missing" };
   if (!isGhlConfigured() && !isSdrGhlConfigured()) return { state: "skipped", reason: "ghl_not_configured" };
@@ -1036,6 +1062,7 @@ export async function enrollInAppointmentWorkflow(params: {
   return enrollWorkflowHandoff({
     workflowKey: "booking_confirmation", ghlContactId: contact.ghlContactId, contactId,
     metadata: {
+      ...(appointmentId ? { appointmentId } : {}),
       appointmentDate: appointmentDate.toISOString(), calendarType, contactId, dealId,
       firstName: contact.firstName, companyName: contact.companyName,
     },
@@ -1056,12 +1083,31 @@ export async function enrollWorkflowHandoff(input: {
   const { getWorkflowId, enrollInGhlWorkflowCompliant } = await import("./ghl-workflows");
   if (!await getWorkflowId(workflowKey)) return { state: "skipped", reason: "workflow_not_configured" };
 
+  // One appointment occurrence owns one handoff obligation. A second booking of the same contact is a different
+  // occurrence; cancelling one occurrence cancels only its obligation.
+  const occurrenceKey = String(input.metadata.appointmentId ?? input.metadata.appointmentDate ?? input.metadata.meetingId
+    ?? input.metadata.callId ?? "");
   const idempotencyKey = identity?.receiptId
     ? `${identity.receiptId}:${identity.stepKey}`
-    : `handoff:${workflowKey}:${contactId}:${String(input.metadata.appointmentDate ?? input.metadata.meetingId ?? "")}`;
+    : `handoff:${workflowKey}:${contactId}:${occurrenceKey}`;
   // Stable per-effect identity: the same receipt and step produce the same key on every attempt.
   const metadata = { ...input.metadata, idempotencyKey, attempt: identity?.attempt ?? 1 };
+  // Durable dispatch ledger: 'started' is recorded before the request, so a later attempt with this identity never
+  // re-sends over an accepted handoff (for example when only the local completion failed) or over an unknown outcome.
+  const claim = await claimHandoffDispatch(idempotencyKey, workflowKey, ghlContactId);
+  if (claim === "accepted") return { state: "enrolled", via: "workflow" };
+  if (claim === "unknown") {
+    await storage.createAuditLog({
+      action: "ghl_appointment_workflow_unknown", entityType: "contact", entityId: contactId,
+      details: { ...input.auditContext, workflowKey, idempotencyKey, reason: "prior_dispatch_outcome_unknown", reassert: "never_automatic" },
+    }).catch(() => undefined);
+    return { state: "unknown", reason: "prior_dispatch_outcome_unknown", durable: false };
+  }
   const result = await enrollInGhlWorkflowCompliant({ workflowKey, ghlContactId, contactId, metadata });
+  const { isAmbiguousDispatchMessage: ambiguousFailure } = await import("./ghl-dispatch-recorder");
+  // Only a definite outcome settles the ledger; a lost response leaves 'started' (outcome unknown, never re-sent).
+  if (result.success) await settleHandoffDispatch(idempotencyKey, "accepted");
+  else if (result.skipped || !ambiguousFailure(result.error)) await settleHandoffDispatch(idempotencyKey, "refused");
   const audit = (state: string, extra: Record<string, unknown>) => storage.createAuditLog({
     action: `ghl_appointment_workflow_${state}`, entityType: "contact", entityId: contactId,
     details: { ...input.auditContext, workflowKey, idempotencyKey, ...extra },
@@ -1074,6 +1120,7 @@ export async function enrollWorkflowHandoff(input: {
   const reason = String(result.error ?? "enrollment_failed").slice(0, 200);
   const { isTransientGhlError, deferGhlEnrollment } = await import("./ghl-enrollment-recovery");
   const { isAmbiguousDispatchMessage } = await import("./ghl-dispatch-recorder");
+  const ambiguous = isAmbiguousDispatchMessage(reason);
   const paused = /paus|coordinator hold|authority/i.test(reason);
   const unverified = /not live-verified|not configured|declaration/i.test(reason);
   const transient = isTransientGhlError(new Error(reason));
@@ -1081,15 +1128,21 @@ export async function enrollWorkflowHandoff(input: {
   // not lost (a permanent denial such as missing consent is not deferred).
   const quietHours = /quiet hours/i.test(reason);
   let durable = false;
-  if (paused || transient || quietHours) {
-    // The handoff stays owed: the recovery job retries it (without spending retries while paused).
-    await deferGhlEnrollment({ ghlContactId, workflowKey, metadata, error: new Error(reason) });
-    durable = true;
+  let deferralFailure: string | null = null;
+  if (!ambiguous && (paused || transient || quietHours)) {
+    // The handoff stays owed: the recovery job retries it (without spending retries while paused). Durable only when
+    // the deferral write is verified; otherwise the failure is surfaced so the caller's retry recovers it.
+    const deferral = await deferGhlEnrollment({
+      ghlContactId, workflowKey, metadata, error: new Error(reason), occurrenceKey: occurrenceKey || null,
+    });
+    durable = deferral.persisted;
+    if (!deferral.persisted) deferralFailure = deferral.reason ?? "deferral_not_persisted";
   }
-  const state: "held" | "failed" | "unknown" = isAmbiguousDispatchMessage(reason) ? "unknown"
+  const state: "held" | "failed" | "unknown" = ambiguous ? "unknown"
+    : deferralFailure ? "failed"
     : (paused || unverified || quietHours || result.skipped) ? "held" : "failed";
-  await audit(state, { reason, durable });
-  return { state, reason, durable };
+  await audit(state, { reason, durable, ...(deferralFailure ? { deferralFailure } : {}) });
+  return { state, reason: deferralFailure ? `${reason}; deferral_not_persisted:${deferralFailure}`.slice(0, 200) : reason, durable };
 }
 
 export async function tagContactForInboxOrganization(params: {

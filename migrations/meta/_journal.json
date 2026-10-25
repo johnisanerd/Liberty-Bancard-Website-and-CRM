@@ -2660,6 +2660,13 @@
       "when":1800400230000,
       "tag":"0376_ghl_webhook_effect_steps_and_appointment_booked_owner",
       "breakpoints":true
+    },
+    {
+      "idx":380,
+      "version":"7",
+      "when":1800400240000,
+      "tag":"0377_ghl_workflow_handoff_dispatches",
+      "breakpoints":true
     }
   ]
 }

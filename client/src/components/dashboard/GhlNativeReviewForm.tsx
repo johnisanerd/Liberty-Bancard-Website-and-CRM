@@ -23,6 +23,37 @@ export interface GhlNativeWorkflowInventoryRow {
 export interface GhlNativeFieldInventoryRow {
   id: string;
   key: string;
+  dataType?: string;
+}
+
+export interface GhlScopeRulesSnapshot {
+  version: number;
+  enabled: boolean;
+  productionOnly: boolean;
+  createSourceCategories: string[];
+  neverCategories: string[];
+  sourceLessLegacy: boolean;
+  currentIntakeSince: string;
+}
+
+export type GhlApprovalStatus =
+  | "approved_unchanged" | "verification_unavailable" | "review_required_changed" | "revoked" | "review_required";
+
+export interface GhlApprovalSnapshot {
+  status: GhlApprovalStatus;
+  reviewerId: string | null;
+  reviewedAt: string | null;
+  locationId: string | null;
+  lastCheckedAt: string | null;
+  lastVerifiedAt: string | null;
+  changedFacts: string[];
+  unavailable: string[];
+  contractVersion: number | null;
+  revokedAt: string | null;
+  revokedBy: string | null;
+  revocationReason: string | null;
+  operations: Array<{ method: string; path: string; fields: string[]; tags: string[] }>;
+  scopeRules: GhlScopeRulesSnapshot | null;
 }
 
 export interface GhlNativeSafetySnapshot {
@@ -32,12 +63,14 @@ export interface GhlNativeSafetySnapshot {
   workflows?: GhlNativeWorkflowInventoryRow[] | null;
   customFields?: GhlNativeFieldInventoryRow[] | null;
   customFieldInventoryRevision?: string | null;
+  scopeRules?: GhlScopeRulesSnapshot | null;
+  scopeRulesRevision?: string | null;
+  approval?: GhlApprovalSnapshot | null;
   warning?: string | null;
   reason?: string | null;
   nativeReview?: {
     state: string;
     reviewedAt: string | null;
-    expiresAt: string | null;
     evidenceReference: string | null;
   } | null;
 }
@@ -68,6 +101,8 @@ function freshInventoryAvailable(safety: GhlNativeSafetySnapshot | undefined): s
   workflows: GhlNativeWorkflowInventoryRow[];
   customFields: GhlNativeFieldInventoryRow[];
   customFieldInventoryRevision: string;
+  scopeRules: GhlScopeRulesSnapshot;
+  scopeRulesRevision: string;
 } {
   return !!safety
     && safety.state !== "unverified"
@@ -80,7 +115,8 @@ function freshInventoryAvailable(safety: GhlNativeSafetySnapshot | undefined): s
     && Array.isArray(safety.customFields)
     && safety.customFields.every((field) => typeof field?.id === "string" && field.id.length > 0
       && typeof field.key === "string" && field.key.length > 0)
-    && isSha256(safety.customFieldInventoryRevision);
+    && isSha256(safety.customFieldInventoryRevision)
+    && !!safety.scopeRules && isSha256(safety.scopeRulesRevision);
 }
 
 export function GhlNativeReviewForm({
@@ -149,6 +185,7 @@ export function GhlNativeReviewForm({
         locationId: safety.locationId,
         inventoryRevision: safety.inventoryRevision,
         customFieldInventoryRevision: safety.customFieldInventoryRevision,
+        scopeRulesRevision: safety.scopeRulesRevision,
         allowedOperations: operationResult.operations,
         workflowActionEvidence,
       });
@@ -243,6 +280,12 @@ export function GhlNativeReviewForm({
               <div>Control epoch: <code>{control?.epoch ?? "Unknown"}</code></div>
               <div>Workflow inventory revision: <code className="break-all">{safety.inventoryRevision}</code></div>
               <div>Custom-field inventory revision: <code className="break-all">{safety.customFieldInventoryRevision}</code></div>
+              <div>Export scope rules revision: <code className="break-all">{safety.scopeRulesRevision}</code></div>
+              <div className="sm:col-span-2" data-testid="text-ghl-review-scope-rules">
+                Export scope rules (approved with this review): production records only; creates from source categories{" "}
+                {safety.scopeRules.createSourceCategories.join(", ") || "none"}; never {safety.scopeRules.neverCategories.join(", ")};
+                source-less legacy prospects {safety.scopeRules.sourceLessLegacy ? "included" : "excluded"}; existing-population scope {safety.scopeRules.enabled ? "on" : "off"}.
+              </div>
               <div>Workflow rows: {safety.workflows.length}</div>
               <div>Custom-field IDs: {safety.customFields.length}</div>
             </div>

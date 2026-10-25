@@ -336,7 +336,7 @@ export async function handleAppointmentBooked(webhookData: AppointmentWebhookDat
   if (await ghlAppointmentSuperseded(null, webhookData, "booked")) return;
   // Awaited: a failed handoff fails the webhook receipt so the provider retry recovers it.
   await enrollStep("booked:enroll_booking_confirmation", merchant, "booking_confirmation",
-    { meetingId: local.meetingId, startTime: webhookData.startTime });
+    { appointmentId: webhookData.appointmentId || webhookData.id || local.meetingId, meetingId: local.meetingId, startTime: webhookData.startTime });
 
   console.log(`[Scheduling] Appointment booked for merchant ${local.merchantId}: ${local.meetingId}`);
 }
@@ -398,8 +398,12 @@ export async function handleAppointmentCanceled(webhookData: AppointmentWebhookD
     if (await ghlAppointmentSuperseded(tx, webhookData, "canceled")) return { outcome: "superseded" as const };
     // A booking confirmation still owed by the deferred-enrollment recovery (held by a pause or a lost response) must
     // not be delivered for an appointment that has since been canceled. Committed with the cancellation itself.
-    await tx.execute(sql`DELETE FROM deferred_ghl_enrollments
-      WHERE ghl_contact_id = ${ghlContactId} AND workflow_key = 'booking_confirmation' AND status = 'pending'`);
+    // Only this appointment's obligation is cancelled (a second booking of the same contact is a different occurrence),
+    // serialised with the recovery worker's final dispatch so a claimed item cannot still be sent.
+    const { cancelDeferredEnrollmentsInTx } = await import("../ghl-enrollment-recovery");
+    await cancelDeferredEnrollmentsInTx(tx, {
+      ghlContactId, workflowKey: "booking_confirmation", occurrenceKey: canceledId ?? null,
+    });
     const [merchant] = await tx.select().from(sdrMerchants).where(eq(sdrMerchants.ghlContactId, ghlContactId));
     if (!merchant) {
       await recordOrphanAppointmentEvent(tx, "appointment_canceled", webhookData, ghlContactId);

@@ -198,3 +198,4 @@
 - [Ack override refusal & worker liveness](ack-worker-liveness.md) — override refused, final recheck, heartbeat in status; new certs are selected suites only.
 - [Partner approval delivery & binding](partner-approval-delivery-and-binding.md) — same-tx mailbox pin, durable approval rows, review reconcile, HTML-only final preview; tsc/intake-pages baseline failures.
 - [GHL projection authority & webhook effect steps](ghl-projection-generation-authority.md) — CAS, owned-tag deltas, existing-population scope; [webhook steps](webhook-effect-steps.md) stay at-least-once.
+- [GHL persistent approval & handoff](ghl-persistent-approval-and-handoff.md) — sorted-key hashes for jsonb, no auto re-send of unknown enrollments, verified deferral, cancel-vs-claim lock.

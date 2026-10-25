@@ -10,12 +10,11 @@ import { Switch } from "@/components/ui/switch";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { getApiErrorMessage, valueOrUnknown } from "@/lib/ghlTruth";
 import { useToast } from "@/hooks/use-toast";
-import { GhlNativeReviewForm, type GhlNativeSafetySnapshot } from "@/components/dashboard/GhlNativeReviewForm";
+import { GhlNativeReviewForm, type GhlApprovalStatus, type GhlNativeSafetySnapshot } from "@/components/dashboard/GhlNativeReviewForm";
 
 interface NativeReview {
   state: string | null;
   reviewedAt: string | null;
-  expiresAt: string | null;
   evidenceReference: string | null;
   allowedOperations: Array<{
     method: string;
@@ -176,7 +175,38 @@ export function GhlSyncControlCard({ canControl, summaryOnly = false }: { canCon
     }),
   });
 
+  const [revokeReason, setRevokeReason] = useState("");
+  const revokeReview = useMutation({
+    mutationFn: async () => {
+      if (!control) throw new Error("GHL sync control is unavailable; refresh before revoking.");
+      const response = await apiRequest("POST", "/api/admin/ghl/native-trigger-safety/revoke", {
+        expectedEpoch: control.epoch, reason: revokeReason.trim(),
+      });
+      return response.json();
+    },
+    onSuccess: () => {
+      setRevokeReason("");
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/ghl/sync-control"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/ghl/sync-truth"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/ghl/native-trigger-safety"] });
+      toast({ title: "Approval revoked", description: "CRM writes that depend on the review are blocked until a new review is recorded." });
+    },
+    onError: (error) => toast({
+      title: "Could not revoke the approval",
+      description: getApiErrorMessage(error, "The revocation was not accepted."),
+      variant: "destructive",
+    }),
+  });
+
   const nativeSafety = nativeSafetyQuery.data;
+  const approval = nativeSafety?.approval ?? null;
+  const approvalLabels: Record<GhlApprovalStatus, string> = {
+    approved_unchanged: "Approved — configuration unchanged",
+    verification_unavailable: "Verification temporarily unavailable",
+    review_required_changed: "Review required — configuration changed",
+    revoked: "Revoked",
+    review_required: "Review required — no approved review on file",
+  };
   const owner = truth?.runtime?.owner;
   const worker = truth?.runtime?.worker;
   const backlog = truth?.runtime?.queueBacklog;
@@ -319,7 +349,7 @@ export function GhlSyncControlCard({ canControl, summaryOnly = false }: { canCon
                 <TruthValue label="Worker active" value={worker?.active} />
                 <TruthValue label="Owner heartbeat" value={showTime(owner?.heartbeatAt)} />
                 <TruthValue label="Heartbeat fresh" value={owner?.heartbeatFresh} />
-                <TruthValue label="Lease expires" value={showTime(owner?.leaseExpiresAt)} />
+                <TruthValue label="Runtime lease expires (not the approval)" value={showTime(owner?.leaseExpiresAt)} />
               </div>
               <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 border-t pt-3 text-xs text-muted-foreground">
                 <span><Clock3 className="mr-1 inline h-3 w-3" />Control owner: {valueOrUnknown(control?.ownerProfile)}</span>
@@ -442,11 +472,11 @@ export function GhlSyncControlCard({ canControl, summaryOnly = false }: { canCon
           <ShieldAlert className={`h-4 w-4 ${nativeReviewCurrent ? "text-green-600" : "text-amber-600"}`} />
           <AlertDescription className={nativeReviewCurrent ? "text-green-900 dark:text-green-100" : "text-amber-900 dark:text-amber-100"}>
             <strong>{nativeReviewCurrent
-              ? "Backend reports a current native-trigger safety review."
+              ? "Backend reports an approved native-trigger review with unchanged configuration."
               : "Native GHL workflow safety is not currently verified."}</strong>{" "}
             {nativeReviewCurrent
-              ? "CRM writes remain limited to the explicit operations recorded in that review; a changed inventory suspends it."
-              : "Contact field, tag, or stage writes remain blocked until a current manual review is verified."}
+              ? "CRM writes remain limited to the explicit operations recorded in that review; a changed reviewed fact blocks writes until a new review is recorded."
+              : "Contact field, tag, or stage writes remain blocked until an approved review is verified."}
             <span className="block mt-1 text-xs">
               Review state: {nativeSafetyQuery.isError ? "unknown (safety endpoint unavailable)" : valueOrUnknown(nativeSafety?.state)}
               {nativeSafety?.warning ? ` — ${nativeSafety.warning}` : nativeSafety?.reason ? ` — ${nativeSafety.reason}` : ""}
@@ -461,22 +491,50 @@ export function GhlSyncControlCard({ canControl, summaryOnly = false }: { canCon
             safetyUnavailable={nativeSafetyQuery.isError}
           />
         )}
-        {control?.nativeReview?.expiresAt && (() => {
-          const remaining = new Date(control.nativeReview!.expiresAt!).getTime() - Date.now();
-          if (!Number.isFinite(remaining) || remaining <= 0 || remaining > 4 * 60 * 60 * 1000) return null;
-          return (
-            <Alert className="border-amber-300 bg-amber-50 dark:bg-amber-950/30" data-testid="alert-ghl-native-review-expiring">
-              <Clock3 className="h-4 w-4 text-amber-600" />
-              <AlertDescription>
-                The native-trigger safety review expires in about {Math.max(1, Math.round(remaining / 60000))} minutes. Pending contact exports pause when it lapses and resume automatically after a legitimate renewal.
-              </AlertDescription>
-            </Alert>
-          );
-        })()}
+        {approval && (
+          <div className="rounded-md border p-3 text-xs space-y-1" data-testid="panel-ghl-approval-status">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant={approval.status === "approved_unchanged" ? "default" : approval.status === "verification_unavailable" ? "secondary" : "destructive"}
+                data-testid="badge-ghl-approval-status">
+                {approvalLabels[approval.status]}
+              </Badge>
+              <span className="text-muted-foreground">An approval stays valid until it is revoked or a reviewed fact changes; it does not expire with time.</span>
+            </div>
+            <div>Reviewer: {valueOrUnknown(approval.reviewerId)}; reviewed {showTime(approval.reviewedAt)}; location {valueOrUnknown(approval.locationId)}.</div>
+            <div>Last verified unchanged: {showTime(approval.lastVerifiedAt)}; last checked: {showTime(approval.lastCheckedAt)}.</div>
+            {approval.status === "verification_unavailable" && (
+              <div>Provider evidence could not be read ({approval.unavailable.join(", ") || "reason unknown"}). Writes are held and resume automatically once the same approved configuration is verified.</div>
+            )}
+            {approval.status === "review_required_changed" && approval.changedFacts.length > 0 && (
+              <ul className="list-disc pl-5" data-testid="list-ghl-approval-changed-facts">
+                {approval.changedFacts.map((fact) => <li key={fact}>{fact}</li>)}
+              </ul>
+            )}
+            {approval.status === "revoked" && (
+              <div>Revoked {showTime(approval.revokedAt)} by {valueOrUnknown(approval.revokedBy)}: {valueOrUnknown(approval.revocationReason)}</div>
+            )}
+            {approval.operations.length > 0 && (
+              <div>Approved operations: {approval.operations.map((operation) => `${operation.method} ${operation.path}`).join("; ")}.</div>
+            )}
+            {approval.scopeRules && (
+              <div>Export scope: {approval.scopeRules.productionOnly ? "production records only" : "all records"}; creates from {approval.scopeRules.createSourceCategories.join(", ") || "none"}; never {approval.scopeRules.neverCategories.join(", ")}.</div>
+            )}
+            {!summaryOnly && canControl && (approval.status === "approved_unchanged" || approval.status === "verification_unavailable" || approval.status === "review_required_changed") && (
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <Input value={revokeReason} onChange={(event) => setRevokeReason(event.target.value)}
+                  placeholder="Reason for revoking this approval" className="h-8 max-w-sm" data-testid="input-ghl-revoke-reason" />
+                <Button size="sm" variant="destructive" disabled={revokeReason.trim().length < 8 || revokeReview.isPending}
+                  onClick={() => revokeReview.mutate()} data-testid="button-ghl-revoke-approval">
+                  {revokeReview.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Revoke approval"}
+                </Button>
+              </div>
+            )}
+          </div>
+        )}
         {control?.nativeReview && (
           <div className="rounded-md border p-3 text-xs text-muted-foreground" data-testid="text-ghl-native-review-evidence">
             Server review metadata: {valueOrUnknown(control.nativeReview.state)}; reviewed {showTime(control.nativeReview.reviewedAt)};
-            {" "}expires {showTime(control.nativeReview.expiresAt)}; evidence {valueOrUnknown(control.nativeReview.evidenceReference)}.
+            {" "}evidence {valueOrUnknown(control.nativeReview.evidenceReference)}.
             {" "}Allowed operations: {control.nativeReview.allowedOperations?.length
               ? control.nativeReview.allowedOperations.map((operation) => `${operation.method} ${operation.path} [fields: ${operation.fields.join(", ") || "none"}]`).join("; ")
               : "unknown"}.

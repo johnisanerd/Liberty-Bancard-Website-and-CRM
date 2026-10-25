@@ -439,9 +439,10 @@ export async function handleAppointmentBooked(rawPayload: unknown): Promise<void
         await runReceiptStep("booked:crm_appointment_workflow", async info => {
           const outcome = await enrollInAppointmentWorkflow({
             contactId: crmContact.id, appointmentDate, calendarType: "sales",
+            appointmentId: payload.appointmentId || payload.id || undefined,
           }, info);
           // A failure with no durable owner fails the receipt so the provider retry recovers it; every other state is a
-          // structured, recorded result (held/unknown handoffs are owned by the deferred-enrollment recovery).
+          // structured, recorded result (held handoffs with a verified deferred enrollment are owned by the recovery job; an unknown outcome stays an explicit hold and is never re-sent).
           if (outcome.state === "failed" && !outcome.durable) throw new Error(`appointment_handoff_failed:${outcome.reason.slice(0, 120)}`);
           return outcome;
         });

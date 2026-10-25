@@ -286,7 +286,9 @@ export async function enrollInGhlWorkflow(params: {
     // Recovery calls (_isRecoveryAttempt) update the retry count via the recovery
     // module itself, so we skip re-deferring to avoid double-counting.
     const { isTransientGhlError, deferGhlEnrollment } = await import("./ghl-enrollment-recovery");
-    const isTransient = isTransientGhlError(err);
+    // A lost response (the request may have been accepted) is an unknown outcome: it is never deferred for re-sending.
+    const { isAmbiguousDispatchMessage } = await import("./ghl-dispatch-recorder");
+    const isTransient = isTransientGhlError(err) && !isAmbiguousDispatchMessage(err?.message);
     if (!params._isRecoveryAttempt && isTransient) {
       await deferGhlEnrollment({
         ghlContactId: params.ghlContactId,
@@ -323,9 +325,10 @@ export async function enrollInGhlWorkflow(params: {
  *   • Marketing/nurture/SDR workflows → global pause + DNC + doNotAutoContact
  *   • Transactional workflows (confirmations, support, onboarding) → DNC only
  *
- * Recovery paths (ghl-enrollment-recovery.ts), RVM transport, unsubscribe
- * handler, and workflow-executor intentionally call enrollInGhlWorkflow()
- * directly — do NOT change those call sites.
+ * The deferred-enrollment recovery job also dispatches through this gate (final
+ * dispatch re-runs workflow verification, pause, identity, suppression and quiet
+ * hours). RVM transport, unsubscribe handler, and workflow-executor intentionally
+ * call enrollInGhlWorkflow() directly — do NOT change those call sites.
  */
 export async function enrollInGhlWorkflowCompliant(params: {
   workflowKey: string;

@@ -99,6 +99,8 @@ export async function getGhlNativeWorkflowInventory(locationId?: string | null):
 export interface GhlProviderCustomField {
   id: string;
   key: string;
+  /** Provider-reported data type (upper-cased, e.g. TEXT); empty when the provider response omits it. */
+  dataType: string;
 }
 
 /** Read-only custom-field identity map. Unknown response shapes are unsupported. */
@@ -129,6 +131,7 @@ export async function getGhlCustomFieldInventory(locationId?: string | null): Pr
       // Provider semantic keys are contact-namespaced, unlike display titles.
       // Non-contact namespaces remain intact and cannot masquerade as consent.
       key: key.startsWith("contact.") ? key.slice("contact.".length) : key,
+      dataType: typeof field?.dataType === "string" ? field.dataType.trim().toUpperCase() : "",
     };
   });
   if (fields.some(field => !field.id || !field.key)

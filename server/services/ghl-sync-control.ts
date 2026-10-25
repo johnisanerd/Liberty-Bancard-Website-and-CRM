@@ -9,9 +9,20 @@ import {
   type GhlCapability,
 } from "./ghl-capability-policy";
 import { resolveRoutineSfpDeploymentIdentity } from "../../shared/sfp-publish-build-identity";
+import { effectiveGhlScopeRules, hashGhlScopeRules, stableStringify, readGhlScopeRules, type GhlScopeRules } from "./ghl-scope-rules";
 
 const SETTING_KEY = "ghlSyncControl";
-const REVIEW_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const VERIFICATION_KEY = "ghlNativeReviewVerification";
+
+/**
+ * Persistent approval contract (#2105 7A). An approved native review has no calendar expiry: it stays valid until the
+ * owner revokes it or a bound fact changes. Reviews recorded under any other contract version (including the earlier
+ * 24-hour reviews) are never converted and never regain authority.
+ */
+export const GHL_APPROVAL_CONTRACT_VERSION = 2;
+/** Provider evidence (workflow inventory, custom-field map) is cached this long and shared by concurrent callers. */
+export const GHL_EVIDENCE_CACHE_TTL_MS = 20_000;
+const GHL_EVIDENCE_FAILURE_TTL_MS = 5_000;
 
 export interface NativeWorkflowEvidence {
   locationId: string;
@@ -23,13 +34,22 @@ export interface NativeWorkflowEvidence {
 export interface NativeCustomFieldEvidence {
   id: string;
   key: string;
+  dataType?: string;
 }
 
 export interface NativeReview {
-  state: "unverified" | "approved";
+  state: "unverified" | "approved" | "revoked";
+  /** Approval contract version; only the current version can carry authority. */
+  contractVersion?: number;
   reviewedAt: string | null;
-  expiresAt: string | null;
   evidenceReference: string | null;
+  /** Hash of every fact the approval binds (see computeReviewContractRevision). */
+  contractRevision?: string;
+  scopeRules?: GhlScopeRules;
+  scopeRulesRevision?: string;
+  revokedAt?: string | null;
+  revokedBy?: string | null;
+  revocationReason?: string | null;
   locationId?: string;
   allowedOperations: Array<{
     method: string;
@@ -103,7 +123,7 @@ function defaultControl(): GhlSyncControl {
     selectedRuntime: null,
     transitioning: false,
     nativeReview: {
-      state: "unverified", reviewedAt: null, expiresAt: null, evidenceReference: null,
+      state: "unverified", reviewedAt: null, evidenceReference: null,
       allowedOperations: [],
     },
   };
@@ -122,7 +142,9 @@ function parseControl(value: any): GhlSyncControl {
     nativeReview: value.nativeReview && typeof value.nativeReview === "object"
       ? value.nativeReview as NativeReview : fallback.nativeReview,
   };
-  if (!isFreshReview(control.nativeReview)) control.nativeReview.state = "unverified";
+  if (control.nativeReview.state === "approved" && !isApprovedReview(control.nativeReview)) {
+    control.nativeReview.state = "unverified";
+  }
   return control;
 }
 
@@ -143,18 +165,51 @@ export function hashNativeWorkflowInventory(workflows: NativeWorkflowEvidence[])
 
 export function hashGhlCustomFieldInventory(fields: NativeCustomFieldEvidence[]): string {
   const canonical = fields.slice().sort((a, b) => a.id.localeCompare(b.id))
-    .map(field => `${field.id}\0${field.key}`).join("\n");
+    .map(field => `${field.id}\0${field.key}\0${field.dataType ?? ""}`).join("\n");
   return crypto.createHash("sha256").update(canonical).digest("hex");
 }
 
-function isFreshReview(review: NativeReview, now = Date.now()): boolean {
-  if (review.state !== "approved" || !review.reviewedAt || !review.expiresAt
+/** Hash of everything the owner approved. A stored review whose content no longer matches this hash is not approved. */
+export function computeReviewContractRevision(review: NativeReview): string {
+  const operations = (review.allowedOperations ?? []).map(op => ({
+    method: op.method.toUpperCase(), path: op.path, fields: op.fields.slice().sort(),
+    tags: op.tags.slice().sort(), stageIds: op.stageIds.slice().sort(),
+    customFieldIds: op.customFieldIds.slice().sort(), purpose: op.purpose, safetyEvidence: op.safetyEvidence,
+  })).sort((x, y) => `${x.method} ${x.path}`.localeCompare(`${y.method} ${y.path}`));
+  const evidence = (review.workflowActionEvidence ?? []).map(item => ({ ...item }))
+    .sort((x, y) => x.workflowId.localeCompare(y.workflowId));
+  return crypto.createHash("sha256").update(stableStringify({
+    contractVersion: review.contractVersion, locationId: review.locationId, operations,
+    customFieldInventoryRevision: review.customFieldInventoryRevision, inventoryRevision: review.inventoryRevision,
+    scopeRulesRevision: review.scopeRulesRevision, evidence, evidenceReference: review.evidenceReference,
+    reviewerId: review.reviewerId, reviewedAt: review.reviewedAt,
+  })).digest("hex");
+}
+
+/** Stamps and seals an approval under the current contract. Used by the review recorder and by certification fixtures. */
+export function sealGhlApprovedReview(
+  review: NativeReview, meta: { reviewerId: string; reviewedAt: Date; scopeRules: GhlScopeRules },
+): NativeReview {
+  const stamped: NativeReview = {
+    ...review, state: "approved", contractVersion: GHL_APPROVAL_CONTRACT_VERSION,
+    reviewedAt: meta.reviewedAt.toISOString(), reviewerId: meta.reviewerId,
+    scopeRules: meta.scopeRules, scopeRulesRevision: hashGhlScopeRules(meta.scopeRules),
+    revokedAt: null, revokedBy: null, revocationReason: null,
+  };
+  return { ...stamped, contractRevision: computeReviewContractRevision(stamped) };
+}
+
+/** Structural validity of an approval. There is no age or expiry condition: elapsed time alone never changes it. */
+export function isApprovedReview(review: NativeReview): boolean {
+  if (review.state !== "approved" || review.contractVersion !== GHL_APPROVAL_CONTRACT_VERSION
+      || review.revokedAt || !review.reviewedAt || !review.reviewerId
       || !review.evidenceReference || !review.inventoryRevision || !Array.isArray(review.workflows)
       || !Array.isArray(review.workflowActionEvidence) || !Array.isArray(review.customFields)
       || !Array.isArray(review.allowedOperations) || review.allowedOperations.length === 0
-      || !review.customFieldInventoryRevision
-      || hashGhlCustomFieldInventory(review.customFields) !== review.customFieldInventoryRevision) return false;
-  const expiry = Date.parse(review.expiresAt);
+      || !review.customFieldInventoryRevision || !review.scopeRules || !review.scopeRulesRevision
+      || hashGhlScopeRules(review.scopeRules) !== review.scopeRulesRevision
+      || hashGhlCustomFieldInventory(review.customFields) !== review.customFieldInventoryRevision
+      || !review.contractRevision || computeReviewContractRevision(review) !== review.contractRevision) return false;
   const reviewed = Date.parse(review.reviewedAt);
   const knownWorkflowStatuses = new Set(["active", "published", "draft", "inactive", "unpublished", "paused", "disabled", "deleted"]);
   const validInventory = review.workflows.every(workflow =>
@@ -175,8 +230,7 @@ function isFreshReview(review: NativeReview, now = Date.now()): boolean {
         && /^[a-f0-9]{64}$/i.test(item.definitionHash)
         && item.observedUpdatedAt === workflow.updatedAt
         && item.observedVersion === workflow.version));
-  return covered && Number.isFinite(expiry) && Number.isFinite(reviewed) && expiry > now
-    && now - reviewed <= REVIEW_MAX_AGE_MS
+  return covered && Number.isFinite(reviewed)
     && hashNativeWorkflowInventory(review.workflows) === review.inventoryRevision;
 }
 
@@ -185,8 +239,10 @@ export function isGhlCrmDecisionCurrent(
   control: GhlSyncControl,
   liveInventoryRevision?: string,
   now = Date.now(),
-  fieldMap: Array<{ id: string; key: string }> = [],
+  fieldMap?: NativeCustomFieldEvidence[],
+  scopeRulesRevision?: string,
 ): boolean {
+  void now; // approvals carry no calendar expiry; the argument is kept for call-site stability
   if (!decision.allowed || control.epoch !== decision.epoch) return false;
   if (decision.capability === "communication" || decision.capability === "unknown"
       || decision.capability === "crm_read" || decision.capability === "diagnostic_read") return true;
@@ -194,11 +250,12 @@ export function isGhlCrmDecisionCurrent(
   if (ghlBodyContainsPermissionWrite(decision.body) && !control.permissionsEnabled) return false;
   if (decision.capability === "permission_write" && !control.permissionsEnabled) return false;
   if (decision.capability === "crm_write" && !control.enabled) return false;
-  if (!isFreshReview(control.nativeReview, now)
+  if (!isApprovedReview(control.nativeReview)
       || control.nativeReview.inventoryRevision !== decision.reviewRevision
       || control.nativeReview.locationId !== (decision.locationId || process.env.GHL_LOCATION_ID || null)
       || !liveInventoryRevision || liveInventoryRevision !== decision.reviewRevision
-      || hashGhlCustomFieldInventory(fieldMap) !== control.nativeReview.customFieldInventoryRevision) return false;
+      || !fieldMap || hashGhlCustomFieldInventory(fieldMap) !== control.nativeReview.customFieldInventoryRevision
+      || !scopeRulesRevision || scopeRulesRevision !== control.nativeReview.scopeRulesRevision) return false;
   const operation = control.nativeReview.allowedOperations.find(candidate =>
     candidate.method.toUpperCase() === decision.method
     && resolveGhlWriteTemplate(decision.method, decision.path) === candidate.path);
@@ -248,9 +305,185 @@ function payloadCovered(
   return actualFields.length > 0;
 }
 
-async function getVerifiedCustomFieldMap(locationId: string | null | undefined): Promise<Array<{ id: string; key: string }>> {
+type EvidenceSlot = {
+  entry?: { value: unknown; at: number };
+  failure?: { error: Error; at: number };
+  inflight?: Promise<unknown>;
+};
+const evidenceSlots = new Map<string, EvidenceSlot>();
+let evidenceClock: () => number = () => Date.now();
+
+/** Test seam: a controlled clock for the provider-evidence cache. */
+export function setGhlEvidenceClockForTest(clock: (() => number) | null): void {
+  evidenceClock = clock ?? (() => Date.now());
+}
+export function resetGhlEvidenceCache(): void { evidenceSlots.clear(); }
+
+/**
+ * Bounded provider-evidence cache with single-flight: concurrent callers share one provider request, a success is
+ * reused for GHL_EVIDENCE_CACHE_TTL_MS, and a failure is remembered for a few seconds so an outage does not turn every
+ * contact into its own provider request. Never serves a value older than the TTL, so verification that cannot be
+ * refreshed holds writes instead of trusting stale facts.
+ */
+async function cachedEvidence<T>(key: string, fetcher: () => Promise<T>): Promise<T> {
+  const slot = evidenceSlots.get(key) ?? {};
+  evidenceSlots.set(key, slot);
+  const now = evidenceClock();
+  if (slot.entry && now - slot.entry.at < GHL_EVIDENCE_CACHE_TTL_MS) return slot.entry.value as T;
+  if (slot.failure && now - slot.failure.at < GHL_EVIDENCE_FAILURE_TTL_MS) throw slot.failure.error;
+  if (slot.inflight) return slot.inflight as Promise<T>;
+  slot.inflight = fetcher().then(value => {
+    slot.entry = { value, at: evidenceClock() };
+    slot.failure = undefined;
+    return value;
+  }, error => {
+    slot.entry = undefined;
+    slot.failure = { error: error instanceof Error ? error : new Error(String(error)), at: evidenceClock() };
+    throw slot.failure.error;
+  }).finally(() => { slot.inflight = undefined; });
+  return slot.inflight as Promise<T>;
+}
+
+async function getVerifiedCustomFieldMap(
+  locationId: string | null | undefined, options: { fresh?: boolean } = {},
+): Promise<NativeCustomFieldEvidence[]> {
   const { getGhlCustomFieldInventory } = await import("./ghl");
-  return getGhlCustomFieldInventory(locationId);
+  if (options.fresh) return getGhlCustomFieldInventory(locationId);
+  return cachedEvidence(`fields:${locationId ?? ""}`, () => getGhlCustomFieldInventory(locationId));
+}
+
+async function getVerifiedWorkflowInventory(locationId: string | null | undefined): Promise<NativeWorkflowEvidence[]> {
+  const { getGhlNativeWorkflowInventory } = await import("./ghl");
+  return cachedEvidence(`workflows:${locationId ?? ""}`, () => getGhlNativeWorkflowInventory(locationId));
+}
+
+export type GhlReviewVerificationStatus = "unchanged" | "unavailable" | "changed" | "not_approved" | "revoked";
+
+export interface GhlReviewVerification {
+  status: GhlReviewVerificationStatus;
+  checkedAt: string;
+  changedFacts: string[];
+  unavailable: string[];
+  workflows?: NativeWorkflowEvidence[];
+  fieldMap?: NativeCustomFieldEvidence[];
+  scopeRules?: GhlScopeRules;
+}
+
+/** Plain-language list of the bound facts that differ from the approval. Pure. */
+export function describeChangedFacts(
+  review: NativeReview,
+  live: { workflows: NativeWorkflowEvidence[]; fields: NativeCustomFieldEvidence[]; scopeRules: GhlScopeRules },
+): string[] {
+  const facts: string[] = [];
+  const byId = <T extends { id: string }>(rows: T[]) => new Map(rows.map(row => [row.id, row]));
+  const reviewedWorkflows = byId(review.workflows ?? []);
+  const liveWorkflows = byId(live.workflows);
+  for (const [id, workflow] of liveWorkflows) {
+    const before = reviewedWorkflows.get(id);
+    if (!before) facts.push(`workflow ${id} added`);
+    else if (before.status !== workflow.status || before.updatedAt !== workflow.updatedAt || before.version !== workflow.version) {
+      facts.push(`workflow ${id} changed (${before.status}/${before.version} -> ${workflow.status}/${workflow.version})`);
+    }
+  }
+  for (const id of reviewedWorkflows.keys()) if (!liveWorkflows.has(id)) facts.push(`workflow ${id} removed`);
+  const reviewedFields = byId(review.customFields ?? []);
+  const liveFields = byId(live.fields);
+  for (const [id, field] of liveFields) {
+    const before = reviewedFields.get(id);
+    if (!before) facts.push(`custom field ${field.key} (${id}) added`);
+    else if (before.key !== field.key || (before.dataType ?? "") !== (field.dataType ?? "")) {
+      facts.push(`custom field ${id} changed (${before.key}/${before.dataType || "no type"} -> ${field.key}/${field.dataType || "no type"})`);
+    }
+  }
+  for (const [id, field] of reviewedFields) if (!liveFields.has(id)) facts.push(`custom field ${field.key} (${id}) removed`);
+  const reviewedRules = review.scopeRules as unknown as Record<string, unknown> | undefined;
+  const liveRules = live.scopeRules as unknown as Record<string, unknown>;
+  for (const key of Object.keys(liveRules)) {
+    if (JSON.stringify(reviewedRules?.[key]) !== JSON.stringify(liveRules[key])) facts.push(`export scope rule ${key} changed`);
+  }
+  return facts;
+}
+
+let lastVerificationSignature = "";
+let lastVerificationPersistedAt = 0;
+let lastUnchangedAt: string | null = null;
+
+async function persistVerification(verification: GhlReviewVerification): Promise<void> {
+  const signature = `${verification.status}|${verification.changedFacts.join(";")}|${verification.unavailable.join(";")}`;
+  const now = evidenceClock();
+  if (signature === lastVerificationSignature && now - lastVerificationPersistedAt < 60_000) return;
+  if (verification.status === "unchanged") lastUnchangedAt = verification.checkedAt;
+  try {
+    const previous = (await pool.query<{ value: any }>("SELECT value FROM system_settings WHERE key=$1", [VERIFICATION_KEY])).rows[0]?.value;
+    const prior = typeof previous === "string" ? JSON.parse(previous) : previous;
+    const lastVerifiedAt = verification.status === "unchanged" ? verification.checkedAt
+      : lastUnchangedAt ?? prior?.lastVerifiedAt ?? null;
+    await pool.query(
+      `INSERT INTO system_settings(key,value,updated_at) VALUES($1,$2::jsonb,NOW())
+       ON CONFLICT(key) DO UPDATE SET value=$2::jsonb,updated_at=NOW()`,
+      [VERIFICATION_KEY, JSON.stringify({
+        status: verification.status, checkedAt: verification.checkedAt, lastVerifiedAt,
+        changedFacts: verification.changedFacts.slice(0, 50), unavailable: verification.unavailable,
+      })],
+    );
+    lastVerificationSignature = signature;
+    lastVerificationPersistedAt = now;
+  } catch (error) {
+    console.warn("[GHL CRM control] Could not persist native review verification", (error as Error).message);
+  }
+}
+
+export async function getGhlReviewVerificationRecord(): Promise<{
+  status: string; checkedAt: string; lastVerifiedAt: string | null; changedFacts: string[]; unavailable: string[];
+} | null> {
+  const row = (await pool.query<{ value: any }>("SELECT value FROM system_settings WHERE key=$1", [VERIFICATION_KEY])).rows[0]?.value;
+  if (!row) return null;
+  return typeof row === "string" ? JSON.parse(row) : row;
+}
+
+/**
+ * Verifies the approved contract against live provider evidence and the saved export-scope rules. Outcomes:
+ *  - unchanged: the approved facts still hold;
+ *  - unavailable: evidence could not be read (a hold: writes wait, nothing is approved or invalidated);
+ *  - changed: a bound fact differs (a block: a new owner review is required);
+ *  - not_approved / revoked: there is no usable approval.
+ */
+export async function verifyGhlNativeReview(
+  control: GhlSyncControl, locationId?: string | null, options: { persist?: boolean } = {},
+): Promise<GhlReviewVerification> {
+  const checkedAt = new Date(evidenceClock()).toISOString();
+  const review = control.nativeReview;
+  const finish = async (verification: GhlReviewVerification) => {
+    if (options.persist !== false) await persistVerification(verification);
+    return verification;
+  };
+  if (review.state === "revoked") return finish({ status: "revoked", checkedAt, changedFacts: [], unavailable: [] });
+  if (!isApprovedReview(review)) return finish({ status: "not_approved", checkedAt, changedFacts: [], unavailable: [] });
+  const location = locationId || review.locationId || null;
+  const unavailable: string[] = [];
+  let workflows: NativeWorkflowEvidence[] | undefined;
+  let fieldMap: NativeCustomFieldEvidence[] | undefined;
+  let scopeRules: GhlScopeRules | undefined;
+  try { workflows = await getVerifiedWorkflowInventory(location); } catch { unavailable.push("workflow inventory"); }
+  try { fieldMap = await getVerifiedCustomFieldMap(location); } catch { unavailable.push("custom-field inventory"); }
+  try { scopeRules = await readGhlScopeRules(); } catch { unavailable.push("export scope rules"); }
+  if (!workflows || !fieldMap || !scopeRules) {
+    return finish({ status: "unavailable", checkedAt, changedFacts: [], unavailable, workflows, fieldMap, scopeRules });
+  }
+  const changedFacts = (hashNativeWorkflowInventory(workflows) !== review.inventoryRevision
+      || hashGhlCustomFieldInventory(fieldMap) !== review.customFieldInventoryRevision
+      || hashGhlScopeRules(scopeRules) !== review.scopeRulesRevision)
+    ? describeChangedFacts(review, { workflows, fields: fieldMap, scopeRules })
+    : [];
+  const changed = changedFacts.length > 0
+    || hashNativeWorkflowInventory(workflows) !== review.inventoryRevision
+    || hashGhlCustomFieldInventory(fieldMap) !== review.customFieldInventoryRevision
+    || hashGhlScopeRules(scopeRules) !== review.scopeRulesRevision;
+  return finish({
+    status: changed ? "changed" : "unchanged", checkedAt,
+    changedFacts: changed && changedFacts.length === 0 ? ["reviewed evidence differs from live evidence"] : changedFacts,
+    unavailable: [], workflows, fieldMap, scopeRules,
+  });
 }
 
 function deny(capability: GhlCapability, control: GhlSyncControl, code: string, reason: string, args: any): GhlCrmDecision {
@@ -265,7 +498,8 @@ function deny(capability: GhlCapability, control: GhlSyncControl, code: string, 
 export function evaluateGhlCapabilityPolicy(args: {
   method: string; path: string; body?: unknown; locationId?: string;
 }, control: GhlSyncControl, liveInventoryRevision?: string, now = Date.now(),
-fieldMap: Array<{ id: string; key: string }> = []): GhlCrmDecision {
+fieldMap?: NativeCustomFieldEvidence[], scopeRulesRevision?: string): GhlCrmDecision {
+  void now; // approvals carry no calendar expiry
   const capability = classifyGhlOperation(args.method, args.path, args.body);
   const common = {
     allowed: true, capability, epoch: control.epoch, reasonCode: "allowed",
@@ -289,17 +523,32 @@ fieldMap: Array<{ id: string; key: string }> = []): GhlCrmDecision {
     return deny(capability, control, "control_disabled", "GHL CRM writes are disabled", args);
   }
   const review = control.nativeReview;
-  if (!isFreshReview(review, now)) {
-    return deny(capability, control, "native_review_unverified", "Current, fresh native-trigger safety review is required", args);
+  if (review.state === "revoked") {
+    return deny(capability, control, "native_review_revoked", "The native-trigger approval was revoked", args);
+  }
+  if (!isApprovedReview(review)) {
+    return deny(capability, control, "native_review_unverified", "An approved native-trigger review under the current contract is required", args);
   }
   if (review.locationId !== (args.locationId || process.env.GHL_LOCATION_ID || null)) {
     return deny(capability, control, "native_review_location_mismatch", "Native-trigger review is not pinned to this GHL location", args);
   }
-  if (!liveInventoryRevision || liveInventoryRevision !== review.inventoryRevision) {
-    return deny(capability, control, "native_inventory_unverified", "Live native workflow inventory does not match the reviewed revision", args);
+  if (!liveInventoryRevision) {
+    return deny(capability, control, "native_inventory_unavailable", "Live native workflow inventory could not be verified", args);
+  }
+  if (liveInventoryRevision !== review.inventoryRevision) {
+    return deny(capability, control, "native_inventory_changed", "Live native workflow inventory differs from the reviewed revision", args);
+  }
+  if (!fieldMap) {
+    return deny(capability, control, "custom_field_inventory_unavailable", "GHL custom-field IDs could not be verified", args);
   }
   if (hashGhlCustomFieldInventory(fieldMap) !== review.customFieldInventoryRevision) {
-    return deny(capability, control, "custom_field_inventory_unverified", "Live provider custom-field map differs from reviewed evidence", args);
+    return deny(capability, control, "custom_field_inventory_changed", "Live provider custom-field map differs from reviewed evidence", args);
+  }
+  if (!scopeRulesRevision) {
+    return deny(capability, control, "scope_rules_unavailable", "Export scope rules could not be verified", args);
+  }
+  if (scopeRulesRevision !== review.scopeRulesRevision) {
+    return deny(capability, control, "scope_rules_changed", "Saved export scope rules differ from the reviewed rules", args);
   }
   if (/[?#]/.test(args.path)) {
     return deny(capability, control, "operation_not_reviewed", "CRM writes with query or fragment suffixes are not in the exact operation allowlist", args);
@@ -341,44 +590,43 @@ export async function authorizeGhlCrmOperation(args: {
   if (!isGhlRuntimeWriteSelected(control, getCurrentGhlRuntimeIdentity())) {
     return deny(capability, control, "runtime_not_selected", "This published runtime is not selected for GHL CRM writes", args);
   }
-  const review = control.nativeReview;
-  if (!isFreshReview(review)) {
-    return deny(capability, control, "native_review_unverified", "Current, fresh native-trigger safety review is required", args);
+  const verification = await verifyGhlNativeReview(control, args.locationId);
+  if (verification.status === "revoked") {
+    return deny(capability, control, "native_review_revoked", "The native-trigger approval was revoked", args);
   }
-  let liveInventory: NativeWorkflowEvidence[];
-  try {
-    const { getGhlNativeWorkflowInventory } = await import("./ghl");
-    liveInventory = await getGhlNativeWorkflowInventory(args.locationId);
-    if (hashNativeWorkflowInventory(liveInventory) !== review.inventoryRevision) {
-      return deny(capability, control, "native_inventory_changed", "Live native workflow inventory differs from the reviewed revision", args);
-    }
-  } catch {
-    return deny(capability, control, "native_inventory_unverified", "Live workflow inventory could not be verified", args);
+  if (verification.status === "not_approved") {
+    return deny(capability, control, "native_review_unverified", "An approved native-trigger review under the current contract is required", args);
   }
-  let fieldMap: Array<{ id: string; key: string }>;
-  try {
-    fieldMap = await getVerifiedCustomFieldMap(args.locationId);
-  } catch {
-    return deny(capability, control, "custom_field_inventory_unverified", "GHL custom-field IDs cannot be verified", args);
+  if (verification.status === "unavailable") {
+    return deny(capability, control, "native_verification_unavailable",
+      `Approval verification is temporarily unavailable (${verification.unavailable.join(", ")}); writes are held`, args);
   }
-  return evaluateGhlCapabilityPolicy(args, control, hashNativeWorkflowInventory(liveInventory), Date.now(), fieldMap);
+  if (verification.status === "changed") {
+    return deny(capability, control, "native_review_changed",
+      `Reviewed configuration changed: ${verification.changedFacts.slice(0, 5).join("; ")}`, args);
+  }
+  return evaluateGhlCapabilityPolicy(
+    args, control, hashNativeWorkflowInventory(verification.workflows!), Date.now(),
+    verification.fieldMap, hashGhlScopeRules(verification.scopeRules!),
+  );
 }
 
 export async function recheckGhlCrmOperation(decision: GhlCrmDecision): Promise<boolean> {
   if (!decision.allowed) return false;
   const control = await getGhlSyncControl();
   let liveRevision: string | undefined;
-  let fieldMap: Array<{ id: string; key: string }> = [];
+  let fieldMap: NativeCustomFieldEvidence[] | undefined;
+  let scopeRevision: string | undefined;
   if (decision.capability !== "communication" && decision.capability !== "unknown"
       && decision.capability !== "crm_read" && decision.capability !== "diagnostic_read") {
     if (!isGhlRuntimeWriteSelected(control, getCurrentGhlRuntimeIdentity())) return false;
-    try {
-      const { getGhlNativeWorkflowInventory } = await import("./ghl");
-      liveRevision = hashNativeWorkflowInventory(await getGhlNativeWorkflowInventory(decision.locationId));
-      fieldMap = await getVerifiedCustomFieldMap(decision.locationId);
-    } catch { return false; }
+    const verification = await verifyGhlNativeReview(control, decision.locationId);
+    if (verification.status !== "unchanged") return false;
+    liveRevision = hashNativeWorkflowInventory(verification.workflows!);
+    fieldMap = verification.fieldMap;
+    scopeRevision = hashGhlScopeRules(verification.scopeRules!);
   }
-  return isGhlCrmDecisionCurrent(decision, control, liveRevision, Date.now(), fieldMap);
+  return isGhlCrmDecisionCurrent(decision, control, liveRevision, Date.now(), fieldMap, scopeRevision);
 }
 
 /** CRM projections have their own allow-switch but still join the global pause
@@ -527,7 +775,11 @@ export async function patchGhlSyncControl(input: {
 
 export async function recordGhlNativeReview(review: NativeReview, actorId: string, expectedEpoch: number): Promise<GhlSyncControl> {
   const configuredLocation = process.env.GHL_LOCATION_ID || null;
-  const providerFields = await getVerifiedCustomFieldMap(configuredLocation);
+  const providerFields = await getVerifiedCustomFieldMap(configuredLocation, { fresh: true });
+  const liveScopeRules = await readGhlScopeRules();
+  if (!review.scopeRulesRevision || review.scopeRulesRevision !== hashGhlScopeRules(liveScopeRules)) {
+    throw new Error("GHL_SCOPE_RULES_CHANGED");
+  }
   const providerFieldRevision = hashGhlCustomFieldInventory(providerFields);
   if (!review.locationId || !configuredLocation || review.locationId !== configuredLocation
       || review.workflows?.some(workflow => workflow.locationId !== review.locationId)
@@ -536,8 +788,7 @@ export async function recordGhlNativeReview(review: NativeReview, actorId: strin
       || hashNativeWorkflowInventory(review.workflows) !== review.inventoryRevision) {
     throw new Error("GHL_NATIVE_REVIEW_EVIDENCE_UNVERIFIED");
   }
-  if (review.customFieldInventoryRevision !== providerFieldRevision
-      || hashGhlCustomFieldInventory(review.customFields ?? []) !== review.customFieldInventoryRevision) {
+  if (review.customFieldInventoryRevision !== providerFieldRevision) {
     throw new Error("GHL_CUSTOM_FIELD_INVENTORY_CHANGED");
   }
   if (!review.allowedOperations.length || review.allowedOperations.some(op =>
@@ -581,10 +832,10 @@ export async function recordGhlNativeReview(review: NativeReview, actorId: strin
     );
     await client.query("COMMIT");
     const now = new Date();
-    const nativeReview: NativeReview = {
-      ...review, state: "approved", reviewedAt: now.toISOString(),
-      expiresAt: new Date(now.getTime() + REVIEW_MAX_AGE_MS).toISOString(), reviewerId: actorId,
-    };
+    const nativeReview = sealGhlApprovedReview({
+      ...review,
+      customFields: providerFields.map(field => ({ id: field.id, key: field.key, dataType: field.dataType ?? "" })),
+    }, { reviewerId: actorId, reviewedAt: now, scopeRules: liveScopeRules });
     await drainGhlCrmInflight();
     const finish = await pool.connect();
     try {
@@ -603,7 +854,7 @@ export async function recordGhlNativeReview(review: NativeReview, actorId: strin
       await finish.query(
         `INSERT INTO audit_logs(action,entity_type,entity_key,actor_type,actor_id,details,created_at)
          VALUES('ghl_native_trigger_safety_reviewed','system',$1,'user',$2,$3::jsonb,NOW())`,
-        [SETTING_KEY, actorId, JSON.stringify({ epoch: next.epoch, evidenceReference: nativeReview.evidenceReference, inventoryRevision: nativeReview.inventoryRevision, allowedOperations: nativeReview.allowedOperations, transition: "committed" })],
+        [SETTING_KEY, actorId, JSON.stringify({ epoch: next.epoch, evidenceReference: nativeReview.evidenceReference, inventoryRevision: nativeReview.inventoryRevision, contractVersion: nativeReview.contractVersion, contractRevision: nativeReview.contractRevision, scopeRulesRevision: nativeReview.scopeRulesRevision, allowedOperations: nativeReview.allowedOperations, transition: "committed" })],
       );
       await finish.query("COMMIT");
       return next;
@@ -618,5 +869,64 @@ export async function recordGhlNativeReview(review: NativeReview, actorId: strin
     throw error;
   } finally {
     client.release();
+  }
+}
+/**
+ * Owner revocation. Bumps the control epoch and drains in-flight CRM writes, so no later mutation or retry can use
+ * the approval. The reviewed content is retained as evidence; only a new review can restore authority.
+ */
+export async function revokeGhlNativeReview(reason: string, actorId: string, expectedEpoch: number): Promise<GhlSyncControl> {
+  if (!reason?.trim()) throw new Error("GHL_NATIVE_REVIEW_REVOCATION_REASON_REQUIRED");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock($1)", [73190421]);
+    const result = await client.query<{ value: any }>("SELECT value FROM system_settings WHERE key=$1 FOR UPDATE", [SETTING_KEY]);
+    const raw = result.rows[0]?.value;
+    const current = parseControl(typeof raw === "string" ? JSON.parse(raw) : raw);
+    if (current.epoch !== expectedEpoch) throw new Error("GHL_CONTROL_EPOCH_CONFLICT");
+    await client.query(
+      `INSERT INTO system_settings(key,value,updated_at) VALUES($1,$2::jsonb,NOW())
+       ON CONFLICT(key) DO UPDATE SET value=$2::jsonb,updated_at=NOW()`,
+      [SETTING_KEY, JSON.stringify({ ...current, transitioning: true, epoch: current.epoch + 1 })],
+    );
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+  await drainGhlCrmInflight();
+  const finish = await pool.connect();
+  try {
+    await finish.query("BEGIN");
+    await finish.query("SELECT pg_advisory_xact_lock($1)", [73190421]);
+    const row = await finish.query<{ value: any }>("SELECT value FROM system_settings WHERE key=$1 FOR UPDATE", [SETTING_KEY]);
+    const raw = row.rows[0]?.value;
+    const stored = typeof raw === "string" ? JSON.parse(raw) : raw;
+    const current = parseControl(stored);
+    if (current.epoch !== expectedEpoch + 1 || !current.transitioning) throw new Error("GHL_CONTROL_EPOCH_CONFLICT");
+    const priorReview = (stored?.nativeReview && typeof stored.nativeReview === "object" ? stored.nativeReview : current.nativeReview) as NativeReview;
+    const next: GhlSyncControl = {
+      ...current, transitioning: false, epoch: current.epoch + 1,
+      nativeReview: {
+        ...priorReview, state: "revoked", revokedAt: new Date().toISOString(), revokedBy: actorId,
+        revocationReason: reason.trim().slice(0, 500),
+      },
+    };
+    await finish.query("UPDATE system_settings SET value=$2::jsonb,updated_at=NOW() WHERE key=$1", [SETTING_KEY, JSON.stringify(next)]);
+    await finish.query(
+      `INSERT INTO audit_logs(action,entity_type,entity_key,actor_type,actor_id,details,created_at)
+       VALUES('ghl_native_review_revoked','system',$1,'user',$2,$3::jsonb,NOW())`,
+      [SETTING_KEY, actorId, JSON.stringify({ epoch: next.epoch, reason: next.nativeReview.revocationReason, contractRevision: priorReview.contractRevision ?? null, transition: "committed" })],
+    );
+    await finish.query("COMMIT");
+    return next;
+  } catch (error) {
+    await finish.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    finish.release();
   }
 }

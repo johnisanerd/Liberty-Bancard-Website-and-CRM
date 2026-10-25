@@ -51,3 +51,12 @@ See `docs/ghl-projection-write-path-matrix.md` for the write-path matrix.
 - Certification: `scripts/certification/test-ghl-projection-authority.ts` includes an approved fake-provider journey
   (real worker, executor, transport and CRM control) with exact request counts, plus explicit mutants.
 - Owner package: `docs/ghl-native-safety-approval-package.md` (prepared, not approved).
+
+## Follow-up: persistent approval, scope categories, handoff durability
+- Approval is persistent (no 24 hour expiry): bound to the reviewed contract, held on provider outage, blocked with named
+  changed facts on a proven change, revocable. Approval hashes are key-order independent so they survive jsonb storage.
+- Scope: production-only, create categories (csv_import, discovery, prospect_conversion, legacy_unknown plus intake
+  categories), source-less legacy by lead label without fabricated events, registry never.
+- Handoff: verified deferral, unknown-outcome hold, dispatch ledger (migration 0377), occurrence-scoped obligations,
+  recovery through the compliant gate, cancel wins over a claimed item.
+- Not yet done: publish, field creation, owner review, activation, production acceptance.

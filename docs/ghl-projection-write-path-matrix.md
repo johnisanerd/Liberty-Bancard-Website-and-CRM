@@ -114,8 +114,10 @@ Receipt identity is a location-scoped occurrence key (legacy keys still resolve)
 identity. The same occurrence key with a different payload is adopted only before any durable effect exists, otherwise it
 is a held collision (409). Handlers split into steps record each local effect in the same transaction as its step and
 each external effect as a leased step with a stable key, so a settlement fault or crash retries only the unfinished step
-(an external step that already reached the provider but whose marker was lost can repeat once; its callee must be
-idempotent). Handlers that are not split remain at-least-once. Appointment booked/updated/canceled are serialized per
+(the workflow-enrollment handoff keeps a durable dispatch ledger, `ghl_workflow_handoff_dispatches`, written before the
+request: a retry after a lost response or a lost completion marker never re-sends, because the provider endpoint is not
+documented as idempotent; only a definite refusal may be re-sent). Handlers that are not split (the six families: opt-out, bounce, statement request, lifecycle transitions, stage-change chains,
+communication-event processing) remain at-least-once. Appointment booked/updated/canceled are serialized per
 appointment; the booked effect has its own owner and never regresses a later state; effects superseded by a later
 accepted terminal transition do not run.
 
@@ -135,3 +137,18 @@ fatal). Run: `npx tsx scripts/run-sfp2060-predeploy-disposable.ts --only scripts
 - Webhook receipt identity is the stable occurrence key; there is no response-time effect marker (see Webhook effect
   idempotency). Migration 0376 adds effect-step and appointment-booked ownership storage and needs a publish.
 - Owner-facing approval material: `docs/ghl-native-safety-approval-package.md`.
+
+## Persistent approval and appointment handoff (migration 0377)
+
+- The native-review approval has no expiry; it is bound to the reviewed contract and held/blocked/revoked as described in
+  `docs/ghl-native-safety-approval-package.md` section 9.
+- Appointment handoff: the deferred obligation is identified by contact, workflow and appointment occurrence
+  (`contact::workflow::appointment`). `deferGhlEnrollment` reports whether a pending row verifiably exists; a handoff is
+  `durable` only then, otherwise the receipt fails so the sender retries. A lost response is an explicit unknown hold: it
+  is audited and never deferred or re-sent automatically.
+- The recovery job dispatches through the compliant gate (workflow verification, pause, identity, suppression/consent,
+  quiet hours) under a per-obligation advisory lock after re-reading the row. Self-clearing holds reschedule without
+  spending retries; permanent denials retire the obligation with an audit row; lost responses park the row as failed
+  with `unknown_outcome:`. A cancel removes only its appointment's obligation under the same lock, so it wins against an
+  item the worker already claimed. Residual: if the database commit fails after the provider accepted a recovery request,
+  the row survives and a later tick could re-send once.

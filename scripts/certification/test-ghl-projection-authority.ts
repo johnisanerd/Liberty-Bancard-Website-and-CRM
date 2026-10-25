@@ -55,6 +55,7 @@ const recorder = await import("../../server/services/ghl-dispatch-recorder");
 const receipts = await import("../../server/services/ghl-webhook-receipts");
 const appointments = await import("../../server/services/ghl-appointment-events");
 const controlService = await import("../../server/services/ghl-sync-control");
+const scopeModule = await import("../../server/services/ghl-scope-rules");
 const runtime = await import("../../server/services/ghl-sync-runtime");
 const { db } = await import("../../server/db");
 
@@ -115,9 +116,15 @@ async function claimable(contactIds: number[]): Promise<boolean> {
 const syncOk = async () => ({ success: true });
 /** The existing-population scope is a policy switch (default on). The R1/H7 sections certify the evidence-only authority
  *  rule, so they run with the scope off; the dedicated scope section below runs with it on. */
-const setScope = async (enabled: boolean, extra: object = {}) =>
-  pool.query(`INSERT INTO system_settings(key,value,updated_at) VALUES('ghl_export_policy',$1::jsonb,NOW())
+let resealControlForScope: (() => Promise<void>) | null = null;
+const setScope = async (enabled: boolean, extra: object = {}) => {
+  await pool.query(`INSERT INTO system_settings(key,value,updated_at) VALUES('ghl_export_policy',$1::jsonb,NOW())
               ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()`, [JSON.stringify({ existingPopulation: { enabled, ...extra } })]);
+  // Scope rules are part of the approval contract; this fixture re-approves under the rules it just saved so the
+  // surrounding sections keep exercising the write path. The dedicated persistent-approval section proves that a
+  // rules change without a new review blocks.
+  if (resealControlForScope) await resealControlForScope();
+};
 await setScope(false);
 
 // ---------------------------------------------------------------- migration / schema
@@ -318,7 +325,7 @@ const setControl = async (enabled: boolean) => {
   assert(identity, "runtime identity must resolve for the disposable run");
   const value = {
     enabled, permissionsEnabled: false, epoch: 1, ownerProfile: "ghl-sync-only", selectedRuntime: identity, transitioning: false,
-    nativeReview: { state: "unverified", reviewedAt: null, expiresAt: null, evidenceReference: null, allowedOperations: [] },
+    nativeReview: { state: "unverified", reviewedAt: null, evidenceReference: null, allowedOperations: [] },
   };
   await pool.query(`INSERT INTO system_settings(key,value,updated_at) VALUES('ghlSyncControl',$1::jsonb,NOW()) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value`, [JSON.stringify(value)]);
 };
@@ -778,7 +785,10 @@ server.close();
 // ================================================================ R3/R4/R8: approved fake-provider journey (real worker, executor, transport, control)
 {
   let tagOpsReviewed = true;
+  let lastPermissionsEnabled = true;
   const controlRow = async (permissionsEnabled: boolean) => {
+    lastPermissionsEnabled = permissionsEnabled;
+    controlService.resetGhlEvidenceCache();
     const identity = controlService.getCurrentGhlRuntimeIdentity();
     assert(identity, "runtime identity must resolve for the disposable run");
     const fields = installedFields.map((k, i) => ({ id: `cf_${i}`, key: k }));
@@ -787,8 +797,8 @@ server.close();
     const identityFields = ["firstName", "lastName", "email", "phone", "companyName", "customFields"];
     const value = {
       enabled: true, permissionsEnabled, epoch: 1, ownerProfile: "ghl-sync-only", selectedRuntime: identity, transitioning: false,
-      nativeReview: {
-        state: "approved", reviewedAt: new Date(now - 60_000).toISOString(), expiresAt: new Date(now + 3_600_000).toISOString(),
+      nativeReview: controlService.sealGhlApprovedReview({
+        state: "approved", reviewedAt: null,
         evidenceReference: "disposable-cert-fixture", locationId: "loc_cert_fake",
         inventoryRevision: controlService.hashNativeWorkflowInventory(workflows), workflows, workflowActionEvidence: [],
         customFields: fields, customFieldInventoryRevision: controlService.hashGhlCustomFieldInventory(fields),
@@ -800,12 +810,13 @@ server.close();
             { method: "DELETE", path: "/contacts/:contactId/tags", fields: ["tags"], tags: ["LB-ACTIVE-PIPELINE", "lb_parent_account"], stageIds: [], customFieldIds: [], purpose: "cert owned-tag remove", safetyEvidence: "fixture" },
           ] : []),
         ],
-      },
+      }, { reviewerId: "cert-owner", reviewedAt: new Date(now - 60_000), scopeRules: await scopeModule.readGhlScopeRules() }),
     };
     await pool.query(`INSERT INTO system_settings(key,value,updated_at) VALUES('ghlSyncControl',$1::jsonb,NOW()) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value`, [JSON.stringify(value)]);
   };
   const controlRowFn = controlRow;
   await controlRow(true);
+  resealControlForScope = async () => { await controlRow(lastPermissionsEnabled); };
   // Global outbound pause stays PAUSED; CRM projections join the pause barrier but may run while paused.
   if ((await pool.query(`UPDATE outbound_pause_control SET state='paused', reason='ghl projection certification', committed_at=NOW()`)).rowCount === 0) {
     await pool.query(`INSERT INTO outbound_pause_control (state,reason,epoch,actor,idempotency_key,committed_at) VALUES ('paused','ghl projection certification',1,'ghl-cert',$1,NOW())`, [`ghl-cert-${randomUUID()}`]);
@@ -818,14 +829,15 @@ server.close();
   const behaviour = {
     fuzzyEmail: false, loseNextPost: false, failCustomFieldPut: false, duplicate400For: null as string | null, failPutFor: null as string | null,
     lookupMode: "normal" as "normal" | "noEmail" | "unsupported", dupRemoteEmail: null as string | null, duplicate400Phone: null as string | null,
-    failTagPut: false, tagStatus: 0,
+    failTagPut: false, tagStatus: 0, inventoryDown: false, extraWorkflows: [] as any[],
   };
   const remoteTags = new Map<string, Set<string>>();
   const journeyResponder = (call: Call, body: any): Response => {
     const u = new URL(call.url);
     const path = u.pathname;
+    if (behaviour.inventoryDown && (/\/customFields$/.test(path) || /^\/workflows\/?$/.test(path))) return json({ message: "provider outage" }, 503);
     if (/\/customFields$/.test(path)) return json({ customFields: installedFields.map((k, i) => ({ id: `cf_${i}`, fieldKey: `contact.${k}` })) });
-    if (/^\/workflows\/?$/.test(path)) return json({ workflows: [] });
+    if (/^\/workflows\/?$/.test(path)) return json({ workflows: behaviour.extraWorkflows });
     if (call.method === "GET" && /^\/contacts\/remote_dup_1$/.test(path)) {
       return json({ contact: { id: "remote_dup_1", email: behaviour.dupRemoteEmail } });
     }
@@ -1149,6 +1161,109 @@ server.close();
   const bl2 = await authority.getProjectionBacklog();
   check(bl1.eligiblePending - bl2.eligiblePending === 1 && !(await claimable([cB])), "Backlog eligibility mirrors the claimant (an archived contact is neither claimable nor eligible)");
 
+
+  // ---- 7A: persistent approval (no calendar expiry; hold on outage; block on change; revocation; legacy gets no authority)
+  {
+    let virtualNow = Date.now();
+    controlService.setGhlEvidenceClockForTest(() => virtualNow);
+    const tick = (ms: number) => { virtualNow += ms; };
+    const auditCount = async () => Number((await pool.query(`SELECT count(*)::int n FROM audit_logs WHERE action LIKE 'ghl_native_review%'`)).rows[0].n);
+    const writeArgs = { method: "POST", path: "/contacts", locationId: "loc_cert_fake", body: { email: "persist-approval@example.test" } };
+    await controlRowFn(true);
+    const before = (await controlService.getGhlSyncControl()).nativeReview;
+    const auditBefore = await auditCount();
+    check((await controlService.authorizeGhlCrmOperation(writeArgs)).allowed, "7A: a fresh approval authorizes the reviewed write");
+    for (const [label, ms] of [["25 hours", 25 * 3600_000], ["7 days", 7 * 24 * 3600_000]] as const) {
+      tick(ms);
+      const d = await controlService.authorizeGhlCrmOperation(writeArgs);
+      check(d.allowed, `7A: the unchanged approval is still usable after ${label} with no renewal`);
+    }
+    const after = (await controlService.getGhlSyncControl()).nativeReview;
+    check(after.state === "approved" && after.reviewedAt === before.reviewedAt && after.contractRevision === before.contractRevision
+      && (await auditCount()) === auditBefore, "7A: elapsed time re-approves nothing and writes no approval audit row");
+    controlService.resetGhlEvidenceCache();
+    check((await controlService.authorizeGhlCrmOperation(writeArgs)).allowed, "7A: an unchanged restart (empty cache, fresh read) preserves the approval");
+
+    // outage: hold (not a failure), then automatic resume when the same configuration is re-verified
+    behaviour.inventoryDown = true; tick(30_000); controlService.resetGhlEvidenceCache();
+    const held = await controlService.authorizeGhlCrmOperation(writeArgs);
+    check(!held.allowed && held.reasonCode === "native_verification_unavailable", "7A: unavailable provider evidence holds the write before dispatch");
+    const cOut = await mkContact();
+    await enqueue(cOut);
+    let mark7 = ghlCalls.length;
+    await runWorker();
+    const outRow = (await projRows(cOut))[0];
+    check(mutationsSince(mark7).length === 0 && outRow.state !== "failed" && outRow.state !== "dead_letter" && outRow.state !== "succeeded",
+      "7A: during the outage nothing is sent and the projection is held, not failed");
+    behaviour.inventoryDown = false; tick(30_000); controlService.resetGhlEvidenceCache();
+    check((await controlService.authorizeGhlCrmOperation(writeArgs)).allowed, "7A: the write resumes automatically once the same configuration is verified again");
+
+    // proven change blocks and reports facts; no automatic approval
+    const expectBlocked = async (label: string, mutate: () => Promise<void>, restore: () => Promise<void>, factRe: RegExp) => {
+      await mutate(); tick(30_000); controlService.resetGhlEvidenceCache();
+      const d = await controlService.authorizeGhlCrmOperation(writeArgs);
+      const v = await controlService.verifyGhlNativeReview(await controlService.getGhlSyncControl(), "loc_cert_fake", { persist: false });
+      check(!d.allowed && d.reasonCode === "native_review_changed" && v.status === "changed" && v.changedFacts.some(f => factRe.test(f)),
+        `7A: ${label} blocks the first affected write and names the changed fact`);
+      const stored = (await controlService.getGhlSyncControl()).nativeReview;
+      check(stored.state === "approved" && stored.contractRevision === before.contractRevision, `7A: ${label} never approves or rewrites the review`);
+      await restore(); tick(30_000); controlService.resetGhlEvidenceCache();
+    };
+    await expectBlocked("a new native workflow", async () => { behaviour.extraWorkflows = [{ id: "wf_new", locationId: "loc_cert_fake", status: "published", updatedAt: "2026-10-25T00:00:00.000Z", version: 1 }]; },
+      async () => { behaviour.extraWorkflows = []; }, /workflow wf_new added/);
+    await expectBlocked("a changed custom-field map", async () => { installedFields.push("lb_unreviewed_field"); },
+      async () => { installedFields.splice(installedFields.indexOf("lb_unreviewed_field"), 1); }, /lb_unreviewed_field/);
+    const priorPolicy = (await pool.query(`SELECT value FROM system_settings WHERE key='ghl_export_policy'`)).rows[0]?.value;
+    await expectBlocked("a changed export-scope rule", async () => {
+      await pool.query(`UPDATE system_settings SET value = jsonb_set(value, '{existingPopulation,sourceLessLegacy}', 'false') WHERE key='ghl_export_policy'`);
+    }, async () => {
+      await pool.query(`UPDATE system_settings SET value=$1::jsonb WHERE key='ghl_export_policy'`, [JSON.stringify(priorPolicy)]);
+    }, /sourceLessLegacy/);
+    check((await controlService.authorizeGhlCrmOperation(writeArgs)).allowed, "7A: when the reviewed configuration is restored the same approval is verified again");
+
+    // changed operations / location / tags / fields are bound by the approval itself
+    const raw = (await controlService.getGhlSyncControl()).nativeReview;
+    const tamper = async (label: string, mutate: (r: any) => any) => {
+      const row = (await pool.query(`SELECT value FROM system_settings WHERE key='ghlSyncControl'`)).rows[0].value;
+      const copy = JSON.parse(JSON.stringify(row)); mutate(copy.nativeReview);
+      await pool.query(`UPDATE system_settings SET value=$1::jsonb WHERE key='ghlSyncControl'`, [JSON.stringify(copy)]);
+      const d = await controlService.authorizeGhlCrmOperation(writeArgs);
+      check(!d.allowed && d.reasonCode === "native_review_unverified", `7A: ${label} invalidates the approval (new review required)`);
+      await pool.query(`UPDATE system_settings SET value=$1::jsonb WHERE key='ghlSyncControl'`, [JSON.stringify(row)]);
+    };
+    await tamper("a changed operation field allow-list", r => { r.allowedOperations[0].fields.push("tags"); });
+    await tamper("a changed tag allow-list", r => { r.allowedOperations[3].tags.push("another_tag"); });
+    await tamper("a changed location", r => { r.locationId = "loc_other"; });
+    await tamper("a changed reviewer", r => { r.reviewerId = "someone_else"; });
+    check((await controlService.authorizeGhlCrmOperation(writeArgs)).allowed, "7A: restoring the exact reviewed record restores the verified approval");
+
+    // revocation: blocks later writes and retries; in-flight decision fails its recheck
+    const inflightDecision = await controlService.authorizeGhlCrmOperation(writeArgs);
+    const current = await controlService.getGhlSyncControl();
+    await controlService.revokeGhlNativeReview("certification revocation check", "cert-owner", current.epoch);
+    check(!(await controlService.recheckGhlCrmOperation(inflightDecision)), "7A: revocation blocks an already-authorized in-flight write at its final recheck");
+    check((await controlService.authorizeGhlCrmOperation(writeArgs)).reasonCode === "native_review_revoked", "7A: revocation blocks later writes and retries");
+    const revoked = (await controlService.getGhlSyncControl()).nativeReview;
+    check(revoked.state === "revoked" && !!revoked.revokedAt && revoked.revokedBy === "cert-owner" && revoked.reviewerId === raw.reviewerId,
+      "7A: revocation is recorded with who/when/why and keeps the reviewed evidence");
+    check((await auditCount()) === auditBefore + 1, "7A: revocation writes one audit row");
+
+    // legacy 24-hour review (no contract version, with expiresAt) never gains authority
+    const legacy = { ...JSON.parse(JSON.stringify(raw)), contractVersion: undefined, contractRevision: undefined, scopeRules: undefined, scopeRulesRevision: undefined, reviewerId: undefined, expiresAt: new Date(Date.now() + 3600_000).toISOString() };
+    const ctl = JSON.parse(JSON.stringify((await pool.query(`SELECT value FROM system_settings WHERE key='ghlSyncControl'`)).rows[0].value));
+    ctl.nativeReview = legacy;
+    await pool.query(`UPDATE system_settings SET value=$1::jsonb WHERE key='ghlSyncControl'`, [JSON.stringify(ctl)]);
+    const legacyRead = (await controlService.getGhlSyncControl()).nativeReview;
+    check(legacyRead.state === "unverified" && (await controlService.authorizeGhlCrmOperation(writeArgs)).reasonCode === "native_review_unverified",
+      "7A: a legacy time-limited review is not converted and carries no authority");
+    // a revoked approval never regains authority by itself
+    controlService.setGhlEvidenceClockForTest(null);
+    controlService.resetGhlEvidenceCache();
+    await controlRowFn(true);
+    check((await controlService.authorizeGhlCrmOperation(writeArgs)).allowed, "7A: only a new sealed review restores authority after revocation or legacy state");
+    const pending = await projRows(cOut);
+    void pending;
+  }
   // restore the unauthorized control for any later assertions
   globalThis.fetch = wrapped;
   ghlResponder = defaultResponder;
@@ -1712,8 +1827,17 @@ server.close();
         const p4 = await mkPair();
         const d4 = await deliverFixed("booked", bookedBody(p4.ghl, "lost"), webhookHandlers.handleAppointmentBooked);
         const ev4 = await heldEvent(p4.m!.id);
-        check(d4.decision === "applied" && ev4?.state === "unknown" && ev4?.durable === true && !!(await deferredRow(p4.ghl)),
-          "C: a lost provider response is an unknown outcome recorded visibly and re-asserted by the durable recovery (no silent success, no failed receipt)");
+        check(d4.decision === "applied" && ev4?.state === "unknown" && ev4?.durable === false && !(await deferredRow(p4.ghl)) && wf.length >= 1,
+          "C: a lost provider response is an explicit unknown hold recorded visibly: nothing is deferred for re-assertion and the receipt is not failed");
+        mode.value = "ok";
+        await pool.query(`UPDATE deferred_ghl_enrollments SET next_retry_at = now() - interval '1 minute'`);
+        const w4 = wf.length;
+        await retryDeferredEnrollments();
+        check(wf.filter((w, i) => i >= w4 && w.url.includes(p4.ghl)).length === 0, "C: an unknown outcome is never re-sent by the recovery job");
+        const d4b = await deliverFixed("booked", bookedBody(p4.ghl, "lost"), webhookHandlers.handleAppointmentBooked, { accept: false });
+        check(wf.filter((w, i) => i >= w4 && w.url.includes(p4.ghl)).length === 0 && ((await pool.query(`SELECT state FROM ghl_workflow_handoff_dispatches WHERE ghl_contact_id=$1`, [p4.ghl])).rows[0]?.state === "started"),
+          "C: a repeat delivery after a lost response finds the started dispatch and does not send a second enrollment");
+        void d4b;
 
         // 5. provider refusal with no durable owner fails the receipt; the retry runs the same step with the same identity.
         mode.value = "bad400";
@@ -1744,8 +1868,88 @@ server.close();
         check(d6.decision === "failed" && /injected completion failure/.test(d6.error ?? "") && wf.length === w6 + 1, "C: a local completion failure after provider acceptance fails the receipt");
         const r6 = await deliverFixed("booked", b6, webhookHandlers.handleAppointmentBooked, { accept: false });
         const sameKey = wf.slice(w6).every(w => w.body.idempotencyKey === `${d6.receiptId}:booked:enroll_booking_confirmation`);
-        check(r6.decision === "applied" && wf.length === w6 + 2 && sameKey && wf[w6 + 1].body.attempt === 2,
-          "C: the retry after a completion failure repeats the provider call under the identical identity (attempt 2), so the provider can de-duplicate it");
+        check(r6.decision === "applied" && wf.length === w6 + 1 && sameKey,
+          "C: the retry after a local completion failure does not send a second enrollment (the dispatch ledger holds the accepted handoff)");
+
+        // 7. two bookings of one contact are two obligations; cancelling one withdraws only that one.
+        await setPause(true);
+        const p7 = await mkPair();
+        const b7a = bookedBody(p7.ghl, "two-a"); const b7b = bookedBody(p7.ghl, "two-b");
+        await deliverFixed("booked", b7a, webhookHandlers.handleAppointmentBooked);
+        await deliverFixed("booked", b7b, webhookHandlers.handleAppointmentBooked);
+        const pending7 = async () => (await pool.query(`SELECT id FROM deferred_ghl_enrollments WHERE ghl_contact_id=$1 AND status='pending'`, [p7.ghl])).rows.map((r: any) => r.id as string);
+        check((await pending7()).length === 2, "C: two bookings of one contact own two separate deferred obligations");
+        await deliverFixed("canceled", { eventId: `h6c3-${run}-two-a-cancel`, locationId: "loc_cert_fake", appointmentId: b7a.appointmentId, contactId: p7.ghl, calendarId: "cal_x", dateUpdated: t(9) }, webhookHandlers.handleAppointmentCanceled);
+        const left7 = await pending7();
+        check(left7.length === 1 && left7[0].endsWith(`::${b7b.appointmentId}`), "C: cancelling one appointment withdraws only that appointment's obligation");
+        await setPause(false);
+        await pool.query(`UPDATE deferred_ghl_enrollments SET next_retry_at = now() - interval '1 minute' WHERE ghl_contact_id=$1`, [p7.ghl]);
+        const w7 = wf.length;
+        await retryDeferredEnrollments();
+        check(wf.slice(w7).filter(w => w.url.includes(p7.ghl)).length === 1 && (await pending7()).length === 0, "C: the remaining booking is delivered exactly once");
+
+        // 8. cancel after the worker claimed the item but before final dispatch: the cancel wins, nothing is sent.
+        await setPause(true);
+        const p8 = await mkPair();
+        const b8 = bookedBody(p8.ghl, "claimed");
+        await deliverFixed("booked", b8, webhookHandlers.handleAppointmentBooked);
+        await setPause(false);
+        await pool.query(`UPDATE deferred_ghl_enrollments SET next_retry_at = now() - interval '1 minute' WHERE ghl_contact_id=$1`, [p8.ghl]);
+        const recovery = await import("../../server/services/ghl-enrollment-recovery");
+        const realQuery8 = pool.query.bind(pool);
+        let cancelledAfterClaim = -1;
+        (pool as any).query = async (...args: any[]) => {
+          const out = await realQuery8(...(args as [any]));
+          const text = typeof args[0] === "string" ? args[0] : args[0]?.text ?? "";
+          if (cancelledAfterClaim === -1 && /UPDATE\s+deferred_ghl_enrollments/.test(text) && (out.rows ?? []).some((r: any) => r.ghl_contact_id === p8.ghl)) {
+            cancelledAfterClaim = -2;
+            cancelledAfterClaim = (await recovery.cancelDeferredEnrollmentsForOccurrence({ ghlContactId: p8.ghl, occurrenceKey: b8.appointmentId })).cancelled;
+          }
+          return out;
+        };
+        const w8 = wf.length;
+        try { await retryDeferredEnrollments(); } finally { (pool as any).query = realQuery8; }
+        check(cancelledAfterClaim === 1 && wf.slice(w8).filter(w => w.url.includes(p8.ghl)).length === 0
+          && !(await deferredRow(p8.ghl)), "C: a cancel that lands after the worker claimed the item still wins: the recheck at final dispatch finds it gone and nothing is sent");
+
+        // 9. suppression changes between deferral and retry: final dispatch re-runs the gate and retires the obligation.
+        await setPause(true);
+        const p9 = await mkPair();
+        await deliverFixed("booked", bookedBody(p9.ghl, "suppressed"), webhookHandlers.handleAppointmentBooked);
+        await setPause(false);
+        await pool.query(`UPDATE contacts SET do_not_contact=true WHERE id=$1`, [p9.cid]);
+        await pool.query(`UPDATE deferred_ghl_enrollments SET next_retry_at = now() - interval '1 minute' WHERE ghl_contact_id=$1`, [p9.ghl]);
+        const w9 = wf.length;
+        await retryDeferredEnrollments();
+        const denied9 = (await pool.query(`SELECT 1 FROM audit_logs WHERE action='ghl_enrollment_recovery_denied' AND entity_key=$1`, [p9.ghl])).rowCount;
+        check(wf.slice(w9).filter(w => w.url.includes(p9.ghl)).length === 0 && !(await deferredRow(p9.ghl)) && denied9 === 1,
+          "C: a contact suppressed after deferral is not enrolled by the retry; the obligation is retired with an audit row");
+
+        // 10. lost response during recovery: parked as an explicit unknown outcome, never re-sent.
+        await setPause(true);
+        const p10 = await mkPair();
+        await deliverFixed("booked", bookedBody(p10.ghl, "recover-lost"), webhookHandlers.handleAppointmentBooked);
+        await setPause(false);
+        await pool.query(`UPDATE deferred_ghl_enrollments SET next_retry_at = now() - interval '1 minute' WHERE ghl_contact_id=$1`, [p10.ghl]);
+        mode.value = "lose";
+        const w10 = wf.length;
+        await retryDeferredEnrollments();
+        const parked = (await pool.query(`SELECT status, last_error FROM deferred_ghl_enrollments WHERE ghl_contact_id=$1`, [p10.ghl])).rows[0];
+        mode.value = "ok";
+        await pool.query(`UPDATE deferred_ghl_enrollments SET next_retry_at = now() - interval '1 minute' WHERE ghl_contact_id=$1`, [p10.ghl]);
+        await retryDeferredEnrollments();
+        check(wf.slice(w10).filter(w => w.url.includes(p10.ghl)).length === 1 && parked?.status === "failed" && /^unknown_outcome:/.test(parked?.last_error ?? ""),
+          "C: a lost response during recovery is parked as an unknown outcome and the later tick does not send a second enrollment");
+
+        // 11. a deferral that cannot be verified is not durable: the receipt fails so the sender's retry recovers it.
+        await setPause(true);
+        const p11 = await mkPair();
+        const b11 = bookedBody(p11.ghl, "no-owner");
+        await pool.query(`INSERT INTO deferred_ghl_enrollments (id, ghl_contact_id, workflow_key, metadata, enqueued_at, retry_count, next_retry_at, last_error, status, failed_at)
+                          VALUES ($1,$2,'booking_confirmation',NULL,now(),9,now(),'prior terminal failure','failed',now())`, [`${p11.ghl}::booking_confirmation::${b11.appointmentId}`, p11.ghl]);
+        const d11 = await deliverFixed("booked", b11, webhookHandlers.handleAppointmentBooked);
+        check(d11.decision === "failed" && /deferral_not_persisted|workflow_enrollment_failed/.test(d11.error ?? "") && !(await heldEvent(p11.m!.id)),
+          "C: when the deferral write changes no row the handoff is not reported durable and the receipt fails instead of completing");
       } finally {
         globalThis.Date = RealDate;
         await setPause(true);
@@ -1768,16 +1972,16 @@ server.close();
   const dispo = async (cid: number) => { const r = (await projRows(cid)).find(x => ["pending", "retry", "processing"].includes(x.state)) ?? (await projRows(cid))[0]; return r ? `${r.export_disposition}/${r.export_reason}` : "none"; };
   await setScope(true);
   const old = new Date("2025-01-01T00:00:00Z");
-  const cLinked = await mkContact({ intake: false, ghl: `ghl_${run}_scope_linked` });
-  const cOldCrm = await mkContact({ intake: false }); await addIntakeEvidence(cOldCrm, "manual_crm", old);
-  const cOldForm = await mkContact({ intake: false }); await addIntakeEvidence(cOldForm, "website_form", old);
-  const cNoSource = await mkContact({ intake: false });
-  const cCsv = await mkContact({ intake: false }); await addIntakeEvidence(cCsv, "csv_import", old);
-  const cDisc = await mkContact({ intake: false }); await addIntakeEvidence(cDisc, "discovery", old);
-  const cReg = await mkContact({ intake: false }); await addIntakeEvidence(cReg, "registry", old); await addIntakeEvidence(cReg, "sunbiz", old); await addIntakeEvidence(cReg, "dbpr", old);
+  const cLinked = await mkContact({ intake: false, recordClass: "production", ghl: `ghl_${run}_scope_linked` });
+  const cOldCrm = await mkContact({ intake: false, recordClass: "production" }); await addIntakeEvidence(cOldCrm, "manual_crm", old);
+  const cOldForm = await mkContact({ intake: false, recordClass: "production" }); await addIntakeEvidence(cOldForm, "website_form", old);
+  const cNoSource = await mkContact({ intake: false, recordClass: "production" });
+  const cCsv = await mkContact({ intake: false, recordClass: "production" }); await addIntakeEvidence(cCsv, "csv_import", old);
+  const cDisc = await mkContact({ intake: false, recordClass: "production" }); await addIntakeEvidence(cDisc, "discovery", old);
+  const cReg = await mkContact({ intake: false, recordClass: "production" }); await addIntakeEvidence(cReg, "registry", old); await addIntakeEvidence(cReg, "sunbiz", old); await addIntakeEvidence(cReg, "dbpr", old);
   const cTestLinked = await mkContact({ intake: false, recordClass: "test", ghl: `ghl_${run}_scope_test` });
-  const cArchLinked = await mkContact({ intake: false, archived: true, ghl: `ghl_${run}_scope_arch` });
-  const cDnc = await mkContact({ intake: false, ghl: `ghl_${run}_scope_dnc` });
+  const cArchLinked = await mkContact({ intake: false, recordClass: "production", archived: true, ghl: `ghl_${run}_scope_arch` });
+  const cDnc = await mkContact({ intake: false, recordClass: "production", ghl: `ghl_${run}_scope_dnc` });
   await pool.query(`UPDATE contacts SET do_not_contact=true WHERE id=$1`, [cDnc]);
 
   // Classification at enqueue: age grants nothing, source policy does.
@@ -1785,26 +1989,27 @@ server.close();
     "A: a production contact that already has a GHL id is in scope for updates without any intake evidence");
   check((await enqueue(cOldCrm)).disposition === "current_intake" && (await enqueue(cOldForm)).disposition === "current_intake",
     "A: an unlinked CRM-source contact (manual_crm, website_form) is in scope for a create whatever the date of its source event");
-  check((await enqueue(cNoSource)).disposition === "historical_hold" && (await enqueue(cCsv)).disposition === "historical_hold"
-    && (await enqueue(cDisc)).disposition === "historical_hold" && (await enqueue(cReg)).disposition === "historical_hold",
-    "A: source-less, csv-import, discovery and registry/Sunbiz/DBPR contacts stay held");
+  check((await enqueue(cCsv)).disposition === "current_intake" && (await enqueue(cDisc)).disposition === "current_intake",
+    "A: an unlinked production contact from a CSV import or discovery is in scope for a create (created categories, no date condition)");
+  check((await enqueue(cNoSource)).disposition === "historical_hold" && (await enqueue(cReg)).disposition === "historical_hold",
+    "A: a source-less contact with no lead label and registry/Sunbiz/DBPR contacts stay held");
   check((await enqueue(cTestLinked)).disposition === "test_local_only" && !(await claimable([cTestLinked])),
     "A: a test contact is never exportable, scope or not");
   check((await enqueue(cArchLinked)).disposition !== "linked_update" && !(await claimable([cArchLinked])), "A: an archived contact is never in scope");
 
   // Sweep: in-scope contacts that have no projection row get one (ordinary worker input); excluded contacts never do; idempotent.
-  const cSwLinked = await mkContact({ intake: false, ghl: `ghl_${run}_sweep_linked` });
-  const cSwCrm = await mkContact({ intake: false }); await addIntakeEvidence(cSwCrm, "partner_referral", old);
-  const cSwCsv = await mkContact({ intake: false }); await addIntakeEvidence(cSwCsv, "csv_import", old);
-  const cSwReg = await mkContact({ intake: false }); await addIntakeEvidence(cSwReg, "sunbiz", old);
-  const cSwNone = await mkContact({ intake: false });
+  const cSwLinked = await mkContact({ intake: false, recordClass: "production", ghl: `ghl_${run}_sweep_linked` });
+  const cSwCrm = await mkContact({ intake: false, recordClass: "production" }); await addIntakeEvidence(cSwCrm, "partner_referral", old);
+  const cSwCsv = await mkContact({ intake: false, recordClass: "production" }); await addIntakeEvidence(cSwCsv, "csv_import", old);
+  const cSwReg = await mkContact({ intake: false, recordClass: "production" }); await addIntakeEvidence(cSwReg, "sunbiz", old);
+  const cSwNone = await mkContact({ intake: false, recordClass: "production" });
   const cSwTest = await mkContact({ intake: false, recordClass: "demo", ghl: `ghl_${run}_sweep_demo` });
   const blBefore = await authority.getProjectionBacklog();
   check(await convergence.projectionConvergenceNeeded(), "A: un-enrolled in-scope contacts are detected as convergence work");
   await convergence.convergeLegacyProjectionRows();
   const sw = async (cid: number) => (await projRows(cid)).filter(r => r.source_kind === "existing_population").length;
-  check(await sw(cSwLinked) === 1 && await sw(cSwCrm) === 1 && await sw(cSwCsv) === 0 && await sw(cSwReg) === 0 && await sw(cSwNone) === 0 && await sw(cSwTest) === 0,
-    "A: the sweep enrols exactly the in-scope contacts (linked update, old CRM-source create) and no csv/registry/source-less/test contact");
+  check(await sw(cSwLinked) === 1 && await sw(cSwCrm) === 1 && await sw(cSwCsv) === 1 && await sw(cSwReg) === 0 && await sw(cSwNone) === 0 && await sw(cSwTest) === 0,
+    "A: the sweep enrols exactly the in-scope contacts (linked update, old CRM-source and CSV-import creates) and no registry/source-less/test contact");
   const swRow = (await projRows(cSwLinked))[0]; const swCreate = (await projRows(cSwCrm))[0];
   check(swRow.export_disposition === "linked_update" && swRow.export_reason === "existing_linked_identity"
     && swCreate.export_disposition === "current_intake" && swCreate.export_reason === "existing_crm_source",
@@ -1818,20 +2023,20 @@ server.close();
 
   // A release of a pre-existing hold for contacts the scope now covers; excluded holds stay.
   await setScope(false);
-  const cHold = await mkContact({ intake: false, ghl: `ghl_${run}_hold_linked` });
+  const cHold = await mkContact({ intake: false, recordClass: "production", ghl: `ghl_${run}_hold_linked` });
   await enqueue(cHold);
-  const cHoldCsv = await mkContact({ intake: false }); await addIntakeEvidence(cHoldCsv, "csv_import", old); await enqueue(cHoldCsv);
+  const cHoldCsv = await mkContact({ intake: false, recordClass: "production" }); await addIntakeEvidence(cHoldCsv, "csv_import", old); await enqueue(cHoldCsv);
   check((await projRows(cHold))[0].export_disposition === "historical_hold" && !(await claimable([cHold])), "A: with the scope off a linked contact's work is held");
   await setScope(true);
   await convergence.convergeLegacyProjectionRows();
   check((await projRows(cHold))[0].export_disposition === "linked_update" && (await projRows(cHold))[0].export_reason === "existing_linked_identity"
-    && (await projRows(cHoldCsv))[0].export_disposition === "historical_hold",
-    "A: switching the scope on releases the held linked update and leaves the csv-import hold in place");
+    && (await projRows(cHoldCsv))[0].export_disposition === "current_intake",
+    "A: switching the scope on releases the held linked update and the held CSV-import create (both covered by the default categories)");
 
   // Policy narrowing is by source category, never by age; registry categories cannot be named; switching off demotes open rows.
   await setScope(true, { createSourceCategories: ["website_form", "sunbiz", "registry"] });
-  const cNarrow = await mkContact({ intake: false }); await addIntakeEvidence(cNarrow, "manual_crm", old);
-  const cNarrowReg = await mkContact({ intake: false }); await addIntakeEvidence(cNarrowReg, "sunbiz", old);
+  const cNarrow = await mkContact({ intake: false, recordClass: "production" }); await addIntakeEvidence(cNarrow, "manual_crm", old);
+  const cNarrowReg = await mkContact({ intake: false, recordClass: "production" }); await addIntakeEvidence(cNarrowReg, "sunbiz", old);
   check((await enqueue(cNarrow)).disposition === "historical_hold" && (await enqueue(cNarrowReg)).disposition === "historical_hold",
     "A: createSourceCategories narrows the create scope by source, and a registry category can never be named into scope");
   await setScope(false);

@@ -454,6 +454,16 @@ export const ghlWebhookEffectSteps = pgTable("ghl_webhook_effect_steps", {
   primaryKey({ columns: [table.receiptId, table.stepKey], name: "ghl_webhook_effect_steps_pk" }),
 ]);
 
+export const ghlWorkflowHandoffDispatches = pgTable("ghl_workflow_handoff_dispatches", {
+  idempotencyKey: text("idempotency_key").primaryKey(),
+  workflowKey: text("workflow_key").notNull(),
+  ghlContactId: text("ghl_contact_id").notNull(),
+  state: text("state").notNull().default("started"), // started|accepted|refused
+  attemptCount: integer("attempt_count").notNull().default(1),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+  settledAt: timestamp("settled_at", { withTimezone: true }),
+});
+
 export const ghlAppointmentState = pgTable("ghl_appointment_state", {
   appointmentId: text("appointment_id").primaryKey(),
   ghlContactId: text("ghl_contact_id"),

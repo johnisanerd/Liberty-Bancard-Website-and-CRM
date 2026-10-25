@@ -62,26 +62,43 @@ export interface DeferredEnrollment {
   status: "pending" | "failed";
 }
 
+/** Identity of one deferred obligation: contact + workflow, plus the appointment occurrence when one exists. */
+export function deferredEnrollmentId(ghlContactId: string, workflowKey: string, occurrenceKey?: string | null): string {
+  return occurrenceKey ? `${ghlContactId}::${workflowKey}::${occurrenceKey}` : `${ghlContactId}::${workflowKey}`;
+}
+
+export interface DeferralResult {
+  /** True only when a pending row for this obligation verifiably exists after the call. */
+  persisted: boolean;
+  id: string;
+  reason?: string;
+}
+
 /**
  * Persist a failed enrollment so the recovery job can retry it.
- * Idempotent: if the same (ghlContactId, workflowKey) already exists, updates
+ * Idempotent: if the same obligation (contact, workflow, appointment occurrence) already exists and is pending, updates
  * lastError and resets nextRetryAt without touching retryCount.
- * Never throws — a failure to persist must not crash the caller's request.
+ * Never throws, and never claims durability it did not verify: the result states whether a pending row now exists
+ * (the INSERT ... ON CONFLICT may change zero rows, for example against a row that already failed permanently).
  */
 export async function deferGhlEnrollment(params: {
   ghlContactId: string;
   workflowKey: string;
   metadata?: Record<string, any>;
   error: unknown;
-}): Promise<void> {
-  const { ghlContactId, workflowKey, metadata, error } = params;
-  const id        = `${ghlContactId}::${workflowKey}`;
+  /** Appointment occurrence this obligation belongs to; a cancel of that occurrence cancels only this obligation. */
+  occurrenceKey?: string | null;
+}): Promise<DeferralResult> {
+  const { ghlContactId, workflowKey, error } = params;
+  const occurrenceKey = params.occurrenceKey ? String(params.occurrenceKey).slice(0, 200) : null;
+  const metadata = occurrenceKey ? { ...(params.metadata ?? {}), _occurrenceKey: occurrenceKey } : params.metadata;
+  const id        = deferredEnrollmentId(ghlContactId, workflowKey, occurrenceKey);
   const lastError = error instanceof Error ? error.message : String(error);
   const delayMs   = nextRetryDelayMs(0);
   const nextRetryAt = new Date(Date.now() + delayMs).toISOString();
 
   try {
-    await db.execute(sql`
+    const written = await db.execute(sql`
       INSERT INTO deferred_ghl_enrollments
         (id, ghl_contact_id, workflow_key, metadata,
          enqueued_at, retry_count, next_retry_at, last_error, status)
@@ -93,14 +110,133 @@ export async function deferGhlEnrollment(params: {
         last_error    = EXCLUDED.last_error,
         next_retry_at = EXCLUDED.next_retry_at
       WHERE deferred_ghl_enrollments.status = 'pending'
+      RETURNING id
     `);
+    if (written.rows.length !== 1) {
+      console.error(`[GHL Recovery] Deferred enrollment NOT persisted (a terminal row already owns ${id})`);
+      return { persisted: false, id, reason: "existing_row_not_pending" };
+    }
     console.warn(
       `[GHL Recovery] Deferred enrollment queued: workflowKey=${workflowKey}` +
       ` ghlContactId=${ghlContactId} error="${lastError}"`
     );
+    return { persisted: true, id };
   } catch (storageErr) {
-    // Never let the deferral mechanism crash the caller
+    // Never let the deferral mechanism crash the caller; report that nothing was persisted.
     console.error("[GHL Recovery] Failed to save deferred enrollment:", storageErr);
+    return { persisted: false, id, reason: "storage_error" };
+  }
+}
+
+const occurrenceLockText = (id: string) => `ghl-deferred:${id}`;
+
+/**
+ * Cancels the deferred enrollment owned by one appointment occurrence (and only that one). Serialised with the
+ * recovery worker's final dispatch through a per-obligation advisory lock, so a cancel that commits first always wins
+ * against an item the worker has already claimed: the worker re-reads the row under the same lock immediately before it
+ * dispatches and finds it gone. A cancel that arrives after dispatch started waits for it and then reports honestly.
+ */
+export async function cancelDeferredEnrollmentsForOccurrence(params: {
+  ghlContactId: string; occurrenceKey: string; workflowKey?: string;
+}): Promise<{ cancelled: number }> {
+  const { pool } = await import("../db");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const ids = (await client.query<{ id: string }>(
+      `SELECT id FROM deferred_ghl_enrollments
+        WHERE ghl_contact_id = $1 AND metadata->>'_occurrenceKey' = $2 AND ($3::text IS NULL OR workflow_key = $3)
+        ORDER BY id`,
+      [params.ghlContactId, params.occurrenceKey, params.workflowKey ?? null],
+    )).rows.map(row => row.id);
+    let cancelled = 0;
+    for (const id of ids) {
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [occurrenceLockText(id)]);
+      const removed = await client.query(
+        `DELETE FROM deferred_ghl_enrollments WHERE id = $1 AND status = 'pending'`, [id],
+      );
+      cancelled += removed.rowCount ?? 0;
+    }
+    await client.query("COMMIT");
+    return { cancelled };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Same cancel, inside the caller's transaction (the appointment-cancel handler commits it with the cancellation itself).
+ * With an occurrence key only that appointment's obligation is removed. Without one the occurrence cannot be identified,
+ * so every pending obligation of that workflow for the contact is removed.
+ */
+export async function cancelDeferredEnrollmentsInTx(
+  tx: { execute: (query: any) => Promise<{ rows: any[]; rowCount?: number | null }> },
+  params: { ghlContactId: string; workflowKey: string; occurrenceKey?: string | null },
+): Promise<{ cancelled: number }> {
+  const found = await tx.execute(sql`
+    SELECT id FROM deferred_ghl_enrollments
+     WHERE ghl_contact_id = ${params.ghlContactId} AND workflow_key = ${params.workflowKey}
+       AND (${params.occurrenceKey ?? null}::text IS NULL OR metadata->>'_occurrenceKey' = ${params.occurrenceKey ?? null})
+     ORDER BY id`);
+  let cancelled = 0;
+  for (const row of found.rows as Array<{ id: string }>) {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${occurrenceLockText(row.id)}, 0))`);
+    const removed = await tx.execute(sql`
+      DELETE FROM deferred_ghl_enrollments WHERE id = ${row.id} AND status = 'pending' RETURNING id`);
+    cancelled += removed.rows.length;
+  }
+  return { cancelled };
+}
+
+/** Holds that clear on their own: they reschedule the obligation without spending retry budget. */
+const RECOVERY_HOLD_PATTERN = /paus|coordinator hold|authority|could not verify|quiet hours|not live-verified|declaration/i;
+
+type RecoveryDispatch =
+  | { kind: "cancelled" }
+  | { kind: "result"; result: { success: boolean; error?: string; skipped?: boolean } };
+
+/**
+ * Final dispatch of one claimed obligation. Under the obligation's advisory lock it (1) confirms the row still exists
+ * and is pending (a cancel wins here), then (2) runs the same compliance gate as a first attempt - workflow
+ * verification, pause, contact identity, suppression/consent/quiet hours - and (3) only then calls the provider.
+ */
+async function dispatchClaimedEnrollment(entry: {
+  id: string; ghl_contact_id: string; workflow_key: string; metadata: any; retry_count: number;
+}): Promise<RecoveryDispatch> {
+  const { pool } = await import("../db");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [occurrenceLockText(entry.id)]);
+    const current = await client.query<{ status: string }>(
+      `SELECT status FROM deferred_ghl_enrollments WHERE id = $1`, [entry.id],
+    );
+    if (current.rows[0]?.status !== "pending") {
+      await client.query("COMMIT");
+      return { kind: "cancelled" };
+    }
+    const { enrollInGhlWorkflowCompliant, resolveLocalContactIdForGhlContactId } = await import("./ghl-workflows");
+    const contactId = await resolveLocalContactIdForGhlContactId(entry.ghl_contact_id);
+    const metadata = { ...(entry.metadata ?? {}), _recovery: true, _retryCount: entry.retry_count + 1 };
+    const result = contactId
+      ? await enrollInGhlWorkflowCompliant({
+          workflowKey: entry.workflow_key, ghlContactId: entry.ghl_contact_id, contactId, metadata,
+          _isRecoveryAttempt: true,
+        })
+      : { success: false, skipped: true, error: "Could not verify workflow recipient (no unique local contact)" };
+    // A provider-accepted enrollment is retired in the same transaction, so a cancel that was waiting on the lock
+    // finds nothing to cancel and reports that truthfully.
+    if (result.success) await client.query(`DELETE FROM deferred_ghl_enrollments WHERE id = $1`, [entry.id]);
+    await client.query("COMMIT");
+    return { kind: "result", result };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
   }
 }
 
@@ -189,9 +325,6 @@ export async function retryDeferredEnrollments(): Promise<{
 
   stats.stillPending = totalPending - rows.length;
 
-  // Import lazily to avoid circular deps
-  const { enrollInGhlWorkflow } = await import("./ghl-workflows");
-
   for (const entry of rows) {
     stats.attempted++;
 
@@ -267,7 +400,7 @@ export async function retryDeferredEnrollments(): Promise<{
     // In-tick dedup: skip sequential entries for the same contact within this run.
     // The per-contact lock below covers concurrent cross-process races; this Set
     // prevents same-contact duplicate processing within a single tick's loop.
-    const dedupKey = `${entry.ghl_contact_id}::${entry.workflow_key}`;
+    const dedupKey = entry.id; // contact::workflow[::appointment occurrence]
     if (processedInThisTick.has(dedupKey)) {
       console.log(`[GHL Recovery] (${entry.ghl_contact_id}, ${entry.workflow_key}) already processed this tick — skipping sequential duplicate`);
       stats.stillPending++;
@@ -291,17 +424,14 @@ export async function retryDeferredEnrollments(): Promise<{
 
     let enrollmentSucceeded = false;
     try {
-      const result = await enrollInGhlWorkflow({
-        workflowKey: entry.workflow_key,
-        ghlContactId: entry.ghl_contact_id,
-        metadata: {
-          ...(entry.metadata ?? {}),
-          _recovery: true,
-          _retryCount: entry.retry_count + 1,
-        },
-        // Prevent infinite deferral recursion inside enrollInGhlWorkflow
-        _isRecoveryAttempt: true,
-      } as any);
+      const dispatch = await dispatchClaimedEnrollment(entry);
+      if (dispatch.kind === "cancelled") {
+        // The obligation was cancelled (or retired) after this worker claimed it: nothing is sent.
+        console.log(`[GHL Recovery] ${entry.id} no longer pending at final dispatch - not sent`);
+        releaseJobLock(lockKey, false, undefined, recoveryLock).catch(() => {});
+        continue;
+      }
+      const result = dispatch.result;
 
       if (result.success) {
         // Success — remove the row
@@ -330,12 +460,48 @@ export async function retryDeferredEnrollments(): Promise<{
         enrollmentSucceeded = true;
         stats.succeeded++;
       } else {
-        // Non-retryable config error → drop without burning retry budget
         const errMsg = result.error ?? "enrollment returned success:false";
-        if (
+        const skipped = (result as any).skipped === true;
+        const { isAmbiguousDispatchMessage } = await import("./ghl-dispatch-recorder");
+        if (!skipped && isAmbiguousDispatchMessage(errMsg)) {
+          // The request may have been accepted (lost response). It is never re-sent automatically: the obligation is
+          // parked as an explicit unknown outcome for reconciliation.
+          await db.execute(sql`
+            UPDATE deferred_ghl_enrollments
+            SET status = 'failed', failed_at = NOW(), last_error = ${`unknown_outcome:${errMsg}`.slice(0, 500)}
+            WHERE id = ${entry.id}
+          `);
+          await auditChange({
+            actorType: "system", action: "ghl_enrollment_recovery_unknown_outcome", entityType: "ghl_sync",
+            entityKey: entry.ghl_contact_id,
+            details: { workflowKey: entry.workflow_key, error: errMsg, retryCount: entry.retry_count, reassert: "never_automatic" },
+          }).catch(() => {});
+          console.error(`[GHL Recovery] Unknown outcome held (not re-sent): workflowKey=${entry.workflow_key} ghlContactId=${entry.ghl_contact_id}`);
+          stats.permanentlyFailed++;
+        } else if (skipped && RECOVERY_HOLD_PATTERN.test(errMsg)) {
+          // A hold that clears on its own (pause, quiet hours, unverified workflow): reschedule, spend no retry budget.
+          const holdUntil = new Date(Date.now() + nextRetryDelayMs(0)).toISOString();
+          await db.execute(sql`
+            UPDATE deferred_ghl_enrollments
+            SET last_error = ${errMsg.slice(0, 500)}, next_retry_at = ${holdUntil}::timestamptz
+            WHERE id = ${entry.id} AND status = 'pending'
+          `);
+          stats.stillPending++;
+          releaseJobLock(lockKey, false, undefined, recoveryLock).catch(() => {});
+        } else if (skipped) {
+          // A permanent denial at final dispatch (suppression, consent, identity mismatch): the obligation is retired.
+          await db.execute(sql`DELETE FROM deferred_ghl_enrollments WHERE id = ${entry.id}`);
+          await auditChange({
+            actorType: "system", action: "ghl_enrollment_recovery_denied", entityType: "ghl_sync",
+            entityKey: entry.ghl_contact_id,
+            details: { workflowKey: entry.workflow_key, reason: errMsg.slice(0, 300), retryCount: entry.retry_count },
+          }).catch(() => {});
+          stats.permanentlyFailed++;
+        } else if (
           errMsg.includes("not configured") ||
           (errMsg.includes("Workflow") && errMsg.includes("not configured"))
         ) {
+          // Non-retryable config error → drop without burning retry budget
           await db.execute(sql`
             DELETE FROM deferred_ghl_enrollments WHERE id = ${entry.id}
           `);
