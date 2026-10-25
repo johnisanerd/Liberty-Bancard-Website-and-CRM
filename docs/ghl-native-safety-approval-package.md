@@ -86,7 +86,7 @@ activation approval, and installing them does not by itself make the first write
 does. Definitions, accepted values (`"true"` / `"false"`), source mapping (local `do_not_contact` / `do_not_auto_contact`)
 and the resulting payload are as written here; install only after this package is accepted.
 
-### Exact install specification for the two suppression fields (not installed; do not create from the repository)
+### Exact install specification for the two suppression fields (installed 2026-10-25 by owner authorization: `lb_do_not_contact` = `wMFGgmIS3puA0NjVnQO5`, `lb_do_not_autocontact` = `aAUS7lQpK15mBGx0QAD6`; do not create from the repository)
 | Key | Display name | Type | Values | Local source | Payload form |
 |---|---|---|---|---|---|
 | `contact.lb_do_not_contact` | LB Do Not Contact | TEXT | lowercase `"true"` or `"false"` | `contacts.do_not_contact` | `{"id":"<provider id>","field_value":"true"}` |

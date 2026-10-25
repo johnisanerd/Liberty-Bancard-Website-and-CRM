@@ -9,3 +9,7 @@ description: Lessons from making the native review approval non-expiring and the
 - Cancel vs claimed recovery item: serialise with a per-obligation advisory lock and re-read the row under it right before dispatch; delete the row inside the same tx on success.
 - scripts/test-ghl-enrollment-recovery.ts is a stale in-memory-store test (fails on HEAD too); the projection-authority cert is the real coverage.
 **Why:** owner required persistent approval and no duplicate customer enrollments. **How to apply:** any new approval-bound hash or provider-effect handoff.
+
+## GHL custom-field creation quirk
+POST /locations/:id/customFields derives the key from `name` (lowercased, spaces to underscores) and prepends `contact.`; passing `fieldKey` with a `contact.` prefix yields a corrupted key (`contact.contactlb_...`). Create with name only: "LB Do Not Autocontact" gives `lb_do_not_autocontact` ("Auto Contact" gives `lb_do_not_auto_contact`, wrong). Verify keys from the inventory after creation.
+**Also:** production `ghl-sync` and `ghl-enrollment-recovery` queues have automation_registry kill_switch_enabled=true; the sync tick (including convergence) does not run until the owner releases it, independent of the GHL control setting.
