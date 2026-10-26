@@ -13,3 +13,6 @@ description: Lessons from making the native review approval non-expiring and the
 ## GHL custom-field creation quirk
 POST /locations/:id/customFields derives the key from `name` (lowercased, spaces to underscores) and prepends `contact.`; passing `fieldKey` with a `contact.` prefix yields a corrupted key (`contact.contactlb_...`). Create with name only: "LB Do Not Autocontact" gives `lb_do_not_autocontact` ("Auto Contact" gives `lb_do_not_auto_contact`, wrong). Verify keys from the inventory after creation.
 **Also:** production `ghl-sync` and `ghl-enrollment-recovery` queues have automation_registry kill_switch_enabled=true; the sync tick (including convergence) does not run until the owner releases it, independent of the GHL control setting.
+
+## Owner review prefill
+Prepared review evidence is a typed data file plus a read-only compare route; the owner loads it in the existing form and submits under their own login. The form no longer asks the owner to claim a personal workflow inspection; it requires an acknowledgement of attributed evidence. A compare mismatch means inspect the change and prepare a new package; never substitute hashes. Prefill code needs a Publish before the owner can use it. Production admin scripts: CSRF endpoint returns `{token}`.
