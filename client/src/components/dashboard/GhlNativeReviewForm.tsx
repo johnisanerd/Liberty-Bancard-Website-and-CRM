@@ -75,6 +75,35 @@ export interface GhlNativeSafetySnapshot {
   } | null;
 }
 
+export interface GhlPreparedReviewResponse {
+  prepared: {
+    source: string;
+    attribution: string;
+    scope: string;
+    locationId: string;
+    allowedOperations: unknown[];
+    workflowActionEvidence: Array<{
+      workflowId: string;
+      disposition: "reviewed_safe" | "no_native_triggers";
+      evidenceReference: string;
+      observedUpdatedAt: string;
+      observedVersion: string;
+      definitionHash: string;
+      changeMetadata: string;
+    }>;
+  };
+  comparison: {
+    allMatch: boolean;
+    revisions: { location: boolean; workflow: boolean; customField: boolean; scopeRules: boolean };
+    workflows: Array<{ workflowId: string; status: string | null; matches: boolean; changes: string[] }>;
+    missingCustomFieldIds: string[];
+    differences: string[];
+  };
+}
+
+const PREPARED_EVIDENCE_REFERENCE =
+  "Independent GHL workflow definition inspection of 2026-10-24 (docs/ghl-native-safety-approval-package.md section 5); owner reviewed and accepted this attributed evidence for restricted contact-sync scope";
+
 interface GhlSyncControlSnapshot {
   epoch: number;
 }
@@ -84,7 +113,6 @@ interface WorkflowReviewDraft {
   evidenceReference: string;
   definitionHash: string;
   changeMetadata: string;
-  inspected: boolean;
 }
 
 const EMPTY_WORKFLOW_REVIEW: WorkflowReviewDraft = {
@@ -92,7 +120,6 @@ const EMPTY_WORKFLOW_REVIEW: WorkflowReviewDraft = {
   evidenceReference: "",
   definitionHash: "",
   changeMetadata: "",
-  inspected: false,
 };
 
 function freshInventoryAvailable(safety: GhlNativeSafetySnapshot | undefined): safety is GhlNativeSafetySnapshot & {
@@ -135,6 +162,10 @@ export function GhlNativeReviewForm({
   const [operationsJson, setOperationsJson] = useState("[]");
   const [workflowDrafts, setWorkflowDrafts] = useState<Record<string, WorkflowReviewDraft>>({});
   const [submitted, setSubmitted] = useState(false);
+  const [prepared, setPrepared] = useState<GhlPreparedReviewResponse | null>(null);
+  const [preparedLoading, setPreparedLoading] = useState(false);
+  const [preparedError, setPreparedError] = useState<string | null>(null);
+  const [acknowledged, setAcknowledged] = useState(false);
   const inventoryAvailable = freshInventoryAvailable(safety);
   const knownCustomFieldIds = new Set((inventoryAvailable ? safety.customFields : []).map((field) => field.id));
   const operationResult = parseGhlReviewOperations(operationsJson, knownCustomFieldIds);
@@ -147,25 +178,57 @@ export function GhlNativeReviewForm({
       setSubmitted(false);
       setEvidenceReference("");
       setOperationsJson("[]");
+      setPrepared(null);
+      setAcknowledged(false);
     }
   }, [inventoryAvailable, safety?.inventoryRevision, safety?.customFieldInventoryRevision]);
+
+  const loadPreparedEvidence = async () => {
+    setPreparedLoading(true);
+    setPreparedError(null);
+    setAcknowledged(false);
+    try {
+      const response = await apiRequest("GET", "/api/admin/ghl/native-trigger-safety/prepared-review");
+      const data = (await response.json()) as GhlPreparedReviewResponse;
+      const matching = new Set(data.comparison.workflows.filter((row) => row.matches).map((row) => row.workflowId));
+      const drafts: Record<string, WorkflowReviewDraft> = {};
+      for (const item of data.prepared.workflowActionEvidence) {
+        if (!matching.has(item.workflowId)) continue;
+        drafts[item.workflowId] = {
+          disposition: item.disposition,
+          evidenceReference: item.evidenceReference,
+          definitionHash: item.definitionHash,
+          changeMetadata: item.changeMetadata,
+        };
+      }
+      setWorkflowDrafts(drafts);
+      setOperationsJson(JSON.stringify(data.prepared.allowedOperations, null, 2));
+      setEvidenceReference(PREPARED_EVIDENCE_REFERENCE);
+      setPrepared(data);
+    } catch (error) {
+      setPrepared(null);
+      setPreparedError(getApiErrorMessage(error, "The prepared evidence could not be loaded."));
+    } finally {
+      setPreparedLoading(false);
+    }
+  };
 
   const reviewMutation = useMutation({
     mutationFn: async () => {
       if (!inventoryAvailable || !control || !operationResult.operations || !evidenceReference.trim()) {
         throw new Error("A current inventory, control epoch, explicit operation allowlist, and review evidence are required.");
       }
+      if (!acknowledged) throw new Error("Acknowledge the attributed evidence before submitting.");
       const incompleteWorkflow = safety.workflows.some((workflow) => {
         const draft = workflowDrafts[workflow.id];
-        return !draft?.inspected
-          || !draft.disposition
+        return !draft?.disposition
           || draft.evidenceReference.trim().length < 8
           || draft.evidenceReference.trim().length > 500
           || !isSha256(draft.definitionHash)
           || draft.changeMetadata.trim().length < 8
           || draft.changeMetadata.trim().length > 500;
       });
-      if (incompleteWorkflow) throw new Error("Every workflow must be manually inspected and have explicit disposition and evidence before submission.");
+      if (incompleteWorkflow) throw new Error("Every workflow must have an explicit disposition and attributed evidence before submission.");
 
       const workflowActionEvidence = safety.workflows.map((workflow) => {
         const draft = workflowDrafts[workflow.id];
@@ -210,8 +273,7 @@ export function GhlNativeReviewForm({
 
   const allWorkflowEvidenceReady = inventoryAvailable && safety.workflows.every((workflow) => {
     const draft = workflowDrafts[workflow.id];
-    return !!draft?.inspected
-      && !!draft.disposition
+    return !!draft?.disposition
       && draft.evidenceReference.trim().length >= 8
       && draft.evidenceReference.trim().length <= 500
       && isSha256(draft.definitionHash)
@@ -219,6 +281,7 @@ export function GhlNativeReviewForm({
       && draft.changeMetadata.trim().length <= 500;
   });
   const canSubmit = !!control
+    && acknowledged
     && inventoryAvailable
     && !safetyUnavailable
     && !!evidenceReference.trim()
@@ -242,7 +305,7 @@ export function GhlNativeReviewForm({
           <CardTitle className="text-base">Native-trigger safety review</CardTitle>
         </div>
         <CardDescription>
-          Submit only evidence from a real manual inspection of current native GHL workflow actions. A workflow inventory list is metadata, not proof of action safety; the backend validates both inventory revisions and the control epoch.
+          Workflow actions are not visible from the inventory list, so this review relies on recorded inspection evidence. Load the prepared evidence, check the comparison with the live inventory, then acknowledge it and submit. The backend validates both inventory revisions, the scope rules and the control epoch.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -290,10 +353,37 @@ export function GhlNativeReviewForm({
               <div>Custom-field IDs: {safety.customFields.length}</div>
             </div>
 
-            <section className="space-y-2" aria-label="Manual workflow action inspection">
-              <h3 className="text-sm font-semibold">Inspect each native workflow in GHL</h3>
+            <section className="space-y-2 rounded-md border p-3" aria-label="Prepared attributed evidence" data-testid="section-native-review-prepared">
+              <h3 className="text-sm font-semibold">Prepared evidence (attributed, not an approval)</h3>
               <p className="text-xs text-muted-foreground">
-                The server returns workflow identity/status metadata only. It does not inspect workflow actions for you. Do not choose a disposition unless you reviewed the current workflow itself.
+                Loads the four contact operations, the recorded evidence for all {safety.workflows.length} workflows and the overall audit reference, then compares them with the live inventory. Nothing is submitted until you acknowledge and press the final button.
+              </p>
+              <Button variant="secondary" size="sm" onClick={loadPreparedEvidence} disabled={preparedLoading} data-testid="button-load-prepared-review">
+                {preparedLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                {prepared ? "Reload prepared evidence" : "Load prepared evidence"}
+              </Button>
+              {preparedError && <p className="text-xs text-destructive" data-testid="text-prepared-review-error">{preparedError}</p>}
+              {prepared && (
+                <div className="space-y-1 text-xs" data-testid="summary-prepared-review">
+                  <div><strong>Attribution:</strong> {prepared.prepared.source}</div>
+                  <div><strong>Scope:</strong> {prepared.prepared.scope}</div>
+                  <div>Workflow revision: {prepared.comparison.revisions.workflow ? "matches" : "CHANGED"} · Custom-field revision: {prepared.comparison.revisions.customField ? "matches" : "CHANGED"} · Scope rules revision: {prepared.comparison.revisions.scopeRules ? "matches" : "CHANGED"} · Location: {prepared.comparison.revisions.location ? "matches" : "CHANGED"}</div>
+                  <div>Workflows matching recorded evidence: {prepared.comparison.workflows.filter((row) => row.matches).length} of {safety.workflows.length}</div>
+                  {prepared.comparison.allMatch ? (
+                    <p className="font-medium" data-testid="text-prepared-review-match">Everything matches the prepared evidence. Nothing changed since it was recorded.</p>
+                  ) : (
+                    <ul className="list-disc pl-4 text-destructive" data-testid="list-prepared-review-differences">
+                      {prepared.comparison.differences.map((difference) => <li key={difference} className="break-all">{difference}</li>)}
+                    </ul>
+                  )}
+                </div>
+              )}
+            </section>
+
+            <section className="space-y-2" aria-label="Recorded workflow action evidence">
+              <h3 className="text-sm font-semibold">Recorded evidence for each native workflow</h3>
+              <p className="text-xs text-muted-foreground">
+                The server returns workflow identity/status metadata only; it does not read workflow actions. Each row below shows the recorded definition hash and evidence carried from the independent October 24 inspection. Rows whose live metadata changed are left blank and must be inspected.
               </p>
               {safety.workflows.length === 0 ? (
                 <p className="rounded-md border p-3 text-sm text-muted-foreground">The current server inventory contains no workflow rows. The backend will still validate this inventory revision.</p>
@@ -307,15 +397,6 @@ export function GhlNativeReviewForm({
                           <strong>Workflow ID:</strong> <code>{workflow.id}</code>
                           <div>Status: {workflow.status} · last updated: {workflow.updatedAt || "Unknown"} · version: {workflow.version || "Unknown"}</div>
                         </div>
-                        <label className="flex items-start gap-2 text-xs">
-                          <input
-                            type="checkbox"
-                            checked={draft.inspected}
-                            onChange={(event) => updateWorkflow(workflow.id, { inspected: event.target.checked })}
-                            className="mt-0.5"
-                          />
-                          <span>I personally inspected this workflow's current native actions in GHL; metadata alone is not the basis for this review.</span>
-                        </label>
                         <div className="grid gap-2 sm:grid-cols-2">
                           <Select
                             value={draft.disposition || "__unreviewed"}
@@ -326,14 +407,14 @@ export function GhlNativeReviewForm({
                             </SelectTrigger>
                             <SelectContent>
                               <SelectItem value="__unreviewed">No disposition selected</SelectItem>
-                              <SelectItem value="reviewed_safe">Inspected; reviewed safe for explicitly allowed operation(s)</SelectItem>
-                              <SelectItem value="no_native_triggers">Inspected; confirmed no native trigger path for explicitly allowed operation(s)</SelectItem>
+                              <SelectItem value="reviewed_safe">Reviewed safe for the explicitly allowed operation(s)</SelectItem>
+                              <SelectItem value="no_native_triggers">Confirmed no native trigger path for the explicitly allowed operation(s)</SelectItem>
                             </SelectContent>
                           </Select>
                           <Input
                             value={draft.definitionHash}
                             onChange={(event) => updateWorkflow(workflow.id, { definitionHash: event.target.value })}
-                            placeholder="Inspected workflow definition SHA-256"
+                            placeholder="Recorded workflow definition SHA-256"
                             aria-label={`Workflow definition hash for ${workflow.id}`}
                           />
                           <Input
@@ -350,7 +431,7 @@ export function GhlNativeReviewForm({
                           />
                         </div>
                         {draft.definitionHash.trim() && !isSha256(draft.definitionHash) && (
-                          <p className="text-xs text-destructive">Definition hash must be a 64-character SHA-256 from your inspected workflow evidence.</p>
+                          <p className="text-xs text-destructive">Definition hash must be a 64-character SHA-256 from the recorded workflow evidence.</p>
                         )}
                       </div>
                     );
@@ -399,6 +480,19 @@ export function GhlNativeReviewForm({
                 placeholder="Link/reference to the actual manual review evidence"
               />
             </div>
+            <label className="flex items-start gap-2 rounded-md border p-3 text-xs" data-testid="label-native-review-acknowledgement">
+              <input
+                type="checkbox"
+                checked={acknowledged}
+                onChange={(event) => setAcknowledged(event.target.checked)}
+                disabled={!prepared}
+                className="mt-0.5"
+                data-testid="checkbox-native-review-acknowledgement"
+              />
+              <span>
+                I reviewed and accept the attributed evidence above (independent GHL workflow inspection of October 24, 2026) for the restricted contact-sync scope: contact create/update and the two owned tags only. I did not personally inspect each workflow. This approves no messaging, workflow enrollment or promotion.
+              </span>
+            </label>
             <Alert>
               <ShieldAlert className="h-4 w-4" />
               <AlertDescription className="text-xs">
@@ -423,7 +517,7 @@ export function GhlNativeReviewForm({
               data-testid="button-submit-native-review"
             >
               {reviewMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Submit manually reviewed evidence
+              Submit owner approval (contact sync only)
             </Button>
           </>
         )}

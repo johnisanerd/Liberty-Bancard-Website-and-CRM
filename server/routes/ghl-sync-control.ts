@@ -15,6 +15,8 @@ import {
 } from "../services/ghl-sync-control";
 import { hashGhlScopeRules, readGhlScopeRules } from "../services/ghl-scope-rules";
 import { getGhlCustomFieldInventory, getGhlNativeWorkflowInventory } from "../services/ghl";
+import { PREPARED_NATIVE_REVIEW } from "../data/ghl-prepared-native-review";
+import { comparePreparedReview } from "../services/ghl-prepared-review";
 
 const operationSchema = z.object({
   method: z.enum(["POST", "PUT", "PATCH", "DELETE"]),
@@ -158,6 +160,30 @@ export function registerGhlSyncControlRoutes(
         nativeReview: review,
         reason: String(error?.message ?? error),
       });
+    }
+  });
+
+  // Prepared, attributed review evidence plus a live comparison. Read-only: it records no review and no reviewer.
+  app.get("/api/admin/ghl/native-trigger-safety/prepared-review", adminRole, async (_req, res) => {
+    const locationId = process.env.GHL_LOCATION_ID || "";
+    if (!locationId) return res.status(503).json({ error: "GHL_LOCATION_UNAVAILABLE" });
+    try {
+      const [workflows, customFields, scopeRules] = await Promise.all([
+        getGhlNativeWorkflowInventory(locationId),
+        getGhlCustomFieldInventory(locationId),
+        readGhlScopeRules(),
+      ]);
+      const comparison = comparePreparedReview(PREPARED_NATIVE_REVIEW, {
+        locationId,
+        inventoryRevision: hashNativeWorkflowInventory(workflows),
+        customFieldInventoryRevision: hashGhlCustomFieldInventory(customFields),
+        scopeRulesRevision: hashGhlScopeRules(scopeRules),
+        workflows,
+        customFieldIds: customFields.map(field => field.id),
+      });
+      return res.json({ prepared: PREPARED_NATIVE_REVIEW, comparison });
+    } catch (error: any) {
+      return res.status(503).json({ error: "GHL_PREPARED_REVIEW_UNAVAILABLE", reason: String(error?.message ?? error) });
     }
   });
 
