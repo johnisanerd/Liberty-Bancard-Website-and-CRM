@@ -237,6 +237,11 @@ export async function enrollInGhlWorkflow(params: {
   metadata?: Record<string, any>;
   /** Internal flag: set by ghl-enrollment-recovery to prevent recursive deferral */
   _isRecoveryAttempt?: boolean;
+  /**
+   * Internal flag: the caller persists its own deferred obligation (with its occurrence identity) for a transient
+   * failure, so this function must not also write an unscoped one for the same requested enrollment.
+   */
+  _callerOwnsDeferral?: boolean;
 }): Promise<{ success: boolean; error?: string }> {
   try {
     if (!isSdrGhlConfigured()) {
@@ -289,7 +294,8 @@ export async function enrollInGhlWorkflow(params: {
     // A lost response (the request may have been accepted) is an unknown outcome: it is never deferred for re-sending.
     const { isAmbiguousDispatchMessage } = await import("./ghl-dispatch-recorder");
     const isTransient = isTransientGhlError(err) && !isAmbiguousDispatchMessage(err?.message);
-    if (!params._isRecoveryAttempt && isTransient) {
+    const defersHere = !params._isRecoveryAttempt && !params._callerOwnsDeferral && isTransient;
+    if (defersHere) {
       await deferGhlEnrollment({
         ghlContactId: params.ghlContactId,
         workflowKey: params.workflowKey,
@@ -309,7 +315,7 @@ export async function enrollInGhlWorkflow(params: {
       details: {
         workflowKey: params.workflowKey,
         error: err.message,
-        deferred: !params._isRecoveryAttempt && isTransient,
+        deferred: defersHere,
         ...params.metadata,
       },
     }).catch(() => {});
@@ -335,6 +341,8 @@ export async function enrollInGhlWorkflowCompliant(params: {
   ghlContactId: string;
   metadata?: Record<string, any>;
   _isRecoveryAttempt?: boolean;
+  /** See enrollInGhlWorkflow: the caller owns the deferred obligation. */
+  _callerOwnsDeferral?: boolean;
   /** DB contact id — enables DNC / doNotAutoContact checks */
   contactId?: number;
   /** Server-owned current inbound event binding; absent means account transactional. */

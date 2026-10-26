@@ -27,6 +27,7 @@
  * ╚══════════════════════════════════════════════════════════════════════════╝
  */
 
+import { claimHandoffDispatch, settleHandoffDispatch } from "./ghl-handoff-dispatch-ledger";
 import { storage } from "../storage";
 import { pool } from "../db";
 import { isGhlConfigured, upsertGhlContact, sendGhlEmail, sendGhlSms, getCalendarBookingUrl } from "./ghl";
@@ -997,28 +998,6 @@ export async function runInboundConfirmationFollowupJob(data: {
   }
 }
 
-type HandoffClaim = "claimed" | "accepted" | "unknown";
-
-async function claimHandoffDispatch(key: string, workflowKey: string, ghlContactId: string): Promise<HandoffClaim> {
-  const claimed = await pool.query(
-    `INSERT INTO ghl_workflow_handoff_dispatches AS d (idempotency_key, workflow_key, ghl_contact_id, state)
-     VALUES ($1, $2, $3, 'started')
-     ON CONFLICT (idempotency_key) DO UPDATE
-       SET state = 'started', attempt_count = d.attempt_count + 1, started_at = now(), settled_at = NULL
-       WHERE d.state = 'refused'
-     RETURNING state`,
-    [key, workflowKey, ghlContactId]);
-  if (claimed.rows[0]) return "claimed";
-  const existing = (await pool.query(`SELECT state FROM ghl_workflow_handoff_dispatches WHERE idempotency_key = $1`, [key])).rows[0];
-  return existing?.state === "accepted" ? "accepted" : "unknown";
-}
-
-async function settleHandoffDispatch(key: string, state: "accepted" | "refused"): Promise<void> {
-  await pool.query(
-    `UPDATE ghl_workflow_handoff_dispatches SET state = $2, settled_at = now() WHERE idempotency_key = $1 AND state = 'started'`,
-    [key, state]).catch(err => console.error("[GHL Handoff] could not settle dispatch ledger:", err instanceof Error ? err.message : err));
-}
-
 /** Stable identity of one external effect attempt: the receipt, the step and the attempt number. */
 export interface AppointmentHandoffIdentity { receiptId: string | null; stepKey: string; attempt: number }
 
@@ -1103,7 +1082,8 @@ export async function enrollWorkflowHandoff(input: {
     }).catch(() => undefined);
     return { state: "unknown", reason: "prior_dispatch_outcome_unknown", durable: false };
   }
-  const result = await enrollInGhlWorkflowCompliant({ workflowKey, ghlContactId, contactId, metadata });
+  // This handoff owns the deferral (below, with the occurrence identity); the low-level path must not write a second row.
+  const result = await enrollInGhlWorkflowCompliant({ workflowKey, ghlContactId, contactId, metadata, _callerOwnsDeferral: true });
   const { isAmbiguousDispatchMessage: ambiguousFailure } = await import("./ghl-dispatch-recorder");
   // Only a definite outcome settles the ledger; a lost response leaves 'started' (outcome unknown, never re-sent).
   if (result.success) await settleHandoffDispatch(idempotencyKey, "accepted");

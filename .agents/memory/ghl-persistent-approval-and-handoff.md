@@ -16,3 +16,6 @@ POST /locations/:id/customFields derives the key from `name` (lowercased, spaces
 
 ## Owner review prefill
 Prepared review evidence is a typed data file plus a read-only compare route; the owner loads it in the existing form and submits under their own login. The form no longer asks the owner to claim a personal workflow inspection; it requires an acknowledgement of attributed evidence. A compare mismatch means inspect the change and prepare a new package; never substitute hashes. Prefill code needs a Publish before the owner can use it. Production admin scripts: CSRF endpoint returns `{token}`.
+
+## Recovery dispatch uses the same ledger as the first handoff
+The recovery retry claims the per-effect dispatch ledger (key = the obligation's stored idempotencyKey, else `recovery:<id>`) before sending and settles it on its own connection BEFORE retiring the row. Accepted-then-retirement-failure retires from the ledger; a crash leaves 'started' and parks an unknown outcome. The low-level enrollment path must not defer when the handoff owns deferral (one occurrence-scoped row). The SDR client used to return `{}` (success) after exhausting 429 retries; it now throws, so a persistent rate limit is a refusal, not an acceptance.

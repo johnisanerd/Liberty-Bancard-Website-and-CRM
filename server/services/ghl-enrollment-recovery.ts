@@ -196,6 +196,10 @@ const RECOVERY_HOLD_PATTERN = /paus|coordinator hold|authority|could not verify|
 
 type RecoveryDispatch =
   | { kind: "cancelled" }
+  /** The durable dispatch ledger shows this effect was already accepted: retire the obligation, send nothing. */
+  | { kind: "already_accepted" }
+  /** The ledger shows a started, unsettled dispatch: the outcome is unknown and is never re-sent. */
+  | { kind: "unknown_prior" }
   | { kind: "result"; result: { success: boolean; error?: string; skipped?: boolean } };
 
 /**
@@ -219,14 +223,36 @@ async function dispatchClaimedEnrollment(entry: {
       return { kind: "cancelled" };
     }
     const { enrollInGhlWorkflowCompliant, resolveLocalContactIdForGhlContactId } = await import("./ghl-workflows");
+    const { claimHandoffDispatch, settleHandoffDispatch } = await import("./ghl-handoff-dispatch-ledger");
+    const { isAmbiguousDispatchMessage } = await import("./ghl-dispatch-recorder");
     const contactId = await resolveLocalContactIdForGhlContactId(entry.ghl_contact_id);
     const metadata = { ...(entry.metadata ?? {}), _recovery: true, _retryCount: entry.retry_count + 1 };
-    const result = contactId
-      ? await enrollInGhlWorkflowCompliant({
-          workflowKey: entry.workflow_key, ghlContactId: entry.ghl_contact_id, contactId, metadata,
-          _isRecoveryAttempt: true,
-        })
-      : { success: false, skipped: true, error: "Could not verify workflow recipient (no unique local contact)" };
+    if (!contactId) {
+      await client.query("COMMIT");
+      return { kind: "result", result: { success: false, skipped: true, error: "Could not verify workflow recipient (no unique local contact)" } };
+    }
+    // The same durable per-effect ledger as the first handoff: an obligation created by the handoff carries its
+    // idempotency key, so a send that was accepted (or may have been) is never repeated by this retry.
+    const ledgerKey = String(entry.metadata?.idempotencyKey ?? `recovery:${entry.id}`);
+    const claim = await claimHandoffDispatch(ledgerKey, entry.workflow_key, entry.ghl_contact_id);
+    if (claim === "accepted") {
+      await client.query(`DELETE FROM deferred_ghl_enrollments WHERE id = $1`, [entry.id]);
+      await client.query("COMMIT");
+      return { kind: "already_accepted" };
+    }
+    if (claim === "unknown") {
+      await client.query("COMMIT");
+      return { kind: "unknown_prior" };
+    }
+    const result = await enrollInGhlWorkflowCompliant({
+      workflowKey: entry.workflow_key, ghlContactId: entry.ghl_contact_id, contactId, metadata,
+      _isRecoveryAttempt: true,
+    });
+    // Only a definite outcome settles the ledger, and it settles on its own connection BEFORE the local retirement
+    // below: if that retirement fails or the process stops, the next attempt sees 'accepted' (retire, send nothing) or
+    // 'started' (unknown, parked) and can never send again.
+    if (result.success) await settleHandoffDispatch(ledgerKey, "accepted");
+    else if (result.skipped || !isAmbiguousDispatchMessage(result.error)) await settleHandoffDispatch(ledgerKey, "refused");
     // A provider-accepted enrollment is retired in the same transaction, so a cancel that was waiting on the lock
     // finds nothing to cancel and reports that truthfully.
     if (result.success) await client.query(`DELETE FROM deferred_ghl_enrollments WHERE id = $1`, [entry.id]);
@@ -238,6 +264,24 @@ async function dispatchClaimedEnrollment(entry: {
   } finally {
     client.release();
   }
+}
+
+/** Parks an obligation whose provider outcome is unknown. It is never re-sent automatically. */
+async function parkUnknownOutcome(
+  entry: { id: string; ghl_contact_id: string; workflow_key: string; retry_count: number },
+  errMsg: string,
+): Promise<void> {
+  await db.execute(sql`
+    UPDATE deferred_ghl_enrollments
+    SET status = 'failed', failed_at = NOW(), last_error = ${`unknown_outcome:${errMsg}`.slice(0, 500)}
+    WHERE id = ${entry.id}
+  `);
+  await auditChange({
+    actorType: "system", action: "ghl_enrollment_recovery_unknown_outcome", entityType: "ghl_sync",
+    entityKey: entry.ghl_contact_id,
+    details: { workflowKey: entry.workflow_key, error: errMsg, retryCount: entry.retry_count, reassert: "never_automatic" },
+  }).catch(() => {});
+  console.error(`[GHL Recovery] Unknown outcome held (not re-sent): workflowKey=${entry.workflow_key} ghlContactId=${entry.ghl_contact_id}`);
 }
 
 /**
@@ -431,6 +475,23 @@ export async function retryDeferredEnrollments(): Promise<{
         releaseJobLock(lockKey, false, undefined, recoveryLock).catch(() => {});
         continue;
       }
+      if (dispatch.kind === "unknown_prior") {
+        await parkUnknownOutcome(entry, "prior dispatch outcome unknown (dispatch ledger started, never re-sent)");
+        stats.permanentlyFailed++;
+        releaseJobLock(lockKey, false, undefined, recoveryLock).catch(() => {});
+        continue;
+      }
+      if (dispatch.kind === "already_accepted") {
+        await auditChange({
+          actorType: "system", action: "ghl_enrollment_recovery_already_accepted", entityType: "ghl_sync",
+          entityKey: entry.ghl_contact_id,
+          details: { workflowKey: entry.workflow_key, retryCount: entry.retry_count, resent: false },
+        }).catch(() => {});
+        processedInThisTick.add(dedupKey);
+        enrollmentSucceeded = true;
+        stats.succeeded++;
+        continue;
+      }
       const result = dispatch.result;
 
       if (result.success) {
@@ -466,17 +527,7 @@ export async function retryDeferredEnrollments(): Promise<{
         if (!skipped && isAmbiguousDispatchMessage(errMsg)) {
           // The request may have been accepted (lost response). It is never re-sent automatically: the obligation is
           // parked as an explicit unknown outcome for reconciliation.
-          await db.execute(sql`
-            UPDATE deferred_ghl_enrollments
-            SET status = 'failed', failed_at = NOW(), last_error = ${`unknown_outcome:${errMsg}`.slice(0, 500)}
-            WHERE id = ${entry.id}
-          `);
-          await auditChange({
-            actorType: "system", action: "ghl_enrollment_recovery_unknown_outcome", entityType: "ghl_sync",
-            entityKey: entry.ghl_contact_id,
-            details: { workflowKey: entry.workflow_key, error: errMsg, retryCount: entry.retry_count, reassert: "never_automatic" },
-          }).catch(() => {});
-          console.error(`[GHL Recovery] Unknown outcome held (not re-sent): workflowKey=${entry.workflow_key} ghlContactId=${entry.ghl_contact_id}`);
+          await parkUnknownOutcome(entry, errMsg);
           stats.permanentlyFailed++;
         } else if (skipped && RECOVERY_HOLD_PATTERN.test(errMsg)) {
           // A hold that clears on its own (pause, quiet hours, unverified workflow): reschedule, spend no retry budget.

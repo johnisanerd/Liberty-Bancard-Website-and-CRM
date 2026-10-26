@@ -1704,7 +1704,7 @@ server.close();
       process.env.GHL_LOCATION_ID ||= "loc_cert_fake";
       type Wf = { url: string; body: any };
       const wf: Wf[] = [];
-      const mode = { value: "ok" as "ok" | "lose" | "bad400" };
+      const mode = { value: "ok" as "ok" | "lose" | "bad400" | "rate429" };
       const prevFetch = globalThis.fetch;
       const prevResponder = ghlResponder;
       globalThis.fetch = (async (input: any, init?: any) => {
@@ -1719,6 +1719,7 @@ server.close();
         if (/\/workflow\//.test(call.url) && call.method === "POST") {
           if (mode.value === "lose") throw new Error("socket hang up");
           if (mode.value === "bad400") return json({ message: "bad workflow" }, 400);
+          if (mode.value === "rate429") return new Response("{}", { status: 429, headers: { "retry-after": "0", "content-type": "application/json" } });
           return json({ success: true });
         }
         return prevResponder(call);
@@ -1950,6 +1951,91 @@ server.close();
         const d11 = await deliverFixed("booked", b11, webhookHandlers.handleAppointmentBooked);
         check(d11.decision === "failed" && /deferral_not_persisted|workflow_enrollment_failed/.test(d11.error ?? "") && !(await heldEvent(p11.m!.id)),
           "C: when the deferral write changes no row the handoff is not reported durable and the receipt fails instead of completing");
+
+        // 12. a transient first failure (429) leaves exactly ONE occurrence-scoped obligation, which the occurrence cancels.
+        await setPause(false);
+        mode.value = "rate429";
+        const p12 = await mkPair();
+        const b12 = bookedBody(p12.ghl, "c2-429");
+        await deliverFixed("booked", b12, webhookHandlers.handleAppointmentBooked);
+        mode.value = "ok";
+        const rows12 = (await pool.query(`SELECT id, status FROM deferred_ghl_enrollments WHERE ghl_contact_id=$1 AND workflow_key='booking_confirmation'`, [p12.ghl])).rows;
+        check(rows12.length === 1 && rows12[0].id === `${p12.ghl}::booking_confirmation::${b12.appointmentId}` && rows12[0].status === "pending",
+          "C: a transient provider failure during the handoff creates exactly one pending obligation, scoped to the appointment occurrence (no second unscoped row)");
+        const c12 = await deliverFixed("canceled", { eventId: `h6c3-${run}-c2-cancel`, locationId: "loc_cert_fake", appointmentId: b12.appointmentId, contactId: p12.ghl, calendarId: "cal_x", dateUpdated: t(7) }, webhookHandlers.handleAppointmentCanceled);
+        await pool.query(`UPDATE deferred_ghl_enrollments SET next_retry_at = now() - interval '1 minute' WHERE ghl_contact_id=$1`, [p12.ghl]);
+        const w12 = wf.length;
+        await retryDeferredEnrollments();
+        check(c12.decision === "applied" && (await pool.query(`SELECT 1 FROM deferred_ghl_enrollments WHERE ghl_contact_id=$1`, [p12.ghl])).rowCount === 0
+          && wf.slice(w12).filter(w => w.url.includes(p12.ghl)).length === 0,
+          "C: cancelling that occurrence leaves zero owed booking confirmations and recovery sends nothing for it");
+
+        // 13. recovery: provider accepts, then the local retirement fails. The retry must not send again.
+        await setPause(true);
+        const p13 = await mkPair();
+        await deliverFixed("booked", bookedBody(p13.ghl, "c1-retire"), webhookHandlers.handleAppointmentBooked);
+        await setPause(false);
+        const due13 = () => pool.query(`UPDATE deferred_ghl_enrollments SET next_retry_at = now() - interval '1 minute' WHERE ghl_contact_id=$1`, [p13.ghl]);
+        await due13();
+        const realConnect = pool.connect.bind(pool);
+        let retirementFailures = 0;
+        (pool as any).connect = async (...a: any[]) => {
+          if (typeof a[0] === "function") return (realConnect as any)(...a);
+          const c = await (realConnect as any)(...a);
+          const q = c.query.bind(c);
+          c.query = (...qa: any[]) => {
+            const text = typeof qa[0] === "string" ? qa[0] : qa[0]?.text ?? "";
+            if (/^\s*DELETE FROM deferred_ghl_enrollments/.test(text) && retirementFailures === 0) { retirementFailures++; return Promise.reject(new Error("injected retirement failure")); }
+            return q(...qa);
+          };
+          return c;
+        };
+        const w13 = wf.length;
+        try { await retryDeferredEnrollments(); } finally { (pool as any).connect = realConnect; }
+        const ledger13 = (await pool.query(`SELECT state FROM ghl_workflow_handoff_dispatches WHERE ghl_contact_id=$1`, [p13.ghl])).rows[0]?.state;
+        check(retirementFailures === 1 && wf.slice(w13).filter(w => w.url.includes(p13.ghl)).length === 1 && ledger13 === "accepted" && (await deferredRow(p13.ghl))?.status === "pending",
+          "C: a provider acceptance followed by a failed local retirement is recorded as accepted in the dispatch ledger while the obligation stays pending");
+        await due13();
+        await retryDeferredEnrollments();
+        check(wf.slice(w13).filter(w => w.url.includes(p13.ghl)).length === 1 && !(await deferredRow(p13.ghl))
+          && (await pool.query(`SELECT 1 FROM audit_logs WHERE action='ghl_enrollment_recovery_already_accepted' AND entity_key=$1`, [p13.ghl])).rowCount === 1,
+          "C: the next recovery attempt retires the obligation from the ledger and sends no second enrollment");
+
+        // 14. recovery: provider accepts, then the process stops before settling or retiring. Never re-sent; parked as unknown.
+        await setPause(true);
+        const p14 = await mkPair();
+        await deliverFixed("booked", bookedBody(p14.ghl, "c1-crash"), webhookHandlers.handleAppointmentBooked);
+        await setPause(false);
+        await pool.query(`UPDATE deferred_ghl_enrollments SET next_retry_at = now() - interval '1 minute' WHERE ghl_contact_id=$1`, [p14.ghl]);
+        const realQuery14 = pool.query.bind(pool);
+        const realConnect14 = pool.connect.bind(pool);
+        (pool as any).query = (...args: any[]) => {
+          const text = typeof args[0] === "string" ? args[0] : args[0]?.text ?? "";
+          if (/UPDATE ghl_workflow_handoff_dispatches SET state = \$2/.test(text) && args[1]?.[1] === "accepted") return Promise.reject(new Error("injected stop before settle"));
+          return realQuery14(...(args as [any]));
+        };
+        (pool as any).connect = async (...a: any[]) => {
+          if (typeof a[0] === "function") return (realConnect14 as any)(...a);
+          const c = await (realConnect14 as any)(...a);
+          const q = c.query.bind(c);
+          c.query = (...qa: any[]) => {
+            const text = typeof qa[0] === "string" ? qa[0] : qa[0]?.text ?? "";
+            if (/^\s*DELETE FROM deferred_ghl_enrollments/.test(text)) return Promise.reject(new Error("injected stop before retirement"));
+            return q(...qa);
+          };
+          return c;
+        };
+        const w14 = wf.length;
+        try { await retryDeferredEnrollments(); } finally { (pool as any).query = realQuery14; (pool as any).connect = realConnect14; }
+        check(wf.slice(w14).filter(w => w.url.includes(p14.ghl)).length === 1
+          && (await pool.query(`SELECT state FROM ghl_workflow_handoff_dispatches WHERE ghl_contact_id=$1`, [p14.ghl])).rows[0]?.state === "started"
+          && (await deferredRow(p14.ghl))?.status === "pending",
+          "C: an interruption after provider acceptance leaves the dispatch ledger started and the obligation pending");
+        await pool.query(`UPDATE deferred_ghl_enrollments SET next_retry_at = now() - interval '1 minute' WHERE ghl_contact_id=$1`, [p14.ghl]);
+        await retryDeferredEnrollments();
+        const parked14 = (await pool.query(`SELECT status, last_error FROM deferred_ghl_enrollments WHERE ghl_contact_id=$1`, [p14.ghl])).rows[0];
+        check(wf.slice(w14).filter(w => w.url.includes(p14.ghl)).length === 1 && parked14?.status === "failed" && /^unknown_outcome:/.test(parked14?.last_error ?? ""),
+          "C: the next recovery attempt after that interruption parks an unknown outcome and never sends a second enrollment");
       } finally {
         globalThis.Date = RealDate;
         await setPause(true);

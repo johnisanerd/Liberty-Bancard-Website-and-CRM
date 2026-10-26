@@ -150,6 +150,7 @@ async function sdrGhlFetch(path: string, options: SdrGhlFetchOptions = {}, retri
     ...(fetchOptions.headers as Record<string, string> || {}),
   };
 
+  let lastRateLimited = false;
   for (let attempt = 0; attempt < retries; attempt++) {
     // ── Per-attempt cross-process epoch recheck ────────────────────────────
     // Called at the TOP of every iteration (including after backoff waits) so
@@ -167,6 +168,7 @@ async function sdrGhlFetch(path: string, options: SdrGhlFetchOptions = {}, retri
     try {
       const response = await fetch(url, { ...fetchOptions, headers });
 
+      lastRateLimited = response.status === 429;
       if (response.status === 429) {
         const retryAfter = parseInt(response.headers.get("retry-after") || "5", 10);
         const waitMs = retryAfter * 1000;
@@ -197,6 +199,8 @@ async function sdrGhlFetch(path: string, options: SdrGhlFetchOptions = {}, retri
       throw err;
     }
   }
+  // Retries exhausted while the provider kept answering 429: that is a refusal, never an empty success.
+  if (lastRateLimited) throw new Error("GHL API error 429: rate limit retries exhausted");
   return {};
 }
 
