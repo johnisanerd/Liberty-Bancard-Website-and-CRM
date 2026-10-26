@@ -69,6 +69,24 @@ async function main() {
       ...baseSelection, globalProfile: "selective", selectiveGroups: ["ghl-sync-only"],
       ownerProfileEnv: "unexpected-owner",
     }), false, "mismatched optional owner-profile environment value is rejected");
+    // The real environment string (not the normalized mode) must still select the isolated capability, and must not
+    // widen anything: the broader integration group and a profile without the group stay unselected.
+    const savedProfile = process.env.BACKGROUND_JOB_PROFILE;
+    try {
+      const { getGhlSyncSelectionProfileInputs } = await import("../server/services/ghl-sync-runtime");
+      const statusFor = (raw: string) => {
+        process.env.BACKGROUND_JOB_PROFILE = raw;
+        return getGhlSyncRuntimeSelectionStatus({ ...baseSelection, ...getGhlSyncSelectionProfileInputs() });
+      };
+      assert.equal(statusFor("selective:enrichment,free-enrichment-lane,provider-live,ghl-sync-only"), "selected",
+        "the deployed mixed profile string selects the isolated capability");
+      assert.equal(statusFor("selective:enrichment,provider-live"), "needs_isolated_group", "a mixed profile without the group is not selected");
+      assert.equal(statusFor("selective:enrichment,ghl-integration"), "needs_isolated_group", "the broader integration group is not selected");
+      assert.equal(statusFor("ghl-sync-only"), "selected", "the standalone profile is selected");
+      assert.equal(statusFor("off"), "needs_isolated_group", "off is not selected");
+    } finally {
+      if (savedProfile === undefined) delete process.env.BACKGROUND_JOB_PROFILE; else process.env.BACKGROUND_JOB_PROFILE = savedProfile;
+    }
     const ownerFence = {
       profile: "ghl-sync-only",
       processProfile: "selective:enrichment,ghl-sync-only",

@@ -107,11 +107,20 @@ function runtimeSelectionMatches(control: GhlControlSnapshot): boolean {
   return getRuntimeSelectionState(control) === "selected";
 }
 
+/**
+ * Profile inputs for the isolated-capability check. The profile must be the NORMALIZED mode ("selective", "full",
+ * "ghl-sync-only", ...) paired with its parsed groups, never the raw environment string: a mixed profile such as
+ * "selective:enrichment,ghl-sync-only" is mode "selective" with groups, and comparing the raw string to "selective"
+ * would never select the isolated capability.
+ */
+export function getGhlSyncSelectionProfileInputs(): { globalProfile: string; selectiveGroups: string[] } {
+  return { globalProfile: getBackgroundProfile(), selectiveGroups: getSelectiveGroups() };
+}
+
 function getRuntimeSelectionState(control: GhlControlSnapshot): string {
   const expectedRuntime = currentRoutineDeploymentIdentity();
   return getGhlSyncRuntimeSelectionStatus({
-    globalProfile: process.env.BACKGROUND_JOB_PROFILE ?? "off",
-    selectiveGroups: getSelectiveGroups(),
+    ...getGhlSyncSelectionProfileInputs(),
     controlEnabled: control.enabled,
     controlOwnerProfile: control.ownerProfile,
     controlSelectedRuntime: control.selectedRuntime,
