@@ -22,3 +22,6 @@ The recovery retry claims the per-effect dispatch ledger (key = the obligation's
 
 ## Sync runtime selection compared the raw profile string (found 2026-10-26)
 `getGhlSyncRuntimeSelectionStatus` is fed the raw `BACKGROUND_JOB_PROFILE` (e.g. `selective:a,b,ghl-sync-only`) but tests `=== "selective"`, so a selective profile can never select the isolated sync capability even when the group is listed. Production showed `needs_isolated_group` while `/api/admin/cro03c/runtime-identity` listed `ghl-sync-only` in selectedGroups. **Why:** unit tests passed the normalized `"selective"`. **How to apply:** diagnose from the admin read routes before suspecting deployment env; the fix is code (normalize via getBackgroundProfile) plus a publish, not a control or restart.
+
+## After a publish the GHL runtime must be re-selected
+A new published build changes the runtime identity; the control's selected runtime then mismatches (`selected_runtime_mismatch`) and ticks stop until an admin re-selects the current runtime through the sync-control PATCH (selectCurrentRuntime, expectedEpoch). The recorded native review survives. A previously open circuit resumes through half-open probes and closes after three successes on its own; do not reset it.
