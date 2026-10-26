@@ -25,3 +25,6 @@ The recovery retry claims the per-effect dispatch ledger (key = the obligation's
 
 ## After a publish the GHL runtime must be re-selected
 A new published build changes the runtime identity; the control's selected runtime then mismatches (`selected_runtime_mismatch`) and ticks stop until an admin re-selects the current runtime through the sync-control PATCH (selectCurrentRuntime, expectedEpoch). The recorded native review survives. A previously open circuit resumes through half-open probes and closes after three successes on its own; do not reset it.
+
+## Reading projection results correctly
+Succeeded projections after go-live carried only identity and owned tags; the permission and profile-field components were recorded as held (provider fields not installed), so "succeeded" is not permission/suppression projection. Terminal "INVALID_OR_UNUSABLE_IDENTITY" is the label for every skip-classified error (dispatch_count 0), not proof of missing email/phone; the early terminals all shared an email with another contact. Export-backlog eligible counts move while convergence is partial_resumable, so quote them only after convergence reports none_needed.
