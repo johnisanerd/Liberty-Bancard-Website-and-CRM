@@ -28,3 +28,8 @@ A new published build changes the runtime identity, so ticks stop with a runtime
 
 ## Reading projection results
 "Succeeded" can still mean permission/profile components were held, not sent. The terminal reason label covers every skip-classified error, so it is not proof of missing identity. Eligible-backlog counts are only stable once convergence reports none_needed. A new server receipt level must also get a client label, or the contact page crashes.
+
+## Scraped lead-file contacts in GHL (2026-10-27)
+Owner paused the sync control after the owner's team called the created contacts a "raw scrape stockpile"; the approved scope (sourceLessLegacy) admits lead-file contacts with no quality filter. A removal was run directly against GHL (not through the outbound pause authority, which refuses every GHL write while the global pause is on). GHL reports a missing contact as HTTP 400 "Contact not found", never 404, so read-back checks must match the message. The local GHL link and succeeded projection of deleted contacts are not cleared (production is read-only from the workspace); resuming the sync before narrowing scope and clearing links would recreate or fail-update them.
+**Why:** owner decision to delete what the sync created; a ledger-proven 201 create plus a stored id is the only safe identity of "created by the sync".
+**How to apply:** never re-enable the sync without a vetted-only scope; someone else also deleted ~1,664 of these contacts in GHL, so existence must be checked per contact.
