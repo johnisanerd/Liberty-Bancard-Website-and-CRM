@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { CheckCircle2, AlertCircle, RefreshCw } from "lucide-react";
 import type { Contact } from "@shared/schema";
 
-type ReceiptLevel = "recorded_locally" | "waiting" | "processing" | "provider_accepted" | "held" | "ambiguous" | "failed" | "not_applicable";
+type ReceiptLevel = "recorded_locally" | "waiting" | "processing" | "provider_accepted" | "provider_accepted_partial" | "held" | "ambiguous" | "failed" | "not_applicable";
 
 export interface ContactProjectionStatus {
   present: boolean;
@@ -28,6 +28,7 @@ export const PROJECTION_LEVEL_LABELS: Record<ReceiptLevel, { label: string; deta
   waiting: { label: "Waiting", detail: "Queued for a later attempt (deferred or scheduled retry); nothing has been confirmed by GHL." },
   processing: { label: "Processing", detail: "A worker currently holds this contact." },
   provider_accepted: { label: "Provider accepted", detail: "GHL accepted the request. This is not a read-back verification." },
+  provider_accepted_partial: { label: "Provider accepted (partial)", detail: "GHL accepted the contact identity and owned tags. Some permission or profile fields were held and not sent. This is not a read-back verification." },
   held: { label: "Held", detail: "Not exported: outside the current export scope, local-only, or test data." },
   ambiguous: { label: "Needs reconciliation", detail: "A create request may have reached GHL without a recorded response; it will not be repeated blindly." },
   failed: { label: "Failed (terminal)", detail: "Retries are exhausted or the contact cannot be exported." },
@@ -86,7 +87,7 @@ export function GhlSyncStatus({ contact, ghlSyncStatus, resyncToGhlMutation }: P
       </Button>
       <ProjectionReceipts projection={ghlSyncStatus?.projection} loaded={!!ghlSyncStatus} />
       <p id="ghl-write-hold-reason" className="basis-full text-xs">
-        Writes to GHL are unavailable: synchronization is incoming-only. This does not pause incoming synchronization.
+        Manual re-sync is unavailable. Outgoing contact projection to GHL runs automatically through the guarded sync worker; it does not send messages or enroll workflows.
       </p>
     </div>
   );
@@ -100,7 +101,7 @@ function ProjectionReceipts({ projection, loaded }: { projection?: ContactProjec
       </p>
     );
   }
-  const level = PROJECTION_LEVEL_LABELS[projection.receiptLevel];
+  const level = PROJECTION_LEVEL_LABELS[projection.receiptLevel] ?? { label: "Unrecognized state", detail: `Export receipt level "${String(projection.receiptLevel)}" is not recognized by this page; it is not shown as healthy.` };
   const { components: componentOutcomes, ...requestReceipts } = (projection.componentReceipts ?? {}) as Record<string, any>;
   const receipts = Object.entries(requestReceipts) as Array<[string, { ok?: number; failed?: number; ambiguous?: number }]>;
   const outcomes = Object.entries((componentOutcomes ?? {}) as Record<string, { state?: string; heldKeys?: string[]; code?: string }>);
