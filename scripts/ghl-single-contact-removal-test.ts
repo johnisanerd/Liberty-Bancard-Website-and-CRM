@@ -30,9 +30,13 @@ async function call(method: string, path: string): Promise<{ status: number; bod
   return { status: response.status, body };
 }
 
+/** GHL reports a missing contact as HTTP 400 "Contact not found", not 404. */
+const isNotFound = (r: { status: number; body: any }) =>
+  r.status === 404 || (r.status === 400 && /not found/i.test(String(r.body?.message ?? r.body?.error ?? "")));
+
 async function check(): Promise<{ exists: boolean; clean: boolean; report: Record<string, unknown> }> {
   const contact = await call("GET", `/contacts/${encodeURIComponent(ghlId)}`);
-  if (contact.status === 404) return { exists: false, clean: false, report: { contactStatus: 404 } };
+  if (isNotFound(contact)) return { exists: false, clean: false, report: { contactStatus: contact.status, notFound: true } };
   if (contact.status !== 200) return { exists: false, clean: false, report: { contactStatus: contact.status } };
   const c = contact.body?.contact ?? {};
   const notes = await call("GET", `/contacts/${encodeURIComponent(ghlId)}/notes`);
@@ -69,5 +73,5 @@ async function check(): Promise<{ exists: boolean; clean: boolean; report: Recor
   console.log("delete status", del.status);
   const after = await call("GET", `/contacts/${encodeURIComponent(ghlId)}`);
   const search = await call("GET", `/contacts/?locationId=${encodeURIComponent(locationId)}&query=${encodeURIComponent(ghlId)}&limit=1`);
-  console.log("read-back status", after.status, after.status === 404 ? "GONE" : "STILL PRESENT OR UNEXPECTED", "search status", search.status);
+  console.log("read-back status", after.status, isNotFound(after) ? "GONE" : "STILL PRESENT OR UNEXPECTED", "search status", search.status);
 })().catch(e => { console.error("ERROR", e.message); process.exit(1); });
