@@ -1,3 +1,4 @@
+import { classifySdrEventKind } from "./event-kinds";
 import { z } from "zod";
 import { createHash } from "crypto";
 import { db } from "../../db";
@@ -157,7 +158,10 @@ export async function handleMessageReceived(rawPayload: unknown): Promise<void> 
 
   const deliveryStatus = (payload as any).status || (payload as any).deliveryStatus || "";
   const isSmsFailure = channel === "sms" && /failed|undelivered|undeliverable/i.test(deliveryStatus);
-  const isInboundReply = (payload as any).direction === "inbound";
+  // One classification decides what this webhook is: a genuine inbound reply, an opt-out (STOP), or a delivery outcome.
+  const eventKind = classifySdrEventKind("message_received", payload as Record<string, any>);
+  const isGenuineReply = eventKind === "reply";
+  const isInboundReply = (payload as any).direction === "inbound" && (eventKind === "reply" || eventKind === "opt_out");
 
   if (isSmsFailure || isInboundReply) {
     const [crmContact] = await db.select().from(contacts).where(eq(contacts.ghlContactId, ghlContactId)).limit(1);
@@ -188,8 +192,9 @@ export async function handleMessageReceived(rawPayload: unknown): Promise<void> 
     }
   }
 
-  // A delivery failure is not a reply: it must not stamp lastReplyAt (which feeds "engaged" counts).
-  if (merchant && !isSmsFailure) {
+  // Only a genuine inbound reply stamps lastReplyAt or drives intent/stage changes (which feed "engaged" counts).
+  // Opt-outs and every delivery outcome (failed SMS or email, delivered outbound) are different facts.
+  if (merchant && isGenuineReply) {
     const [state] = await db.select().from(sdrLeadState).where(eq(sdrLeadState.merchantId, merchant.id));
     if (state) {
       await db.update(sdrLeadState).set({

@@ -6,6 +6,7 @@ import { storage } from "../server/storage";
 import { resolveSdrStage } from "../server/services/sdr/stage-precedence";
 import { classifySdrEventKind, countSdrEventKinds } from "../server/services/sdr/event-kinds";
 import { getSdrEventKindCensus } from "../server/services/sdr/funnel-metrics";
+import { handleMessageReceived } from "../server/services/sdr/webhook-handlers";
 import { getPaidProviderControls, IN_FLIGHT_SAMPLE_LIMIT } from "../server/services/paid-provider-control";
 
 let n = 0;
@@ -41,7 +42,7 @@ async function main() {
   ]);
   assert.deepEqual(counts, { reply: 5, opt_out: 3, bounce: 2, delivery_failure: 4, delivery: 0, other: 0 });
   const wh = src("server/services/sdr/webhook-handlers.ts");
-  assert.match(wh, /merchant && !isSmsFailure/);
+  assert.match(wh, /merchant && isGenuineReply/);
   ok("reply / opt-out / bounce / delivery are classified separately and a delivery failure no longer stamps lastReplyAt");
 
   // 3. Census labels scope, as-of, availability (live dev read; read-only).
@@ -105,6 +106,36 @@ async function main() {
   assert.match(integ, /outgoingControl/);
   assert.match(src("server/routes/lead-ops.ts"), /crosswalkOnlyExcluded: crosswalkOnlyExcluded \?\? null/);
   ok("local link wording, outgoing-control read and unavailable-not-zero crosswalk are in the contract");
+  // 8. Webhook-to-state: only a genuine inbound reply stamps lastReplyAt (which feeds "engaged").
+  const whIds: number[] = [];
+  try {
+    const cases: Array<{ label: string; payload: Record<string, unknown>; stamped: boolean }> = [
+      { label: "failed SMS", payload: { type: "SMS", direction: "outbound", status: "failed" }, stamped: false },
+      { label: "failed email", payload: { type: "Email", direction: "outbound", status: "failed", body: "x" }, stamped: false },
+      { label: "undelivered inbound-labelled email", payload: { type: "Email", direction: "inbound", deliveryStatus: "undelivered" }, stamped: false },
+      { label: "delivered outbound", payload: { type: "SMS", direction: "outbound", status: "delivered", body: "hello" }, stamped: false },
+      { label: "inbound STOP", payload: { type: "SMS", direction: "inbound", body: "STOP" }, stamped: false },
+      { label: "genuine inbound reply", payload: { type: "SMS", direction: "inbound", body: "" }, stamped: true },
+    ];
+    for (const [i, c] of cases.entries()) {
+      const ghlId = `${PREFIX}-wh-${i}`;
+      const m = await pool.query(`INSERT INTO sdr_merchants(business_name, ghl_contact_id) VALUES ($1,$2) RETURNING id`, [`${PREFIX}-wh-${i}`, ghlId]);
+      whIds.push(m.rows[0].id);
+      await pool.query(`INSERT INTO sdr_lead_state(merchant_id) VALUES ($1)`, [m.rows[0].id]);
+      await handleMessageReceived({ contactId: ghlId, messageId: `${PREFIX}-msg-${i}`, ...c.payload });
+      const st = (await pool.query(`SELECT last_reply_at, current_stage FROM sdr_lead_state WHERE merchant_id=$1`, [m.rows[0].id])).rows[0];
+      assert.equal(st.last_reply_at !== null, c.stamped, `${c.label}: lastReplyAt ${c.stamped ? "stamped" : "untouched"}`);
+      assert.equal(st.current_stage, "DISCOVERED", `${c.label}: stage unchanged`);
+    }
+  } finally {
+    for (const id of whIds) {
+      await pool.query(`DELETE FROM sdr_lead_events WHERE merchant_id=$1`, [id]);
+      await pool.query(`DELETE FROM sdr_lead_state WHERE merchant_id=$1`, [id]);
+      await pool.query(`DELETE FROM sdr_merchants WHERE id=$1`, [id]);
+    }
+    await pool.query(`DELETE FROM sdr_lead_events WHERE merchant_id IS NULL AND payload_json::text LIKE $1`, [`%${PREFIX}%`]);
+  }
+  ok("webhook-to-state: failed SMS/email, delivered outbound and STOP never stamp lastReplyAt; a genuine reply does");
 }
 
 main().then(() => { console.log(`\n${n} check groups passed`); process.exit(0); }).catch((e) => { console.error(e); process.exit(1); });
