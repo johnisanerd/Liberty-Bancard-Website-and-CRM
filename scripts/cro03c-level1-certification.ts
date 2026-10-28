@@ -106,8 +106,8 @@ await phase("1c. Seed >25 eligible canonical businesses across South FL counties
     const uniqueName = `${RUN_ID}-biz-${i}`;
 
     const bizResult = rows(await db.execute(sql`
-      INSERT INTO businesses (canonical_name, normalized_name, vertical, created_at)
-      VALUES (${uniqueName}, ${uniqueName.toLowerCase()}, ${vertical}, NOW())
+      INSERT INTO businesses (canonical_name, normalized_name, vertical, record_class, created_at)
+      VALUES (${uniqueName}, ${uniqueName.toLowerCase()}, ${vertical}, 'canonical', NOW())
       RETURNING id
     `))[0];
     const bizId = Number(bizResult.id);
@@ -205,6 +205,10 @@ await phase("2c. selectRoiCohort() with 30 seeded businesses returns exactly top
   assert(result.eligible.length <= 25, `Cohort must be capped at 25; got ${result.eligible.length}`);
   // At minimum our newly-seeded businesses should appear in evaluated count.
   assert(result.evaluated > 0, "Must have evaluated at least one candidate");
+  // The selector scans only record_class='canonical' businesses (seeded in 1c). The v1 taxonomy
+  // needs no classification evidence rows, so the seeded businesses themselves must be selected.
+  const seededEligible = result.eligible.filter((c) => seededBusinessIds.includes(c.canonicalBusinessId));
+  assert(seededEligible.length > 0, "Seeded canonical businesses must appear in the eligible cohort");
   // All returned eligible businesses must be marked eligible.
   for (const c of result.eligible) {
     assert(c.eligible, "All returned eligible candidates must be marked eligible");

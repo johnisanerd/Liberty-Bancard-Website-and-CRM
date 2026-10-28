@@ -158,6 +158,8 @@ export const CERTIFICATION_FIXTURE_SUITES: Suite[] = [
     timeoutSecs:300,requiresDisposableTestDatabase:true},
   {name:"Stage 4A pilot history and emergency stop browser",script:"scripts/test-stage4a-browser-pilot-history.ts",
     timeoutSecs:600,requiresDisposableTestDatabase:true},
+  {name:"CRO-03C Level 1 ROI cohort certification",script:"scripts/cro03c-level1-certification.ts",
+    timeoutSecs:600,requiresDisposableTestDatabase:true},
 ];
 export const MANDATORY_SUITES: Suite[] = [
   {name:"Stage 3 C3 Destination Codec and Source Contracts",script:"scripts/test-stage3-c3-contracts.ts",timeoutSecs:60},
