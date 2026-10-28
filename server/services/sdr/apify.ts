@@ -29,7 +29,7 @@ interface ApifyUsageStats {
 }
 
 const APIFY_ACTORS = {
-  yelp: "apify/yelp-scraper",
+  yelp: "johnvc/yelp-search-api",
   facebook: "apify/facebook-pages-scraper",
   google_maps: "compass/crawler-google-places",
 };
@@ -96,18 +96,18 @@ function extractDomain(url: string | null | undefined): string | null {
 
 function parseYelpResult(raw: Record<string, any>): ApifyBusiness {
   return {
-    name: raw.name || raw.bizName || "",
-    phone: normalizePhone(raw.phone || raw.phoneNumber),
+    name: raw.title || "",
+    phone: normalizePhone(raw.phone),
     email: raw.email || null,
-    website: extractDomain(raw.website || raw.bizUrl),
+    website: extractDomain(raw.website),
     address: raw.address || raw.fullAddress || null,
     city: raw.city || null,
     state: raw.state || null,
     zip: raw.zipCode || raw.zip || null,
     rating: raw.rating ? parseFloat(raw.rating) : null,
-    reviewCount: raw.reviewCount ? parseInt(raw.reviewCount) : null,
-    category: Array.isArray(raw.categories) ? raw.categories[0] : raw.category || null,
-    sourceUrl: raw.url || raw.bizUrl || null,
+    reviewCount: raw.reviews ? parseInt(raw.reviews) : null,
+    category: Array.isArray(raw.categories) ? raw.categories[0]?.title || raw.categories[0] || null : null,
+    sourceUrl: raw.link || null,
     rawData: raw,
   };
 }
@@ -178,13 +178,20 @@ export async function searchYelp(
   limit: number = 200
 ): Promise<ApifyBusiness[]> {
   const items = await runApifyActor(APIFY_ACTORS.yelp, {
-    searchTerms: [searchTerm],
-    locations: [location],
-    maxItems: Math.min(limit, 500),
-    reviewsMode: "none",
+    search_term: searchTerm,
+    location,
+    max_pages: Math.ceil(Math.min(limit, 500) / 10),
   });
 
-  const results = items.map(parseYelpResult).filter(b => b.name);
+  const errorPage = items.find(page => page.error);
+  if (errorPage) console.warn(`[Apify/Yelp] Actor error: ${errorPage.error_message || errorPage.error}`);
+
+  const results = items
+    .filter(page => !page.error)
+    .flatMap(page => Array.isArray(page.organic_results) ? page.organic_results : [])
+    .map(parseYelpResult)
+    .filter(b => b.name)
+    .slice(0, limit);
   await trackApifyRun(true, results.length);
   console.log(`[Apify/Yelp] Found ${results.length} businesses for: ${searchTerm} in ${location}`);
   return results;
