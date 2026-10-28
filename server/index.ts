@@ -11,6 +11,7 @@ import { ensureSfpOutreachPolicyControlCheckConstraint } from "./services/cro03/
 // W13: Ceremony removed from startup — use scripts/cro03d-run-ceremony.ts offline.
 import { serveStatic } from "./static";
 import { createServer } from "http";
+import { handleHttpClientError } from "./lib/http-client-error";
 import { getQueueManager, shutdownQueueManager } from "./services/queue-manager";
 import { seedDefaultData } from "./services/seed-workflows";
 import { seedSequences } from "./services/seed-sequences";
@@ -208,6 +209,7 @@ process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 instrumentExpressRouting(); // before any use() registration so mount paths are recorded for the permissions inventory
 const app = express();
 const httpServer = createServer(app);
+httpServer.on("clientError", handleHttpClientError);
 
 // Trust Replit's reverse proxy so req.hostname reflects X-Forwarded-Host
 // (the custom domain, e.g. libertybancard.com) rather than the internal
