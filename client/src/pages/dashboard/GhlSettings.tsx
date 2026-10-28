@@ -109,14 +109,17 @@ interface SyncDashboard {
     threshold: number;
     lastTripAt: string | null;
   };
-  failedSyncsLast24h?: number;
-  missingGhlContactId?: number;
-  fieldWriteErrors422?: number;
-  recent422Errors?: Array<{ contactId: number | null; operation: string | null; httpStatus: number | null; createdAt: string | null }>;
-  webhookEventsLast24h?: number;
-  permissionCheckCallsLast24h?: number;
-  optOutEventsLast24h?: number;
-  hasPermissionFieldGap?: boolean;
+  // null = that read failed and the value is unavailable (never shown as zero).
+  failedSyncsLast24h?: number | null;
+  missingGhlContactId?: number | null;
+  fieldWriteErrors422?: number | null;
+  emailValidation422Count?: number | null;
+  unclassified422Count?: number | null;
+  recent422Errors?: Array<{ contactId: number | null; operation: string | null; httpStatus: number | null; createdAt: string | null; kind?: "field_write" | "email_validation" | "unclassified" }>;
+  webhookEventsLast24h?: number | null;
+  permissionCheckCallsLast24h?: number | null;
+  optOutEventsLast24h?: number | null;
+  hasPermissionFieldGap?: boolean | null;
 }
 
 interface CircuitStatus {
@@ -645,7 +648,7 @@ export default function GhlSettings() {
                     </p>
                   </div>
                   <div>
-                    <p className="text-muted-foreground">Missing GHL IDs</p>
+                    <p className="text-muted-foreground">Missing GHL IDs (all contacts with an email)</p>
                     <p className={`font-semibold ${syncDashboard.missingGhlContactId == null ? "text-muted-foreground" : syncDashboard.missingGhlContactId > 0 ? "text-amber-600" : "text-muted-foreground"}`}
                       data-testid="text-missing-ghl-ids">
                       {syncDashboard.missingGhlContactId ?? "Unknown"}
@@ -670,10 +673,22 @@ export default function GhlSettings() {
                     </p>
                   </div>
                   <div>
-                    <p className="text-muted-foreground">Field Write Errors (422)</p>
+                    <p className="text-muted-foreground">Custom-Field Write Errors (422, 24h)</p>
                     <p className={`font-semibold ${syncDashboard.fieldWriteErrors422 == null ? "text-muted-foreground" : syncDashboard.fieldWriteErrors422 > 0 ? "text-amber-600" : "text-muted-foreground"}`}
                       data-testid="text-field-write-errors">
                       {syncDashboard.fieldWriteErrors422 ?? "Unknown"}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Email-Rejected 422s (24h)</p>
+                    <p className="font-semibold text-muted-foreground" data-testid="text-email-validation-422">
+                      {syncDashboard.emailValidation422Count ?? "Unknown"}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Other 422s (24h)</p>
+                    <p className="font-semibold text-muted-foreground" data-testid="text-unclassified-422">
+                      {syncDashboard.unclassified422Count ?? "Unknown"}
                     </p>
                   </div>
                   <div>
@@ -713,7 +728,7 @@ export default function GhlSettings() {
                 {/* Recent 422 error rows (last 10) */}
                 {(syncDashboard.recent422Errors?.length ?? 0) > 0 && (
                   <div className="mt-3">
-                    <p className="text-xs font-semibold text-amber-700 dark:text-amber-400 mb-1">Recent 422 Field-Write Errors (last 10):</p>
+                    <p className="text-xs font-semibold text-amber-700 dark:text-amber-400 mb-1">Recent 422 errors (last 10, classified):</p>
                     <div className="overflow-x-auto rounded border border-amber-200 dark:border-amber-800">
                       <table className="text-xs w-full" data-testid="table-recent-422-errors">
                         <thead className="bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300">
@@ -721,6 +736,7 @@ export default function GhlSettings() {
                             <th className="px-2 py-1 text-left">Contact ID</th>
                             <th className="px-2 py-1 text-left">Operation</th>
                             <th className="px-2 py-1 text-left">Status</th>
+                            <th className="px-2 py-1 text-left">Kind</th>
                             <th className="px-2 py-1 text-left">Time</th>
                           </tr>
                         </thead>
@@ -730,6 +746,7 @@ export default function GhlSettings() {
                               <td className="px-2 py-1">{row.contactId ?? "—"}</td>
                               <td className="px-2 py-1">{row.operation ?? "—"}</td>
                               <td className="px-2 py-1">{row.httpStatus ?? 422}</td>
+                              <td className="px-2 py-1">{row.kind === "field_write" ? "Custom field" : row.kind === "email_validation" ? "Email rejected" : "Unclassified"}</td>
                               <td className="px-2 py-1">{row.createdAt ? new Date(row.createdAt).toLocaleString() : "—"}</td>
                             </tr>
                           ))}

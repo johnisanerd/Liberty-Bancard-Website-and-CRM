@@ -16,11 +16,11 @@ const base: ContactProjectionStatus = {
     },
   } as any,
 };
-function render(projection: ContactProjectionStatus | null | undefined) {
+function render(projection: ContactProjectionStatus | null | undefined, outgoingControl?: any) {
   return renderToStaticMarkup(
     <GhlSyncStatus
       contact={{ id: 1, ghlContactId: "ghl-test-id" } as any}
-      ghlSyncStatus={{ isSynced: true, isRecent: true, ghlContactId: "ghl-test-id", projection }}
+      ghlSyncStatus={{ isSynced: true, isRecent: true, ghlContactId: "ghl-test-id", projection, outgoingControl }}
       resyncToGhlMutation={{ mutate: () => {}, isPending: false }}
     />,
   );
@@ -49,5 +49,26 @@ check("Page no longer claims outgoing writes are unavailable", () => {
   assert.doesNotMatch(html, /incoming-only|Writes to GHL are unavailable/);
   assert.match(html, /Manual re-sync is unavailable/);
   assert.match(html, /<button[^>]*disabled=""[^>]*data-testid="button-resync-ghl"/);
+});
+check("Paused/released outgoing control says paused and never claims it runs automatically", () => {
+  const html = render(base, { state: "paused", epoch: 16, ownerSelected: false });
+  assert.match(html, /currently paused, so nothing is being sent/);
+  assert.doesNotMatch(html, /runs automatically/);
+});
+check("Enabled/current outgoing control uses capability language", () => {
+  const html = render(base, { state: "enabled", epoch: 17, ownerSelected: true });
+  assert.match(html, /enabled and runs through the guarded sync worker when it is selected/);
+  assert.doesNotMatch(html, /currently paused/);
+});
+check("Unknown/unavailable control makes no claim either way", () => {
+  for (const c of [undefined, { state: "unknown" }]) {
+    const html = render(base, c);
+    assert.match(html, /control state is unknown/);
+    assert.doesNotMatch(html, /currently paused|runs automatically|is enabled and/);
+  }
+});
+check("Local link is labelled as locally recorded with native existence unverified", () => {
+  const html = render(base, { state: "paused" });
+  assert.match(html, /linked ID recorded locally; current native existence unverified/);
 });
 console.log(`${checks} checks passed`);

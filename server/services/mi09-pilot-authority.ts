@@ -2798,16 +2798,32 @@ export async function runPreflightChecklist(): Promise<PreflightCheckResult> {
     checks.minFiveWithFreeEnrichment = { passed: false, detail: String(e?.message) };
   }
 
-  // 8. CRO03C_CURRENT_MIGRATION_HEAD matches expected.
-  const expectedHead = "0260_mi07_dedup_unique_indexes";
+  // 8. Migration head: read the real migration metadata. The repository journal head must be recorded as applied in
+  // the database ledger (drizzle stores the journal "when" as created_at). A constant compared to itself proved
+  // nothing; if either side cannot be read the check reports unavailable instead of passing.
   try {
-    const { CRO03C_CURRENT_MIGRATION_HEAD } = await import("./cro03/contracts");
-    checks.migrationHeadUpdated = {
-      passed: CRO03C_CURRENT_MIGRATION_HEAD === expectedHead,
-      detail: `got=${CRO03C_CURRENT_MIGRATION_HEAD} want=${expectedHead}`,
-    };
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const journal = JSON.parse(readFileSync(join(process.cwd(), "migrations", "meta", "_journal.json"), "utf-8"));
+    const entries: Array<{ idx: number; when: number; tag: string }> = journal.entries ?? [];
+    if (entries.length === 0) throw new Error("journal has no entries");
+    const head = entries.reduce((prev, cur) => (cur.idx > prev.idx ? cur : prev));
+    const ledger = rows(await db.execute(sql`
+      SELECT MAX(created_at)::bigint AS latest, COUNT(*)::int AS applied FROM drizzle.__drizzle_migrations
+    `))[0];
+    const latest = ledger?.latest == null ? null : Number(ledger.latest);
+    if (latest === null || !Number.isFinite(latest)) {
+      checks.migrationHeadUpdated = { passed: false, detail: `unavailable: no applied-migration ledger rows (journal head ${head.tag})` };
+    } else {
+      checks.migrationHeadUpdated = {
+        passed: latest >= Number(head.when),
+        detail: latest >= Number(head.when)
+          ? `journal head ${head.tag} is recorded as applied (${ledger?.applied} ledger rows)`
+          : `journal head ${head.tag} is newer than the latest applied ledger entry`,
+      };
+    }
   } catch (e: any) {
-    checks.migrationHeadUpdated = { passed: false, detail: String(e?.message) };
+    checks.migrationHeadUpdated = { passed: false, detail: `unavailable: migration metadata could not be read (${String(e?.message)})` };
   }
 
   // 12. Zero open canonical_conflict_evidence rows.

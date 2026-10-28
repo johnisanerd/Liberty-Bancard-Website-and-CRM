@@ -783,7 +783,7 @@ export function registerCampaignsRoutes(app: Express) {
             s.status,
             s.version,
             s.retired_at,
-            s.total_steps,
+            COALESCE((SELECT COUNT(*) FROM sequence_steps ss WHERE ss.sequence_id = s.id), 0)::int AS total_steps,
             COUNT(e.id)::int AS enrolled,
             COUNT(CASE WHEN e.current_step >= 1 THEN 1 END)::int AS step1_complete,
             COUNT(CASE WHEN e.current_step >= 3 THEN 1 END)::int AS step3_complete,
@@ -795,7 +795,7 @@ export function registerCampaignsRoutes(app: Express) {
             MAX(e.created_at) AS last_enrolled_at
           FROM follow_up_sequences s
           LEFT JOIN sequence_enrollments e ON e.sequence_id = s.id
-          GROUP BY s.id, s.name, s.status, s.total_steps
+          GROUP BY s.id, s.name, s.status
           ORDER BY s.name
         `);
 

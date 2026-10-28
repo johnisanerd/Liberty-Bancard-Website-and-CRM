@@ -869,7 +869,7 @@ interface SendMonitoringIdentity {
   sentToday: number;
   bouncesToday: number;
   complaintsToday: number;
-  healthScore: number;
+  healthScore: number | null;
   capUtilization: number;
   week: {
     sent: number;
@@ -901,8 +901,11 @@ interface SendMonitoringData {
     totalSentToday: number;
     totalDailyLimit: number;
     overallCapUtilization: number;
-    smtpFallbacksLast24h?: number;
-    ghlSendsLast24h?: number;
+    smtpFallbacksLast24h?: number | null;
+    ghlSendsLast24h?: number | null;
+    channelCountsAvailable?: boolean;
+    asOf?: string;
+    scope?: string;
   };
   recentSends?: RecentSend[];
 }
@@ -1268,14 +1271,14 @@ function SendMonitoringPanel() {
                     <span className="inline-block w-2 h-2 rounded-full bg-green-500" />
                     GHL (all channels)
                   </td>
-                  <td className="py-2 text-right font-medium" data-testid="channel-count-ghl">{agg?.ghlSendsLast24h ?? 0}</td>
+                  <td className="py-2 text-right font-medium" data-testid="channel-count-ghl">{agg?.channelCountsAvailable === false ? "unavailable" : (agg?.ghlSendsLast24h ?? 0)}</td>
                 </tr>
                 <tr>
                   <td className="py-2 flex items-center gap-2">
                     <span className="inline-block w-2 h-2 rounded-full bg-amber-500" />
                     SMTP Fallback
                   </td>
-                  <td className="py-2 text-right font-medium" data-testid="channel-count-smtp">{agg?.smtpFallbacksLast24h ?? 0}</td>
+                  <td className="py-2 text-right font-medium" data-testid="channel-count-smtp">{agg?.channelCountsAvailable === false ? "unavailable" : (agg?.smtpFallbacksLast24h ?? 0)}</td>
                 </tr>
               </tbody>
             </table>
@@ -1346,7 +1349,7 @@ function SendMonitoringPanel() {
                   )}
                 </div>
                 <div className="text-right">
-                  <div className="text-sm font-bold" data-testid={`health-score-${identity.id}`}>{Math.round(identity.healthScore)}</div>
+                  <div className="text-sm font-bold" data-testid={`health-score-${identity.id}`}>{identity.healthScore != null ? Math.round(identity.healthScore) : "—"}</div>
                   <div className="text-xs text-muted-foreground">Health</div>
                 </div>
               </div>

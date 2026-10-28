@@ -643,7 +643,7 @@ interface SendMonitoringIdentity {
   sentToday: number;
   bouncesToday: number;
   complaintsToday: number;
-  healthScore: number;
+  healthScore: number | null;
   capUtilization: number;
   week: {
     sent: number;
@@ -825,11 +825,11 @@ function WarmupAndCapPanel() {
                 </div>
                 <div className="text-center">
                   <div className="text-muted-foreground">Health</div>
-                  <div className="font-medium">{Math.round(identity.healthScore)}</div>
+                  <div className="font-medium">{identity.healthScore != null ? Math.round(identity.healthScore) : "—"}</div>
                   <div className="w-full bg-muted rounded-full h-1.5 mt-1">
                     <div
-                      className={`h-1.5 rounded-full ${identity.healthScore >= 80 ? "bg-green-500" : identity.healthScore >= 60 ? "bg-yellow-500" : "bg-red-500"}`}
-                      style={{ width: `${identity.healthScore}%` }}
+                      className={`h-1.5 rounded-full ${identity.healthScore == null ? "bg-muted-foreground/30" : identity.healthScore >= 80 ? "bg-green-500" : identity.healthScore >= 60 ? "bg-yellow-500" : "bg-red-500"}`}
+                      style={{ width: `${identity.healthScore ?? 0}%` }}
                     />
                   </div>
                 </div>

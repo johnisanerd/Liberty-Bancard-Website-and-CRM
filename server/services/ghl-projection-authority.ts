@@ -24,6 +24,17 @@ export const AMBIGUOUS_RETRY_MS = 5 * 60 * 1000;
 export const DEFERRAL_RETRY_MS = 60 * 1000;
 export const UNREOPENABLE_TERMINAL_REASONS = ["pipeline_local_only", "superseded_by_merge", "DISPATCH_AMBIGUOUS_UNRESOLVED"] as const;
 
+/**
+ * Non-plaintext fingerprint of the identity fields the provider validates (email, phone digits). Stored in the existing
+ * component_receipts JSON when the provider rejects an identity, and compared on later enqueues so an unchanged rejected
+ * identity is never re-dispatched while a changed one gets one controlled reconsideration. Computed in SQL from the live
+ * contact row so the settlement and the enqueue always agree. Expects alias `c` over contacts unless another is given.
+ */
+export const IDENTITY_FINGERPRINT_SQL = (alias = "c") =>
+  `encode(sha256(convert_to('ghl-identity-v1|' || lower(btrim(coalesce(${alias}.email, ''))) || '|' || regexp_replace(coalesce(${alias}.phone, ''), '\\D', '', 'g'), 'UTF8')), 'hex')`;
+export const REJECTED_IDENTITY_TERMINAL_REASON = "INVALID_OR_UNUSABLE_IDENTITY";
+export const REJECTED_IDENTITY_FINGERPRINT_KEY = "rejectedIdentityFingerprint";
+
 export type ExportDisposition =
   | "current_intake" | "linked_update" | "historical_hold"
   | "local_only" | "test_local_only" | "closed" | "unclassified";
@@ -101,6 +112,15 @@ const resultingDispositionSql = (disposition: string, hasEvidence: boolean) => s
     ELSE ${disposition}
   END`;
 
+/**
+ * True for a terminal projection the provider rejected whose recorded fingerprint equals the contact's current identity.
+ * Expects alias p over contact_provider_projections. A rejection recorded before fingerprints existed has no fingerprint,
+ * so it is reconsidered once; the next rejection records one.
+ */
+const UNCHANGED_REJECTED_IDENTITY_SQL = `p.state = 'terminal' AND p.terminal_reason = '${REJECTED_IDENTITY_TERMINAL_REASON}'
+  AND p.component_receipts ->> '${REJECTED_IDENTITY_FINGERPRINT_KEY}' IS NOT NULL
+  AND p.component_receipts ->> '${REJECTED_IDENTITY_FINGERPRINT_KEY}' = (SELECT ${IDENTITY_FINGERPRINT_SQL("rc")} FROM contacts rc WHERE rc.id = p.contact_id)`;
+
 /** The only producer entry point for GHL contact projections. Safe inside a caller's transaction. */
 export async function enqueueContactProjection(
   executor: SqlExecutor,
@@ -175,7 +195,8 @@ export async function enqueueContactProjection(
         AND (p.state IN ('succeeded', 'superseded')
              OR (p.state = 'terminal' AND p.terminal_reason IS DISTINCT FROM 'pipeline_local_only'
                  AND p.terminal_reason IS DISTINCT FROM 'superseded_by_merge'
-                 AND p.terminal_reason IS DISTINCT FROM 'DISPATCH_AMBIGUOUS_UNRESOLVED'))
+                 AND p.terminal_reason IS DISTINCT FROM 'DISPATCH_AMBIGUOUS_UNRESOLVED'
+                 AND NOT (${sql.raw(UNCHANGED_REJECTED_IDENTITY_SQL)})))
       RETURNING p.desired_generation
     `))[0];
     if (reopened) return { action: "reopened", disposition, desiredGeneration: Number(reopened.desired_generation) };
@@ -195,11 +216,15 @@ export async function enqueueContactProjection(
     // 4. A closed row that must never be reopened (unresolved ambiguous create, merge supersession) owns
     //    the projection key. Report it; never throw into the producer's write path.
     const blocker = rowsOf(await executor.execute(sql`
-      SELECT terminal_reason, dispatch_state FROM contact_provider_projections
-      WHERE contact_id = ${contactId} AND provider = 'ghl' AND projection_key = ${key}
-        AND state NOT IN ('pending', 'retry', 'processing')
+      SELECT p.terminal_reason, p.dispatch_state, (${sql.raw(UNCHANGED_REJECTED_IDENTITY_SQL)}) AS unchanged_rejected
+      FROM contact_provider_projections p
+      WHERE p.contact_id = ${contactId} AND p.provider = 'ghl' AND p.projection_key = ${key}
+        AND p.state NOT IN ('pending', 'retry', 'processing')
       LIMIT 1
     `))[0];
+    if (blocker?.unchanged_rejected === true) {
+      return { action: "not_exported", disposition: "closed", reason: "rejected_identity_unchanged" };
+    }
     if (blocker && (blocker.dispatch_state === "ambiguous"
         || ["superseded_by_merge", "DISPATCH_AMBIGUOUS_UNRESOLVED", "pipeline_local_only"].includes(blocker.terminal_reason))) {
       return { action: "not_exported", disposition: "closed", reason: `blocked_${String(blocker.terminal_reason ?? "ambiguous_dispatch")}` };
@@ -229,6 +254,8 @@ export interface ClaimedProjection {
   claimedGeneration: number;
   dispatchState: string;
   claimToken: string;
+  /** Fingerprint of the contact identity at claim time; a rejection is recorded against this, never a later edit. */
+  identityFingerprint?: string;
 }
 
 /**
@@ -262,11 +289,13 @@ export async function claimEligibleProjections(limit: number): Promise<ClaimedPr
         updated_at = now()
     FROM candidates
     WHERE p.id = candidates.id
-    RETURNING p.id, p.contact_id, p.attempt_count, p.claimed_generation, p.dispatch_state
+    RETURNING p.id, p.contact_id, p.attempt_count, p.claimed_generation, p.dispatch_state,
+      (SELECT ${sql.raw(IDENTITY_FINGERPRINT_SQL("fc"))} FROM contacts fc WHERE fc.id = p.contact_id) AS identity_fingerprint
   `);
   return rowsOf(result).map(r => ({
     id: r.id, contactId: Number(r.contact_id), attemptCount: Number(r.attempt_count),
     claimedGeneration: Number(r.claimed_generation), dispatchState: r.dispatch_state, claimToken,
+    identityFingerprint: r.identity_fingerprint ?? undefined,
   }));
 }
 
@@ -379,7 +408,9 @@ export type ProjectionSettlement =
   | { kind: "deferred"; code: string; retryAfterMs?: number }
   | { kind: "retry"; code: string; receipts: Record<string, unknown>; consumedAttempt: boolean; dispatched: boolean; delayMs: number }
   | { kind: "ambiguous"; code: string; receipts: Record<string, unknown>; delayMs?: number }
-  | { kind: "terminal"; reason: string; code: string; receipts: Record<string, unknown>; consumedAttempt: boolean; dispatched: boolean }
+  | { kind: "terminal"; reason: string; code: string; receipts: Record<string, unknown>; consumedAttempt: boolean; dispatched: boolean;
+      /** Provider/local identity rejection: record the non-plaintext identity fingerprint beside the receipts. */
+      rejectedIdentity?: boolean }
   | { kind: "released" }
   /** Unresolvable ambiguous identity: held for review with a specific code; the ambiguity evidence is retained. */
   | { kind: "hold"; code: string };
@@ -461,16 +492,32 @@ export async function settleProjection(row: ClaimedProjection, outcome: Projecti
           dispatch_state = 'ambiguous', updated_at = now()
         WHERE ${where} RETURNING id`);
       break;
-    case "terminal":
+    case "terminal": {
+      // A rejection is about the identity that was dispatched. When the contact was edited (and re-enqueued) while the
+      // request was in flight, desired_generation has advanced: the rejection must not terminally fence the newer
+      // intent, so the row returns to pending with a fresh budget and the corrected identity is dispatched.
+      const fingerprintExpr = outcome.rejectedIdentity !== true
+        ? sql`'{}'::jsonb`
+        : row.identityFingerprint
+          ? sql`jsonb_build_object(${REJECTED_IDENTITY_FINGERPRINT_KEY}::text, ${row.identityFingerprint}::text)`
+          : sql`jsonb_build_object(${REJECTED_IDENTITY_FINGERPRINT_KEY}::text, (SELECT ${sql.raw(IDENTITY_FINGERPRINT_SQL("rc"))} FROM contacts rc WHERE rc.id = contact_id))`;
+      const newer = outcome.rejectedIdentity === true ? sql`desired_generation > ${row.claimedGeneration}` : sql`FALSE`;
       result = await db.execute(sql`
         UPDATE contact_provider_projections SET
-          state = 'terminal', terminal_reason = ${outcome.reason}, last_error_code = ${outcome.code},
-          attempt_count = attempt_count + ${outcome.consumedAttempt ? 1 : 0},
+          state = CASE WHEN ${newer} THEN 'pending' ELSE 'terminal' END,
+          terminal_reason = CASE WHEN ${newer} THEN NULL ELSE ${outcome.reason} END,
+          last_error_code = ${outcome.code},
+          attempt_count = CASE WHEN ${newer} THEN 0 ELSE attempt_count + ${outcome.consumedAttempt ? 1 : 0} END,
           dispatch_count = dispatch_count + ${outcome.dispatched ? 1 : 0},
-          completed_at = now(), claim_token = NULL, lease_expires_at = NULL, claimed_generation = NULL,
+          next_attempt_at = CASE WHEN ${newer} THEN now() ELSE next_attempt_at END,
+          completed_at = CASE WHEN ${newer} THEN NULL ELSE now() END,
+          claim_token = NULL, lease_expires_at = NULL, claimed_generation = NULL,
           dispatch_state = 'none', dispatch_operation_id = NULL,
-          component_receipts = ${JSON.stringify(outcome.receipts)}::jsonb, updated_at = now()
+          component_receipts = ${JSON.stringify(outcome.receipts)}::jsonb
+            || CASE WHEN ${newer} THEN '{}'::jsonb ELSE ${fingerprintExpr} END,
+          updated_at = now()
         WHERE ${where} RETURNING id`);
+    }
       break;
   }
   return rowsOf(result).length === 1;

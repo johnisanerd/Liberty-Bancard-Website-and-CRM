@@ -15,6 +15,7 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
+import { PaidProviderControlsPanel } from "./PaidProviderControlsPanel";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -821,6 +822,8 @@ export function ProgramHealthPanel() {
           )}
         </CardContent>
       </Card>
+      {/* Paid provider controls and emergency stop (relocated from the retired pilot panel) */}
+      <PaidProviderControlsPanel />
     </div>
   );
 }

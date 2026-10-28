@@ -653,8 +653,61 @@ const NAMED_QUEUE_SCHEDULES: NamedQueueSchedule[] = [
   },
 ];
 
+/**
+ * Why a queue's worker is or is not running, derived from the expected selection (profile/active config) and then the
+ * live registry. An unselected queue is a deliberate state, not a failure; a selected queue without a ready worker is.
+ */
+export type QueueRuntimeState =
+  | "active" | "expected_not_selected" | "selected_missing" | "selected_not_ready" | "unreadable";
+/** The GHL queue's runtime capability is its own state: the worker can run while GHL writes are paused or unowned. */
+export type QueueCapabilityState = "not_applicable" | "ghl_paused" | "ghl_owner_released" | "ghl_enabled" | "ghl_unreadable";
+export type QueueFreshnessModel = "interval" | "cron" | "event_driven";
+export interface QueueFreshness {
+  model: QueueFreshnessModel;
+  /** Only interval queues have an expected cadence. Event-driven and cron queues are never judged stale by silence. */
+  expectedIntervalMs: number | null;
+  /** Last completion observed by this process; never Redis-retained history. */
+  lastObservedAt: string | null;
+  status: "fresh" | "stale" | "no_observation_in_process" | "not_applicable" | "unavailable";
+}
+export const QUEUE_STALE_AFTER_INTERVALS = 3;
+
+/** Pure freshness derivation shared by every consumer so thresholds cannot drift. */
+export function deriveQueueFreshness(input: {
+  hasCron: boolean;
+  repeatEveryMs: number;
+  runtimeState: QueueRuntimeState;
+  paused: boolean | null;
+  probeOk: boolean;
+  lastObservedAt: string | null;
+  nowMs?: number;
+}): QueueFreshness {
+  const model: QueueFreshnessModel = input.hasCron ? "cron" : input.repeatEveryMs > 0 ? "interval" : "event_driven";
+  const expectedIntervalMs = model === "interval" ? input.repeatEveryMs : null;
+  const base = { model, expectedIntervalMs, lastObservedAt: input.lastObservedAt };
+  if (!input.probeOk || input.runtimeState === "unreadable") return { ...base, status: "unavailable" };
+  if (model !== "interval" || input.runtimeState !== "active" || input.paused === true) return { ...base, status: "not_applicable" };
+  if (!input.lastObservedAt) return { ...base, status: "no_observation_in_process" };
+  const age = (input.nowMs ?? Date.now()) - new Date(input.lastObservedAt).getTime();
+  return { ...base, status: age > QUEUE_STALE_AFTER_INTERVALS * input.repeatEveryMs ? "stale" : "fresh" };
+}
+
+export function deriveQueueRuntimeState(input: {
+  expectedSelected: boolean; workerInstantiated: boolean; workerActive: boolean; probeOk: boolean;
+}): QueueRuntimeState {
+  if (!input.probeOk) return "unreadable";
+  if (!input.expectedSelected) return "expected_not_selected";
+  if (!input.workerInstantiated) return "selected_missing";
+  return input.workerActive ? "active" : "selected_not_ready";
+}
+
 export interface QueueMetric {
   name: string;
+  /** Selection expected from the background profile and active config, independent of instantiated workers. */
+  expectedSelected: boolean;
+  runtimeState: QueueRuntimeState;
+  capabilityState: QueueCapabilityState;
+  freshness: QueueFreshness;
   waiting: number | null;
   active: number | null;
   completed: number | null;
@@ -3287,12 +3340,42 @@ export class QueueManager {
 
   async getAllQueueMetrics(): Promise<{ queues: QueueMetric[]; queueMode: QueueMode; status: "ok" | "degraded" }> {
     const metrics: QueueMetric[] = [];
+    const expectedNames = new Set(this.activeConfigs().map(c => c.name));
+    let ghlCapability: QueueCapabilityState = "ghl_unreadable";
+    try {
+      const { getGhlSyncControl } = await import("./ghl-sync-control");
+      const control = await getGhlSyncControl();
+      ghlCapability = !control.enabled ? "ghl_paused"
+        : (!control.ownerProfile || !control.selectedRuntime) ? "ghl_owner_released"
+        : "ghl_enabled";
+    } catch { ghlCapability = "ghl_unreadable"; }
+    // Derived fields are computed once per queue so every branch (ok / unreadable) reports the same contract.
+    const derived = (config: QueueConfig, probeOk: boolean, paused: boolean | null, lastObservedAt: string | null) => {
+      const expectedSelected = expectedNames.has(config.name);
+      const runtimeState = deriveQueueRuntimeState({
+        expectedSelected, workerInstantiated: this.workers.has(config.name),
+        workerActive: this.isQueueWorkerActive(config.name), probeOk,
+      });
+      return {
+        expectedSelected, runtimeState,
+        capabilityState: (config.name === QUEUE_NAMES.GHL_SYNC ? ghlCapability : "not_applicable") as QueueCapabilityState,
+        freshness: deriveQueueFreshness({
+          hasCron: Boolean(config.cronPattern),
+          repeatEveryMs: this.effectiveIntervals.get(config.name) ?? config.repeatEveryMs,
+          runtimeState, paused, probeOk, lastObservedAt,
+        }),
+      };
+    };
 
     for (const config of QUEUE_CONFIGS) {
       const queue = this.queues.get(config.name);
       if (!queue) {
+        // A queue the profile does not select has nothing to read: a deliberate state, not a failed probe.
+        // A selected queue with no instantiated Queue object is a real read failure.
+        const notExpected = !expectedNames.has(config.name);
         metrics.push({
           name: config.name,
+          ...derived(config, notExpected, null, null),
           waiting: null,
           active: null,
           completed: null,
@@ -3304,12 +3387,12 @@ export class QueueManager {
           lastRetainedRedisCompletedAt: null,
           lastFailedAt: null,
           lastRetainedRedisFailedAt: null,
-          workerSelected: this.workers.has(config.name),
+          workerSelected: expectedNames.has(config.name),
           workerActive: this.isQueueWorkerActive(config.name),
           avgDurationMs: null,
           throughputPerHour: null,
-          probeStatus: "error",
-          errorCode: "QUEUE_METRICS_READ_FAILED",
+          probeStatus: notExpected ? "ok" : "error",
+          ...(notExpected ? {} : { errorCode: "QUEUE_METRICS_READ_FAILED" as const }),
         });
         continue;
       }
@@ -3363,6 +3446,7 @@ export class QueueManager {
 
         metrics.push({
           name: config.name,
+          ...derived(config, true, isPaused, lastCompletedAt),
           waiting,
           active,
           completed,
@@ -3374,7 +3458,7 @@ export class QueueManager {
           lastRetainedRedisCompletedAt,
           lastFailedAt,
           lastRetainedRedisFailedAt,
-          workerSelected: this.workers.has(config.name),
+          workerSelected: expectedNames.has(config.name),
           workerActive: this.isQueueWorkerActive(config.name),
           avgDurationMs,
           throughputPerHour,
@@ -3383,6 +3467,7 @@ export class QueueManager {
       } catch (err: any) {
         metrics.push({
           name: config.name,
+          ...derived(config, false, null, null),
           waiting: null,
           active: null,
           completed: null,
@@ -3394,7 +3479,7 @@ export class QueueManager {
           lastRetainedRedisCompletedAt: null,
           lastFailedAt: null,
           lastRetainedRedisFailedAt: null,
-          workerSelected: this.workers.has(config.name),
+          workerSelected: expectedNames.has(config.name),
           workerActive: this.isQueueWorkerActive(config.name),
           avgDurationMs: null,
           throughputPerHour: null,
@@ -3407,7 +3492,8 @@ export class QueueManager {
     return {
       queues: metrics,
       queueMode: getQueueMode(),
-      status: metrics.some((metric) => metric.probeStatus === "error" || (this.workers.has(metric.name) && !metric.workerActive))
+      status: metrics.some((metric) => metric.probeStatus === "error"
+        || metric.runtimeState === "selected_missing" || metric.runtimeState === "selected_not_ready")
         ? "degraded"
         : "ok",
     };

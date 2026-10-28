@@ -1029,8 +1029,10 @@ function ZeroBounceSafetyTab() {
   const safetyQuery = useQuery<{
     enabled: boolean;
     circuitState: string;
-    autoRunEnabled: boolean;
-    nextAutomaticRunAt: string;
+    autoRunEnabled: boolean | null;
+    autoRunState?: "disabled" | "scheduled" | "schedule_unresolved" | "unavailable";
+    autoRunSchedule?: string;
+    nextAutomaticRunAt: string | null;
     authorizedPurposes: string[];
     authorizedCallers: string[];
   }>({ queryKey: ["/api/admin/settings/zerobounce-safety"] });
@@ -1059,8 +1061,8 @@ function ZeroBounceSafetyTab() {
         </div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
           <div className="rounded border p-2"><div className="text-muted-foreground">Validations today</div><div className="font-mono">{isLoading ? "…" : (usage?.usedToday ?? 0).toLocaleString()}</div></div>
-          <div className="rounded border p-2"><div className="text-muted-foreground">MI-09 auto-run</div><div className="font-mono">{safetyQuery.data?.autoRunEnabled ? "ON" : "OFF"}</div></div>
-          <div className="rounded border p-2"><div className="text-muted-foreground">Next scheduled</div><div className="font-mono">{safetyQuery.data?.nextAutomaticRunAt ? new Date(safetyQuery.data.nextAutomaticRunAt).toLocaleString() : "—"}</div></div>
+          <div className="rounded border p-2"><div className="text-muted-foreground">MI-09 auto-run</div><div className="font-mono">{safetyQuery.data?.autoRunEnabled === true ? "ON" : safetyQuery.data?.autoRunEnabled === false ? "OFF" : "Unavailable"}</div></div>
+          <div className="rounded border p-2"><div className="text-muted-foreground">Next scheduled</div><div className="font-mono">{safetyQuery.data?.nextAutomaticRunAt ? new Date(safetyQuery.data.nextAutomaticRunAt).toLocaleString() : safetyQuery.data?.autoRunState === "disabled" ? "Not scheduled (auto-run off)" : safetyQuery.data?.autoRunState === "schedule_unresolved" ? `Custom schedule ${safetyQuery.data.autoRunSchedule ?? ""}` : "Unavailable"}</div></div>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button

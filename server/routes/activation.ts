@@ -1036,11 +1036,16 @@ export function registerActivationRoutes(app: Express, dependencies: {
         const { requireQueueManagerReady } = await import("../services/queue-manager");
         const qm = requireQueueManagerReady();
         const metrics = await qm.getAllQueueMetrics();
+        const unreadable = metrics.queues.filter((q) => q.probeStatus !== "ok");
+        const notRunning = metrics.queues.filter((q) => q.runtimeState === "selected_missing" || q.runtimeState === "selected_not_ready");
         const dlqTotal = metrics.queues.reduce((sum, q) => sum + (q.probeStatus === "ok" ? (q.failed ?? 0) : 0), 0);
-        queueStatus = metrics.status === "ok" && dlqTotal === 0 ? "green" : "yellow";
-        queueValue = metrics.status === "ok"
-          ? (dlqTotal === 0 ? "No failed queue jobs" : `${dlqTotal} failed queue job(s)`)
-          : "Queue metrics are degraded";
+        // A failed read is unavailable, never "no failed jobs"; a selected queue without a running worker is its own finding.
+        queueStatus = unreadable.length === 0 && notRunning.length === 0 && dlqTotal === 0 ? "green" : "yellow";
+        queueValue = unreadable.length > 0
+          ? `Queue metrics unavailable for ${unreadable.length} queue(s); failed-job count is partial (${dlqTotal} counted)`
+          : notRunning.length > 0
+            ? `${notRunning.length} selected queue(s) have no running worker`
+            : (dlqTotal === 0 ? "No failed queue jobs" : `${dlqTotal} failed queue job(s)`);
       } catch {
         queueStatus = "yellow";
         queueValue = "Queue health source unavailable";

@@ -14,6 +14,7 @@ import { deriveCanonicalBusinessSafeNextAction } from "../services/canonical-bus
 import { buildCanonicalBusinessEmailDisplay } from "../services/canonical-business-email-display";
 import { sanitizeAuditPayload } from "../services/audit-sanitizer";
 import { backgroundJobs, inboundRequestEffects, sdrMerchants } from "@shared/schema";
+import { retiredPilotEntrance } from "../services/pilot-entrance-retirement";
 import { registerSfpReadyHeldOperatorRoutes } from "./sfp-ready-held-operator";
 import { registerSfpStagedProjectionReconciliationRoutes } from "./sfp-staged-projection-reconciliation";
 
@@ -2486,17 +2487,9 @@ Return maximum 5 segments, 4 recommendations, 4 outreach priorities, 3 quick win
     }
   });
 
-  app.put("/api/lead-ops/pilot/activation-readiness", requireRole("admin"), async (req, res) => {
-    try {
-      const { typedConfirmation } = req.body as { typedConfirmation?: unknown };
-      const { authorizeSelectiveActivation } = await import("../services/mi09-pilot-authority");
-      const authorizedBy = (req.user as any)?.email || (req.user as any)?.id || "unknown";
-      const authorization = await authorizeSelectiveActivation({ authorizedBy, typedConfirmation: String(typedConfirmation ?? "") });
-      res.json({ authorization });
-    } catch (err: any) {
-      res.status(400).json({ error: err?.message });
-    }
-  });
+  // Retired entrance (Stage 4A matrix: server/services/pilot-entrance-retirement.ts). Route and role gate stay
+  // registered; the handler is fenced after auth and performs nothing.
+  app.put("/api/lead-ops/pilot/activation-readiness", requireRole("admin"), retiredPilotEntrance("activation-readiness"));
 
   // #corrective-build item 9 — one consolidated telemetry snapshot the Lead
   // Ops panel renders: pool authority, eligible/exclusion counts,
@@ -2953,12 +2946,14 @@ Return maximum 5 segments, 4 recommendations, 4 outreach priorities, 3 quick win
           available: !!sourcePool && !!throughput24h,
           unavailableReason: telemetryUnavailableReason,
         },
-        crosswalkOnlyExcluded: crosswalkOnlyExcluded ?? { crosswalk_only_excluded_count: 0, ambiguous_match_count: 0, insufficient_evidence_count: 0 },
+        // A failed read is null (unavailable), never zeros.
+        crosswalkOnlyExcluded: crosswalkOnlyExcluded ?? null,
         spendByProvider: spend.byProvider,
         providerControls: paidProviderControls.providers,
         zeroBounceSafety: paidProviderControls.zeroBounce,
         paidInFlightCount: paidProviderControls.inFlightCount,
         paidInFlightOperations: paidProviderControls.inFlightOperations,
+        paidInFlightSample: paidProviderControls.inFlightSample,
         // ── Serper gateway state telemetry ──────────────────────────────────
         // Exposes the live legacy gateway control and rolling-window counts
         // alongside provider_controls; all selected fields exist in the
@@ -3013,100 +3008,17 @@ Return maximum 5 segments, 4 recommendations, 4 outreach priorities, 3 quick win
     }
   });
 
-  app.put("/api/lead-ops/pilot/pool-authority", requireRole("admin"), async (req, res) => {
-    try {
-      const { pool } = req.body as { pool?: unknown };
-      if (pool !== "master_leads" && pool !== "prospects") {
-        return res.status(400).json({ error: "pool must be 'master_leads' or 'prospects'" });
-      }
-      const { setPoolAuthorityDecision } = await import("../services/mi09-pilot-authority");
-      const decidedBy = (req.user as any)?.email || (req.user as any)?.id || "unknown";
-      const decision = await setPoolAuthorityDecision({ pool, decidedBy });
-      res.json({ decision });
-    } catch (err: any) {
-      res.status(400).json({ error: err?.message });
-    }
-  });
+  // Retired entrance (Stage 4A matrix: server/services/pilot-entrance-retirement.ts). Route and role gate stay
+  // registered; the handler is fenced after auth and performs nothing.
+  app.put("/api/lead-ops/pilot/pool-authority", requireRole("admin"), retiredPilotEntrance("pool-authority"));
 
-  app.post("/api/lead-ops/pilot/runs/:runId/transition", requireRole("admin"), async (req, res) => {
-    try {
-      const { transitionPilotRunState, evaluateStopConditions, getPilotRun, getPilotDefinitions, assertPaidBudgetAuthorized } = await import("../services/mi09-pilot-authority");
-      const { toState, stopReason, advancedBy } = req.body as { toState: string; stopReason?: string; advancedBy?: string };
-      if (!toState) return res.status(400).json({ error: "toState required" });
+  // Retired entrance (Stage 4A matrix: server/services/pilot-entrance-retirement.ts). Route and role gate stay
+  // registered; the handler is fenced after auth and performs nothing.
+  app.post("/api/lead-ops/pilot/runs/:runId/transition", requireRole("admin"), retiredPilotEntrance("transition"));
 
-      // Starting a run whose definition allows paid providers requires explicit
-      // operator approval. Provider limits and circuit state remain independent.
-      if (toState === "running") {
-        const run = await getPilotRun(String(req.params.runId));
-        if (!run) return res.status(404).json({ error: "PILOT_RUN_NOT_FOUND" });
-        const defs = await getPilotDefinitions();
-        const def = defs.find((d: any) => String(d.id) === String(run.pilot_definition_id));
-        const paidAllowed = def?.paid_providers_allowed
-          ? (typeof def.paid_providers_allowed === "string" ? JSON.parse(def.paid_providers_allowed) : def.paid_providers_allowed)
-          : {};
-        const anyPaidAllowed = Object.values(paidAllowed).some((v) => v === true);
-        if (anyPaidAllowed) {
-          await assertPaidBudgetAuthorized();
-        }
-      }
-
-      // Always evaluate stop conditions before running/completing.
-      const stopCheck = await evaluateStopConditions(String(req.params.runId));
-      if (!stopCheck.passed && toState === "running") {
-        return res.status(409).json({ error: "stop_conditions_failed", detail: stopCheck });
-      }
-      await transitionPilotRunState(String(req.params.runId), toState as any, { stopReason, advancedBy });
-      res.json({ ok: true, stopConditionsChecked: stopCheck });
-    } catch (err: any) {
-      const status = err?.message?.includes("MI09_PAID_BUDGET_NOT_AUTHORIZED") ? 403
-        : err?.message?.includes("PILOT_EVIDENCE") ? 409
-        : 500;
-      res.status(status).json({ error: err?.message });
-    }
-  });
-
-  app.post("/api/lead-ops/pilot/runs/:runId/advance", requireRole("admin"), async (req, res) => {
-    try {
-      const { issuePilotAdvancementReceipt, evaluateStopConditions } = await import("../services/mi09-pilot-authority");
-      const { fromLevel, toLevel, pricingArtifactId, idempotencyKey } = req.body as {
-        fromLevel: number; toLevel: number;
-        pricingArtifactId?: string; idempotencyKey: string;
-      };
-      if (!idempotencyKey) return res.status(400).json({ error: "idempotencyKey required" });
-
-      // approvedBy is derived from the authenticated session, not caller-supplied.
-      // This binds the advancement receipt to the verified session identity.
-      const actorUser = (req as any).user as { email?: string; id?: unknown } | undefined;
-      const approvedBy = actorUser?.email ?? String(actorUser?.id ?? "unknown-admin");
-
-      // Validate legal level progression: only 1→2 and 2→3 are allowed.
-      const parsedFrom = Number(fromLevel);
-      const parsedTo   = Number(toLevel);
-      if (!([1, 2, 3] as number[]).includes(parsedFrom) || !([1, 2, 3] as number[]).includes(parsedTo)) {
-        return res.status(400).json({ error: "fromLevel and toLevel must each be 1, 2, or 3" });
-      }
-      if (parsedTo !== parsedFrom + 1) {
-        return res.status(400).json({
-          error: `Illegal level advancement: ${parsedFrom}→${parsedTo}. Only sequential advancement (1→2, 2→3) is permitted.`,
-        });
-      }
-
-      const stopConditions = await evaluateStopConditions(String(req.params.runId));
-      const receipt = await issuePilotAdvancementReceipt({
-        pilotRunId: String(req.params.runId),
-        fromLevel: parsedFrom,
-        toLevel: parsedTo,
-        approvedBy,
-        pricingArtifactId,
-        stopConditionsChecked: stopConditions.details,
-        stopConditionsPassed: stopConditions.passed,
-        idempotencyKey,
-      });
-      res.json(receipt);
-    } catch (err: any) {
-      res.status(err?.message?.includes("PILOT_EVIDENCE") ? 409 : 500).json({ error: err?.message });
-    }
-  });
+  // Retired entrance (Stage 4A matrix: server/services/pilot-entrance-retirement.ts). Route and role gate stay
+  // registered; the handler is fenced after auth and performs nothing.
+  app.post("/api/lead-ops/pilot/runs/:runId/advance", requireRole("admin"), retiredPilotEntrance("advance"));
 
   app.get("/api/lead-ops/pilot/pricing-artifacts", requireRole("admin"), async (_req, res) => {
     try {
@@ -3151,46 +3063,23 @@ Return maximum 5 segments, 4 recommendations, 4 outreach priorities, 3 quick win
   });
 
   // POST /api/lead-ops/pilot/definitions — create immutable pilot definition
-  app.post("/api/lead-ops/pilot/definitions", requireRole("admin"), async (req, res) => {
-    try {
-      const { createPilotDefinition } = await import("../services/mi09-pilot-authority");
-      const createdBy = (req as any).user?.email ?? String((req as any).user?.id ?? "unknown-admin");
-      const result = await createPilotDefinition({ ...req.body, createdBy });
-      res.json(result);
-    } catch (err: any) {
-      res.status(500).json({ error: err?.message });
-    }
-  });
+  // Retired entrance (Stage 4A matrix: server/services/pilot-entrance-retirement.ts). Route and role gate stay
+  // registered; the handler is fenced after auth and performs nothing.
+  app.post("/api/lead-ops/pilot/definitions", requireRole("admin"), retiredPilotEntrance("definitions"));
 
   // POST /api/lead-ops/pilot/runs — create a new pilot run in 'draft' state
-  app.post("/api/lead-ops/pilot/runs", requireRole("admin"), async (req, res) => {
-    try {
-      const { createPilotRun } = await import("../services/mi09-pilot-authority");
-      const result = await createPilotRun({ ...req.body, advancedBy: (req as any).user?.email ?? "admin" });
-      res.json(result);
-    } catch (err: any) {
-      res.status(err?.message?.includes("BLOCKED") ? 409 : 500).json({ error: err?.message });
-    }
-  });
+  // Retired entrance (Stage 4A matrix: server/services/pilot-entrance-retirement.ts). Route and role gate stay
+  // registered; the handler is fenced after auth and performs nothing.
+  app.post("/api/lead-ops/pilot/runs", requireRole("admin"), retiredPilotEntrance("runs"));
 
   // POST /api/lead-ops/pilot/runs/:runId/select-cohort — deterministic, server-side
   // cohort selection. The operator UI calls this instead of assembling a member
   // list by hand: it selects from the definition's own certified scope, applies
   // fixed exclusions (DBPR lineage, test/demo data, already-linked identities,
   // suppressed records, open conflicts), and freezes the result. Idempotent.
-  app.post("/api/lead-ops/pilot/runs/:runId/select-cohort", requireRole("admin"), async (req, res) => {
-    try {
-      const { selectDeterministicPilotCohort } = await import("../services/mi09-pilot-authority");
-      const result = await selectDeterministicPilotCohort(String(req.params.runId));
-      res.json(result);
-    } catch (err: any) {
-      const status = err?.message?.includes("INSUFFICIENT") ? 409
-        : err?.message?.includes("NOT_FOUND") ? 404
-        : err?.message?.includes("MISSING_SOURCE_ADAPTER") ? 400
-        : 500;
-      res.status(status).json({ error: err?.message });
-    }
-  });
+  // Retired entrance (Stage 4A matrix: server/services/pilot-entrance-retirement.ts). Route and role gate stay
+  // registered; the handler is fenced after auth and performs nothing.
+  app.post("/api/lead-ops/pilot/runs/:runId/select-cohort", requireRole("admin"), retiredPilotEntrance("select-cohort"));
 
   // GET /api/lead-ops/pilot/budget-summary — ladder-wide aggregate paid spend
   // (settled + in-flight reserved) across ALL pilot runs and providers, vs the
@@ -3219,31 +3108,9 @@ Return maximum 5 segments, 4 recommendations, 4 outreach priorities, 3 quick win
     }
   });
 
-  // POST /api/lead-ops/pilot/paid-provider-approval — separately revocable
-  // paid-provider approval. The old URL below remains a compatible alias.
-  const approvePaidProviders = async (req: any, res: any) => {
-    try {
-      const { authorizePaidBudget, MI09_PAID_BUDGET_TYPED_CONFIRMATION } = await import("../services/mi09-pilot-authority");
-      const typedConfirmation = String(req.body?.typedConfirmation ?? "");
-      if (typedConfirmation !== "AUTHORIZE PAID PILOT" && typedConfirmation !== MI09_PAID_BUDGET_TYPED_CONFIRMATION) {
-        return res.status(400).json({ error: "PAID_PROVIDER_APPROVAL_DENIED:typed_confirmation_mismatch — type exactly: AUTHORIZE PAID PILOT" });
-      }
-      const authorizedBy = (req as any).user?.email ?? String((req as any).user?.id ?? "unknown-admin");
-      const result = await authorizePaidBudget({ authorizedBy, typedConfirmation: MI09_PAID_BUDGET_TYPED_CONFIRMATION });
-      await storage.createAuditLog({
-        action: "mi09_pilot_paid_provider_approved",
-        entityType: "system",
-        entityId: 0,
-        details: { authorizedBy },
-      });
-      const { capMicros: _legacyCapMicros, ...approval } = result;
-      res.json(approval);
-    } catch (err: any) {
-      res.status(err?.message?.includes("DENIED") ? 403 : 500).json({ error: err?.message });
-    }
-  };
-  app.post("/api/lead-ops/pilot/paid-provider-approval", requireRole("admin"), approvePaidProviders);
-  app.post("/api/lead-ops/pilot/authorize-paid-budget", requireRole("admin"), approvePaidProviders);
+  // Retired entrances (Stage 4A matrix): paid-provider approval and its legacy alias. The GET above stays readable.
+  app.post("/api/lead-ops/pilot/paid-provider-approval", requireRole("admin"), retiredPilotEntrance("paid-provider-approval"));
+  app.post("/api/lead-ops/pilot/authorize-paid-budget", requireRole("admin"), retiredPilotEntrance("authorize-paid-budget"));
 
   // GET /api/lead-ops/recurrence/budget-summary — corrective item 8: the
   // recurring-execution aggregate paid spend cap and typed authorization,
@@ -3312,23 +3179,9 @@ Return maximum 5 segments, 4 recommendations, 4 outreach priorities, 3 quick win
 
   // POST /api/lead-ops/pilot/runs/:runId/freeze-cohort — freeze pilot cohort (idempotent)
   // Body: { members: Array<{canonicalBusinessId, sourceAdapterKey, countyFips, vertical?}> }
-  app.post("/api/lead-ops/pilot/runs/:runId/freeze-cohort", requireRole("admin"), async (req, res) => {
-    try {
-      const { freezePilotCohort } = await import("../services/mi09-pilot-authority");
-      const members = req.body?.members;
-      if (!Array.isArray(members) || members.length === 0) {
-        return res.status(400).json({ error: "members array is required and must be non-empty" });
-      }
-      const result = await freezePilotCohort({
-        pilotRunId: String(req.params.runId),
-        members: members as Array<{ canonicalBusinessId: string; sourceAdapterKey: string; countyFips: string; vertical?: string }>,
-      });
-      res.json(result);
-    } catch (err: any) {
-      const status = err?.message?.includes("INSUFFICIENT") ? 409 : err?.message?.includes("BLOCKED") ? 409 : 500;
-      res.status(status).json({ error: err?.message });
-    }
-  });
+  // Retired entrance (Stage 4A matrix: server/services/pilot-entrance-retirement.ts). Route and role gate stay
+  // registered; the handler is fenced after auth and performs nothing.
+  app.post("/api/lead-ops/pilot/runs/:runId/freeze-cohort", requireRole("admin"), retiredPilotEntrance("freeze-cohort"));
 
   // NOTE: There is intentionally no manual checkpoint endpoint.
   // Checkpoints are ONLY advanced by the verified executor (execute-phase) to
@@ -3377,39 +3230,9 @@ Return maximum 5 segments, 4 recommendations, 4 outreach priorities, 3 quick win
   // Consumes mi09_pilot_cohort_members for the given run and records mi09_pilot_effect_links.
   // Resumable: reads last checkpoint and picks up where it left off.
   // Must be called repeatedly (one page at a time) until {complete:true} is returned.
-  app.post("/api/lead-ops/pilot/runs/:runId/execute-phase", requireRole("admin"), async (req, res) => {
-    try {
-      const idempotencyKey = req.headers["idempotency-key"] as string | undefined;
-      if (!idempotencyKey) {
-        return res.status(400).json({ error: "Idempotency-Key header is required" });
-      }
-      const { executePilotCohortPhase, assertPaidBudgetAuthorized, getPilotRun, getPilotDefinitions } = await import("../services/mi09-pilot-authority");
-
-      // Paid-provider gate: retain explicit operator approval, without an
-      // aggregate-spend authorization or cap check.
-      const run = await getPilotRun(String(req.params.runId));
-      if (!run) return res.status(404).json({ error: "PILOT_RUN_NOT_FOUND" });
-      const defs = await getPilotDefinitions();
-      const def = defs.find((d: any) => String(d.id) === String(run.pilot_definition_id));
-      const paidAllowed = def?.paid_providers_allowed
-        ? (typeof def.paid_providers_allowed === "string" ? JSON.parse(def.paid_providers_allowed) : def.paid_providers_allowed)
-        : {};
-      const anyPaidAllowed = Object.values(paidAllowed).some((v) => v === true);
-      if (anyPaidAllowed) {
-        await assertPaidBudgetAuthorized();
-      }
-
-      const result = await executePilotCohortPhase({
-        pilotRunId: String(req.params.runId),
-        phase: String(req.body?.phase ?? "enrichment") as any,
-        batchSize: req.body?.batchSize ? Number(req.body.batchSize) : 50,
-      });
-      res.json(result);
-    } catch (err: any) {
-      const status = err?.message?.includes("MI09_PAID_BUDGET_NOT_AUTHORIZED") ? 403 : 500;
-      res.status(status).json({ error: err?.message });
-    }
-  });
+  // Retired entrance (Stage 4A matrix: server/services/pilot-entrance-retirement.ts). Route and role gate stay
+  // registered; the handler is fenced after auth and performs nothing.
+  app.post("/api/lead-ops/pilot/runs/:runId/execute-phase", requireRole("admin"), retiredPilotEntrance("execute-phase"));
 
   // POST /api/lead-ops/pilot/reconciliation-reports — generate and save the
   // complete report from durable server data. The client supplies only run id.
@@ -3580,35 +3403,16 @@ Return maximum 5 segments, 4 recommendations, 4 outreach priorities, 3 quick win
   // POST /api/lead-ops/pilot/definitions/ensure-level1 — convergently creates the
   // canonical Level 1 pilot definition (South FL FIPS + five verticals, no paid
   // providers, max 25 businesses).
-  app.post("/api/lead-ops/pilot/definitions/ensure-level1", requireRole("admin"), async (req, res) => {
-    try {
-      const { ensureLevel1PilotDefinition } = await import("../services/cro03/level1-roi-cohort");
-      const result = await ensureLevel1PilotDefinition({
-        createdBy: `admin:${(req as any).user?.id ?? "system"}`,
-      });
-      res.json(result);
-    } catch (err: any) {
-      res.status(500).json({ error: err?.message });
-    }
-  });
+  // Retired entrance (Stage 4A matrix: server/services/pilot-entrance-retirement.ts). Route and role gate stay
+  // registered; the handler is fenced after auth and performs nothing.
+  app.post("/api/lead-ops/pilot/definitions/ensure-level1", requireRole("admin"), retiredPilotEntrance("definitions-ensure-level1"));
 
   // POST /api/lead-ops/pilot/runs/:runId/select-roi-cohort — Level 1 ROI-ranked
   // cohort selection + freeze. Uses selectRoiCohort() (businesses + business_locations
   // directly) so it succeeds when master_leads = 0. Idempotent.
-  app.post("/api/lead-ops/pilot/runs/:runId/select-roi-cohort", requireRole("admin"), async (req, res) => {
-    try {
-      const { selectAndFreezeLevel1RoiCohort } = await import("../services/cro03/level1-roi-cohort");
-      const result = await selectAndFreezeLevel1RoiCohort(String(req.params.runId));
-      res.json(result);
-    } catch (err: any) {
-      const status = err?.message?.includes("CENSUS_INSUFFICIENT") ? 409
-        : err?.message?.includes("NOT_FOUND") ? 404
-        : err?.message?.includes("NOT_LEVEL_1") ? 400
-        : err?.message?.includes("FREEZE_BLOCKED") ? 409
-        : 500;
-      res.status(status).json({ error: err?.message });
-    }
-  });
+  // Retired entrance (Stage 4A matrix: server/services/pilot-entrance-retirement.ts). Route and role gate stay
+  // registered; the handler is fenced after auth and performs nothing.
+  app.post("/api/lead-ops/pilot/runs/:runId/select-roi-cohort", requireRole("admin"), retiredPilotEntrance("select-roi-cohort"));
 
   // GET /api/lead-ops/pilot/runs/:runId/free-evidence-report — Level 1 free-evidence
   // summary per frozen cohort business. Shows candidate counts, best masked values,
@@ -3640,27 +3444,9 @@ Return maximum 5 segments, 4 recommendations, 4 outreach priorities, 3 quick win
   // bounded ZeroBounce validation. Max 25 addresses. Only provider_valid results
   // create master_leads rows. Idempotent by idempotencyKey.
   // Body: { idempotencyKey: string, maxValidations?: number }
-  app.post("/api/lead-ops/pilot/runs/:runId/validate-cohort", requireRole("admin"), async (req, res) => {
-    try {
-      const { executeBoundedValidation } = await import("../services/cro03/cohort-validation");
-      const idempotencyKey = String(req.body?.idempotencyKey ?? "");
-      if (!idempotencyKey || idempotencyKey.length > 200) {
-        return res.status(400).json({ error: "idempotencyKey is required (max 200 chars)" });
-      }
-      const result = await executeBoundedValidation(String(req.params.runId), {
-        idempotencyKey,
-        actorId: `admin:${(req as any).user?.id ?? "system"}`,
-        maxValidations: req.body?.maxValidations,
-      });
-      res.json(result);
-    } catch (err: any) {
-      const status = err?.message?.includes("NOT_FOUND") ? 404
-        : err?.message?.includes("BLOCKED") ? 422
-        : err?.message?.includes("NOT_FROZEN") ? 409
-        : 500;
-      res.status(status).json({ error: err?.message });
-    }
-  });
+  // Retired entrance (Stage 4A matrix: server/services/pilot-entrance-retirement.ts). Route and role gate stay
+  // registered; the handler is fenced after auth and performs nothing.
+  app.post("/api/lead-ops/pilot/runs/:runId/validate-cohort", requireRole("admin"), retiredPilotEntrance("validate-cohort"));
 
   // ════════════════════════════════════════════════════════════════════════════
   // SOUTH FLORIDA PROSPECTING — independent program routes

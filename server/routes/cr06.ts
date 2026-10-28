@@ -50,6 +50,16 @@ export function registerCr06Routes(app: Express) {
     res.json(getCr06RolloutManifest());
   });
 
+  // Derived read-only catalog contract (current/template/historical/uninstalled/unresolved + readiness states).
+  app.get("/api/admin/catalog-truth", requireRole("admin", "manager"), async (_req, res) => {
+    try {
+      const { loadCatalogTruth } = await import("../services/catalog-truth");
+      res.json(await loadCatalogTruth());
+    } catch (error) {
+      serverError(res, error);
+    }
+  });
+
   app.get("/api/admin/cr06/catalog", requireRole("admin", "manager"), async (_req, res) => {
     try {
       res.json(await getCr06Catalog());

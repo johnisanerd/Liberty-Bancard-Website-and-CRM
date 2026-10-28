@@ -99,12 +99,16 @@ import {
   roleplayExchanges, type RoleplayExchange, type InsertRoleplayExchange,
   leaderboardSettings, type LeaderboardSettings,
 } from "@shared/schema";
-import { eq, desc, and, lt, isNull, ne, sql, asc, gte, lte, inArray, or, ilike, count } from "drizzle-orm";
+import { eq, desc, and, lt, isNull, ne, sql, asc, gte, lte, inArray, or, ilike, count, getTableColumns } from "drizzle-orm";
   import { type PaginationParams, type PaginatedResult, normalizePagination } from "./_shared";
 
   export class CampaignsStorage {
     async getCampaigns() {
-    return await db.select().from(campaigns).orderBy(desc(campaigns.createdAt));
+    // totalSteps is derived from a grouped step count; the stored total_steps column is not trusted (it drifts).
+    return await db.select({
+      ...getTableColumns(campaigns),
+      totalSteps: sql<number>`COALESCE((SELECT COUNT(*) FROM campaign_steps cs WHERE cs.campaign_id = "campaigns"."id"), 0)::int`,
+    }).from(campaigns).orderBy(desc(campaigns.createdAt));
   }
 
 

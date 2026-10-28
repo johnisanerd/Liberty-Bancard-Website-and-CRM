@@ -2757,7 +2757,7 @@ export function registerAdminRoutes(app: Express) {
   // would produce a permanently stale/misleading entry.
   app.get("/api/admin/worker-heartbeats", requireRole("admin", "manager"), async (_req, res) => {
     try {
-      const { QUEUE_CONFIGS: QC, getEffectiveQueueIntervals, isLegacyGhlSyncClaimed, QUEUE_NAMES: QN, getQueueManagerProducers } = await import("../services/queue-manager");
+      const { QUEUE_CONFIGS: QC, getEffectiveQueueIntervals, isLegacyGhlSyncClaimed, QUEUE_NAMES: QN, getQueueManagerProducers, getWorkerCapabilityStatus, deriveQueueFreshness } = await import("../services/queue-manager");
       const live = getEffectiveQueueIntervals();
       const legacyGhl = isLegacyGhlSyncClaimed();
       const now = Date.now();
@@ -2782,7 +2782,22 @@ export function registerAdminRoutes(app: Express) {
           const lastSeenMs = typeof raw === "number" ? raw : null;
           // Use the live effective interval (may include a persisted override) if available.
           const expectedMs = live[config.name] ?? config.repeatEveryMs;
-          const stale = lastSeenMs === null || (now - lastSeenMs) > expectedMs * 2;
+          // Selection comes from the profile, not from whether a worker object exists. Event-driven and cron queues
+          // have no per-interval heartbeat expectation, so silence is never "stale" for them (previously a 0 ms
+          // expectation made every event-driven queue permanently stale).
+          const capability = getWorkerCapabilityStatus(config.name);
+          const freshness = deriveQueueFreshness({
+            hasCron: Boolean(config.cronPattern),
+            repeatEveryMs: expectedMs,
+            runtimeState: !capability.selected ? "expected_not_selected" : capability.workerActive ? "active" : "selected_not_ready",
+            paused: null,
+            probeOk: true,
+            lastObservedAt: lastSeenMs ? new Date(lastSeenMs).toISOString() : null,
+            nowMs: now,
+          });
+          const stale = freshness.model === "interval" && capability.selected && capability.workerActive
+            ? (lastSeenMs === null || (now - lastSeenMs) > expectedMs * 2)
+            : false;
 
           let backlog: { waiting: number; active: number; delayed: number; failed: number } | null = null;
           try {
@@ -2804,7 +2819,10 @@ export function registerAdminRoutes(app: Express) {
             queueName: config.name,
             lastSeenMs,
             lastSeenAt: lastSeenMs ? new Date(lastSeenMs).toISOString() : null,
-            expectedIntervalMs: expectedMs,
+            expectedIntervalMs: freshness.expectedIntervalMs,
+            freshnessModel: freshness.model,
+            expectedSelected: capability.selected,
+            workerActive: capability.workerActive,
             stale,
             backlog,
             backlogAvailable: backlog !== null,
@@ -3890,7 +3908,9 @@ export function registerAdminRoutes(app: Express) {
         }
       } catch {}
 
-      const dlqCount = queueMetrics.reduce((sum, q) => sum + (q.failed || 0), 0);
+      // A failed probe is unavailable, not zero: any unreadable queue makes the total partial.
+      const dlqUnreadable = queueMetrics.some((q) => q.probeStatus === "error");
+      const dlqCount = queueMetrics.reduce((sum, q) => sum + (q.probeStatus === "error" ? 0 : (q.failed || 0)), 0);
       const lastQueueFailure = queueMetrics
         .filter((q) => q.lastFailedAt)
         .sort((a, b) => new Date(b.lastFailedAt).getTime() - new Date(a.lastFailedAt).getTime())[0];
@@ -4048,7 +4068,7 @@ export function registerAdminRoutes(app: Express) {
         { id: "smtp", label: "SMTP fallback configured", pass: smtpOk, detail: smtpOk ? `host=${smtpStatus.host}` : "SMTP not configured — GHL is primary delivery path", ownerAction: smtpOk ? undefined : "Set SMTP_HOST, SMTP_USER, SMTP_PASS in Replit Secrets (optional but required for transactional email fallback)" },
         { id: "gmail_oauth", label: "Gmail OAuth connected", pass: gmailConnected, detail: gmailConnected ? `Connected: ${gmailEmail ?? "email not retrieved"}` : "OAuth not completed", ownerAction: !gmailConnected ? "Complete Gmail OAuth on Outbound Readiness page" : undefined },
         { id: "queues", label: "All queues registered", pass: queueMetrics.length >= 8, detail: `${queueMetrics.length} queues registered` },
-        { id: "dlq_clean", label: "Dead letter queue empty", pass: dlqCount === 0, detail: dlqCount > 0 ? `${dlqCount} failed jobs in DLQ — investigate before launch` : "No failed jobs" },
+        { id: "dlq_clean", label: "Dead letter queue empty", pass: !dlqUnreadable && dlqCount === 0, detail: dlqUnreadable ? "Dead-letter count unavailable: at least one queue could not be read" : dlqCount > 0 ? `${dlqCount} failed jobs in DLQ — investigate before launch` : "No failed jobs" },
         { id: "backups", label: "Backup artifact exists", pass: backups.length > 0, detail: backups.length > 0 ? `${backups.length} backup(s) — latest: ${backups[0]?.name}` : "No backups yet — run a manual backup", ownerAction: backups.length === 0 ? "Trigger POST /api/admin/backups/run to create first backup" : undefined },
         { id: "no_critical_alerts", label: "No unacknowledged critical alerts", pass: criticalAlerts.length === 0, detail: criticalAlerts.length > 0 ? `${criticalAlerts.length} critical alert(s) need acknowledgement` : "Clean" },
         { id: "app_url_secret", label: "APP_URL secret set", pass: !!process.env.APP_URL, detail: process.env.APP_URL ? "Set" : "Not set — email links may point to wrong host", ownerAction: !process.env.APP_URL ? "Set APP_URL=https://<your-deployment-domain> in Replit Secrets" : undefined },
@@ -4083,13 +4103,13 @@ export function registerAdminRoutes(app: Express) {
         },
         {
           id: "redis_bullmq", label: "Redis / BullMQ Queues", icon: "Cpu",
-          status: queueMode !== "bullmq_redis" ? "fail" : dlqCount > 0 ? "warn" : "pass",
+          status: queueMode !== "bullmq_redis" ? "fail" : (dlqCount > 0 || dlqUnreadable) ? "warn" : "pass",
           metrics: [
             { key: "Queues", value: queueMetrics.length },
-            { key: "DLQ failures", value: dlqCount },
+            { key: "DLQ failures", value: dlqUnreadable ? `${dlqCount}+ (partial: some queues unreadable)` : dlqCount },
             { key: "Last failure", value: lastQueueFailure?.lastFailedAt ?? "None" },
           ],
-          detail: queueMode !== "bullmq_redis" ? `Queue mode: ${queueMode}; configure REDIS_URL` : dlqCount > 0 ? `${dlqCount} failed jobs need attention` : "Live Redis · all queues healthy",
+          detail: queueMode !== "bullmq_redis" ? `Queue mode: ${queueMode}; configure REDIS_URL` : dlqUnreadable ? "Some queues could not be read — failure counts are partial" : dlqCount > 0 ? `${dlqCount} failed jobs need attention` : "Live Redis · all queues healthy",
         },
         {
           id: "ghl_sync", label: "GHL Sync", icon: "RefreshCw",
@@ -4364,19 +4384,30 @@ export function registerAdminRoutes(app: Express) {
         detail: ghlOk ? "GHL_PRIVATE_INTEGRATION_TOKEN present" : "GHL_PRIVATE_INTEGRATION_TOKEN missing or invalid",
       });
 
-      // 2. At least one sequence with status='active'
-      const seqResult = await pgPool.query<{ count: string }>(
-        `SELECT COUNT(*)::text AS count FROM follow_up_sequences WHERE status = 'active'`
-      );
-      const activeSequences = parseInt(seqResult.rows[0]?.count ?? "0", 10);
-      checks.push({
-        id: "active_sequences",
-        label: "At least one active sequence",
-        status: activeSequences > 0 ? "pass" : "fail",
-        detail: activeSequences > 0
-          ? `${activeSequences} active sequence(s) ready`
-          : "No sequences set to 'active' — activate at least one before launch",
-      });
+      // 2. Sequence catalog. A status='active' count is NOT readiness proof: readiness comes from the derived catalog
+      // (real current package pins and their readiness states). The raw status count is shown only as context.
+      const { loadCatalogTruth } = await import("../services/catalog-truth");
+      const catalog = await loadCatalogTruth();
+      if (!catalog.available) {
+        checks.push({
+          id: "active_sequences",
+          label: "Sequence catalog (derived from package pins)",
+          status: "blocked",
+          detail: `Catalog unavailable (${catalog.unavailableReason ?? "read failed"}); readiness is unknown, not zero.`,
+        });
+      } else {
+        const currentPkgs = catalog.packages.filter((p) => p.catalogClass === "current");
+        const configured = currentPkgs.filter((p) => p.readiness.configured.state === "yes").length;
+        const qualified = currentPkgs.filter((p) => p.readiness.qualified.state === "yes").length;
+        checks.push({
+          id: "active_sequences",
+          label: "Sequence catalog (derived from package pins)",
+          status: currentPkgs.length > 0 && configured === currentPkgs.length ? "pass" : "fail",
+          detail: `${currentPkgs.length} current package(s) pinned, ${configured} with resolved pins, ${qualified} qualified; `
+            + `${catalog.statusActiveSequences.count ?? "unknown"} sequence(s) have status 'active' (status is not readiness proof). `
+            + `Native effects unverified (CRO-07 ${catalog.cro07.productionConnected ? "connected" : "disconnected"}).`,
+        });
+      }
 
       // 3. Bounce handler registered (webhook route exists — check system setting)
       const bounceHandlerActive = ghlOk; // webhook is always registered if GHL is configured

@@ -52,7 +52,7 @@ export async function buildSdrDailyDigest(): Promise<{ html: string; summary: Re
   const stuckLeadsData = await storage.getSdrStuckLeads();
   const topStuck = stuckLeadsData.slice(0, 5);
 
-  const killSwitchTriggered = identities.some(i => (i.healthScore || 100) < 50);
+  const killSwitchTriggered = identities.some(i => i.healthScore != null && i.healthScore < 50);
 
   const summary = {
     date: yesterday,

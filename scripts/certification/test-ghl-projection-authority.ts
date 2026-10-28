@@ -241,6 +241,81 @@ await enqueue(cLive);
 await pool.query(`UPDATE contacts SET record_class='test' WHERE id=$1`, [cLive]);
 check(!(await claimable([cLive])), "A contact reclassified as test after enqueue is excluded at claim time");
 
+// provider-rejected identity: an unchanged rejected identity is never re-dispatched; a changed one is reconsidered once
+{
+  const cRej = await mkContact();
+  const rejectErr = 'GHL API error 422: {"message":["email must be an email"],"error":"Unprocessable Entity","statusCode":422}';
+  let rejDispatches = 0;
+  const rejectingSync = async (id: number) => { if (id !== cRej) return syncOk(); rejDispatches++; return { success: false, error: rejectErr }; };
+  await enqueue(cRej);
+  await sync.processEligibleContactProjections(50, { syncFn: rejectingSync });
+  const rej1 = (await projRows(cRej))[0];
+  const fp1 = rej1.component_receipts?.rejectedIdentityFingerprint;
+  check(rej1.state === "terminal" && rej1.terminal_reason === "INVALID_OR_UNUSABLE_IDENTITY" && Number(rej1.attempt_count) === 0 && rejDispatches === 1,
+    "N01: the exact 'email must be an email' 422 settles terminal without consuming the failure budget");
+  check(typeof fp1 === "string" && /^[0-9a-f]{64}$/.test(fp1) && !JSON.stringify(rej1.component_receipts).includes("fixture.invalid"),
+    "N01: the rejection records a non-plaintext identity fingerprint in the existing receipts");
+  const before = (await projRows(cRej))[0];
+  const unrelated = [await enqueue(cRej, "scheduler_tick"), await enqueue(cRej, "contact_edit_unrelated"), await enqueue(cRej, "restart_reconcile")];
+  await sync.processEligibleContactProjections(50, { syncFn: rejectingSync });
+  const after = (await projRows(cRej))[0];
+  check(unrelated.every(o => o.action === "not_exported" && (o as any).reason === "rejected_identity_unchanged") && (await projRows(cRej)).length === 1
+    && after.state === "terminal" && after.desired_generation === before.desired_generation && rejDispatches === 1 && !(await claimable([cRej])),
+    "N01: unrelated enqueues, ticks and restarts do not reopen or re-dispatch an unchanged rejected identity");
+  // A name edit does not change the validated identity fields.
+  await pool.query(`UPDATE contacts SET first_name='Renamed' WHERE id=$1`, [cRej]);
+  check((await enqueue(cRej)).action === "not_exported" && rejDispatches === 1, "N01: editing a non-identity field does not reconsider the rejection");
+  // Changed identity → exactly one controlled reconsideration, then fenced again.
+  await pool.query(`UPDATE contacts SET email=$2 WHERE id=$1`, [cRej, `gpa-${run}-changed@fixture.invalid`]);
+  check((await enqueue(cRej)).action === "reopened", "N01: a changed identity is admitted for one reconsideration");
+  await makeDue(cRej);
+  await sync.processEligibleContactProjections(50, { syncFn: rejectingSync });
+  const rej2 = (await projRows(cRej))[0];
+  check(rejDispatches === 2 && rej2.state === "terminal" && rej2.component_receipts?.rejectedIdentityFingerprint !== fp1
+    && (await enqueue(cRej)).action === "not_exported" && rejDispatches === 2,
+    "N01: the reconsidered identity is rejected once, recorded with its own fingerprint, and fenced again");
+  // Edit during an in-flight request: the rejection belongs to the identity that was dispatched, so the corrected identity
+  // (enqueued while the request was pending) must be dispatched, not fenced by a fingerprint of the new email.
+  {
+    const cRace = await mkContact();
+    await enqueue(cRace);
+    const dispatchedEmails: string[] = [];
+    const racingSync = async (id: number) => {
+      if (id !== cRace) return syncOk();
+      const cur = (await pool.query(`SELECT email FROM contacts WHERE id=$1`, [id])).rows[0].email as string;
+      dispatchedEmails.push(cur);
+      if (dispatchedEmails.length === 1) {
+        await pool.query(`UPDATE contacts SET email=$2 WHERE id=$1`, [id, `gpa-${run}-corrected@fixture.invalid`]);
+        const o = await enqueue(id, "contact_edit_identity");
+        check(o.action === "coalesced", "N01 race: an identity edit during the in-flight request coalesces onto the processing row");
+        return { success: false, error: rejectErr };
+      }
+      return syncOk();
+    };
+    await sync.processEligibleContactProjections(50, { syncFn: racingSync });
+    const mid = (await projRows(cRace))[0];
+    check(mid.state === "pending" && mid.terminal_reason === null && !mid.component_receipts?.rejectedIdentityFingerprint && Number(mid.attempt_count) === 0,
+      "N01 race: a rejection of the old identity does not terminally fence the newer intent");
+    await makeDue(cRace);
+    await sync.processEligibleContactProjections(50, { syncFn: racingSync });
+    const fin = (await projRows(cRace))[0];
+    check(dispatchedEmails.length === 2 && dispatchedEmails[0] !== dispatchedEmails[1] && fin.state === "succeeded",
+      "N01 race: the corrected identity is dispatched and succeeds");
+  }
+  // Rejections recorded before fingerprints existed are reconsidered once, not forever.
+  const cLegacy = await mkContact();
+  await enqueue(cLegacy);
+  await pool.query(`UPDATE contact_provider_projections SET state='terminal', terminal_reason='INVALID_OR_UNUSABLE_IDENTITY', last_error_code='skip', completed_at=now(), component_receipts='{}'::jsonb WHERE contact_id=$1`, [cLegacy]);
+  check((await enqueue(cLegacy)).action === "reopened", "N01: a pre-fingerprint rejection gets one reconsideration (no stored fingerprint to compare)");
+  // An unknown 422 is still retryable and never recorded as a rejected identity.
+  const cUnk = await mkContact();
+  await enqueue(cUnk);
+  await sync.processEligibleContactProjections(50, { syncFn: async (id) => (id === cUnk ? { success: false, error: 'GHL API error 422: {"message":["something novel"]}' } : syncOk()) });
+  const unk = (await projRows(cUnk))[0];
+  check(unk.state === "retry" && Number(unk.attempt_count) === 1 && !unk.component_receipts?.rejectedIdentityFingerprint,
+    "N01: an unknown 422 stays retryable and consumes budget");
+}
+
 // ambiguity
 const cAmb = await mkContact();
 await enqueue(cAmb);

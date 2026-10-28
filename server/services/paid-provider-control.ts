@@ -42,22 +42,46 @@ function rows(result: any): any[] {
   return result?.rows ?? [];
 }
 
-function nextSixUtc(): string {
-  const next = new Date();
-  next.setUTCHours(6, 0, 0, 0);
-  if (next.getTime() <= Date.now()) next.setUTCDate(next.getUTCDate() + 1);
-  return next.toISOString();
+export type ZeroBounceAutoRunState = "disabled" | "scheduled" | "schedule_unresolved" | "unavailable";
+
+/**
+ * Next automatic ZeroBounce run. `cron` is the effective schedule (ZEROBOUNCE_AUTO_RUN_CRON override, default
+ * "0 6 * * *"). Only fixed-time daily patterns ("M H * * *", UTC) are resolved here; any other expression is reported
+ * as schedule_unresolved with a null time rather than a guessed one. A disabled auto-run never has a next run.
+ */
+export function resolveZeroBounceNextRun(input: {
+  autoRunEnabled: boolean | null;
+  cron: string;
+  now?: Date;
+}): { state: ZeroBounceAutoRunState; nextAutomaticRunAt: string | null; schedule: string } {
+  const schedule = input.cron.trim();
+  if (input.autoRunEnabled === null) return { state: "unavailable", nextAutomaticRunAt: null, schedule };
+  if (!input.autoRunEnabled) return { state: "disabled", nextAutomaticRunAt: null, schedule };
+  const m = /^(\d{1,2})\s+(\d{1,2})\s+\*\s+\*\s+\*$/.exec(schedule);
+  const minute = m ? Number(m[1]) : NaN;
+  const hour = m ? Number(m[2]) : NaN;
+  if (!m || minute > 59 || hour > 23) return { state: "schedule_unresolved", nextAutomaticRunAt: null, schedule };
+  const now = input.now ?? new Date();
+  const next = new Date(now);
+  next.setUTCHours(hour, minute, 0, 0);
+  if (next.getTime() <= now.getTime()) next.setUTCDate(next.getUTCDate() + 1);
+  return { state: "scheduled", nextAutomaticRunAt: next.toISOString(), schedule };
 }
 
 /**
  * A panel-safe snapshot. Secret values are never returned; missing control
  * rows are represented explicitly rather than treated as enabled.
  */
+/** Display bound for the in-flight operation list (the count is never bounded). */
+export const IN_FLIGHT_SAMPLE_LIMIT = 100;
+
 export async function getPaidProviderControls(): Promise<{
   providers: Array<Record<string, unknown>>;
   zeroBounce: Record<string, unknown>;
   inFlightCount: number;
   inFlightOperations: Array<Record<string, unknown>>;
+  /** inFlightOperations is a bounded sample; inFlightCount is the whole-population count. */
+  inFlightSample: { limit: number; returned: number; total: number; truncated: boolean; scope: string; asOf: string };
 }> {
   const controls = rows(await db.execute(sql`
     SELECT provider, capability, enabled, circuit_state,
@@ -73,8 +97,15 @@ export async function getPaidProviderControls(): Promise<{
      WHERE provider IN ('serper', 'outscraper', 'openai', 'apollo', 'zerobounce')
        AND (state IN ('pending', 'deferred', 'running') OR billing_state IN ('reserved','ambiguous'))
      ORDER BY created_at ASC
-     LIMIT 100
+     LIMIT ${IN_FLIGHT_SAMPLE_LIMIT}
   `));
+  // Whole-population count, independent of the displayed sample.
+  const inFlightTotal = Number(rows(await db.execute(sql`
+    SELECT COUNT(*)::int AS n
+      FROM provider_operations
+     WHERE provider IN ('serper', 'outscraper', 'openai', 'apollo', 'zerobounce')
+       AND (state IN ('pending', 'deferred', 'running') OR billing_state IN ('reserved','ambiguous'))
+  `))[0]?.n ?? 0);
   const sfpCostRows = rows(await db.execute(sql`
     SELECT o.provider,
            COALESCE(SUM(settled_cost_micros) FILTER (WHERE settled_cost_micros IS NOT NULL), 0)::bigint AS settled_micros,
@@ -185,20 +216,35 @@ export async function getPaidProviderControls(): Promise<{
     };
   });
 
-  const autoRunValue = await storage.getSystemSetting("zerobounce_auto_run_enabled").catch(() => false);
+  let autoRunEnabled: boolean | null = null;
+  try {
+    const autoRunValue = await storage.getSystemSetting("zerobounce_auto_run_enabled");
+    autoRunEnabled = autoRunValue === true || autoRunValue === "true";
+  } catch { autoRunEnabled = null; }
+  const nextRun = resolveZeroBounceNextRun({ autoRunEnabled, cron: process.env.ZEROBOUNCE_AUTO_RUN_CRON ?? "0 6 * * *" });
   const zb = providers.find((provider) => provider.provider === "zerobounce")!;
   return {
     providers,
     zeroBounce: {
       enabled: zb.enabled,
       circuitState: zb.circuitState,
-      autoRunEnabled: autoRunValue === true || autoRunValue === "true",
-      nextAutomaticRunAt: nextSixUtc(),
+      autoRunEnabled,
+      autoRunState: nextRun.state,
+      autoRunSchedule: nextRun.schedule,
+      nextAutomaticRunAt: nextRun.nextAutomaticRunAt,
       authorizedPurposes: zb.authorizedPurposes,
       authorizedCallers: zb.authorizedCallers,
     },
-    inFlightCount: inFlightOperations.length,
+    inFlightCount: inFlightTotal,
     inFlightOperations,
+    inFlightSample: {
+      limit: IN_FLIGHT_SAMPLE_LIMIT,
+      returned: inFlightOperations.length,
+      total: inFlightTotal,
+      truncated: inFlightTotal > inFlightOperations.length,
+      scope: "oldest in-flight paid-provider operations; the list is a sample, the count is the whole population",
+      asOf: new Date().toISOString(),
+    },
   };
 }
 

@@ -52,15 +52,9 @@ const CALENDAR_VARS: Array<{ key: string; name: string }> = [
   { key: "GHL_CALENDAR_RESTAURANT", name: "Restaurant" },
 ];
 
-const QUEUE_EXPECTED_INTERVALS: Record<string, number> = {
-  "ghl-sync":      45_000,
-  "sequences":     30_000,
-  "sla-checks":    5 * 60_000,
-  "enrichment":    10 * 60_000,
-  "digests":       60 * 60_000,
-  "discovery":     24 * 60 * 60_000,
-  "mid-ingestion": 24 * 60 * 60_000,
-};
+// Queues shown on the wizard health step. Cadence and freshness come from the queue registry's own metric
+// (interval / cron / event-driven model), not from a hand-maintained interval table that can drift from the schedule.
+const WIZARD_QUEUE_NAMES = ["ghl-sync", "sequences", "sla-checks", "enrichment", "digests", "discovery", "mid-ingestion"];
 
 function isWizardTestContact(contact: { tags: string[] | null }): boolean {
   return Array.isArray(contact.tags) && contact.tags.includes("wizard_test_contact");
@@ -638,7 +632,7 @@ export function registerWizardRoutes(app: Express): void {
   // ── Phase 5: Queue Health ───────────────────────────────────────────────────
   app.get("/api/wizard/queue-health", requireRole("admin", "manager"), async (_req, res) => {
     try {
-      const { requireQueueManagerReady } = await import("../services/queue-manager");
+      const { requireQueueManagerReady, QUEUE_STALE_AFTER_INTERVALS } = await import("../services/queue-manager");
       let qm;
       try {
         qm = requireQueueManagerReady();
@@ -648,34 +642,28 @@ export function registerWizardRoutes(app: Express): void {
       }
       const { queues, queueMode, status: metricsStatus } = await qm.getAllQueueMetrics();
 
-      const now = Date.now();
       const enrichedQueues = queues
-        .filter((q: any) =>
-          Object.keys(QUEUE_EXPECTED_INTERVALS).some((name) => q.name?.includes(name))
-        )
+        .filter((q: any) => WIZARD_QUEUE_NAMES.some((name) => q.name?.includes(name)))
         .map((q: any) => {
-          const matchedKey = Object.keys(QUEUE_EXPECTED_INTERVALS).find((k) => q.name?.includes(k));
-          const expectedIntervalMs = matchedKey ? QUEUE_EXPECTED_INTERVALS[matchedKey] : null;
-
           const probeUnavailable = q.probeStatus !== "ok";
-          let isStale = false;
-          let staleSince: string | null = null;
-
-          if (!probeUnavailable && expectedIntervalMs && q.lastCompletedAt) {
-            const lastMs = new Date(q.lastCompletedAt).getTime();
-            if (now - lastMs > 3 * expectedIntervalMs) {
-              isStale = true;
-              staleSince = new Date(lastMs + 3 * expectedIntervalMs).toISOString();
-            }
-          } else if (!probeUnavailable && expectedIntervalMs && !q.lastCompletedAt) {
-            isStale = true;
-          }
+          const freshness = q.freshness ?? null;
+          // Stale only when an interval queue's worker is running, its process observed a completion, and that
+          // completion is older than the threshold. No observation in this process is unknown, not stale.
+          const isStale = freshness?.status === "stale";
+          const staleSince = isStale && freshness.lastObservedAt && freshness.expectedIntervalMs
+            ? new Date(new Date(freshness.lastObservedAt).getTime() + QUEUE_STALE_AFTER_INTERVALS * freshness.expectedIntervalMs).toISOString()
+            : null;
 
           return {
             name: q.name,
             probeStatus: q.probeStatus,
             errorCode: q.errorCode,
-            expectedIntervalMs,
+            runtimeState: q.runtimeState,
+            capabilityState: q.capabilityState,
+            expectedSelected: q.expectedSelected,
+            freshnessModel: freshness?.model ?? null,
+            freshnessStatus: freshness?.status ?? "unavailable",
+            expectedIntervalMs: freshness?.expectedIntervalMs ?? null,
             lastCompletedAt: q.lastCompletedAt ?? null,
             isStale,
             staleSince,

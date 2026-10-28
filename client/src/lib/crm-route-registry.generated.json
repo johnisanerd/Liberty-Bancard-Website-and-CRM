@@ -8512,7 +8512,7 @@
         {
           "selector": "pilot",
           "renderedComponents": [
-            "PilotStatusPanel"
+            "PilotHistoryPanel"
           ],
           "conditionExpressions": []
         },

@@ -576,7 +576,7 @@ export function registerAcquisitionRoutes(app: Express): void {
           category: "Nurture",
           label: "GHL Nurture Sequences Ready",
           status: activeSeqs >= 3 ? "pass" : activeSeqs >= 1 ? "warn" : "fail",
-          detail: `${activeSeqs} active sequences configured`,
+          detail: `${activeSeqs} sequences have status 'active' (status only; not readiness proof, see /api/admin/catalog-truth)`,
           blockerForScale: true,
         },
         {

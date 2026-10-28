@@ -1412,7 +1412,7 @@ export async function reconcileCr06PreparationReservations(input: {
 }
 
 export async function getCr06Catalog() {
-  const [artifacts, artifactHistory, legacyCampaigns, legacySequences] = await Promise.all([
+  const [artifacts, artifactHistory, legacyCampaigns, legacySequences, packagePins] = await Promise.all([
     pool.query(`SELECT * FROM cr06_artifacts
       WHERE version=2 AND identity_key LIKE '%-v2'
       ORDER BY artifact_kind,identity_key`),
@@ -1420,14 +1420,28 @@ export async function getCr06Catalog() {
       WHERE NOT (version=2 AND identity_key LIKE '%-v2')
       ORDER BY version DESC,artifact_kind,identity_key`),
     pool.query(`SELECT id,name,status,created_by,created_at FROM campaigns ORDER BY id`),
-    pool.query(`SELECT id,name,status,created_by,created_at FROM follow_up_sequences ORDER BY id`),
+    pool.query(`SELECT id,name,status,created_by,created_at,retired_at FROM follow_up_sequences ORDER BY id`),
+    // Real package pins decide the label; ids are never hard-coded and status/name never decide it.
+    pool.query(`SELECT campaign_id,sequence_id,lifecycle_state FROM sfp_campaign_package_versions`),
   ]);
+  const { catalogClassForPins } = await import("./catalog-truth");
+  const label = (kind: "campaign" | "sequence", row: { id: number; retired_at?: unknown }) => {
+    const pins = packagePins.rows
+      .filter((p: any) => (kind === "campaign" ? p.campaign_id : p.sequence_id) === row.id)
+      .map((p: any) => p.lifecycle_state as string);
+    return catalogClassForPins(pins, !!row.retired_at);
+  };
+  const compat = (c: ReturnType<typeof label>) =>
+    c === "unresolved" ? "legacy_review_required"
+      : c === "current" ? "current_sfp_package"
+      : c === "template" ? "template_sfp_package"
+      : "historical";
   return {
     governed: artifacts.rows,
     history: artifactHistory.rows,
     legacy: {
-      campaigns: legacyCampaigns.rows.map((row) => ({ ...row, compatibilityState: "legacy_review_required", approvalHistory: null })),
-      sequences: legacySequences.rows.map((row) => ({ ...row, compatibilityState: "legacy_review_required", approvalHistory: null })),
+      campaigns: legacyCampaigns.rows.map((row) => { const catalogClass = label("campaign", row); return { ...row, catalogClass, compatibilityState: compat(catalogClass), approvalHistory: null }; }),
+      sequences: legacySequences.rows.map((row) => { const catalogClass = label("sequence", row); return { ...row, catalogClass, compatibilityState: compat(catalogClass), approvalHistory: null }; }),
     },
   };
 }

@@ -612,6 +612,8 @@ async function checkQueueHealth(): Promise<SubsystemResult> {
 
   let queueCount: number | null = null;
   let queueFailed: number | null = null;
+  let queueSelectedMissing: string[] = [];
+  let queueNotSelected = 0;
   let queueState: "ok" | "unavailable" | "degraded" = "unavailable";
   let queueMode: "bullmq_redis" | "legacy_interval_partial" | "unavailable" = "unavailable";
   try {
@@ -622,6 +624,8 @@ async function checkQueueHealth(): Promise<SubsystemResult> {
     queueFailed = m.status === "ok"
       ? m.queues.reduce((acc, q) => acc + (q.failed ?? 0), 0)
       : null;
+    queueSelectedMissing = m.queues.filter((q) => q.runtimeState === "selected_missing" || q.runtimeState === "selected_not_ready").map((q) => q.name);
+    queueNotSelected = m.queues.filter((q) => q.runtimeState === "expected_not_selected").length;
     queueState = m.status;
     queueMode = m.queueMode;
   } catch {
@@ -632,8 +636,8 @@ async function checkQueueHealth(): Promise<SubsystemResult> {
   const status: SubsystemStatus = !dbOk ? "fail" : queueMode !== "bullmq_redis" || queueState === "unavailable" ? "warn" : queueState === "degraded" || (queueFailed ?? 0) > 10 ? "warn" : "pass";
   return {
     id: "queue_health", name: "Queue / BullMQ / Redis / DB Health", status,
-    evidence: `DB: ${dbOk ? `${dbMs}ms ✓` : "DOWN ✗"}. Queue mode: ${queueMode}. Queues: ${queueState === "unavailable" ? "unavailable" : `${queueCount} registered, ${queueFailed} failed jobs`}.`,
-    checkedAt: now(), details: { dbOk, dbMs, queueMode, queueState, queueCount, queueFailed },
+    evidence: `DB: ${dbOk ? `${dbMs}ms ✓` : "DOWN ✗"}. Queue mode: ${queueMode}. Queues: ${queueState === "unavailable" ? "unavailable" : `${queueCount} registered (${queueNotSelected} not selected by this profile${queueSelectedMissing.length ? `; selected but not running: ${queueSelectedMissing.join(", ")}` : ""}), ${queueFailed === null ? "failed-job count unavailable" : `${queueFailed} failed jobs`}`}.`,
+    checkedAt: now(), details: { dbOk, dbMs, queueMode, queueState, queueCount, queueFailed, queueNotSelected, queueSelectedMissing },
   };
 }
 

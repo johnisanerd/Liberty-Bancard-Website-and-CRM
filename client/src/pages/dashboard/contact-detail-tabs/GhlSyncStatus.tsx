@@ -40,6 +40,8 @@ interface Props {
   ghlSyncStatus?: {
     isSynced?: boolean; isRecent?: boolean; ghlContactId?: string | null; lastSyncedAt?: string | null;
     projection?: ContactProjectionStatus | null;
+    linkEvidence?: string;
+    outgoingControl?: { state: "enabled" | "paused" | "unknown"; epoch?: number | null; ownerSelected?: boolean | null };
   };
   resyncToGhlMutation: { mutate: () => void; isPending: boolean };
 }
@@ -66,6 +68,7 @@ export function GhlSyncStatus({ contact, ghlSyncStatus, resyncToGhlMutation }: P
         {ghlId && (
           <span className="ml-2 text-xs text-muted-foreground font-mono" data-testid="text-ghl-contact-id">
             GHL contact ID (provider identity, not a business assignment): {ghlId}
+            <span data-testid="text-ghl-link-evidence"> — linked ID recorded locally; current native existence unverified</span>
           </span>
         )}
         {lastSyncedAt && (
@@ -87,10 +90,20 @@ export function GhlSyncStatus({ contact, ghlSyncStatus, resyncToGhlMutation }: P
       </Button>
       <ProjectionReceipts projection={ghlSyncStatus?.projection} loaded={!!ghlSyncStatus} />
       <p id="ghl-write-hold-reason" className="basis-full text-xs">
-        Manual re-sync is unavailable. Outgoing contact projection to GHL runs automatically through the guarded sync worker; it does not send messages or enroll workflows.
+        Manual re-sync is unavailable. {outgoingCopy(ghlSyncStatus?.outgoingControl)}
       </p>
     </div>
   );
+}
+
+export function outgoingCopy(control?: { state: "enabled" | "paused" | "unknown" } | null): string {
+  if (!control || control.state === "unknown") {
+    return "The current outgoing sync control state is unknown; no claim is made about whether contacts are being sent to GHL.";
+  }
+  if (control.state === "paused") {
+    return "Outgoing contact projection to GHL is currently paused, so nothing is being sent; receipts below are history. It never sends messages or enrolls workflows.";
+  }
+  return "Outgoing contact projection to GHL is enabled and runs through the guarded sync worker when it is selected; it does not send messages or enroll workflows.";
 }
 
 function ProjectionReceipts({ projection, loaded }: { projection?: ContactProjectionStatus | null; loaded: boolean }) {

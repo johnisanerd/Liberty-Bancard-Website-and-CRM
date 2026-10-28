@@ -266,7 +266,7 @@ async function executeClaimedProjection(row: ClaimedProjection, deps: Projection
     return (await settleProjection(row, { kind: "deferred", code: "PROVIDER_AUTH_FAILURE", retryAfterMs: 5 * 60 * 1000 })) ? "auth" : "claim_lost";
   }
   if (kind === "skip") {
-    return (await settleProjection(row, { kind: "terminal", reason: "INVALID_OR_UNUSABLE_IDENTITY", code: kind, receipts, consumedAttempt: false, dispatched: evidence.dispatched })) ? "skip" : "claim_lost";
+    return (await settleProjection(row, { kind: "terminal", reason: "INVALID_OR_UNUSABLE_IDENTITY", code: kind, receipts, consumedAttempt: false, dispatched: evidence.dispatched, rejectedIdentity: true })) ? "skip" : "claim_lost";
   }
   if (nextAttempt >= CONTACT_PROJECTION_MAX_ATTEMPTS) {
     return (await settleProjection(row, { kind: "terminal", reason: "MAX_ATTEMPTS_EXHAUSTED", code: thrown ? "PROJECTION_EXCEPTION" : kind, receipts, consumedAttempt: true, dispatched: evidence.dispatched })) ? "failure" : "claim_lost";
@@ -2154,55 +2154,74 @@ export async function getFullSyncDashboard() {
   const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
   // Audit log based metrics
-  let failedSyncsLast24h = 0;
-  let optOutEventsLast24h = 0;
+  let failedSyncsLast24h: number | null = null;
+  let optOutEventsLast24h: number | null = null;
   let lastCircuitTripAt: string | null = null;
   try {
     const auditLogs = await storage.getAuditLogs();
     const recent = auditLogs.filter(l => l.createdAt && new Date(l.createdAt) >= twentyFourHoursAgo);
-    failedSyncsLast24h = recent.filter(l => l.action === "ghl_sync_error" || l.action === "ghl_sync_failed").length;
-    optOutEventsLast24h = recent.filter(l =>
+    const failedCount = recent.filter(l => l.action === "ghl_sync_error" || l.action === "ghl_sync_failed").length;
+    const optOutCount = recent.filter(l =>
       l.action === "contact_unsubscribed" ||
       l.action === "contact_dnd_set"
     ).length;
+    failedSyncsLast24h = failedCount;
+    optOutEventsLast24h = optOutCount;
     const circuitTrip = auditLogs.find(l => l.action === "GHL_CIRCUIT_OPEN");
     lastCircuitTripAt = circuitTrip?.createdAt ? new Date(circuitTrip.createdAt).toISOString() : null;
   } catch { /* non-fatal */ }
 
   // GHL activity log based metrics — use global query (no contactId filter)
-  let webhookEventsLast24h = 0;
-  let permissionCheckCallsLast24h = 0;
-  let fieldWriteErrors422 = 0;
-  let missingGhlContactId = 0;
-  let recent422Errors: Array<{ contactId: number | null; operation: string | null; httpStatus: number | null; createdAt: string | null }> = [];
+  let webhookEventsLast24h: number | null = null;
+  let permissionCheckCallsLast24h: number | null = null;
+  // null = the read failed (rendered "Unknown"); never a silent zero.
+  let fieldWriteErrors422: number | null = null;
+  let emailValidation422Count: number | null = null;
+  let unclassified422Count: number | null = null;
+  let missingGhlContactId: number | null = null;
+  let recent422Errors: Array<{ contactId: number | null; operation: string | null; httpStatus: number | null; createdAt: string | null; kind: "field_write" | "email_validation" | "unclassified" }> = [];
   try {
-    const { data: allContacts } = await storage.getContacts({ limit: 5000 });
-    missingGhlContactId = allContacts.filter(c => !c.ghlContactId && c.email).length;
-
+    // Exact count over every contact (the previous first-5000 sample under-reported on a larger book).
+    const r = await db.execute(sql`SELECT count(*)::int AS n FROM contacts WHERE ghl_contact_id IS NULL AND COALESCE(btrim(email), '') <> ''`);
+    missingGhlContactId = Number(((r as any).rows ?? r)[0]?.n ?? NaN);
+    if (!Number.isFinite(missingGhlContactId)) missingGhlContactId = null;
+  } catch { missingGhlContactId = null; }
+  try {
     // Full-scope global query — getGhlActivityLogs() with no contactId returns all logs
     const allActivityLogs = await storage.getGhlActivityLogs();
+    let fieldWrite = 0, emailValidation = 0, unclassified = 0, webhooks = 0, permChecks = 0;
     for (const log of allActivityLogs) {
       if (!log.createdAt || new Date(log.createdAt) < twentyFourHoursAgo) continue;
-      if (log.direction === "inbound") webhookEventsLast24h++;
-      if (log.channel === "permission_check") permissionCheckCallsLast24h++;
+      if (log.direction === "inbound") webhooks++;
+      if (log.channel === "permission_check") permChecks++;
       if (log.channel === "sync_error") {
         const meta = log.metadata as any;
         if (meta?.httpStatus === 422 || meta?.httpStatus === "422") {
-          fieldWriteErrors422++;
+          // A 422 is only a custom-field gap when the provider body names a custom field. Email-validation 422s are
+          // data-quality rejections of one record and must not raise the permission-field alert.
+          const body = String(meta?.errorBody ?? "");
+          const kind: "field_write" | "email_validation" | "unclassified" =
+            isGhlEmailValidation422(`GHL API error 422: ${body}`) ? "email_validation"
+            : /custom ?field|\blb_[a-z_]+|customFields/i.test(body) ? "field_write"
+            : "unclassified";
+          if (kind === "field_write") fieldWrite++; else if (kind === "email_validation") emailValidation++; else unclassified++;
           if (recent422Errors.length < 10) {
             recent422Errors.push({
               contactId: log.contactId ?? null,
               operation: meta?.operation ?? null,
               httpStatus: meta?.httpStatus ? Number(meta.httpStatus) : 422,
               createdAt: log.createdAt ? new Date(log.createdAt).toISOString() : null,
+              kind,
             });
           }
         }
       }
     }
-  } catch { /* non-fatal */ }
+    webhookEventsLast24h = webhooks; permissionCheckCallsLast24h = permChecks;
+    fieldWriteErrors422 = fieldWrite; emailValidation422Count = emailValidation; unclassified422Count = unclassified;
+  } catch { /* leaves the 422 counters null (unavailable) */ }
 
-  const hasPermissionFieldGap = fieldWriteErrors422 > 0;
+  const hasPermissionFieldGap = fieldWriteErrors422 === null ? null : fieldWriteErrors422 > 0;
 
   return {
     ...baseStatus,
@@ -2218,6 +2237,8 @@ export async function getFullSyncDashboard() {
     failedSyncsLast24h,
     missingGhlContactId,
     fieldWriteErrors422,
+    emailValidation422Count,
+    unclassified422Count,
     recent422Errors,
     webhookEventsLast24h,
     permissionCheckCallsLast24h,

@@ -658,22 +658,27 @@ await phase("8h. master_leads rows do NOT trigger contacts/deals/GHL records (no
 
 console.log("\nPhase 9: UI and route static assertions");
 
-await phase("9a. Lead Ops UI has select-roi-cohort action for Level 1 runs", async () => {
+await phase("9a. Lead Ops UI no longer offers a Level 1 cohort action; select-roi-cohort is a retired entrance (Stage 4A)", async () => {
   const src = readFileSync("client/src/pages/dashboard/LeadOpsCenter.tsx", "utf8");
-  assert(src.includes("select-roi-cohort"), "UI must call select-roi-cohort for Level 1 runs");
-  assert(src.includes("selectRoiCohortMutation"), "UI must have selectRoiCohortMutation");
-  assert(src.includes("ROI Cohort"), "UI must label the Level 1 action clearly");
+  assert(!src.includes("selectRoiCohortMutation"), "UI must not carry a select-roi-cohort mutation");
+  assert(!src.includes("pilot/runs/") || !/apiRequest\("POST",[^)]*select-roi-cohort/.test(src), "UI must not call select-roi-cohort");
+  const routes = readFileSync("server/routes/lead-ops.ts", "utf8");
+  assert.match(routes, /select-roi-cohort", requireRole\("admin"\), retiredPilotEntrance\("select-roi-cohort"\)/,
+    "select-roi-cohort must be fenced after the role gate");
 });
 
-await phase("9b. UI success message confirms master_leads = 0 is OK for Level 1", async () => {
-  const src = readFileSync("client/src/pages/dashboard/LeadOpsCenter.tsx", "utf8");
-  assert(src.includes("master_leads = 0 is OK"), "UI must confirm master_leads=0 is acceptable for Level 1");
+await phase("9b. Pilot history UI is read-only (no mutation calls or inputs)", async () => {
+  const src = readFileSync("client/src/pages/dashboard/LeadOps/PilotHistoryPanel.tsx", "utf8");
+  assert(!/apiRequest\(|method:\s*"(POST|PUT|PATCH|DELETE)"/.test(src), "history panel must issue only GET requests");
+  assert(!/<(button|Button|input|Input|textarea|select)\b/.test(src), "history panel must render no controls");
 });
 
-await phase("9c. validate-cohort route exists and requires idempotencyKey", async () => {
+await phase("9c. validate-cohort route stays registered but is a retired entrance (Stage 4A)", async () => {
   const src = readFileSync("server/routes/lead-ops.ts", "utf8");
-  assert(src.includes("validate-cohort"), "validate-cohort route must exist");
-  assert(src.includes("idempotencyKey is required"), "Route must require idempotencyKey");
+  const idx = src.indexOf(`"/api/lead-ops/pilot/runs/:runId/validate-cohort"`);
+  assert(idx >= 0, "validate-cohort route must exist");
+  assert.match(src.slice(idx, idx + 200), /requireRole\("admin"\), retiredPilotEntrance\("validate-cohort"\)/,
+    "validate-cohort must be fenced after the role gate");
 });
 
 await phase("9d. validation-preview route exists", async () => {
@@ -686,11 +691,9 @@ await phase("9e. free-evidence-report route exists", async () => {
   assert(src.includes("free-evidence-report"), "free-evidence-report route must exist");
 });
 
-await phase("9f. UI only shows ROI cohort button for Level 1 runs (Level 2+ use legacy select-cohort)", async () => {
+await phase("9f. Pilot history UI no longer mounts the mutable pilot panel (Stage 4A)", async () => {
   const src = readFileSync("client/src/pages/dashboard/LeadOpsCenter.tsx", "utf8");
-  // Must branch on r.level === 1 for roi path.
-  assert(src.includes("r.level === 1"), "UI must gate ROI cohort button behind r.level === 1");
-  assert(src.includes("r.level !== 1"), "UI must use legacy select-cohort for non-Level-1 runs");
+  assert(!src.includes("<PilotStatusPanel"), "Pilot history must not mount PilotStatusPanel");
 });
 
 // ════════════════════════════════════════════════════════════════════════════════

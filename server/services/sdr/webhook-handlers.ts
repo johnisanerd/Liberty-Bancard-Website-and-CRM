@@ -188,7 +188,8 @@ export async function handleMessageReceived(rawPayload: unknown): Promise<void> 
     }
   }
 
-  if (merchant) {
+  // A delivery failure is not a reply: it must not stamp lastReplyAt (which feeds "engaged" counts).
+  if (merchant && !isSmsFailure) {
     const [state] = await db.select().from(sdrLeadState).where(eq(sdrLeadState.merchantId, merchant.id));
     if (state) {
       await db.update(sdrLeadState).set({

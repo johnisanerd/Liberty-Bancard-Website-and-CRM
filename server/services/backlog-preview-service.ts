@@ -210,6 +210,7 @@ export class BacklogPreviewService {
 
     const queueMap: Record<string, { waiting: number | null; delayed: number | null; active: number | null; failed: number | null }> = {};
     for (const m of metrics) {
+      // Counts of a queue this profile does not select, or that could not be read, are null (unavailable), never zero.
       queueMap[m.name] = {
         waiting: m.waiting,
         delayed: m.delayed,

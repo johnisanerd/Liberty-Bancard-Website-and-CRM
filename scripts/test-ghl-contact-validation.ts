@@ -59,6 +59,11 @@ async function main() {
   check("422 email_invalid body → skip", classifyGhlSyncError('GHL API error 422: {"message":"email_invalid"}') === "skip");
   check("422 CONTACT_EMAIL_INVALID body → skip", classifyGhlSyncError('GHL API error 422: {"code":"CONTACT_EMAIL_INVALID"}') === "skip");
   check("422 'email must be a valid email' → skip", classifyGhlSyncError('GHL API error 422: {"message":["email must be a valid email"]}') === "skip");
+  check("422 'email must be an email' (exact production body) → skip", classifyGhlSyncError('GHL API error 422: {"message":["email must be an email"],"error":"Unprocessable Entity","statusCode":422}') === "skip");
+  check("422 'email must be an email address' → skip", classifyGhlSyncError('GHL API error 422: {"message":["email must be an email address"]}') === "skip");
+  check("422 'email should not be empty' → skip", classifyGhlSyncError('GHL API error 422: {"message":["email should not be empty"]}') === "skip");
+  check("422 on phone only stays retryable", classifyGhlSyncError('GHL API error 422: {"message":["phone must be a valid phone number"]}') === "retryable");
+  check("non-422 mentioning email stays retryable", classifyGhlSyncError('GHL API error 500: {"message":["email must be an email"]}') === "retryable");
   check("unknown 422 body stays retryable", classifyGhlSyncError('GHL API error 422: {"message":"something else entirely"}') === "retryable");
   check("unknown 400 body stays retryable", classifyGhlSyncError('GHL API error 400: {"message":"weird payload"}') === "retryable");
   check("recordFailure(no_usable_identity) does not count", (() => {
@@ -122,6 +127,9 @@ async function main() {
 
   console.log("\n[D] upsertGhlContact shared boundary (fake provider via patched fetch)");
   {
+    // Fake credentials for the patched-fetch fake provider only; never a real token, never a real network call.
+    process.env.GHL_API_KEY = "fake-test-token-not-real";
+    process.env.GHL_LOCATION_ID = "fake-location-not-real";
     const { upsertGhlContact, GhlInvalidContactError } = await import("../server/services/ghl");
     const audits: any[] = [];
     const fetchCalls: Array<{ url: string; body: any }> = [];
@@ -135,7 +143,13 @@ async function main() {
       status,
       headers: { get: (k: string) => (k.toLowerCase() === "content-type" ? "application/json" : null) },
       text: async () => JSON.stringify(bodyObj),
+      json: async () => bodyObj,
     }) as any;
+    // The upsert boundary reads the custom-field inventory first; the fake provider answers that read locally.
+    const withInventory = (fn: (url: any, opts: any) => Promise<any>) => async (url: any, opts: any) =>
+      String(url).includes("/customFields") ? fakeResponse(200, { customFields: [] })
+        : String(url).includes("/contacts/search/duplicate") ? fakeResponse(200, { contact: null })
+        : fn(url, opts);
     try {
       // D1: no usable identity → throws BEFORE any provider I/O
       (globalThis as any).fetch = async (url: any, opts: any) => { fetchCalls.push({ url: String(url), body: opts?.body }); return fakeResponse(200, {}); };
@@ -146,34 +160,20 @@ async function main() {
       check("D1: zero provider calls made", fetchCalls.length === 0);
       check("D1: sanitized skip audit written at boundary", audits.some(a => a.action === "ghl_sync_skipped_invalid_contact" && a.details?.reason === GHL_NO_USABLE_IDENTITY));
 
-      // D2: invalid email + valid phone → provider payload has NO email field
+      // D2-D4 (phone-only payload, provider 422 email rejection) previously drove a real create through the fake
+      // provider. Provider writes are now fenced by the GHL sync control, and this suite must not select the
+      // runtime for writes. Assert the fence holds instead: the write is refused and no POST reaches the provider.
+      // The 422 classification itself is covered by sections A-C and the projection-authority certification.
       audits.length = 0; fetchCalls.length = 0;
-      (globalThis as any).fetch = async (url: any, opts: any) => {
+      (globalThis as any).fetch = withInventory(async (url: any, opts: any) => {
         fetchCalls.push({ url: String(url), body: opts?.body });
         return fakeResponse(201, { contact: { id: "fakeGhlId123" } });
-      };
-      const id2 = await upsertGhlContact({ id: 0, firstName: "P", lastName: "Only", email: "not-an-email", phone: "3055550142", ghlContactId: null } as any);
-      check("D2: upsert succeeded phone-only", id2 === "fakeGhlId123");
-      const createBody = JSON.parse(fetchCalls[0].body);
-      check("D2: provider payload omits email", !("email" in createBody), JSON.stringify(Object.keys(createBody)));
-      check("D2: provider payload carries phone", createBody.phone === "3055550142");
-
-      // D3: provider 422 email_invalid → sanitized terminal skip, raw body never persisted
-      audits.length = 0; fetchCalls.length = 0;
-      (globalThis as any).fetch = async (url: any, opts: any) => {
-        fetchCalls.push({ url: String(url), body: opts?.body });
-        return fakeResponse(422, { message: "email_invalid", email: "leaky2@example.com" });
-      };
+      });
       threw = null;
-      try { await upsertGhlContact({ id: 0, firstName: "V", lastName: "E", email: "valid.person@company.com", phone: "", ghlContactId: null } as any); }
+      try { await upsertGhlContact({ id: 0, firstName: "P", lastName: "Only", email: "not-an-email", phone: "3055550142", ghlContactId: null } as any); }
       catch (e) { threw = e; }
-      check("D3: throws GhlInvalidContactError(email_validation_rejected)", threw instanceof GhlInvalidContactError && threw.code === GHL_EMAIL_VALIDATION_REJECTED);
-      check("D3: sanitized audit written (reason/stage/retryable:false)", audits.some(a =>
-        a.action === "ghl_sync_skipped_invalid_contact" &&
-        a.details?.reason === GHL_EMAIL_VALIDATION_REJECTED &&
-        a.details?.stage === "provider_422_email_validation" &&
-        a.details?.retryable === false));
-      check("D3: no raw response body/PII in audits", !JSON.stringify(audits).includes("leaky2@example.com"));
+      check("D2: a phone-only create is refused by the GHL control while this runtime is not selected", /runtime_not_selected/.test(String(threw?.message ?? threw)));
+      check("D2: no provider create (POST /contacts/) was attempted", !fetchCalls.some(c => c.body !== undefined && /\/contacts\/?$/.test(c.url)));
     } finally {
       (globalThis as any).fetch = origFetch;
       (storage as any).createAuditLog = origAudit;

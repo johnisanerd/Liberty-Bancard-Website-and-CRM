@@ -74,8 +74,7 @@
 - [GitHub workflow push scope](github-workflow-push-scope.md) — workflow-file pushes need GitHub's explicit workflow permission; repo access alone may be insufficient.
 - [Durable command lease cleanup](durable-command-lease-cleanup.md) — every claimed-command exit must release only its own token-fenced lease.
 - [Provider-readiness deferral audits](provider-readiness-deferral-audits.md) — when readiness defers pre-legacy-gate, persist the actual deferral reason.
-- [Disposable certification](local-predeploy-database.md) — Isolate DB/Redis/processes; [pause fixtures](pause-cycle-test-db.md).
-- [Disposable database names](disposable-database-names.md) — Keep generated identifiers within 63 bytes; silent PostgreSQL truncation invalidates verified targets.
+- [Disposable certification](local-predeploy-database.md) — Isolate DB/Redis/processes; [pause fixtures](pause-cycle-test-db.md); [names ≤63 bytes](disposable-database-names.md).
 - [Sequence dispatch linearization](sequence-dispatch-linearization.md) — serialize inbound writes and final dispatch; only expired pre-dispatch leases are retryable.
 - [Commercial/channel authority axes](commercial-resolution-authority.md) — Keep resolution, channel evidence, and identity/provenance separate; shadow never replaces legacy pre-cutover.
 - [Multi-source cursor buffering](multi-source-cursor-buffering.md) — merged pagination must retain fetched-but-not-emitted items or cursors silently drop them.
@@ -184,8 +183,7 @@
 - [Domain/location automation](domain-location-automation.md) — closed-by-default worker; admin PUT enables.
 - [Domain/location tick resumability](domain-location-tick-resume.md) — budget-stopped windowed ticks must persist cursor to the last handled id; else progress stalls.
 - [Heading ownership claims](heading-ownership-claims.md) — one h1 per page via runtime claim; hubs embed children at h2; verify by settled-h1 crawl.
-- [Stale dist and import gaps](stale-dist-and-import-gaps.md) — rebuild before browser suites; scripted page migrations can miss imports that only fail at render time.
-- [Dev blank app / cold load / cert iteration](dev-app-blank-and-cold-load.md) — restart app workflow first; wait >5s on cold routes; stub-import trick to avoid rebuild per cert edit.
+- [Stale dist, blank app, cold load](stale-dist-and-import-gaps.md) — rebuild before browser suites; restart app workflow first; see [dev-app-blank-and-cold-load.md](dev-app-blank-and-cold-load.md).
 - [D-V review repair patterns](dv-review-repair-patterns.md) — cohort URL selectors, in-page fetch hold tests, bounded CSV streaming, rebuild-after-scripts rule.
 - [Partner response allowlist and mailbox lock order](partner-response-allowlist.md) — explicit DTO for partner responses; mailbox lock before row/graph locks on every email mutation.
 - [Drizzle begin failure leaks client](drizzle-begin-leak.md) — failed BEGIN never released in drizzle 0.45; override in server/db.ts; db:long_checkout floods mean a leak.
@@ -199,3 +197,4 @@
 - [Partner approval delivery & binding](partner-approval-delivery-and-binding.md) — same-tx mailbox pin, durable approval rows, review reconcile, HTML-only final preview; tsc/intake-pages baseline failures.
 - [GHL projection authority & webhook effect steps](ghl-projection-generation-authority.md) — CAS, owned-tag deltas, existing-population scope; [webhook steps](webhook-effect-steps.md) stay at-least-once.
 - [GHL persistent approval & handoff](ghl-persistent-approval-and-handoff.md) — sorted-key hashes for jsonb, no auto re-send of unknown enrollments, verified deferral, cancel-vs-claim lock.
+- [Operational-truth patterns](stage4a-operational-truth-patterns.md) — 410 retirement, derived catalog/step totals, GHL rejection fingerprint, disposable-runner and rebuild pitfalls.

@@ -70,8 +70,8 @@ export function IdentityHealthDashboard() {
                 </div>
                 <div className="flex items-center gap-6 text-sm">
                   <div className="text-center">
-                    <div className={`font-medium ${identity.healthScore >= 80 ? "text-green-600" : identity.healthScore >= 50 ? "text-yellow-600" : "text-red-600"}`}>
-                      {identity.healthScore}%
+                    <div className={`font-medium ${identity.healthScore == null ? "text-muted-foreground" : identity.healthScore >= 80 ? "text-green-600" : identity.healthScore >= 50 ? "text-yellow-600" : "text-red-600"}`}>
+                      {identity.healthScore != null ? `${identity.healthScore}%` : "unknown"}
                     </div>
                     <div className="text-xs text-muted-foreground">Health</div>
                   </div>

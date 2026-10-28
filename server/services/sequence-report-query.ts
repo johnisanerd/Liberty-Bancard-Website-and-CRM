@@ -3,7 +3,7 @@
  */
 export const SEQUENCE_REPORT_SQL = `
 SELECT s.id,s.name,s.status,s.trigger_type,s.sequence_family,s.description,
-  s.eligible_consent_tiers,s.channels_allowed,s.lifecycle_stages_allowed,s.total_steps,
+  s.eligible_consent_tiers,s.channels_allowed,s.lifecycle_stages_allowed,COALESCE(steps.step_count,0)::int AS total_steps,
   steps.step_count,steps.email_steps,steps.sms_steps,steps.ghl_steps,steps.task_steps,steps.max_delay_days,
   members.active_enrollments,members.completed_enrollments,members.total_memberships,members.unique_contacts
 FROM follow_up_sequences s

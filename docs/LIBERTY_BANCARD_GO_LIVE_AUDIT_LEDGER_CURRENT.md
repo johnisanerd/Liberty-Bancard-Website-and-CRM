@@ -1918,3 +1918,65 @@ Controls in the same run: the held response is shown to contain the old actor's 
 - Until the application re-reads `/api/auth/user`, the page keeps showing the previous user's retained header after a session cookie swap made elsewhere. The server authorizes every data read under the new session, and the page fences as soon as the actor is re-read. This is the existing revalidation design and is recorded as an observation, not as a pass or a defect.
 - The run used the working tree at `bd22a22b` plus the new test, not a checkout of `cafc77ab`.
 - The independent production walkthrough is separate and is not claimed here.
+
+## 47. Stage 4A — Catalog and operational truth (2026-10-28; source, not yet published)
+
+Scope: F01, F02, F10, F12, F13, N01. No outbound activation, no change to the global/email/SMS/cold-email pauses, the `sequences` or `ghl-enrollment-recovery` kill switches, or to GHL sync control, epoch, owner, circuit, approval or runtime selection. No GHL call from application code, no contact-removal or existence script, no local GHL link cleared, no backfill, no provider call, no asset deleted. Incoming GHL contact sync was not touched. No sidebar, theme, dependency or lockfile change (the forbidden-file diff grep returns nothing).
+
+### 47.1 Binding
+
+- Base commit: `4baf2106` (the work is uncommitted source in the working tree on top of it; the receipt is the working tree, not a commit).
+- Build identity of the final local build: `56887058-cbfe-4cc1-ae2b-840e86551eea` (`npm run build`, exit 0, client built and server bundle written). The browser suite binds to this build.
+- Production baseline control state: unavailable. The production database could not be read through the available read-only path from this session, so no before/after production control comparison is claimed.
+
+### 47.2 What changed (behavior)
+
+- F01: the pilot tab is a read-only history (`PilotHistoryPanel`: GET only, no buttons or inputs). Retired pilot entrances (`select-cohort`, `select-roi-cohort`, `validate-cohort`, `freeze-cohort`, `execute-phase`, `advance`, `transition`, `effect-links`, definitions, approvals, reconciliation) answer 410 after the auth/role gate and enqueue nothing. The paid-provider emergency stop route is unchanged and live; its control moved to Program Health (`PaidProviderControlsPanel`).
+- F02: catalog classification derives from package-version pins and `retired_at`, never from status or name; superseded versions are preserved; an unproven transport is not shown as ready.
+- F10: sequence and campaign step totals come from a grouped count of real steps, not the stored `total_steps`; `healthScore` 0 stays 0 and null stays unknown; failed channel-count reads show unavailable; SDR `stage`/`currentStage` use one precedence helper and report conflicts; reply, opt-out, bounce, delivery failure and delivery are counted separately and a delivery failure no longer stamps `lastReplyAt`; the paid-provider in-flight list is labelled as a sample next to a whole-population count; the contact page labels a local GHL link as "linked ID recorded locally; current native existence unverified" and shows outgoing control as paused, enabled or unknown.
+- F12/F13: queue topology and ZeroBounce schedule reported from what is actually selected and instantiated.
+- N01: the exact GHL message "email must be an email" and known variants are a terminal, non-retryable, sanitized rejection; unknown 422, 401, 429 and 5xx are unchanged; an unchanged rejected identity is fingerprinted and not re-dispatched by unrelated enqueues, ticks or restarts; a material change allows one reconsideration.
+
+### 47.3 Verification (commands and exit codes)
+
+Disposable runner is `npx tsx scripts/run-sfp2060-predeploy-disposable.ts --only <script>`.
+
+| Check | Result |
+|---|---|
+| `test-stage4a-operational-truth.ts` (disposable) | exit 0 |
+| `test-stage4a-retired-pilot-routes.ts` (disposable) | exit 0 |
+| `test-stage4a-catalog-truth.ts` (disposable) | exit 0 |
+| `test-stage4a-metrics-truth.ts` (disposable; also direct against dev) | exit 0 |
+| `test-stage4a-browser-pilot-history.ts` (disposable, private Chromium, compiled client; rerun on the final build) | exit 0; 51 checks: emergency stop anonymous 401 and manager/agent/merchant 403 (never sent as admin), empty state at 1280/768/390 px in light and dark, no horizontal overflow, no controls, no non-GET request; populated, loading, error ("unavailable, not empty"), denied, Back and reload |
+| `test-ghl-contact-validation.ts` (disposable) | exit 0 (section D updated: see 47.4) |
+| `test-ghl-sync-status-render.tsx` (`npx tsx --tsconfig scripts/tsconfig.ghl-inbound-ui-test.json`) | 8/8 pass, exit 0. Not registered in the disposable roster because it needs that tsconfig. |
+| `certification/test-ghl-projection-authority.ts` (disposable) | exit 0 on the final rerun, including the new N01 checks GPA-28 to GPA-38 (rerun after the in-flight-edit fix in 47.6). An earlier run exited 1 in an unrelated fixture (a unique-index collision); it did not reproduce and its cause was not established. |
+| `test-background-profile.ts` (disposable) | exit 0 |
+| `test-stage3-c3-contracts.ts` (disposable) | exit 0 |
+| `test-sfp-vertical-classifier-v2.ts`, `test-sfp-five-vertical-fairness-pure.ts` (direct) | exit 0, exit 0 |
+| `test-ghl-prepared-review.ts`, `test-ghl-sync-runtime-boundary.ts` (direct) | exit 0, exit 0 |
+| `test-cro03c-shared-provider-control.ts`, `test-paid-provider-controls-convergence.ts` (disposable) | exit 0, exit 0 (the second needed one retry after a private-Redis start failure) |
+| `role-guards` workflow | 162/162 guarded routes passed, exit 0 |
+| `api-coverage` workflow | passed (853 client endpoints, 1767 server handlers, no new unmatched endpoint) |
+| `npm run build` | exit 0 |
+| `scripts/cro03c-level1-certification.ts` (disposable) | exit 1, one phase failing: 2c. See 47.4. Phases 9a to 9f pass. |
+
+### 47.4 Not established / known failures
+
+- `cro03c-level1-certification.ts` phase 2c fails ("Must have evaluated at least one candidate"). The ROI cohort selector now requires completed classification evidence rows, which this script's seeded businesses do not have. No Stage 4A file touches the selector. It was not compared against a clean baseline checkout, so "already failing before this task" is a conclusion from the code, not a measured baseline. Phases 9a and 9b asserted the retired UI and were rewritten to assert retirement and read-only history.
+- `test-ghl-contact-validation.ts` section D used to push a phone-only create and a provider 422 through the real upsert boundary with a fake provider. Provider writes are now fenced by the GHL sync control, which this task must not change, so D2 to D4 now assert that the write is refused (`runtime_not_selected`) and no create reaches the provider. The 422 classification itself is covered by sections A to C and the projection-authority certification.
+- The "5xx alert" cause was inconclusive and is not claimed as proven.
+- The full TypeScript check was not run (production build and focused suites only). Consumer handlers beyond the ones named in 47.3 were not exercised.
+- `ci-suite-manifest.ts --check` reports manifest gaps for five `test-stage3-d-v-*` mandatory suites. They are not new suites from this task; the new suites are in `CERTIFICATION_FIXTURE_SUITES`, not `MANDATORY_SUITES`.
+- `CRO03C_CURRENT_MIGRATION_HEAD` is `0260_mi07_dedup_unique_indexes` while the migrations directory ends at 0377. This task added no migration and did not change that constant.
+- `client/src/lib/crm-route-registry.generated.json` was edited by hand (one component name, `PilotStatusPanel` to `PilotHistoryPanel`) instead of rerunning the generator, which rewrites many certification documents.
+- Stale local GHL links and 15 unresolved edited lead-file GHL contacts are untouched and must not be deleted without an explicit instruction.
+- Nothing was published and production behavior was not observed.
+
+### 47.5 Rollback
+
+Source only. Revert the working-tree changes for the files in this task (or restore the `4baf2106` versions) and rebuild. There is no migration, no data write and no control change to undo. The retired entrances return to their previous behavior on revert; the paid-provider emergency stop route is unchanged either way.
+
+### 47.6 Review finding fixed: edit during an in-flight provider request
+
+A code review found that a contact edit enqueued while a request was in flight advanced the desired generation, but a rejection of the old identity then settled the row terminal with a fingerprint of the new (edited) identity, which would have fenced the corrected contact. Fixed in `server/services/ghl-projection-authority.ts`: the rejection is recorded against the identity fingerprint captured at claim time, and an identity rejection settled while the desired generation is newer than the claimed generation returns the row to pending with a fresh budget and records no fingerprint. Other terminal settlements are unchanged. A new certification (GPA-34 to GPA-36) edits the contact during the pending provider call, returns the email-validation 422, and verifies that the corrected identity is dispatched and succeeds. `test-ghl-projection-authority.ts` exit 0 after the change.

@@ -729,7 +729,7 @@ export function validateGhlIdentityFields(fields: { email?: string | null; phone
 export function isGhlEmailValidation422(errorMessage: string | undefined): boolean {
   if (!errorMessage) return false;
   if (!/GHL API error 422/i.test(errorMessage)) return false;
-  return /email[^"]*invalid|invalid[^"]*email|CONTACT_EMAIL_INVALID|email_invalid|email must be a valid/i.test(errorMessage);
+  return /email[^"]*invalid|invalid[^"]*email|CONTACT_EMAIL_INVALID|email_invalid|email must be a valid|email must be an? (?:valid )?email|email should not be empty|email must be an? email address/i.test(errorMessage);
 }
 
 async function writeInvalidContactSkipAudit(contactId: number | null, reason: string, stage: string): Promise<void> {

@@ -1328,25 +1328,37 @@ async function run(): Promise<void> {
       // verified executor (execute-phase) to prevent checkpoint-only certification bypass.
       { path: "/api/lead-ops/pilot/runs/test-run-id/effect-links",           desc: "POST pilot effect link" },
       { path: "/api/lead-ops/pilot/runs/test-run-id/execute-phase",         desc: "POST pilot execute-phase" },
+      // Stage 4A retired entrances: still registered behind the role gate, fenced with a stable non-404 response.
+      { path: "/api/lead-ops/pilot/runs/test-run-id/select-cohort",          desc: "POST select-cohort (retired)" },
+      { path: "/api/lead-ops/pilot/runs/test-run-id/select-roi-cohort",      desc: "POST select-roi-cohort (retired)" },
+      { path: "/api/lead-ops/pilot/runs/test-run-id/validate-cohort",        desc: "POST validate-cohort (retired)" },
+      { path: "/api/lead-ops/pilot/runs/test-run-id/transition",             desc: "POST transition (retired)" },
+      { path: "/api/lead-ops/pilot/runs/test-run-id/advance",                desc: "POST advance (retired)" },
+      { path: "/api/lead-ops/pilot/definitions/ensure-level1",               desc: "POST ensure-level1 (retired)" },
+      { path: "/api/lead-ops/pilot/paid-provider-approval",                  desc: "POST paid-provider-approval (retired)" },
+      { path: "/api/lead-ops/pilot/authorize-paid-budget",                   desc: "POST authorize-paid-budget (retired)" },
+      // Live exception: the emergency stop stays registered and role-gated (never executed by this smoke as admin).
+      { path: "/api/lead-ops/pilot/emergency-stop-paid",                     desc: "POST emergency-stop-paid (live, role-gated)", anonOnly: true },
       { path: "/api/lead-ops/pilot/reconciliation-reports",                  desc: "POST reconciliation report" },
       { path: "/api/admin/cro08a/schedule-definitions",                      desc: "POST cro08a schedule def" },
       { path: "/api/admin/cro08a/schedule-definitions/test-id/activate",     desc: "POST activate schedule def" },
       { path: "/api/admin/cro08a/schedule-definitions/test-id/deactivate",   desc: "POST deactivate schedule def" },
       { path: "/api/admin/pause-state",                                      desc: "GET pause-state (admin only)" },
     ];
-    for (const { path, desc } of MI09_POST_ROUTES) {
+    for (const { path, desc, anonOnly } of MI09_POST_ROUTES as Array<{ path: string; desc: string; anonOnly?: boolean }>) {
       const isGet = path === "/api/admin/pause-state";
       const method = isGet ? "GET" : "POST";
       const [anonStatus, merchantStatus, adminStatus] = await Promise.all([
         fetch(`${BASE_URL}${path}`, { method }).then(r => r.status),
         fetch(`${BASE_URL}${path}`, { method, headers: { cookie: merchantCookie } }).then(r => r.status),
-        fetch(`${BASE_URL}${path}`, { method, headers: { cookie: adminCookie } }).then(r => r.status),
+        // The live emergency stop is never sent as admin from a smoke: it would disable provider controls.
+        anonOnly ? Promise.resolve(0) : fetch(`${BASE_URL}${path}`, { method, headers: { cookie: adminCookie } }).then(r => r.status),
       ]);
       const anonOk    = anonStatus === 401;
       const merchantOk = merchantStatus === 403;
       // Admin: any non-200 ok (400/404/409/500 all prove the route is found + auth passed)
       // 403 on admin = CSRF-blocked POST (no CSRF token in test) — this is fine for auth guard purposes
-      const adminOk   = adminStatus !== 404;
+      const adminOk   = anonOnly ? true : adminStatus !== 404;
       if (anonOk && merchantOk && adminOk) {
         console.log(`  ✓ ${method} ${path}: anon→${anonStatus}(401✓) merchant→${merchantStatus}(403✓) admin→${adminStatus}(✓)`);
       } else {

@@ -2584,6 +2584,16 @@ export function registerSdrRoutes(app: Express) {
     }
   });
 
+  app.get("/api/sdr/event-kind-census", isAuthenticated, requireRole("admin", "manager"), async (req, res) => {
+    try {
+      const { getSdrEventKindCensus } = await import("../services/sdr/funnel-metrics");
+      res.json(await getSdrEventKindCensus(Number(req.query.days) || 30));
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ message: safeMessage(errMsg) });
+    }
+  });
+
   app.get("/api/sdr/market-expansion", isAuthenticated, async (_req, res) => {
     try {
       const { getMarketExpansionData } = await import("../services/sdr/funnel-metrics");

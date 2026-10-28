@@ -329,12 +329,29 @@ export function registerIntegrationsRoutes(app: Express) {
       const permissionProjection = await getContactPermissionProjectionStatus(contactId);
       const { describeContactProjection } = await import("../services/ghl-projection-authority");
       const projection = await describeContactProjection(contactId).catch(() => null);
+      // Read-only local read of the outgoing sync control; never a provider call. null = unreadable (unknown).
+      const { getGhlSyncControl } = await import("../services/ghl-sync-control");
+      const control = await getGhlSyncControl().catch(() => null);
+      const outgoingControl = control
+        ? {
+            state: control.enabled ? ("enabled" as const) : ("paused" as const),
+            epoch: control.epoch,
+            ownerSelected: control.ownerProfile != null,
+          }
+        : { state: "unknown" as const, epoch: null, ownerSelected: null };
       const lastSyncedAt = lastOutboundSync?.createdAt || null;
       const isSynced = !!contact.ghlContactId && !!lastSyncedAt;
       const syncAge = lastSyncedAt ? Date.now() - new Date(lastSyncedAt).getTime() : null;
       const isRecent = syncAge !== null && syncAge < 24 * 60 * 60 * 1000;
       res.json({
         ghlContactId: contact.ghlContactId || null,
+        // A local id and local activity age only; they are not a read-back of GHL.
+        linkEvidence: contact.ghlContactId
+          ? "linked ID recorded locally; current native existence unverified"
+          : "no GHL ID recorded locally",
+        nativeExistence: "unverified" as const,
+        outgoingControl,
+        asOf: new Date().toISOString(),
         isSynced,
         isRecent,
         lastSyncedAt: lastSyncedAt ? new Date(lastSyncedAt).toISOString() : null,

@@ -10,6 +10,8 @@ function getEstDateString(date?: Date): string {
   return (date || new Date()).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
 }
 
+import { countSdrEventKinds, type SdrEventKind } from "./event-kinds";
+
 export async function aggregateDailyMetrics(dateStr?: string): Promise<void> {
   const targetDate = dateStr || getEstDateString(new Date(Date.now() - 24 * 60 * 60 * 1000));
   console.log(`[FunnelMetrics] Aggregating metrics for ${targetDate}...`);
@@ -309,13 +311,14 @@ export async function getIdentityHealthReport(): Promise<any[]> {
       warmupStatus: identity.warmupStatus,
       dailyLimit: identity.dailyLimit,
       sentToday: identity.sentToday || 0,
-      healthScore: identity.healthScore || 100,
+      // 0 is a real score; a missing score is null (unknown), never a defaulted 100.
+      healthScore: identity.healthScore ?? null,
       bounceRate: Math.round(((stats.totalBounced || 0) / sent) * 100),
       replyRate: Math.round(((stats.totalReplied || 0) / sent) * 100),
       complaintRate: Math.round(((stats.totalComplaints || 0) / sent) * 1000) / 10,
       openRate: Math.round(((stats.totalOpened || 0) / sent) * 100),
       weekSent: stats.totalSent || 0,
-      alert: (identity.healthScore || 100) < 70 ? "degraded" :
+      alert: identity.healthScore != null && identity.healthScore < 70 ? "degraded" :
              (stats.totalComplaints || 0) > 2 ? "complaints" :
              ((stats.totalBounced || 0) / sent) > 0.1 ? "high_bounce" : null,
     };
@@ -643,7 +646,7 @@ export async function getSendMonitoringData(): Promise<any> {
       sentToday: identity.sentToday || 0,
       bouncesToday: identity.bouncesToday || 0,
       complaintsToday: identity.complaintsToday || 0,
-      healthScore: identity.healthScore || 100,
+      healthScore: identity.healthScore ?? null,
       capUtilization: (identity.dailyLimit || 30) > 0 ? Math.round(((identity.sentToday || 0) / (identity.dailyLimit || 30)) * 100) : 0,
       week: {
         sent: sent,
@@ -678,6 +681,7 @@ export async function getSendMonitoringData(): Promise<any> {
     return raw;
   }
 
+  let channelCountsAvailable = true;
   try {
     const [smtpRes, ghlRes, recentRes] = await Promise.all([
       db.execute(sql`
@@ -708,18 +712,25 @@ export async function getSendMonitoringData(): Promise<any> {
       entityId: r.entity_id ? Number(r.entity_id) : null,
       sentAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
     }));
-  } catch (_) {}
+  } catch (err) {
+    // A failed read is unavailable, not zero.
+    channelCountsAvailable = false;
+    console.error("[SendMonitoring] channel breakdown unavailable:", err instanceof Error ? err.message : "unknown");
+  }
 
   return {
     identities: identityStats,
     aggregated: {
+      asOf: new Date().toISOString(),
+      scope: "all sending identities; sentToday is the current EST day, channel counts are the trailing 24 hours, recentSends is the latest 25",
+      channelCountsAvailable,
       totalIdentities: identities.length,
       activeIdentities: identities.filter(i => i.isActive).length,
       totalSentToday: totalSent,
       totalDailyLimit: totalLimit,
       overallCapUtilization: totalLimit > 0 ? Math.round((totalSent / totalLimit) * 100) : 0,
-      smtpFallbacksLast24h,
-      ghlSendsLast24h,
+      smtpFallbacksLast24h: channelCountsAvailable ? smtpFallbacksLast24h : null,
+      ghlSendsLast24h: channelCountsAvailable ? ghlSendsLast24h : null,
     },
     recentSends,
   };
@@ -801,4 +812,42 @@ export async function getLowConfidenceClassifications(): Promise<any[]> {
         createdAt: row.event.createdAt,
       };
     });
+}
+
+
+/**
+ * Read-only whole-population event-kind census. Replies, opt-outs, bounces and delivery outcomes are reported
+ * separately, with scope/as-of/availability. A failed read is `available:false` with null counts, never zeros.
+ */
+export async function getSdrEventKindCensus(days = 30): Promise<{
+  available: boolean;
+  scope: string;
+  asOf: string;
+  windowDays: number;
+  counts: Record<SdrEventKind, number> | null;
+  unavailableReason?: string;
+}> {
+  const asOf = new Date().toISOString();
+  const windowDays = Math.max(1, Math.min(365, Math.trunc(days) || 30));
+  const scope = `all sdr_lead_events in the trailing ${windowDays} days; kinds are classified separately (reply, opt_out, bounce, delivery_failure, delivery)`;
+  try {
+    const rows = await db.execute(sql`
+      SELECT event_type AS "eventType",
+             payload_json->>'status' AS status,
+             payload_json->>'deliveryStatus' AS "deliveryStatus",
+             payload_json->>'direction' AS direction,
+             payload_json->>'body' AS body,
+             COUNT(*)::int AS n
+        FROM sdr_lead_events
+       WHERE created_at >= NOW() - make_interval(days => ${windowDays})
+       GROUP BY 1,2,3,4,5`);
+    const events = ((rows as any).rows ?? []).map((r: any) => ({
+      eventType: r.eventType,
+      payloadJson: { status: r.status, deliveryStatus: r.deliveryStatus, direction: r.direction, body: r.body },
+      n: Number(r.n),
+    }));
+    return { available: true, scope, asOf, windowDays, counts: countSdrEventKinds(events) };
+  } catch (err) {
+    return { available: false, scope, asOf, windowDays, counts: null, unavailableReason: err instanceof Error ? err.message.slice(0, 120) : "read failed" };
+  }
 }

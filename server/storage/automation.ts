@@ -97,7 +97,7 @@ import {
   roleplayExchanges, type RoleplayExchange, type InsertRoleplayExchange,
   leaderboardSettings, type LeaderboardSettings,
 } from "@shared/schema";
-import { eq, desc, and, lt, isNull, ne, sql, asc, gte, lte, inArray, or, ilike, count } from "drizzle-orm";
+import { eq, desc, and, lt, isNull, ne, sql, asc, gte, lte, inArray, or, ilike, count, getTableColumns } from "drizzle-orm";
 import { coerceDateFields } from "../utils/date-coerce";
   import { type PaginationParams, type PaginatedResult, normalizePagination } from "./_shared";
 
@@ -148,7 +148,11 @@ import { coerceDateFields } from "../utils/date-coerce";
 
 
   async getFollowUpSequences() {
-    return await db.select().from(followUpSequences).orderBy(desc(followUpSequences.createdAt));
+    // totalSteps is derived from a grouped step count; the stored total_steps column is not trusted (it drifts).
+    return await db.select({
+      ...getTableColumns(followUpSequences),
+      totalSteps: sql<number>`COALESCE((SELECT COUNT(*) FROM sequence_steps ss WHERE ss.sequence_id = "follow_up_sequences"."id"), 0)::int`,
+    }).from(followUpSequences).orderBy(desc(followUpSequences.createdAt));
   }
 
 
